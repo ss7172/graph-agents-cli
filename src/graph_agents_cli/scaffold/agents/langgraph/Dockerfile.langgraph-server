@@ -18,14 +18,23 @@ ADD . /deps/{{cookiecutter.project_name}}
 # `uv export` writes the locked versions (with hashes); they are installed
 # without resolving again, and must agree with the base image's constraints, so
 # a lock that conflicts with the server fails the build instead of the server.
-# The base image ships uv; nothing is added to it.
+# The lock must also pin the base image's own langgraph-api release (the build
+# stops with the tag to use otherwise). The base image ships uv; nothing is
+# added to it.
 RUN cd /deps/{{cookiecutter.project_name}} \
+ && base_api="$(python -c "import importlib.metadata as m; print(m.version('langgraph-api'))")" \
  && uv export --quiet --frozen --no-dev --no-emit-project --no-header -o /tmp/requirements.txt \
  && uv pip install --system --no-cache --compile-bytecode --no-deps \
       -c /api/constraints.txt -r /tmp/requirements.txt \
  && uv pip install --system --no-cache --compile-bytecode --no-deps \
       -e /deps/{{cookiecutter.project_name}} \
- && rm /tmp/requirements.txt
+ && rm /tmp/requirements.txt \
+ && lock_api="$(python -c "import importlib.metadata as m; print(m.version('langgraph-api'))")" \
+ && if [ "$base_api" != "$lock_api" ]; then \
+      echo "uv.lock pins langgraph-api $lock_api but the base image is $base_api:" \
+           "use FROM langchain/langgraph-api:$lock_api-py3.12" >&2; \
+      exit 1; \
+    fi
 
 # The graph, the custom routes (/chat, /threads, /health, /ready, /metrics,
 # /playground, A2A) and the auth handler, as langgraph.json declares them.
@@ -34,8 +43,12 @@ RUN cd /deps/{{cookiecutter.project_name}} \
 ENV LANGSERVE_GRAPHS='{"agent": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/agent.py:graph"}'
 ENV LANGGRAPH_HTTP='{"app": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/fast_api_app.py:app", "disable_meta": true}'
 ENV LANGGRAPH_AUTH='{"path": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/app_utils/auth.py:auth"}'
-# Tells fast_api_app.py it is mounted inside the server (no checkpointer binding).
+# LANGGRAPH_SERVER tells fast_api_app.py it is mounted inside the server (no
+# checkpointer binding). The server allows every CORS origin when
+# CORS_ALLOW_ORIGINS is unset; the image starts from none, like the fastapi
+# runtime: list your browser origins in CORS_ALLOW_ORIGINS (comma-separated).
 ENV LANGGRAPH_SERVER=1 \
+    CORS_ALLOW_ORIGINS="" \
     PYTHONDONTWRITEBYTECODE=1 \
     HOME=/tmp
 

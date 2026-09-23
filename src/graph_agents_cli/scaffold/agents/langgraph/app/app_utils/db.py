@@ -24,7 +24,9 @@ Records always hold the `metadata` capture set plus the caller's (capped)
 `/chat` metadata, and hold request/response content only under
 `TRACE_CAPTURE=full`. The schema is created at startup with `CREATE ... IF NOT
 EXISTS` / `ADD COLUMN IF NOT EXISTS` under a Postgres advisory lock, so
-replicas starting together do not race. `RETENTION_DAYS` (see `chat.py`)
+replicas starting together do not race and an existing database is upgraded
+in place (the index added to an existing `threads` table is built
+concurrently, without blocking writes). `RETENTION_DAYS` (see `chat.py`)
 purges the records of idle threads.
 """
 
@@ -81,7 +83,7 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 ALTER TABLE threads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS threads_principal_id_idx ON threads (principal_id);
-CREATE INDEX IF NOT EXISTS threads_updated_at_idx ON threads (updated_at);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS threads_updated_at_idx ON threads (updated_at);
 """
 
 

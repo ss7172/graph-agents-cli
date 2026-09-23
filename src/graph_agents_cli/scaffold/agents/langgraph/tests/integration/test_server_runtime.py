@@ -416,6 +416,19 @@ async def test_thread_ids_must_be_uuids_under_the_server_runtime(server, thread_
     assert sdk.created == [] and sdk.deleted == []
 
 
+async def test_uuid_spellings_name_one_thread(server) -> None:
+    """Canonical ids: the run lock and ownership cannot be split by upper/lower case."""
+    rt, sdk = server
+    upper = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+    resolved = await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=upper))
+    assert resolved == upper.lower() and sdk.created[-1]["thread_id"] == upper.lower()
+    lease = await rt.acquire_thread(resolved)
+    again = await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=upper))
+    events = await _events(rt, OWNER, ChatRequest(message="x"), again)
+    assert events[-1][1]["code"] == "thread_busy"
+    await lease.release()
+
+
 async def test_server_failure_is_a_generic_503_not_403(server, monkeypatch) -> None:
     rt, _sdk = server
 

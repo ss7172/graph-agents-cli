@@ -186,8 +186,12 @@ def unavailable(what: str, exc: BaseException) -> HTTPException:
     return HTTPException(status_code=503, detail=f"{what} unavailable. Reference: {error_id}.")
 
 
-def validate_thread_id(thread_id: str, runtime: str) -> None:
-    """422 for an id outside the accepted form (LangGraph Server additionally needs a UUID)."""
+def validate_thread_id(thread_id: str, runtime: str) -> str:
+    """The thread id in canonical form, or 422 for an id outside the accepted form.
+
+    LangGraph Server needs a UUID; it is canonicalised (lower case, hyphens)
+    so one thread never has two spellings, e.g. for the run lock.
+    """
     if not valid_thread_id(thread_id):
         raise HTTPException(
             status_code=422,
@@ -195,12 +199,13 @@ def validate_thread_id(thread_id: str, runtime: str) -> None:
         )
     if runtime == LANGGRAPH_SERVER:
         try:
-            uuid.UUID(thread_id)
+            return str(uuid.UUID(thread_id))
         except ValueError:
             raise HTTPException(
                 status_code=422,
                 detail="thread_id must be a UUID under the langgraph-server runtime.",
             ) from None
+    return thread_id
 
 
 def http_status(exc: BaseException) -> int | None:
@@ -540,7 +545,7 @@ class ChatRuntime:
     async def resolve_thread(self, principal: Principal, req: ChatRequest) -> str:
         """The thread id for this request, after the ownership check (403 before streaming)."""
         if req.thread_id is not None:
-            validate_thread_id(req.thread_id, self.runtime)
+            req.thread_id = validate_thread_id(req.thread_id, self.runtime)
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_resolve_thread(principal, req)
         assert self.threads is not None
@@ -588,7 +593,7 @@ class ChatRuntime:
         404 for an unknown thread, 403 for someone else's, `ThreadBusy` while
         a run is in progress on it.
         """
-        validate_thread_id(thread_id, self.runtime)
+        thread_id = validate_thread_id(thread_id, self.runtime)
         if self.runtime == LANGGRAPH_SERVER:
             client = self._sdk_client(forward_headers or {})
             record = await self._server_thread_record(client, thread_id)
@@ -974,7 +979,7 @@ class ChatRuntime:
         thread_id: str,
         forward_headers: Mapping[str, str] | None = None,
     ) -> list[dict[str, Any]]:
-        validate_thread_id(thread_id, self.runtime)
+        thread_id = validate_thread_id(thread_id, self.runtime)
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_messages(principal, thread_id, forward_headers or {})
         assert self.threads is not None
