@@ -14,24 +14,25 @@ scaffolding files implement them.
 │   │   ├── model.py             # get_model(), get_judge_model() via init_chat_model; FakeChatModel (provider `fake`)
 │   │   ├── chat.py              # the single invocation path shared by /chat, A2A and the playground; emits the SSE events
 │   │   ├── checkpointer.py      # memory | postgres from CHECKPOINTER (fastapi only)
-│   │   ├── auth.py              # Principal, AuthPolicy, SharedBearerPolicy, get_policy(), `auth` for langgraph.json
+│   │   ├── auth.py              # Principal (public_attributes()), AuthPolicy, SharedBearerPolicy, JwtPolicy, get_policy(), `auth` for langgraph.json
 │   │   ├── threads.py           # thread ownership table (fastapi) / thread metadata (langgraph-server)
-│   │   ├── product_client.py    # ProductClient, PolicyViolation, check_tool_declarations(); loads product-policy.yaml
+│   │   ├── api_client.py        # get_client(), ApiClient, ApiPolicy, ApiPolicyError, ApiCallError; enforces api-policy.yaml
 │   │   ├── telemetry.py         # opt-in tracing, capture policy
 │   │   ├── db.py                # run records (`runs` table under postgres)
 │   │   ├── content.py           # message content helpers
 │   │   ├── playground.py        # the /playground page (APP_ENV=dev only)
 │   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events
 │   ├── policies/
-│   │   └── product_session.py   # ProductSessionPolicy stub (fails closed with HTTPException 503)
+│   │   └── custom.py            # CustomPolicy stub (fails closed with HTTPException 503)
 │   └── tools/
-│       ├── __init__.py          # collects TOOLS from every module; warns on a module without PRODUCT_CALLS
-│       ├── weather.py           # get_weather (PRODUCT_CALLS = [])
-│       └── product_lookup.py    # product_lookup via ProductClient (PRODUCT_CALLS GET getItem; registered only with a policy)
+│       ├── __init__.py          # collects TOOLS from every module; warns on a module without API_CALLS
+│       ├── weather.py           # get_weather (API_CALLS = [])
+│       └── example_api.py       # lookup_item via get_client (API_CALLS GET getItem); only with --api-policy
 ├── tests/
-│   ├── unit/test_policy.py      # auth policies (incl. the product-session stub), product client (path templates, traversal)
+│   ├── unit/test_policy.py      # auth policies (shared-bearer, the jwt placeholder, the custom stub)
+│   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging
 │   ├── unit/test_threads.py     # ownership: owner / read-across role / stranger; tool-args redaction
-│   ├── unit/test_telemetry.py   # D17: no error message or stack trace leaves under metadata capture
+│   ├── unit/test_telemetry.py   # no error message or stack trace leaves under metadata capture
 │   ├── integration/test_server_e2e.py       # fastapi runtime in process (error event, 503 stub, ownership)
 │   ├── integration/test_server_runtime.py   # langgraph-server branch against a fake SDK client
 │   ├── eval/datasets/basic-dataset.json, eval/eval_config.yaml   # judges: {} (built-in rubrics); cases pass on the fake model
@@ -39,14 +40,15 @@ scaffolding files implement them.
 ├── deployment/helm/<name>/      # Chart.yaml, values.yaml, values-{dev,staging,prod}.yaml, templates/, charts/
 ├── deployment/argocd/           # application-{dev,staging,prod}.yaml (cd = argocd only)
 ├── .github/workflows/{pr_checks,staging,promote-to-prod}.yaml   # staging/promote only when cd != skip
+├── .github/agent.env            # GRAPH_AGENTS_CLI_SPEC (where CI installs the CLI) + chart settings
 ├── .github/CODEOWNERS           # values-prod.yaml, application-prod.yaml -> production approvers (cd != skip)
 ├── langgraph.json               # always generated: graphs, http.app, auth
 ├── Dockerfile                   # runtime-specific
 ├── .dockerignore                # keeps .env, .venv, .git, artifacts, tests, deployment out of the image
 ├── .env.example                 # full env contract
-├── product-policy.yaml          # only when --product-policy was given
+├── api-policy.yaml              # only when --api-policy was given
 ├── graph-agents-cli-manifest.yaml
-├── GEMINI.md | CLAUDE.md | AGENTS.md   # may declare `process:`
+├── AGENTS.md | CLAUDE.md | GEMINI.md   # may declare `process:` (default AGENTS.md)
 └── pyproject.toml, uv.lock
 ```
 
@@ -76,12 +78,15 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `CHECKPOINTER` (`memory`\|`postgres`) | `.env`=memory, chart=postgres | fastapi only |
 | `POSTGRES_DSN` | Secret (external) or chart env (subchart) | fastapi only |
 | `DATABASE_URI`, `REDIS_URI` | Secret (external) or chart env (subchart) | langgraph-server only |
-| `AUTH_POLICY` (`shared-bearer`\|`product-session`) | `.env` / chart | |
+| `AUTH_POLICY` (`shared-bearer`\|`jwt`\|`custom`) | `.env` / chart | `product-session` is read as `custom` (deprecated) |
 | `API_KEY` | Secret | shared-bearer key |
+| `AUTH_JWT_JWKS_URL` \| `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE` | `.env` / chart | jwt only; issuer and audience required outside dev |
 | `AUTH_READ_ACROSS_ROLES` | chart | comma-separated roles allowed to read (never write) others' threads; empty default |
+| `AUTH_ADMIN_ROLES` | chart | langgraph-server: roles allowed to manage assistants, crons and the store; empty = nobody |
 | `APP_URL` | chart (`appUrl` / hostname) / `.env` | public base URL in the A2A agent card; unset = bind address (warned outside dev) |
-| `PRODUCT_API_BASE_URL` | `.env` / chart | when a product policy exists |
-| `PRODUCT_API_TOKEN` | Secret | only when `product-policy.yaml` has `auth: bearer` |
+| `<API>_BASE_URL` (each API's `base_url_env`) | `.env` / chart | one per API in `api-policy.yaml` |
+| each `auth: bearer` API's `token_env` | Secret | joins `secrets.keys` at create |
+| `API_POLICY_PATH` | `.env` | default `./api-policy.yaml` |
 | `TRACING_ENABLED` (`true`\|`false`) | `.env`=false | tracing opt-in |
 | `TRACE_CAPTURE` (`metadata`\|`full`) | `.env`=metadata | capture policy |
 | `LANGSMITH_API_KEY` | Secret | |
@@ -147,50 +152,60 @@ ACTIONS = {"chat.send", "thread.read", "thread.list", "thread.delete", "run.read
 
 `get_policy()` returns the instance for `AUTH_POLICY`. `SharedBearerPolicy` checks
 `Authorization: Bearer <API_KEY>` (constant-time compare) and returns `Principal(id="shared")`.
-`ProductSessionPolicy` lives in `app/policies/product_session.py` and fails closed with an
-`HTTPException(503)` carrying the implementation instructions (`require()` also maps a
-`NotImplementedError` to 503) until implemented. Under `fastapi`, thread ownership is enforced by
-the app-owned `threads` table check before any checkpointer access. `auth` (a `langgraph_sdk.Auth`) is built from the same policy for
-`langgraph.json`. Client flags: `--header 'Authorization: Bearer ...'`, `--cookie name=value`,
-`--session-token value` (sent as `X-Session-Token`).
+`JwtPolicy` (`jwt`) maps a verified OIDC/JWT bearer token to a per-user principal. `CustomPolicy`
+lives in `app/policies/custom.py` and fails closed with an `HTTPException(503)` carrying the
+implementation instructions (`require()` also maps a `NotImplementedError` to 503) until
+implemented. `Principal.attributes` may hold secrets only under `credentials` (api name ->
+credential, forwarded by `auth: forward` APIs); `Principal.public_attributes()` drops them and is
+what may be persisted, logged, traced or passed into LangGraph Server run context. Under
+`fastapi`, thread ownership is enforced by the app-owned `threads` table check before any
+checkpointer access. `auth` (a `langgraph_sdk.Auth`) is built from the same policy for
+`langgraph.json`. Client flags: `--header 'Authorization: Bearer ...'`, `--cookie name=value`.
 
-## Product client (`app/app_utils/product_client.py`) and `product-policy.yaml`
+## API client (`app/app_utils/api_client.py`) and `api-policy.yaml`
 
 ```yaml
-# product-policy.yaml (owned by the product; example values, not defaults)
-product_api:
-  base_url_env: PRODUCT_API_BASE_URL
-  auth: forwarded-session | bearer | none
-  token_env: PRODUCT_API_TOKEN           # bearer only
-  allowed_methods: [GET]                 # omit or [] = every method
-  allowed_operations:                    # optional allow-list; omit = every operation
-    - operationId: getIncident
-    - path: /sites/{siteId}/topology
-      methods: [GET]
-  denied_operations: []                  # optional explicit denials (win over allows)
-  openapi: docs/product-openapi.yaml     # optional; enables static validation
-  timeouts_ms: {connect: 2000, read: 5000}
-  pagination: {page_size_param: pageSize, max_page_size: 200}
+# api-policy.yaml (owned by the project; example values, not defaults). Unknown keys are errors.
+apis:
+  incidents:                             # [a-z][a-z0-9_]*, at most 32 characters
+    base_url_env: INCIDENTS_API_BASE_URL # required; the URL may carry a path prefix
+    auth: bearer                         # required: none | bearer | forward
+    token_env: INCIDENTS_API_TOKEN       # required iff auth: bearer
+    # forward_header: Authorization      # auth: forward only (the default)
+    allowed_methods: [GET]               # required, non-empty; ["*"] = every method
+    allowed_operations:                  # optional; omit = every operation within allowed_methods
+      - operationId: getIncident
+        path: /incidents/{incident_id}   # both pinned: both must match
+      - path: /sites/{siteId}/topology
+        methods: [GET]
+    denied_operations: []                # same entry shape; denials win
+    openapi: docs/incidents-openapi.yaml # optional; lint validates declared calls against it
+    timeouts_ms: {connect: 2000, read: 5000}
+    pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
 ```
 
-- Loaded once at import. `ProductClient.request(method, operation_id=None, path=None, **kw)`
-  refuses, before sending, any method or operation outside the policy and raises
-  `PolicyViolation` (a tool error the model can read). Forwards the caller's session cookie or
-  `PRODUCT_API_TOKEN` per `auth`.
+- `get_client(name)` returns a policy-enforcing async client for one declared API. It fails
+  closed: no file, an invalid file or an undeclared API raise `ApiPolicyError`; there is no
+  unrestricted fallback. `request(method, path, operation_id=None, path_params=None, ...)`
+  refuses, before sending, any method or operation outside the policy (`ApiPolicyError`, a tool
+  error the model can read); configuration or HTTP failures raise `ApiCallError`.
+- `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
+  principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
+  the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the
+  caller has none; `forward` is refused at create and lint under `langgraph-server`.
 - Every module under `app/tools/` declares a module-level **literal**
-  `PRODUCT_CALLS = [{"method": ..., "operation_id": ...} | {"method": ..., "path": ...}]` (`[]`
-  when it calls no product API) and `TOOLS`. `graph-agents-cli lint` runs the CLI's
-  `dev/policy_check.py`, which reads those literals with `ast` (no import, no model SDK) and
-  checks them against `product-policy.yaml` and, when `openapi:` is set (resolved relative to the
-  project root), the spec by `operationId` or `path` + `method`; the template additionally exposes
-  `app_utils.product_client.check_tool_declarations()`, an import-based check used by
-  `tests/unit/test_policy.py`. `pr_checks` fails on a violation.
-- No policy file: the client is unrestricted and logs one warning at startup; `lint` reports every
-  declared call as allowed. The manifest's `product_api.policy_file` key is absent.
-- The policy also governs the session-validation call made by `ProductSessionPolicy`. It does not
-  govern the agent's own chat transport, its own Postgres, or model egress.
+  `API_CALLS = [{"api": ..., "method": ..., "operation_id": ..., "path": ...}]` (`[]` when it
+  calls no external API) and `TOOLS`. `graph-agents-cli lint` runs the CLI's
+  `dev/policy_check.py`, which reads those literals with `ast` (no import, no model SDK),
+  validates `api-policy.yaml` with the runtime's own schema rules (the two copies are kept
+  byte-identical by a CLI test), and checks every call against its API and, when `openapi:` is
+  set (resolved relative to the project root), the spec by `operationId` or `path` + `method`.
+  `pr_checks` fails on a violation.
+- Both Dockerfiles copy `api-policy.yaml` into the image when the project has one. The manifest
+  records `api_policy: {policy_file: api-policy.yaml}`; the key is absent without a policy.
 - The CLI never edits the policy after scaffolding; `scaffold enhance` and `upgrade` leave it
-  untouched. Changes go through the product owner's process.
+  untouched. A project on the retired `product-policy.yaml` / `product_api:` format stops
+  `create`, `enhance`, `upgrade` and `lint` with migration steps (exit 3).
 
 ## Manifest (`graph-agents-cli-manifest.yaml`)
 
@@ -209,9 +224,9 @@ create_params:
   checkpointer: postgres            # memory | postgres  (deployed default)
   registry: ghcr.io/my-org
   cd: skip                          # argocd | helm-push | skip
-  auth_policy: shared-bearer        # shared-bearer | product-session
-  auth_policy_implemented: true     # false while the product-session stub is in place
-  agent_guidance_filename: GEMINI.md
+  auth_policy: shared-bearer        # shared-bearer | jwt | custom
+  auth_policy_implemented: true     # false while the custom stub is in place
+  agent_guidance_filename: AGENTS.md
 environments:
   dev:     { context: "", namespace: my-agent-dev }
   staging: { context: "", namespace: my-agent-staging }
@@ -219,7 +234,7 @@ environments:
 secrets:
   keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY]
   owner: "platform-team"
-product_api:
-  policy_file: product-policy.yaml  # absent when no policy is declared
+api_policy:
+  policy_file: api-policy.yaml      # absent when no policy is declared
 process: null                       # or a path to a governing process document
 ```

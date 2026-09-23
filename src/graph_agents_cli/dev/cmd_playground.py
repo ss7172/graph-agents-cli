@@ -15,7 +15,7 @@
 
 """graph-agents-cli playground command: run the application with reload.
 
-D22: the playground exercises the selected application, not a substitute.
+The playground exercises the selected application, not a substitute.
 ``fastapi`` -> ``uvicorn <agent_dir>.fast_api_app:app --reload`` with
 ``APP_ENV=dev`` so the app serves ``/playground``; ``langgraph-server`` ->
 ``langgraph dev --no-browser`` (the server *is* the application and mounts

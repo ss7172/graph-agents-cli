@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authentication and authorization adapter (DECISIONS.md D13, D23).
+"""Authentication and authorization adapter.
 
 One `AuthPolicy` is selected by `AUTH_POLICY` and applied to every surface:
 the chat API and thread routes through the `require(action)` dependency, the
@@ -25,14 +25,20 @@ fastapi runtime does not need it.
 Policies:
   * `SharedBearerPolicy` (`shared-bearer`, default): `Authorization: Bearer <API_KEY>`,
     constant-time compare, one principal `shared`, every action allowed.
-  * `ProductSessionPolicy` (`product-session`): interface plus a fail-closed
-    stub in `policies/product_session.py`, implemented by the consuming project.
+  * `JwtPolicy` (`jwt`): per-user principals from a verified OIDC/JWT bearer
+    token (`AUTH_JWT_*` settings, see `.env.example`).
+  * `CustomPolicy` (`custom`): interface plus a fail-closed stub in
+    `policies/custom.py`, implemented by the project (for example to validate
+    an existing application's session cookie).
+
+The retired name `product-session` is still read as `custom`, with a warning.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -40,7 +46,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from fastapi import HTTPException, Request
 
-# Every action a policy may be asked to authorize (CONTRACTS section 6).
+logger = logging.getLogger(__name__)
+
+# Every action a policy may be asked to authorize.
 ACTIONS: frozenset[str] = frozenset(
     {
         "chat.send",
@@ -54,13 +62,25 @@ ACTIONS: frozenset[str] = frozenset(
 )
 
 SHARED_BEARER = "shared-bearer"
-PRODUCT_SESSION = "product-session"
+JWT = "jwt"
+CUSTOM = "custom"
 DEFAULT_POLICY = SHARED_BEARER
+# Retired policy names still accepted from AUTH_POLICY.
+LEGACY_ALIASES = {"product-session": CUSTOM}
+
+# The one attribute key that may hold secrets: api name -> credential string,
+# forwarded by `app_utils.api_client` for `auth: forward` APIs.
+CREDENTIALS_KEY = "credentials"
 
 
 @dataclass
 class Principal:
-    """Who is calling. `id` is what traces and run records use, hashed."""
+    """Who is calling. `id` is what traces and run records use, hashed.
+
+    `attributes` may hold secrets only under `credentials` (api name ->
+    credential string). Anything persisted, logged, traced or passed into
+    LangGraph Server run context/metadata must use `public_attributes()`.
+    """
 
     id: str
     roles: list[str] = field(default_factory=list)
@@ -68,8 +88,12 @@ class Principal:
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def hashed_id(self) -> str:
-        """sha256 of the id, first 16 hex characters (D17 `metadata` capture)."""
+        """sha256 of the id, first 16 hex characters (what `metadata` trace capture records)."""
         return hashlib.sha256(self.id.encode("utf-8")).hexdigest()[:16]
+
+    def public_attributes(self) -> dict[str, Any]:
+        """`attributes` without `credentials`: safe to persist, log or trace."""
+        return {k: v for k, v in self.attributes.items() if k != CREDENTIALS_KEY}
 
 
 @runtime_checkable
@@ -126,11 +150,42 @@ class SharedBearerPolicy:
             raise HTTPException(status_code=403, detail=f"Unknown action {action!r}.")
 
 
+JWT_NOT_AVAILABLE = (
+    "AUTH_POLICY=jwt: token verification is not available in this build of the "
+    "template; every request is refused until it is (fail closed)."
+)
+
+
+class JwtPolicy:
+    """Per-user principals from a verified OIDC/JWT bearer token.
+
+    Placeholder: refuses every request (503) until token verification lands,
+    so selecting `jwt` can never mean "no auth".
+    """
+
+    async def authenticate(self, request: Request) -> Principal:
+        raise HTTPException(status_code=503, detail=JWT_NOT_AVAILABLE)
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        raise HTTPException(status_code=503, detail=JWT_NOT_AVAILABLE)
+
+
 _policies: dict[str, AuthPolicy] = {}
+_warned_aliases: set[str] = set()
 
 
 def policy_name() -> str:
-    return (os.environ.get("AUTH_POLICY") or DEFAULT_POLICY).strip().lower()
+    """The selected policy; a retired name is read as its replacement (warned once)."""
+    name = (os.environ.get("AUTH_POLICY") or DEFAULT_POLICY).strip().lower()
+    alias = LEGACY_ALIASES.get(name)
+    if alias is None:
+        return name
+    if name not in _warned_aliases:
+        _warned_aliases.add(name)
+        logger.warning(
+            "AUTH_POLICY=%s is deprecated and read as %s; set AUTH_POLICY=%s.", name, alias, alias
+        )
+    return alias
 
 
 def get_policy() -> AuthPolicy:
@@ -210,10 +265,10 @@ def build_sdk_auth() -> Any:
     handlers set `{principal_id, tenant}` in thread metadata at creation and
     return owner filters on threads and runs. A role listed in
     `AUTH_READ_ACROSS_ROLES` relaxes only the read and search filters; update,
-    delete and create_run stay owner-only (D23: read-across roles may *read*
-    others' threads). These handlers cover the native API called from outside
-    the app; the custom routes' loopback SDK calls bypass the server's auth
-    middleware, so `chat.py` enforces the same rule in-app (ASSUMPTIONS 23).
+    delete and create_run stay owner-only (read-across roles may *read*
+    others' threads, never change them). These handlers cover the native API
+    called from outside the app; the custom routes' loopback SDK calls bypass
+    the server's auth middleware, so `chat.py` enforces the same rule in-app.
     """
     from langgraph_sdk import Auth
 

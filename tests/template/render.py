@@ -17,9 +17,9 @@
 Builds the cookiecutter tree in the engine's order (base_templates/_shared ->
 base_templates/python -> deployment_targets/<target>/{_shared,python} -> the
 agent template's app/, tests/, deployment/ and every other top-level item),
-renders it with the CONTRACTS section 3 variables and applies the
+renders it with the engine's cookiecutter variables and applies the
 post-processing the engine performs (Dockerfile selection, lock rename,
-argocd / cd=skip / target=none / product-policy deletions).
+argocd / cd=skip / target=none / api-policy deletions).
 
 This is a test harness for the template, not the engine; when the engine's
 behaviour and this file disagree, the engine wins and this file is updated.
@@ -37,10 +37,21 @@ from pathlib import Path
 import yaml
 from cookiecutter.main import cookiecutter
 
+from graph_agents_cli._api_policy import ApiSummary, bearer_token_envs
 from graph_agents_cli._defaults import (
     DEFAULT_MODELS,
     PROVIDER_KEY_VARS,
     default_secret_keys,
+)
+
+# What the bundled api-policy.yaml declares (the example tool calls it).
+BUNDLED_POLICY_APIS = (
+    ApiSummary(
+        name="example",
+        base_url_env="EXAMPLE_API_BASE_URL",
+        auth="bearer",
+        token_env="EXAMPLE_API_TOKEN",
+    ),
 )
 
 try:  # Reuse the engine's post-processing when it exposes it (scaffold-core).
@@ -82,7 +93,7 @@ class Combo:
     agent_directory: str = "app"
     agent_guidance_filename: str = "AGENTS.md"
     process: str = ""
-    has_product_policy: bool = False
+    has_api_policy: bool = False
     project_name: str = "weather-agent"
     extra: dict = field(default_factory=dict)
 
@@ -93,10 +104,12 @@ class Combo:
             (AGENT_TEMPLATE / ".template" / "templateconfig.yaml").read_text()
         )
         settings = template_config["settings"]
-        # The template's own product-policy.yaml sets `auth: bearer`, so a
-        # rendering that keeps it carries the token variable (as `create` does).
-        token_env = "PRODUCT_API_TOKEN" if self.has_product_policy else None
-        secret_keys = default_secret_keys(self.model_provider, self.runtime, token_env)
+        # The template's own api-policy.yaml declares one `auth: bearer` API, so
+        # a rendering that keeps it carries the token variable (as `create` does).
+        apis = BUNDLED_POLICY_APIS if self.has_api_policy else ()
+        secret_keys = default_secret_keys(
+            self.model_provider, self.runtime, bearer_token_envs(apis)
+        )
         return {
             "project_name": self.project_name,
             "agent_name": "langgraph",
@@ -115,12 +128,13 @@ class Combo:
             "auth_policy": self.auth_policy,
             "agent_guidance_filename": self.agent_guidance_filename,
             "process": self.process,
-            "has_product_policy": self.has_product_policy,
+            "has_api_policy": self.has_api_policy,
             # A bare list is a cookiecutter *choice* (first item wins); wrapping
             # it makes the whole list the value, as the engine does for lists.
+            "apis": [[api.as_context() for api in apis]],
             "secret_keys": [secret_keys],
             "default_judge_model": model,
-            "cli_version_pin": "",
+            "cli_install_spec": "git+https://example.test/graph-agents-cli@v0.1.0",
             "tags": [settings["tags"]],
             "settings": settings,
             "recorded_base_template": "langgraph",
@@ -173,7 +187,7 @@ def _rm(path: Path) -> None:
 
 
 def post_process(project: Path, combo: Combo) -> None:
-    """What the engine does after cookiecutter (CONTRACTS section 3 table).
+    """What the engine does after cookiecutter (conditional files, runtime files).
 
     Delegates to the engine's `apply_conditional_files` / `select_runtime_files`
     when they exist, so the template is tested against the real behaviour.
@@ -187,7 +201,7 @@ def post_process(project: Path, combo: Combo) -> None:
             "deployment_target": combo.deployment_target,
             "runtime": combo.runtime,
             "cd": combo.cd,
-            "has_product_policy": combo.has_product_policy,
+            "has_api_policy": combo.has_api_policy,
         }
         _engine.apply_conditional_files(project, config, combo.agent_directory)
         _engine._remove_unused_paths(project)
@@ -221,9 +235,9 @@ def _post_process_fallback(project: Path, combo: Combo) -> None:
         _rm(project / ".github" / "CODEOWNERS")
     if combo.deployment_target == "none":
         _rm(project / "deployment")
-        _rm(project / ".github" / "agent.env")
-    if not combo.has_product_policy:
-        _rm(project / "product-policy.yaml")
+    if not combo.has_api_policy:
+        _rm(project / "api-policy.yaml")
+        _rm(project / combo.agent_directory / "tools" / "example_api.py")
 
 
 def render_project(dest: Path, combo: Combo) -> Path:

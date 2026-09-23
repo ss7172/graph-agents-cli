@@ -20,7 +20,7 @@ import pathlib
 
 import click
 
-from graph_agents_cli import _tools
+from graph_agents_cli import _api_policy, _tools
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import MANIFEST_FILENAME, find_project_config, find_project_root
 
@@ -118,6 +118,10 @@ def upgrade(
         console.print(f"Ensure {MANIFEST_FILENAME} exists in your project root.")
         raise SystemExit(1)
 
+    # The retired product API policy must be migrated first: an upgrade would
+    # otherwise re-render the project without it.
+    _api_policy.ensure_no_legacy_api_policy(project_dir)
+
     language = metadata.language
 
     old_version = metadata.cli_version
@@ -165,6 +169,11 @@ def upgrade(
 
     project_name = metadata.project_name or project_dir.name
     agent_directory = metadata.agent_directory or "app"
+    # The old snapshot is rendered by the CLI that scaffolded the project, which
+    # may spell some values differently; the new one by this CLI.
+    old_args = metadata_to_cli_args(
+        metadata, cli_version=old_version if baseline == "authentic" else None
+    )
     cli_args = metadata_to_cli_args(metadata)
 
     backup_hook = make_backup_pre_apply_hook(
@@ -182,7 +191,7 @@ def upgrade(
         project_name=project_name,
         agent_directory=agent_directory,
         language=language,
-        old_args=cli_args,
+        old_args=old_args,
         new_args=cli_args,
         old_version=old_version,
         baseline=baseline,  # type: ignore[arg-type]

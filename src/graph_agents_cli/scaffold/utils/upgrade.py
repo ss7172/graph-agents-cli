@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""3-way file comparison and dependency merging for upgrade and enhance (D26)."""
+"""3-way file comparison and dependency merging for upgrade and enhance."""
 
 import fnmatch
 import hashlib
@@ -29,9 +29,9 @@ import yaml
 
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
 
-# Preservation rules (DECISIONS.md D26). Patterns use the {agent_directory}
-# placeholder, replaced at runtime. Everything not listed is "scaffolding"
-# and gets the 3-way compare.
+# Preservation rules: what upgrade/enhance never overwrite. Patterns use the
+# {agent_directory} placeholder, replaced at runtime. Everything not listed is
+# "scaffolding" and gets the 3-way compare.
 FILE_CATEGORIES: dict[str, list[str]] = {
     "agent_code": [  # Never modified
         "{agent_directory}/agent.py",
@@ -44,7 +44,7 @@ FILE_CATEGORIES: dict[str, list[str]] = {
     "config_files": [  # Never overwritten
         ".env",
         ".env.*",
-        "product-policy.yaml",
+        "api-policy.yaml",
         "deployment/helm/*/values-*.yaml",
         "deployment/argocd/**",
         "tests/eval/datasets/**",
@@ -175,7 +175,7 @@ def three_way_compare(
         # yet is added only when the old snapshot did not ship it either (e.g.
         # the argocd Applications that `enhance --cd argocd` introduces). When
         # the old template shipped it and the project no longer has it, the
-        # developer removed it deliberately: it is never re-added (D26).
+        # developer removed it deliberately: it is never re-added.
         new_hash = _file_hash(new_template_file)
         if new_hash is not None:
             if old_template_file.exists():
@@ -521,7 +521,7 @@ def write_python_dependencies(
         return False
 
 
-# Per-language dependency handlers (Python only, D3). None = not supported.
+# Per-language dependency handlers (Python only). None = not supported.
 MERGE_DEPENDENCY_HANDLERS: dict[str, Callable | None] = {
     "python": merge_python_dependencies,
 }

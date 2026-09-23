@@ -15,10 +15,9 @@
 
 """graph-agents-cli build command: ``docker build`` on the project's Dockerfile.
 
-Section 7 item 13: one runtime-specific Dockerfile per project, selected at
-scaffold time; ``build``, CI, and local-load all run ``docker build``. There is
-no experiment gate. Exit codes follow CONTRACTS section 9: 0 ok, 2 when docker
-fails, 3 for a configuration error.
+One runtime-specific Dockerfile per project, selected at scaffold time;
+``build``, CI, and local-load all run ``docker build``. There is no experiment
+gate. Exit codes: 0 ok, 2 when docker fails, 3 for a configuration error.
 """
 
 from __future__ import annotations

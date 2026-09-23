@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``create``: scaffold a LangGraph agent project (DECISIONS.md section 6)."""
+"""``create``: scaffold a LangGraph agent project."""
 
 import dataclasses
 import functools
@@ -28,6 +28,7 @@ from dataclasses import dataclass
 import click
 from rich.prompt import IntPrompt, Prompt
 
+from graph_agents_cli import _api_policy
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_AUTH_POLICY,
@@ -46,9 +47,8 @@ from ..utils import cli_options, remote_template, template
 from ..utils.fs import standard_ignore_patterns
 from ..utils.logging import display_welcome_banner
 from ..utils.manifest import (
-    PRODUCT_POLICY_FILENAME,
+    API_POLICY_FILENAME,
     CreateParams,
-    bearer_token_env,
     finalize_manifest,
 )
 from ..utils.version import get_current_version
@@ -156,7 +156,7 @@ def create(
     registry: str | None,
     cd: str | None,
     auth_policy: str | None,
-    product_policy: str | None,
+    api_policy: str | None,
     process: str | None,
     prototype: bool,
     agent_directory: str | None,
@@ -196,6 +196,14 @@ def create(
         logging.debug("Starting CLI in debug mode")
 
     destination_dir = (pathlib.Path(output_dir) if output_dir else pathlib.Path.cwd()).resolve()
+
+    if in_folder:
+        # A re-render of a project still on the retired product API policy
+        # would drop the policy silently: stop with the migration steps.
+        _api_policy.ensure_no_legacy_api_policy(destination_dir)
+
+    # Validate the seed policy before anything is rendered.
+    api_document = _api_policy.load_policy_document(api_policy) if api_policy else None
 
     project_path = _prepare_project_path(
         destination_dir,
@@ -245,7 +253,7 @@ def create(
             registry=registry,
             cd=cd,
             auth_policy=auth_policy,
-            product_policy=product_policy,
+            api_document=api_document,
             process=process,
             prototype=prototype,
             interactive=interactive,
@@ -263,15 +271,17 @@ def create(
     logging.debug("Resolved create params: %s", params)
 
     # An in-folder render (enhance/upgrade overwrite mode) re-renders the manifest
-    # and the product policy from the template before finalize_manifest runs, so
+    # and the API policy from the template before finalize_manifest runs, so
     # the developer's recorded state has to be captured here and re-applied.
     existing_policy: bytes | None = None
     if in_folder:
         params = _carry_recorded_state(destination_dir, params)
-        policy_path = destination_dir / PRODUCT_POLICY_FILENAME
-        if product_policy is None and policy_path.is_file():
+        policy_path = destination_dir / API_POLICY_FILENAME
+        if api_policy is None and policy_path.is_file():
             existing_policy = policy_path.read_bytes()
-            params = dataclasses.replace(params, has_product_policy=True)
+            params = dataclasses.replace(
+                params, has_api_policy=True, apis=_api_policy.read_summaries(policy_path)
+            )
         logging.debug("Create params after carrying the recorded state: %s", params)
 
     if not template_source_path:
@@ -303,7 +313,8 @@ def create(
             registry=params.registry,
             cd=params.cd,
             auth_policy=params.auth_policy,
-            has_product_policy=params.has_product_policy,
+            has_api_policy=params.has_api_policy,
+            apis=params.apis,
             process=params.process,
             output_dir=destination_dir,
             remote_template_path=template_source_path,
@@ -316,18 +327,18 @@ def create(
             # upgrade can fetch it again.
             recorded_base_template=recorded_spec if not in_folder else None,
             agent_guidance_filename=agent_guidance_filename,
-            product_token_env=params.product_token_env,
             auth_policy_implemented=params.auth_policy_implemented,
         )
 
-        if product_policy:
-            shutil.copy2(product_policy, rendered_path / PRODUCT_POLICY_FILENAME)
-            logging.debug("Seeded %s from %s", PRODUCT_POLICY_FILENAME, product_policy)
+        if api_policy:
+            shutil.copy2(api_policy, rendered_path / API_POLICY_FILENAME)
+            logging.debug("Seeded %s from %s", API_POLICY_FILENAME, api_policy)
         elif existing_policy is not None:
-            # product-policy.yaml is owned by the product (D28): an in-folder
-            # re-render must never replace it with the template's example.
-            (rendered_path / PRODUCT_POLICY_FILENAME).write_bytes(existing_policy)
-            logging.debug("Restored the project's own %s", PRODUCT_POLICY_FILENAME)
+            # api-policy.yaml belongs to the project (it is the security
+            # boundary the team reviews): an in-folder re-render must never
+            # replace it with the template's example.
+            (rendered_path / API_POLICY_FILENAME).write_bytes(existing_policy)
+            logging.debug("Restored the project's own %s", API_POLICY_FILENAME)
 
         finalize_manifest(
             rendered_path,
@@ -883,7 +894,7 @@ def _resolve_create_params(
     registry: str | None,
     cd: str | None,
     auth_policy: str | None,
-    product_policy: str | None,
+    api_document: dict | None,
     process: str | None,
     prototype: bool,
     interactive: bool,
@@ -894,7 +905,7 @@ def _resolve_create_params(
     remote_config: dict | None,
     git_dir: pathlib.Path,
 ) -> CreateParams:
-    """Resolve every create parameter (flag > prompt > default) and validate the D6 table."""
+    """Resolve every create parameter (flag > prompt > default) and validate the combination."""
     final_deployment = _resolve_deployment_target(
         deployment_target=deployment_target,
         prototype=prototype,
@@ -955,13 +966,24 @@ def _resolve_create_params(
     final_auth_policy = auth_policy or (
         template.prompt_auth_policy(DEFAULT_AUTH_POLICY) if interactive else DEFAULT_AUTH_POLICY
     )
-    if final_auth_policy == "product-session" and not quiet:
+    if final_auth_policy == "custom" and not quiet:
         console.print(
-            "Info: product-session ships as a fail-closed stub: implement app/policies/"
-            "product_session.py and set auth_policy_implemented: true before "
+            "Info: custom ships as a fail-closed stub: implement CustomPolicy in "
+            "app/policies/custom.py and set auth_policy_implemented: true before "
             "`deploy --env staging|prod`.",
             style="cyan",
         )
+    elif final_auth_policy == "jwt" and not quiet:
+        console.print(
+            "Info: jwt verifies OIDC bearer tokens: set AUTH_JWT_JWKS_URL (or "
+            "AUTH_JWT_PUBLIC_KEY), AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE (see .env.example).",
+            style="cyan",
+        )
+
+    apis = _api_policy.summarize(api_document) if api_document else ()
+    problem = _api_policy.forward_runtime_problem(apis, final_runtime)
+    if problem:
+        raise click.UsageError(problem)
 
     return CreateParams(
         deployment_target=final_deployment,
@@ -972,20 +994,20 @@ def _resolve_create_params(
         registry=final_registry,
         cd=final_cd,
         auth_policy=final_auth_policy,
-        has_product_policy=product_policy is not None,
+        has_api_policy=api_document is not None,
         process=(process or "").strip() or None,
-        # A bearer policy's token variable joins secrets.keys (Section 7 item 21).
-        product_token_env=bearer_token_env(product_policy) if product_policy else None,
+        # Every bearer API's token variable joins secrets.keys.
+        apis=apis,
     )
 
 
 def _carry_recorded_state(project_dir: pathlib.Path, params: CreateParams) -> CreateParams:
     """Keep what the existing manifest records where the re-render must not reset it.
 
-    ``auth_policy_implemented`` is the developer's flag (Section 7 item 11): it is
-    kept when the policy is unchanged and re-derived only when ``auth_policy``
-    switches. The bearer token variable of an existing product policy is kept
-    in ``secrets.keys``.
+    ``auth_policy_implemented`` is the developer's flag (flipped once the stub
+    is replaced): it is kept when the policy is unchanged and re-derived only
+    when ``auth_policy`` switches. The APIs of an existing ``api-policy.yaml``
+    are carried so their bearer token variables stay in ``secrets.keys``.
     """
     if not (project_dir / MANIFEST_FILENAME).is_file():
         return params
@@ -997,10 +1019,10 @@ def _carry_recorded_state(project_dir: pathlib.Path, params: CreateParams) -> Cr
     updates: dict[str, object] = {}
     if existing.auth_policy == params.auth_policy:
         updates["auth_policy_implemented"] = existing.auth_policy_implemented
-    if params.product_token_env is None and existing.product_policy_file:
-        token_env = bearer_token_env(project_dir / existing.product_policy_file)
-        if token_env:
-            updates["product_token_env"] = token_env
+    if not params.apis and existing.api_policy_file:
+        apis = _api_policy.read_summaries(project_dir / existing.api_policy_file)
+        if apis:
+            updates["apis"] = apis
     return dataclasses.replace(params, **updates) if updates else params
 
 
@@ -1017,8 +1039,8 @@ def _resolve_deployment_target(
     """Resolve the deployment target.
 
     Honors an explicit --deployment-target, defaults to 'none' in prototype
-    mode (C34), auto-selects when only one target exists, prompts
-    interactively, and otherwise defaults to kubernetes.
+    mode, auto-selects when only one target exists, prompts interactively, and
+    otherwise defaults to kubernetes.
     """
     if deployment_target:
         return deployment_target
@@ -1153,7 +1175,7 @@ def _resolve_registry(
     quiet: bool,
     git_dir: pathlib.Path,
 ) -> str:
-    """Resolve the container registry (empty when the target is none, CONTRACTS section 2)."""
+    """Resolve the container registry (empty when the target is none: nothing is pushed)."""
     if final_deployment != "kubernetes":
         if registry and not quiet:
             console.print(

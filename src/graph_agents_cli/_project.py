@@ -33,18 +33,19 @@ import yaml
 
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
-    DEFAULT_AUTH_POLICY,
     DEFAULT_CD,
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_MODELS,
     DEFAULT_RUNTIME,
     ENVIRONMENTS,
     PROVIDER_KEY_VARS,
+    auth_policy_implemented_default,
     default_secret_keys,
+    normalize_auth_policy,
 )
 
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
-PRODUCT_POLICY_FILENAME = "product-policy.yaml"
+API_POLICY_FILENAME = "api-policy.yaml"
 
 
 @dataclass
@@ -56,8 +57,8 @@ class SecretsConfig:
 
 
 @dataclass
-class ProductApiConfig:
-    """The ``product_api:`` block. ``policy_file`` is None when no policy is declared."""
+class ApiPolicyConfig:
+    """The ``api_policy:`` block. ``policy_file`` is None when no policy is declared."""
 
     policy_file: str | None = None
 
@@ -80,8 +81,11 @@ class ProjectConfig:
     create_params: dict[str, Any] = field(default_factory=dict)
     environments: dict[str, dict[str, str]] = field(default_factory=dict)
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
-    product_api: ProductApiConfig = field(default_factory=ProductApiConfig)
+    api_policy: ApiPolicyConfig = field(default_factory=ApiPolicyConfig)
     process: str | None = None
+    # True when the manifest still has the retired ``product_api:`` block;
+    # create/enhance/upgrade/lint stop with a migration message (exit 3).
+    has_legacy_product_api: bool = False
 
     # -- manifest aliases -------------------------------------------------
 
@@ -116,7 +120,7 @@ class ProjectConfig:
         recorded = self.create_params.get("checkpointer")
         if recorded:
             return str(recorded)
-        # D6: the deployed default is postgres; a local-only project uses memory.
+        # A deployed project defaults to postgres; a local-only project to memory.
         return "postgres" if self.deployment_target == "kubernetes" else "memory"
 
     @property
@@ -129,13 +133,14 @@ class ProjectConfig:
 
     @property
     def auth_policy(self) -> str:
-        return str(self.create_params.get("auth_policy") or DEFAULT_AUTH_POLICY)
+        """The recorded policy; the retired ``product-session`` reads as ``custom`` (with a warning)."""
+        return normalize_auth_policy(self.create_params.get("auth_policy"))
 
     @property
     def auth_policy_implemented(self) -> bool:
         recorded = self.create_params.get("auth_policy_implemented")
         if recorded is None:
-            return self.auth_policy != "product-session"
+            return auth_policy_implemented_default(self.auth_policy)
         return bool(recorded)
 
     @property
@@ -151,11 +156,11 @@ class ProjectConfig:
         return list(self.secrets.keys)
 
     @property
-    def product_policy_file(self) -> str | None:
-        return self.product_api.policy_file
+    def api_policy_file(self) -> str | None:
+        return self.api_policy.policy_file
 
     def provider_key_var(self) -> str:
-        """The Secret key that carries the model provider's API key (CONTRACTS section 2)."""
+        """The Secret key that carries the model provider's API key."""
         return PROVIDER_KEY_VARS.get(self.model_provider, "MODEL_API_KEY")
 
     def environment(self, env: str) -> tuple[str, str]:
@@ -163,8 +168,8 @@ class ProjectConfig:
 
         The manifest's ``environments:`` block wins. An environment the block
         does not name but the CLI knows (dev, staging, prod) falls back to an
-        empty context and the ``<name>-<env>`` namespace convention
-        (ASSUMPTIONS item 11). Anything else is a usage error.
+        empty context (the current kube context) and the ``<name>-<env>``
+        namespace convention. Anything else is a usage error.
         """
         recorded = self.environments.get(env)
         if recorded is not None:
@@ -227,15 +232,16 @@ class ProjectConfig:
             raw_keys = [raw_keys]
         keys = [str(k) for k in raw_keys] if raw_keys else []
         if not keys:
-            # Section 7 item 21: the default allow-list follows the provider and runtime.
+            # No recorded allow-list: the default follows the provider and runtime.
             keys = default_secret_keys(cfg.model_provider, cfg.runtime)
         cfg.secrets = SecretsConfig(keys=keys, owner=str(secrets.get("owner") or ""))
 
-        product_api = data.get("product_api") or {}
-        if not isinstance(product_api, Mapping):
-            raise click.ClickException(f"malformed product_api in {filename}")
-        policy_file = product_api.get("policy_file")
-        cfg.product_api = ProductApiConfig(policy_file=str(policy_file) if policy_file else None)
+        api_policy = data.get("api_policy") or {}
+        if not isinstance(api_policy, Mapping):
+            raise click.ClickException(f"malformed api_policy in {filename}")
+        policy_file = api_policy.get("policy_file")
+        cfg.api_policy = ApiPolicyConfig(policy_file=str(policy_file) if policy_file else None)
+        cfg.has_legacy_product_api = "product_api" in data
 
         process = data.get("process")
         cfg.process = str(process) if process else None
@@ -309,10 +315,12 @@ def check_cli_version(cfg: ProjectConfig) -> None:
         return
 
     if cli_ver < project_ver:
+        from graph_agents_cli.scaffold.utils.version import install_command
+
         click.echo(
             f"\n⚠️  Version mismatch: project was scaffolded with graph-agents-cli {cli_version},"
             f" running {__version__}.\n"
-            f"   Upgrade the CLI: uv tool install graph-agents-cli@{cli_version}\n",
+            f"   Upgrade the CLI: {install_command(version=cli_version)}\n",
             err=True,
         )
     elif cli_ver > project_ver:

@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Example tool: a simulated weather lookup. Calls no product API."""
+"""Example tool: a simulated weather lookup. Calls no external API."""
 
 from __future__ import annotations
 
 from langchain_core.tools import tool
 
-PRODUCT_CALLS: list[dict[str, str]] = []
+API_CALLS: list[dict[str, str]] = []
 
 
 @tool

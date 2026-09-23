@@ -5,7 +5,7 @@ scaffolding or code. Adapt the depth to the agent's complexity.
 
 ## Process deference first
 
-Before anything else, check the project guidance file (`GEMINI.md`, `CLAUDE.md`, `AGENTS.md`) and
+Before anything else, check the project guidance file (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) and
 `graph-agents-cli-manifest.yaml` for `process:`. If a process is declared, this playbook serves
 that process's design stage; its documents and approvals replace the spec and the user-review gate
 below. Do not run both.
@@ -19,10 +19,10 @@ to name a matching pattern is exempt; it is design input, not implementation. Th
 
 ## Scale to complexity
 
-- **Trivial agent:** single tool or none, fixed persona, no product API, no sessions.
+- **Trivial agent:** single tool or none, fixed persona, no external API, no per-user identity.
   A couple of adaptive questions, a 2-3 sentence spec, one approval.
-- **Complex agent:** multi-step graph or subgraphs, product API access with a policy, product
-  sessions and roles, human-in-the-loop, safety-critical.
+- **Complex agent:** multi-step graph or subgraphs, external API access with a policy, per-user
+  identity and roles, human-in-the-loop, safety-critical.
   Full treatment: adaptive Q&A across all topics, 2-3 approaches, sectioned design with approval
   per section, self-review, user-review gate.
 
@@ -60,16 +60,16 @@ Typical axes:
 - **`create_agent` (ReAct loop) versus an explicit `StateGraph`** with named nodes, conditional
   edges, and subgraphs. Start with `create_agent`; move to an explicit graph when the flow has
   fixed stages, branching, or a human approval step.
-- **Tool and integration choices:** which product operations, with which credential; everything
-  goes through the product client and must be allowed by `product-policy.yaml`. There is no
-  generic HTTP tool.
-- **Human-in-the-loop:** which tool calls pause for approval (`interrupt`), and how the product
-  resumes the thread.
+- **Tool and integration choices:** which API operations, with which credential (none, a service
+  token, or the caller's own); everything goes through the API client and must be allowed by
+  `api-policy.yaml`. There is no generic HTTP tool.
+- **Human-in-the-loop:** which tool calls pause for approval (`interrupt`), and how the calling
+  application resumes the thread.
 - **Persistence:** `memory` locally; `postgres` when deployed; `thread_id` is the continuity key.
 - **Model and egress:** hosted provider versus on-network OpenAI-compatible server; tool-capable
   model required for the ReAct pattern.
-- **Auth:** `shared-bearer` versus `product-session` (validates the product's session and roles,
-  enforces conversation ownership).
+- **Auth:** `shared-bearer` (one shared key) versus `jwt` (per-user OIDC tokens, conversation
+  ownership) versus `custom` (the project's own policy, for example an existing session cookie).
 - **Deployment shape:** prototype-first (recommended) versus Kubernetes with a CD mode.
 
 ## Present the design in sections
@@ -77,7 +77,7 @@ Typical axes:
 For complex agents, present the design in sections and get approval after each:
 
 - **Graph:** nodes, edges, subgraphs, interrupts; `create_agent` or explicit.
-- **Tools:** each tool's purpose, product operation, credential, and `PRODUCT_CALLS` declaration.
+- **Tools:** each tool's purpose, API operation, credential, and `API_CALLS` declaration.
 - **Data flow and state:** inputs, state schema, what is checkpointed, what is stored in run
   records.
 - **Safety and policy:** denied operations, refusal behaviour, capture policy, egress.

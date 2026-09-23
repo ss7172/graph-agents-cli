@@ -20,7 +20,7 @@ modules are imported only when the user invokes the command (or asks for
 its specific --help). See `LazyGroup` in `_click.py`.
 
 The startup path must import no agent framework, model SDK, or Kubernetes
-client: `tests/test_startup_imports.py` enforces that (DECISIONS.md D26).
+client: `tests/test_startup_imports.py` enforces that (a fast, light startup).
 """
 
 from __future__ import annotations
@@ -338,7 +338,7 @@ def main():
       graph-agents-cli eval run              Run the agent over the eval dataset and grade it
       graph-agents-cli deploy --env dev      Deploy to the current Kubernetes context
     """
-    # Update and skills-version checks are opt-out for disconnected installs (D21).
+    # Update and skills-version checks are opt-out for disconnected installs.
     if os.environ.get(NO_UPDATE_CHECK_ENV) == "1":
         return
     from graph_agents_cli._skills_check import check_skills_version
@@ -393,7 +393,7 @@ main.add_lazy_command(
 main.add_lazy_command(
     "lint",
     "graph_agents_cli.dev.cmd_lint:cmd_lint",
-    "Run code quality checks and the product-policy check.",
+    "Run code quality checks and the API-policy check.",
 )
 main.add_lazy_command(
     "install",

@@ -18,12 +18,12 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # Agent evaluation guide
 
-> **Requires:** `graph-agents-cli` (`uv tool install graph-agents-cli`).
+> **Requires:** `graph-agents-cli` (`uv tool install git+https://github.com/ss7172/graph-agents-cli`).
 
 > **Scaffolded project?** `tests/eval/datasets/basic-dataset.json` and
 > `tests/eval/eval_config.yaml` already exist. Start with `graph-agents-cli eval run` and iterate.
@@ -37,7 +37,7 @@ metadata:
 
 ---
 
-## The gate rule (verbatim from the design record, D24)
+## The gate rule
 
 > **One rule.** Three things are always mandatory and have no threshold: complete case accounting
 > (no `error` or `missing` case), every deterministic check, and every judge metric a case declares
@@ -74,9 +74,9 @@ non-zero exit.**
 ## Commands
 
 ```bash
-graph-agents-cli eval run      [--dataset F] [--url URL] [--concurrency N] [-H ...] [--cookie ...] [--session-token T]
+graph-agents-cli eval run      [--dataset F] [--url URL] [--concurrency N] [-H ...] [--cookie ...]
                                [--app-name N] [--timeout S] [--config F] [-o F] [--judge-provider P] [--judge-model M] [--judge-timeout S]
-graph-agents-cli eval generate [--dataset F] [-o F] [--url URL] [--concurrency N] [-H ...] [--cookie ...] [--session-token T] [--app-name N] [--timeout S]
+graph-agents-cli eval generate [--dataset F] [-o F] [--url URL] [--concurrency N] [-H ...] [--cookie ...] [--app-name N] [--timeout S]
 graph-agents-cli eval grade    [--traces F|DIR] [--dataset F] [--config F] [-o F] [--judge-provider P] [--judge-model M] [--judge-timeout S]
 graph-agents-cli eval compare  BASELINE CANDIDATE [--fail-on-regression] [--json]
 graph-agents-cli eval analyze  [--results F] [--output F] [--top-k K] [--judge] [--judge-provider P] [--judge-model M]
@@ -85,8 +85,8 @@ graph-agents-cli eval metric list [--json]
 ```
 
 - `eval generate` drives the local server (started like `run`, per runtime, stopped afterwards)
-  or `--url` over the same `/chat` SSE API the product uses, with the same credential flags as
-  `run` (`--header`, `GRAPH_AGENTS_CLI_API_KEY`, `--cookie`, `--session-token`; locally the
+  or `--url` over the same `/chat` SSE API clients use, with the same credential flags as
+  `run` (`--header`, `GRAPH_AGENTS_CLI_API_KEY`, `--cookie`; locally the
   `API_KEY` from `.env`). `--dataset` defaults to `tests/eval/datasets/basic-dataset.json`, else
   every `*.json` there. Each case runs on a fresh `thread_id`; multi-message cases send messages
   in order on that thread and the trace records the final turn (plus every turn under `turns`).
@@ -204,7 +204,7 @@ passes on the `fake` provider with the fake judge.
 
 ## CI
 
-`pr_checks.yaml` runs `uvx graph-agents-cli eval run` when `tests/eval/datasets/*.json` exists
+`pr_checks.yaml` runs `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli eval run` when `tests/eval/datasets/*.json` exists
 and fails on non-zero, with `MODEL_PROVIDER=${{ vars.MODEL_PROVIDER || 'fake' }}`: until the
 repository variable `MODEL_PROVIDER` is set, the agent and the judge run on the deterministic
 `fake` provider and need no key (the scaffolded dataset passes that way). To grade against the

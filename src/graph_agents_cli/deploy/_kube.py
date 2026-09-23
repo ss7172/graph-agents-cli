@@ -34,7 +34,7 @@ from graph_agents_cli._output import Console
 
 
 class DeployError(click.ClickException):
-    """Base for deploy/secrets/infra failures; ``exit_code`` follows CONTRACTS section 9."""
+    """Base for deploy/secrets/infra failures; ``exit_code``: 1 refused, 2 tool failed, 3 config."""
 
     exit_code = 1
 

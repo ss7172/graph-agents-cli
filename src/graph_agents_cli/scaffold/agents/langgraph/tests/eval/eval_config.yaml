@@ -1,5 +1,4 @@
-# Grading configuration for `graph-agents-cli eval grade` (DECISIONS.md D24,
-# CONTRACTS section 11).
+# Grading configuration for `graph-agents-cli eval grade` and `eval run`.
 #
 # Mandatory, no threshold: complete case accounting, every deterministic
 # `expect` check, and every judge metric a case declares that is NOT listed

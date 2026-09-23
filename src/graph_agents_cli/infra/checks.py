@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Read-only prerequisite checks for ``infra check`` (D10, D12, D25).
+"""Read-only prerequisite checks for ``infra check``: cluster, GitHub gates, disconnected profile.
 
 Every check reports; nothing here creates or changes cluster or GitHub state.
 Cluster checks shell out to ``kubectl`` with ``check=False`` so a missing
@@ -267,7 +267,7 @@ def check_cluster(
         )
     # The chart's HTTPRoute marks gateway.parentRef.name as `required`, and `deploy`
     # refuses (exit 3) before any tool runs when it is blank; report it here so the
-    # operator sees it before the first deploy (CONTRACTS section 8).
+    # operator sees it before the first deploy.
     parent_name = str(_get(values, "gateway", "parentRef", "name", default="") or "").strip()
     checks.append(
         Check(
@@ -440,7 +440,7 @@ def _gh_api(path: str) -> tuple[int, Any]:
 
 
 def check_github(settings: DeploySettings) -> list[Check]:
-    """Report (never enforce) the D12 environment protection and branch protection settings."""
+    """Report (never enforce) the production environment and branch protection settings."""
     if settings.cd == "skip":
         return [Check("github protection", SKIP, False, "not needed: cd is skip")]
     if not _github_token_available():
@@ -492,7 +492,7 @@ def check_github(settings: DeploySettings) -> list[Check]:
                 detail,
                 ""
                 if ok
-                else "D12: at least one required reviewer, prevent self-review, deployment branches restricted to main",
+                else "at least one required reviewer, prevent self-review, deployment branches restricted to main",
             )
         )
 
@@ -528,7 +528,7 @@ def check_github(settings: DeploySettings) -> list[Check]:
                 WARN,
                 False,
                 "no branch protection on main",
-                "D12: require pull requests, code-owner review, dismiss stale approvals, pr_checks as a required status check",
+                "require pull requests, code-owner review, dismiss stale approvals, pr_checks as a required status check",
             )
         )
     else:
@@ -553,7 +553,7 @@ def check_github(settings: DeploySettings) -> list[Check]:
                 OK if ok else WARN,
                 False,
                 detail,
-                "" if ok else "D12 branch protection settings",
+                "" if ok else "the branch protection settings the production gate relies on",
             )
         )
     return checks
@@ -565,7 +565,7 @@ def _hosted_registry(registry: str) -> bool:
 
 
 def check_disconnected(settings: DeploySettings, values: dict[str, Any]) -> list[Check]:
-    """D25 disconnected profile: fail on every hosted dependency."""
+    """Disconnected profile: fail on every hosted dependency."""
     checks: list[Check] = []
     provider_ok = settings.model_provider == "openai-compatible"
     checks.append(
@@ -600,7 +600,7 @@ def check_disconnected(settings: DeploySettings, values: dict[str, Any]) -> list
             settings.runtime,
             ""
             if runtime_ok
-            else "langgraph-server needs a LangSmith license check (ASSUMPTIONS item 1); use runtime fastapi",
+            else "langgraph-server needs a LangSmith license check (a hosted call); use runtime fastapi",
         )
     )
     hosted = bool(settings.registry) and _hosted_registry(settings.registry)
@@ -644,7 +644,7 @@ def check_disconnected(settings: DeploySettings, values: dict[str, Any]) -> list
                 "disconnected: ci/cd",
                 WARN,
                 False,
-                f"cd is {settings.cd} on GitHub Enterprise Server {', '.join(sorted(gitops.enterprise_hosts()))} (ASSUMPTIONS item 24)",
+                f"cd is {settings.cd} on GitHub Enterprise Server {', '.join(sorted(gitops.enterprise_hosts()))} (CD needs GitHub Actions on that server)",
             )
         )
     else:

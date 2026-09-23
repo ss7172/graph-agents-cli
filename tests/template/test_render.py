@@ -141,7 +141,7 @@ def test_manifest_matches_contract(rendered: dict[str, Path]) -> None:
         "API_KEY",
         "LANGSMITH_API_KEY",
     ]
-    assert "product_api" not in manifest
+    assert "api_policy" not in manifest
     assert manifest["process"] is None
 
     none_manifest = yaml.safe_load(
@@ -152,10 +152,19 @@ def test_manifest_matches_contract(rendered: dict[str, Path]) -> None:
     assert none_manifest["create_params"]["checkpointer"] == "memory"
 
     custom = yaml.safe_load((rendered["custom-dir"] / "graph-agents-cli-manifest.yaml").read_text())
-    assert custom["product_api"] == {"policy_file": "product-policy.yaml"}
+    assert custom["api_policy"] == {"policy_file": "api-policy.yaml"}
     assert custom["process"] == "agentic-template/workflow.md"
     assert custom["agent_directory"] == "my_agent"
-    assert custom["secrets"]["keys"][-1] == "PRODUCT_API_TOKEN"  # the policy uses auth: bearer
+    assert custom["secrets"]["keys"][-1] == "EXAMPLE_API_TOKEN"  # the example API uses bearer
+
+    stub = yaml.safe_load(
+        (rendered["compat-custom"] / "graph-agents-cli-manifest.yaml").read_text()
+    )
+    assert stub["create_params"]["auth_policy"] == "custom"
+    assert stub["create_params"]["auth_policy_implemented"] is False
+    jwt = yaml.safe_load((rendered["jwt"] / "graph-agents-cli-manifest.yaml").read_text())
+    assert jwt["create_params"]["auth_policy"] == "jwt"
+    assert jwt["create_params"]["auth_policy_implemented"] is True
 
     server = yaml.safe_load(
         (rendered["server-helm-push"] / "graph-agents-cli-manifest.yaml").read_text()
@@ -177,13 +186,17 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     assert (argocd / ".github" / "workflows" / "promote-to-prod.yaml").exists()
     assert (argocd / ".github" / "CODEOWNERS").exists()
     assert "weather-agent/values-prod.yaml" in (argocd / ".github" / "CODEOWNERS").read_text()
-    assert not (argocd / "product-policy.yaml").exists()
+    assert not (argocd / "api-policy.yaml").exists()
+    assert not (argocd / "app" / "tools" / "example_api.py").exists()
+    assert (argocd / "app" / "policies" / "custom.py").exists()
     assert not (argocd / "Dockerfile.langgraph-server").exists()
     assert (
         not (argocd / "uv-fastapi.lock").exists()
         and not (argocd / "uv-langgraph-server.lock").exists()
     )
     assert "python:3.12-slim" in (argocd / "Dockerfile").read_text()
+    # The API policy travels with the fastapi image whenever the project has one.
+    assert "COPY pyproject.toml api-policy.yam[l] ./" in (argocd / "Dockerfile").read_text()
     assert "langgraph-api" not in (argocd / "pyproject.toml").read_text()
 
     skip = rendered["fastapi-skip"]
@@ -207,13 +220,16 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
 
     none = rendered["none"]
     assert not (none / "deployment").exists()
-    assert not (none / ".github" / "agent.env").exists()
+    # pr_checks needs the CLI install spec even without a deployment target.
+    assert (none / ".github" / "agent.env").read_text().count("GRAPH_AGENTS_CLI_SPEC=") == 1
     assert not (none / ".github" / "workflows" / "staging.yaml").exists()
     assert (none / ".github" / "workflows" / "pr_checks.yaml").exists()
     assert (none / "langgraph.json").exists()
 
     custom = rendered["custom-dir"]
-    assert (custom / "product-policy.yaml").exists()
+    assert (custom / "api-policy.yaml").exists()
+    assert (custom / "my_agent" / "tools" / "example_api.py").exists()
+    assert '"api": "example"' in (custom / "my_agent" / "tools" / "example_api.py").read_text()
     assert (custom / "my_agent" / "agent.py").exists() and not (custom / "app").exists()
 
 
@@ -235,7 +251,7 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_build_context(
             assert entry in ignore, f"{name}: {entry} missing from .dockerignore"
         assert "!.env.example" in ignore
         # What the images need stays in the context.
-        for keep in ("pyproject.toml", "uv.lock", "product-policy.yaml", "langgraph.json"):
+        for keep in ("pyproject.toml", "uv.lock", "api-policy.yaml", "langgraph.json"):
             assert keep not in ignore and not any(line.rstrip("/") == keep for line in ignore), (
                 f"{name}: {keep} must not be ignored"
             )
@@ -271,6 +287,30 @@ def test_workflows_never_interpolate_untrusted_values_into_shell(rendered: dict[
     staging = (KUBE / ".github" / "workflows" / "staging.yaml").read_text()
     assert 'git push --force origin "$BRANCH"' in staging
     assert "gh pr list --head" in staging and "gh pr merge --auto --squash" in staging
+
+
+def test_workflows_install_the_cli_from_the_pinned_spec() -> None:
+    """Every workflow runs `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli ...`."""
+    pr_checks = (
+        SCAFFOLD / "base_templates" / "python" / ".github" / "workflows" / "pr_checks.yaml"
+    ).read_text()
+    # GITHUB_ENV takes NAME=VALUE lines only: comments and blank lines are filtered out.
+    assert "grep -Ev '^[[:space:]]*(#|$)' .github/agent.env" in pr_checks
+    workflows = {
+        "pr_checks.yaml": pr_checks,
+        "staging.yaml": (KUBE / ".github" / "workflows" / "staging.yaml").read_text(),
+        "promote-to-prod.yaml": (
+            KUBE / ".github" / "workflows" / "promote-to-prod.yaml"
+        ).read_text(),
+    }
+    for name, text in workflows.items():
+        uvx_lines = [line.strip() for line in text.splitlines() if "uvx" in line]
+        assert uvx_lines, name
+        for line in uvx_lines:
+            assert line.startswith('uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli '), (
+                f"{name}: {line}"
+            )
+        assert "CLI_VERSION_PIN" not in text
 
 
 def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
@@ -320,8 +360,21 @@ def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
         "CHART_PATH": "deployment/helm/weather-agent",
         "RUNTIME": "fastapi",
         "CD": "argocd",
-        "CLI_VERSION_PIN": "",
+        "GRAPH_AGENTS_CLI_SPEC": "git+https://example.test/graph-agents-cli@v0.1.0",
     }
+    assert values["env"]["AUTH_ADMIN_ROLES"] == ""
+    assert "AUTH_JWT_ISSUER" not in values["env"]
+    jwt_values = yaml.safe_load(
+        (rendered["jwt"] / "deployment" / "helm" / "weather-agent" / "values.yaml").read_text()
+    )
+    assert jwt_values["env"]["AUTH_POLICY"] == "jwt"
+    assert {"AUTH_JWT_JWKS_URL", "AUTH_JWT_ISSUER", "AUTH_JWT_AUDIENCE"} <= set(jwt_values["env"])
+    policy_values = yaml.safe_load(
+        (
+            rendered["custom-dir"] / "deployment" / "helm" / "weather-agent" / "values.yaml"
+        ).read_text()
+    )
+    assert policy_values["env"]["EXAMPLE_API_BASE_URL"] == "http://CHANGE-ME"
     prod_app = yaml.safe_load(
         (project / "deployment" / "argocd" / "application-prod.yaml").read_text()
     )
@@ -372,6 +425,13 @@ def test_langgraph_json_env_and_guidance(rendered: dict[str, Path]) -> None:
     assert guidance[0] == "process: null"
     custom_guidance = (rendered["custom-dir"] / "AGENTS.md").read_text().splitlines()
     assert custom_guidance[0] == "process: agentic-template/workflow.md"
+    jwt_env = (rendered["jwt"] / ".env.example").read_text()
+    for var in ("AUTH_POLICY=jwt", "AUTH_JWT_JWKS_URL=", "AUTH_JWT_ISSUER=", "AUTH_JWT_AUDIENCE="):
+        assert var in jwt_env, var
+    assert "AUTH_JWT_ISSUER=" not in env_example
+    policy_env = (rendered["custom-dir"] / ".env.example").read_text()
+    assert "EXAMPLE_API_BASE_URL=" in policy_env and "EXAMPLE_API_TOKEN=" in policy_env
+    assert "every outbound API call is refused" in env_example
     server_env = (rendered["server-helm-push"] / ".env.example").read_text()
     assert (
         "ANTHROPIC_API_KEY=" in server_env
@@ -392,20 +452,23 @@ def test_rendered_python_compiles_and_imports_use_the_agent_directory(
         sources = [p for p in (project / agent_dir).rglob("*.py")] + [
             p for p in (project / "tests").rglob("*.py")
         ]
+        import re
+
+        package_import = re.compile(
+            r"^\s*(?:from|import)\s+(\w+)\.(?:app_utils|policies)\b",
+            re.MULTILINE,
+        )
         for src in sources:
             text = src.read_text()
             if agent_dir != "app":
                 assert "from app." not in text and "import app." not in text, f"{src} imports `app`"
-            assert (
-                f"from {agent_dir}." in text
-                or "app_utils" not in text
-                or src.name == "__init__.py"
-                or "tests" in src.parts
-            )
+            # Every import of the agent package goes through the agent directory's name.
+            for package in package_import.findall(text):
+                assert package == agent_dir, f"{src} imports {package}.*, not {agent_dir}.*"
 
 
 def test_template_sources_only_use_known_cookiecutter_variables() -> None:
-    """Every `cookiecutter.<var>` in the template sources is a CONTRACTS section 3 variable."""
+    """Every `cookiecutter.<var>` in the template sources is a variable the engine provides."""
     import re
 
     allowed = {
@@ -426,10 +489,11 @@ def test_template_sources_only_use_known_cookiecutter_variables() -> None:
         "auth_policy",
         "agent_guidance_filename",
         "process",
-        "has_product_policy",
+        "has_api_policy",
+        "apis",
         "secret_keys",
         "default_judge_model",
-        "cli_version_pin",
+        "cli_install_spec",
         "tags",
         "settings",
         "recorded_base_template",
@@ -443,7 +507,14 @@ def test_template_sources_only_use_known_cookiecutter_variables() -> None:
                 )
             )
     assert used <= allowed, f"unknown cookiecutter variables: {sorted(used - allowed)}"
-    assert "secret_keys" in used and "has_product_policy" in used
+    assert {"secret_keys", "has_api_policy", "apis", "cli_install_spec"} <= used
+    # The engine provides exactly the allowed variables (plus cookiecutter's own).
+    from graph_agents_cli.scaffold.utils.template import build_cookiecutter_context
+
+    context = build_cookiecutter_context(
+        project_name="x", agent_name="langgraph", deployment_target="none", runtime="fastapi"
+    )
+    assert set(context) - {"_copy_without_render", "auth_policy_implemented"} == allowed
 
 
 # --- slow: install, test, lint, helm ------------------------------------------

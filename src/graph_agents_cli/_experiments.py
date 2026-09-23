@@ -15,7 +15,7 @@
 
 """Experiment flags.
 
-The registry is intentionally empty (DECISIONS.md Section 7 item 25): the
+The registry is intentionally empty (no feature is experimental today): the
 mechanism is kept so a future flag can be gated behind
 ``GRAPH_AGENTS_CLI_EXPERIMENTS='{"label": value}'`` without re-inventing it.
 The former ``build_command`` gate is gone; ``build`` is always available.

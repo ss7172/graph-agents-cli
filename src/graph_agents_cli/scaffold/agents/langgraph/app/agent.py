@@ -16,8 +16,8 @@
 """The agent: `graph` is a compiled LangGraph ReAct agent with NO checkpointer.
 
 The model comes from `MODEL_PROVIDER` / `MODEL_NAME` through
-`app_utils.model.get_model()`, so no provider is named here (D7). The tools
-come from `tools/`. Persistence is bound elsewhere (D8): `fast_api_app.py`
+`app_utils.model.get_model()`, so no provider is named here. The tools
+come from `tools/`. Persistence is bound elsewhere: `fast_api_app.py`
 attaches the checkpointer under the fastapi runtime and LangGraph Server owns
 it under langgraph-server. Replacing `create_agent` with an explicit
 `StateGraph` is a one-file change: keep exporting `graph`.
@@ -34,8 +34,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
+from {{cookiecutter.agent_directory}}.app_utils.api_client import ApiCallError, ApiPolicyError
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
-from {{cookiecutter.agent_directory}}.app_utils.product_client import PolicyViolation, ProductAPIError
 from {{cookiecutter.agent_directory}}.tools import get_tools
 
 load_dotenv()
@@ -48,7 +48,7 @@ SYSTEM_PROMPT = (
 
 @dataclass
 class AgentContext:
-    """Per-run context set by the server: who is calling (D23), for tools to forward."""
+    """Per-run context set by the server: who is calling, for tools to act on their behalf."""
 
     principal_id: str = "anonymous"
     roles: list[str] = field(default_factory=list)
@@ -65,8 +65,8 @@ def _tool_error(request: Any, exc: Exception) -> ToolMessage:
     )
 
 
-class SurfaceProductErrors(AgentMiddleware):
-    """Turn a product-policy refusal into a tool error the model can read (D28).
+class SurfaceApiErrors(AgentMiddleware):
+    """Turn an API-policy refusal or a failed API call into a tool error the model can read.
 
     Without this the exception would abort the run; with it the refusal reaches
     the model as a ToolMessage with `status="error"` and the caller sees
@@ -76,13 +76,13 @@ class SurfaceProductErrors(AgentMiddleware):
     def wrap_tool_call(self, request: Any, handler: Any) -> Any:
         try:
             return handler(request)
-        except (PolicyViolation, ProductAPIError) as exc:
+        except (ApiPolicyError, ApiCallError) as exc:
             return _tool_error(request, exc)
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         try:
             return await handler(request)
-        except (PolicyViolation, ProductAPIError) as exc:
+        except (ApiPolicyError, ApiCallError) as exc:
             return _tool_error(request, exc)
 
 
@@ -90,7 +90,7 @@ graph: CompiledStateGraph = create_agent(
     model=get_model(),
     tools=get_tools(),
     system_prompt=SYSTEM_PROMPT,
-    middleware=[SurfaceProductErrors()],
+    middleware=[SurfaceApiErrors()],
     context_schema=AgentContext,
     name="{{cookiecutter.project_name}}",
 )

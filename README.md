@@ -7,7 +7,9 @@ agents on self-hosted Kubernetes.
 harness, a Helm chart, and GitHub Actions workflows; runs and evaluates the agent locally;
 and deploys it to any Kubernetes cluster with Helm, either directly or through Argo CD. It
 ships six skills that teach a coding agent (Claude Code, Antigravity, Codex, Gemini CLI,
-Cursor) the same lifecycle.
+Cursor) the same lifecycle. It is a generic tool: projects choose their auth policy
+(`shared-bearer`, `jwt` or `custom`) and declare the external APIs their tools may call in
+`api-policy.yaml`; nothing in the CLI or the template is specific to one consumer.
 
 It is a fork of [google-agents-cli](https://github.com/google/agents-cli) with the Google
 Cloud specific parts removed; see [NOTICE](NOTICE). Status: first milestone under
@@ -20,13 +22,19 @@ Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/inst
 and Node.js (for the skills installer). Deployment additionally needs `helm`, `kubectl`, a
 Docker-compatible `docker` CLI, `git`, and, for Argo CD or GitHub-hosted CD, `gh`. A tool
 missing from `PATH` makes `deploy` exit 2. `run --mode a2a` needs the optional `a2a` extra
-(`uv tool install 'graph-agents-cli[a2a]'`); `eval submit` needs the `langsmith` extra.
+(`uv tool install 'graph-agents-cli[a2a] @ git+https://github.com/ss7172/graph-agents-cli'`);
+`eval submit` needs the `langsmith` extra.
 
 ```bash
-uv tool install graph-agents-cli     # the CLI
+uv tool install git+https://github.com/ss7172/graph-agents-cli   # the CLI (pin a release: ...@v<version>)
 graph-agents-cli setup               # install the CLI and skills into your coding agents
 graph-agents-cli login               # preflight: provider key, tracing, kubeconfig
 ```
+
+The CLI is installed from its GitHub repository (it is not published on a package index).
+`GRAPH_AGENTS_CLI_INSTALL_SPEC` overrides where `setup`, `update`, the `scaffold upgrade`
+baseline and generated projects' CI (`.github/agent.env` `GRAPH_AGENTS_CLI_SPEC`) install it
+from, for example a private mirror or a wheel.
 
 `setup` installs skills with `npx skills add`, falling back to the copy bundled in the
 wheel and finally to a plain copy into `~/.agents/skills` (`./.agents/skills` with
@@ -54,7 +62,7 @@ graph-agents-cli deploy --env dev                             # helm upgrade --i
 `create` accepts `--runtime fastapi|langgraph-server`, `--model-provider
 openai|anthropic|gemini|openai-compatible`, `--model`, `--checkpointer memory|postgres`,
 `--deployment-target kubernetes|none`, `--registry`, `--cd argocd|helm-push|skip`,
-`--auth-policy shared-bearer|product-session`, `--product-policy <file>`, `--process
+`--auth-policy shared-bearer|jwt|custom`, `--api-policy <file>`, `--process
 <path>`, and `--prototype`; incompatible combinations are rejected by the CLI. Ask your
 coding agent to "use graph-agents-cli to build ..." and the `graph-agents-cli-workflow`
 skill walks the same steps. `.env.example` selects `MODEL_PROVIDER` from the manifest and
@@ -65,19 +73,19 @@ project (tests, `run`, `eval run`) with the deterministic test model and no key.
 
 | Command | What it does |
 |---------|-------------|
-| `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install`) and the skills into detected coding agents |
-| `update [--workspace] [-i] [-y]` | Force-reinstall the skills and upgrade the CLI (best effort) |
+| `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install` from the pinned git spec) and the skills into detected coding agents |
+| `update [--workspace] [-i] [-y]` | Force-reinstall the skills and reinstall the CLI from the latest GitHub release (best effort) |
 | `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig; writes `.env` on request (generating `API_KEY`); stores nothing; exit 1 on a failed check (0 with `--status`) |
-| `create [NAME]` / `scaffold create [NAME]` `[-a/--agent] [-o/--output-dir] [--runtime] [--model-provider] [--model] [--checkpointer] [-d/--deployment-target] [--registry] [--cd] [--auth-policy] [--product-policy FILE] [--process] [-p/--prototype] [-dir/--agent-directory] [--agent-guidance-filename] [-bt/--base-template] [-i] [-y] [-s/--skip-checks] [--debug]` | Create a LangGraph agent project from the template |
-| `scaffold enhance [TEMPLATE_PATH]` (the `create` flags plus `[-n/--name]`, `[--force]`, `[--dry-run]`, `[--prefer-new]`; `--product-policy` is refused) | Add or change the deployment target, CD mode, or runtime of an existing project (3-way merge, backup first) |
+| `create [NAME]` / `scaffold create [NAME]` `[-a/--agent] [-o/--output-dir] [--runtime] [--model-provider] [--model] [--checkpointer] [-d/--deployment-target] [--registry] [--cd] [--auth-policy] [--api-policy FILE] [--process] [-p/--prototype] [-dir/--agent-directory] [--agent-guidance-filename] [-bt/--base-template] [-i] [-y] [-s/--skip-checks] [--debug]` | Create a LangGraph agent project from the template |
+| `scaffold enhance [TEMPLATE_PATH]` (the `create` flags plus `[-n/--name]`, `[--force]`, `[--dry-run]`, `[--prefer-new]`; `--api-policy` is refused) | Add or change the deployment target, CD mode, or runtime of an existing project (3-way merge, backup first) |
 | `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge; stops without an authentic prior baseline |
 | `playground [--port INT] [--graph] [--no-open]` | Run the selected application with reload and the dev chat page (port 8000); `--graph` opens LangGraph Studio via `langgraph dev` |
-| `run MESSAGE [--mode chat\|a2a] [--url] [--thread-id] [-H/--header]... [--cookie]... [--session-token] [-f/--file]... [--start-server] [--stop-server] [-v]` | Send one prompt to the local server (started on demand) or a deployed URL; `--mode a2a` needs the `a2a` extra |
+| `run MESSAGE [--mode chat\|a2a] [--url] [--thread-id] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [-v]` | Send one prompt to the local server (started on demand) or a deployed URL; `--mode a2a` needs the `a2a` extra |
 | `install [--clean] [--locked]` | Install project dependencies with uv |
-| `lint [--fix] [--policy-only]` | Ruff plus the static product-policy check of every tool module's `PRODUCT_CALLS` |
+| `lint [--fix] [--policy-only]` | Ruff plus the static API-policy check: `api-policy.yaml` against the strict schema, every tool module's `API_CALLS` against it |
 | `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` the runtime-specific Dockerfile (default tag `latest`) |
-| `eval run [--dataset] [--url] [--concurrency] [-H/--header]... [--cookie]... [--session-token] [--app-name] [--timeout] [--config] [-o/--output] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; exit code is the eval gate |
-| `eval generate [--dataset] [-o/--output] [--url] [--concurrency] [-H/--header]... [--cookie]... [--session-token] [--app-name] [--timeout]` | Run the agent over `tests/eval/datasets/*.json`, write `artifacts/traces/` |
+| `eval run [--dataset] [--url] [--concurrency] [-H/--header]... [--cookie]... [--app-name] [--timeout] [--config] [-o/--output] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; exit code is the eval gate |
+| `eval generate [--dataset] [-o/--output] [--url] [--concurrency] [-H/--header]... [--cookie]... [--app-name] [--timeout]` | Run the agent over `tests/eval/datasets/*.json`, write `artifacts/traces/` |
 | `eval grade [--traces] [--dataset] [--config] [-o/--output] [--judge-provider] [--judge-model] [--judge-timeout]` | Deterministic checks in-process, then judge metrics through a runner staged into the project; write `artifacts/grade_results/` |
 | `eval compare BASELINE CANDIDATE [--fail-on-regression] [--json]` | Diff two result files |
 | `eval analyze [--results] [--output] [--top-k] [--judge] [--judge-provider] [--judge-model]` | Deterministic clustering of failures (judge summaries with `--judge`) |
@@ -128,7 +136,7 @@ Local-load dev clusters are detected from the kube context (`kind-*`, `k3d-*`, `
 
 Secrets never live in values files or the chart. The manifest's `secrets.keys` allow-list
 (provider key, `JUDGE_API_KEY`, `POSTGRES_DSN` or `DATABASE_URI`/`REDIS_URI`, `API_KEY`,
-`LANGSMITH_API_KEY`, `PRODUCT_API_TOKEN` when the product policy uses bearer auth) is the
+`LANGSMITH_API_KEY`, the `token_env` of every `auth: bearer` API in `api-policy.yaml`) is the
 only set of variables that can reach the cluster.
 
 1. Put the values in `.env.<env>` (or `.env`); `login --write-env` prompts for missing

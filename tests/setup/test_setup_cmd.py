@@ -24,6 +24,7 @@ import pytest
 
 from graph_agents_cli._skills_check import SKILLS_NPX_PACKAGE
 from graph_agents_cli._tools import DEFAULT_SKILLS_SOURCE
+from graph_agents_cli.scaffold.utils import version as version_mod
 from graph_agents_cli.setup import cmd_setup, cmd_update
 from graph_agents_cli.setup.cmd_setup import (
     _build_skills_args,
@@ -192,9 +193,13 @@ def test_setup_dry_run_prints_commands(runner, bundle: Path, monkeypatch: pytest
     calls: list[list[str]] = []
     monkeypatch.setattr(cmd_setup, "run", lambda *a, **k: calls.append(a[0]))
     monkeypatch.setattr(cmd_setup, "run_npx_skills", _FakeNpx(fail_first=0))
+    monkeypatch.delenv(version_mod.INSTALL_SPEC_ENV, raising=False)
     result = runner.invoke(setup_command, ["--dry-run", "--agent", "claude-code"])
     assert result.exit_code == 0, result.output
-    assert "uv tool install graph-agents-cli" in result.output
+    # The CLI installs from the pinned git spec of the running version, never a bare name.
+    spec = version_mod.install_spec(version_mod.get_current_version())
+    assert spec.startswith("git+https://github.com/ss7172/graph-agents-cli")
+    assert f"uv tool install {spec}" in result.output
     assert f"npx -y {SKILLS_NPX_PACKAGE} add {DEFAULT_SKILLS_SOURCE} -y --agent claude-code -g" in (
         result.output
     )
@@ -227,9 +232,10 @@ def test_setup_installs_cli_and_skills(runner, bundle: Path, monkeypatch: pytest
     monkeypatch.setattr(cmd_setup, "run", fake_run)
     npx = _FakeNpx(fail_first=0)
     monkeypatch.setattr(cmd_setup, "run_npx_skills", npx)
+    monkeypatch.setenv(version_mod.INSTALL_SPEC_ENV, "/srv/mirror/graph_agents_cli.whl")
     result = runner.invoke(setup_command, ["--workspace"])
     assert result.exit_code == 0, result.output
-    assert runs == [["uv", "tool", "install", "graph-agents-cli"]]
+    assert runs == [["uv", "tool", "install", "/srv/mirror/graph_agents_cli.whl"]]
     assert npx.calls == [["add", DEFAULT_SKILLS_SOURCE, "-y"]]
     assert "Authentication" not in result.output
     assert "Skills: Installed" in result.output
@@ -271,7 +277,15 @@ def test_setup_continues_when_cli_install_fails(
 # ── update ───────────────────────────────────────────────────────────────────
 
 
-def test_update_runs_npx_update_then_uv_upgrade(runner, monkeypatch: pytest.MonkeyPatch):
+def _versions(monkeypatch: pytest.MonkeyPatch, *, current: str, latest: str) -> None:
+    monkeypatch.delenv(version_mod.INSTALL_SPEC_ENV, raising=False)
+    monkeypatch.setattr(version_mod, "get_current_version", lambda: current)
+    monkeypatch.setattr(version_mod, "get_latest_version", lambda: latest)
+
+
+def test_update_runs_npx_update_then_installs_the_latest_release(
+    runner, monkeypatch: pytest.MonkeyPatch
+):
     npx_calls: list[list[str]] = []
     runs: list[list[str]] = []
     monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: npx_calls.append(list(a)))
@@ -281,18 +295,69 @@ def test_update_runs_npx_update_then_uv_upgrade(runner, monkeypatch: pytest.Monk
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(cmd_update, "run", fake_run)
+    _versions(monkeypatch, current="0.1.0", latest="0.2.0")
     result = runner.invoke(update_command, ["--workspace", "-y"])
     assert result.exit_code == 0, result.output
     assert npx_calls == [["update"]]
-    assert runs == [["uv", "tool", "upgrade", "graph-agents-cli"]]
+    # uv tool upgrade cannot move a git-pinned install: reinstall from the release tag.
+    assert runs == [
+        [
+            "uv",
+            "tool",
+            "install",
+            "--force",
+            "git+https://github.com/ss7172/graph-agents-cli@v0.2.0",
+        ]
+    ]
     assert "Skills updated" in result.output
+
+
+@pytest.mark.parametrize(
+    ("current", "latest", "message"),
+    [
+        ("0.2.0", "0.2.0", "is up to date"),
+        ("0.3.0", "0.2.0", "is up to date"),
+        ("0.1.0", "0.0.0", "No graph-agents-cli release found"),
+    ],
+)
+def test_update_leaves_the_cli_alone_without_a_newer_release(
+    runner, monkeypatch: pytest.MonkeyPatch, current: str, latest: str, message: str
+):
+    runs: list[list[str]] = []
+    monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: None)
+    monkeypatch.setattr(cmd_update, "run", lambda args, **k: runs.append(list(args)))
+    _versions(monkeypatch, current=current, latest=latest)
+    result = runner.invoke(update_command, ["-y"])
+    assert result.exit_code == 0, result.output
+    assert runs == []
+    assert message in result.output
+
+
+def test_update_reinstalls_from_the_install_spec_override(runner, monkeypatch: pytest.MonkeyPatch):
+    runs: list[list[str]] = []
+    monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: None)
+
+    def fake_run(args, **kwargs):
+        runs.append(list(args))
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(cmd_update, "run", fake_run)
+    monkeypatch.setattr(version_mod, "get_latest_version", lambda: "0.0.0")
+    monkeypatch.setenv(version_mod.INSTALL_SPEC_ENV, "git+https://mirror.example/gac@v9")
+    result = runner.invoke(update_command, ["-y"])
+    assert result.exit_code == 0, result.output
+    assert runs == [["uv", "tool", "install", "--force", "git+https://mirror.example/gac@v9"]]
 
 
 def test_update_global_and_best_effort_upgrade(runner, monkeypatch: pytest.MonkeyPatch):
     npx_calls: list[list[str]] = []
     monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: npx_calls.append(list(a)))
     monkeypatch.setattr(cmd_update, "run", lambda args, **k: subprocess.CompletedProcess(args, 1))
+    _versions(monkeypatch, current="0.1.0", latest="0.2.0")
     result = runner.invoke(update_command, ["-y"])
     assert result.exit_code == 0, result.output
     assert npx_calls == [["update", "-g"]]
     assert "Could not upgrade graph-agents-cli automatically" in result.output
+    assert "uv tool install --force git+https://github.com/ss7172/graph-agents-cli@v0.2.0" in (
+        result.output
+    )

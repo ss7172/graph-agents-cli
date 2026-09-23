@@ -13,11 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""graph-agents-cli update command — update skills via npx skills CLI."""
+"""graph-agents-cli update command — update the skills (npx skills) and the CLI itself.
+
+The CLI is reinstalled from ``install_spec()`` pinned to the latest GitHub
+release (``uv tool install --force``) when that release is newer than the
+running version; ``GRAPH_AGENTS_CLI_INSTALL_SPEC`` forces a reinstall from the
+override. ``uv tool upgrade`` cannot move a git-pinned install to a new tag,
+which is why the install is forced.
+"""
 
 from __future__ import annotations
 
+import os
+import shlex
+
 import click
+from packaging import version as pkg_version
 
 from graph_agents_cli._runner import run
 from graph_agents_cli._tools import run_npx_skills
@@ -38,7 +49,7 @@ def cmd_update(workspace, auto_approve):
     """Force reinstall skills to all detected coding agents.
 
     Updates all installed skills to their latest versions via npx skills,
-    then upgrades the CLI itself with `uv tool upgrade` (best effort).
+    then reinstalls the CLI from the latest GitHub release (best effort).
     """
     click.echo()
     args = ["update"]
@@ -65,10 +76,37 @@ def cmd_update(workspace, auto_approve):
     # Best-effort CLI upgrade: a failure (offline, not installed with uv tool)
     # must not turn a successful skills update into a non-zero exit.
     click.echo()
-    result = run(["uv", "tool", "upgrade", PACKAGE_NAME], check=False)
+    from graph_agents_cli.scaffold.utils.version import (
+        INSTALL_SPEC_ENV,
+        UNKNOWN_VERSION,
+        get_current_version,
+        get_latest_version,
+        install_spec,
+    )
+
+    latest = get_latest_version()
+    overridden = bool(os.environ.get(INSTALL_SPEC_ENV, "").strip())
+    if latest == UNKNOWN_VERSION and not overridden:
+        click.secho(
+            f"  No {PACKAGE_NAME} release found on GitHub (offline, or none published yet); "
+            "the CLI was left as is.",
+            dim=True,
+        )
+        return
+    current = get_current_version()
+    if (
+        not overridden
+        and current != UNKNOWN_VERSION
+        and pkg_version.parse(latest) <= pkg_version.parse(current)
+    ):
+        click.secho(f"  {PACKAGE_NAME} {current} is up to date.", dim=True)
+        return
+    spec = install_spec(None if latest == UNKNOWN_VERSION else latest)
+    cmd = ["uv", "tool", "install", "--force", spec]
+    result = run(cmd, check=False)
     if result.returncode != 0:
         click.secho(
             f"  Could not upgrade {PACKAGE_NAME} automatically "
-            f"(exit code {result.returncode}); run 'uv tool upgrade {PACKAGE_NAME}' manually.",
+            f"(exit code {result.returncode}); run '{shlex.join(cmd)}' manually.",
             fg="yellow",
         )

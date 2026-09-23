@@ -18,7 +18,7 @@
 
 Run with ``uv run python -m graph_agents_cli.scaffold.utils.generate_locks``.
 For each runtime the template's ``pyproject.toml`` is rendered with the
-CONTRACTS section 3 variables (project name ``locked-template``, agent
+cookiecutter variables ``create`` uses (project name ``locked-template``, agent
 directory ``app``, provider ``openai``, ...) and resolved with
 ``uv lock --no-config`` in a temporary directory that also holds what the
 build backend needs to read the project metadata: an empty ``__init__.py`` in

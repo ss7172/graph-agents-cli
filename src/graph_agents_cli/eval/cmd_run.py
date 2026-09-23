@@ -93,7 +93,7 @@ def _generate_override_argv(
         argv += ["--concurrency", str(concurrency)]
     if timeout != DEFAULT_TIMEOUT:
         # Forwarded like --concurrency: only a non-default value, so an override
-        # that does not know the flag keeps working at the defaults (D24 parity).
+        # that does not know the flag keeps working at the defaults.
         argv += ["--timeout", format(timeout, "g")]
     for value in header:
         argv += ["--header", value]

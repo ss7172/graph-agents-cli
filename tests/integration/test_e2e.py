@@ -17,7 +17,7 @@
 Scaffolds real projects with `create`, installs one with `uv sync` (network),
 and drives `lint`, `run`, `eval`, `playground`, `build`, `deploy --dry-run`,
 `secrets --dry-run`, `infra check`, `info`, `login`, `scaffold enhance/upgrade`
-and the product-policy check through the console script. Nothing talks to a
+and the API-policy check through the console script. Nothing talks to a
 cluster: KUBECONFIG points at an empty file and every kubectl/helm-mutating
 command runs under --dry-run.
 
@@ -190,7 +190,7 @@ def project2(workspace: Path) -> Path:
 
 @pytest.fixture(scope="module")
 def project5(workspace: Path) -> Path:
-    """Combination 5: product policy + process document (not installed)."""
+    """Combination 5: API policy + process document (not installed)."""
     return _create(
         workspace,
         "p5-policy",
@@ -200,7 +200,7 @@ def project5(workspace: Path) -> Path:
         "skip",
         "-d",
         "kubernetes",
-        "--product-policy",
+        "--api-policy",
         str(rf.SAMPLE_POLICY),
         "--process",
         "docs/process.md",
@@ -223,7 +223,7 @@ def test_scaffold_matrix_matches_fixtures(workspace: Path, name: str) -> None:
     assert rf.normalized_manifest(project) == expected_manifest
 
 
-def test_invalid_combination_is_refused_with_d6_reason(workspace: Path) -> None:
+def test_invalid_combination_is_refused_with_the_reason(workspace: Path) -> None:
     result = cli(
         "create",
         "bad-combo",
@@ -311,7 +311,8 @@ def test_registry_defaults_to_git_origin_owner(workspace: Path) -> None:
 
 def test_lint_passes(project2: Path) -> None:
     result = _ok(cli("lint", cwd=project2))
-    assert "All declared product API calls are allowed" in _out(result)
+    # The default project declares no API policy and its tools call no API.
+    assert "API policy check: nothing to check" in _out(result)
 
 
 def test_run_one_off_server(project2: Path) -> None:
@@ -659,19 +660,21 @@ def test_a2a_mode(project2: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# E. product policy
+# E. API policy
 # ---------------------------------------------------------------------------
 
 
 def test_policy_lint_passes_with_template_tools(project5: Path) -> None:
     result = _ok(cli("lint", "--policy-only", cwd=project5))
-    assert "All declared product API calls are allowed" in _out(result)
+    assert "All declared API calls are allowed" in _out(result)
+    assert "example_api.py" in _out(result)
 
 
-def test_policy_lint_flags_a_post_tool(project5: Path) -> None:
+def test_policy_lint_flags_a_post_tool_and_a_leftover_product_calls(project5: Path) -> None:
     tool = project5 / "app" / "tools" / "mutate.py"
     tool.write_text(
-        'PRODUCT_CALLS = [{"method": "POST", "operation_id": "createItem", "path": "/items"}]\n'
+        'API_CALLS = [{"api": "example", "method": "POST", "operation_id": "createItem",'
+        ' "path": "/items"}]\n'
         "TOOLS: list = []\n",
         encoding="utf-8",
     )
@@ -683,15 +686,34 @@ def test_policy_lint_flags_a_post_tool(project5: Path) -> None:
     out = _out(result)
     assert "mutate.py" in out and "POST" in out and "denied" in out
     assert "1 violation(s)" in out
+    old = project5 / "app" / "tools" / "old.py"
+    old.write_text('PRODUCT_CALLS = [{"method": "GET", "path": "/x"}]\n', encoding="utf-8")
+    try:
+        result = cli("lint", "--policy-only", cwd=project5)
+    finally:
+        old.unlink()
+    assert result.returncode == 1
+    assert "renamed to API_CALLS" in _out(result)
+
+
+def test_lint_stops_on_the_retired_policy_file(project5: Path) -> None:
+    legacy = project5 / "product-policy.yaml"
+    legacy.write_text("product_api:\n  allowed_methods: [GET]\n", encoding="utf-8")
+    try:
+        result = cli("lint", "--policy-only", cwd=project5)
+    finally:
+        legacy.unlink()
+    assert result.returncode == 3
+    assert "Migrate it to api-policy.yaml" in _out(result)
 
 
 def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
-    policy = project5 / "product-policy.yaml"
+    policy = project5 / "api-policy.yaml"
     original = policy.read_text(encoding="utf-8")
     (project5 / "docs").mkdir(exist_ok=True)
-    (project5 / "docs" / "product-openapi.yaml").write_text(
+    (project5 / "docs" / "example-openapi.yaml").write_text(
         "openapi: 3.0.0\n"
-        'info: {title: Product API, version: "1"}\n'
+        'info: {title: Example API, version: "1"}\n'
         "paths:\n"
         "  /items/{item_id}:\n"
         "    get:\n"
@@ -705,21 +727,23 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
     )
     tool = project5 / "app" / "tools" / "mutate.py"
     tool.write_text(
-        'PRODUCT_CALLS = [{"method": "POST", "operation_id": "createItem", "path": "/items"}]\n'
+        'API_CALLS = [{"api": "example", "method": "POST", "operation_id": "createItem",'
+        ' "path": "/items"}]\n'
         "TOOLS: list = []\n",
         encoding="utf-8",
     )
     try:
         policy.write_text(
-            "product_api:\n"
-            "  base_url_env: PRODUCT_API_BASE_URL\n"
-            "  auth: bearer\n"
-            "  token_env: PRODUCT_API_TOKEN\n"
-            "  allowed_methods: [GET, POST]\n"
-            "  allowed_operations:\n"
-            "    - operationId: getItem\n"
-            "    - operationId: createItem\n"
-            "  openapi: docs/product-openapi.yaml\n",
+            "apis:\n"
+            "  example:\n"
+            "    base_url_env: EXAMPLE_API_BASE_URL\n"
+            "    auth: bearer\n"
+            "    token_env: EXAMPLE_API_TOKEN\n"
+            "    allowed_methods: [GET, POST]\n"
+            "    allowed_operations:\n"
+            "      - operationId: getItem\n"
+            "      - operationId: createItem\n"
+            "    openapi: docs/example-openapi.yaml\n",
             encoding="utf-8",
         )
         accepted = _ok(cli("lint", "--policy-only", cwd=project5))
@@ -727,13 +751,14 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
         # An operation the policy allows but the spec does not know is a violation.
         ghost = project5 / "app" / "tools" / "ghost.py"
         ghost.write_text(
-            'PRODUCT_CALLS = [{"method": "GET", "operation_id": "getGhost"}]\nTOOLS: list = []\n',
+            'API_CALLS = [{"api": "example", "method": "GET", "operation_id": "getGhost"}]\n'
+            "TOOLS: list = []\n",
             encoding="utf-8",
         )
         policy.write_text(
             policy.read_text(encoding="utf-8").replace(
-                "    - operationId: createItem\n",
-                "    - operationId: createItem\n    - operationId: getGhost\n",
+                "      - operationId: createItem\n",
+                "      - operationId: createItem\n      - operationId: getGhost\n",
             ),
             encoding="utf-8",
         )
@@ -755,7 +780,7 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
         )
         denied = cli("lint", "--policy-only", cwd=project5)
         assert denied.returncode == 1
-        assert "not listed in allowed_operations" in _out(denied)
+        assert "not in allowed_operations" in _out(denied)
     finally:
         tool.unlink(missing_ok=True)
         policy.write_text(original, encoding="utf-8")

@@ -1,9 +1,0 @@
-# Sample product policy used by scripts/regen_fixtures.py and the e2e tests:
-# read-only access to the product API (DECISIONS.md D28).
-product_api:
-  base_url_env: PRODUCT_API_BASE_URL
-  auth: bearer
-  token_env: PRODUCT_API_TOKEN
-  allowed_methods: [GET]
-  denied_operations: []
-  timeouts_ms: {connect: 2000, read: 5000}

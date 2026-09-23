@@ -19,12 +19,12 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # Project scaffolding guide
 
-> **Requires:** `graph-agents-cli` (`uv tool install graph-agents-cli`).
+> **Requires:** `graph-agents-cli` (`uv tool install git+https://github.com/ss7172/graph-agents-cli`).
 > [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md) first if needed.
 
 Use `graph-agents-cli create`, `scaffold enhance`, and `scaffold upgrade` to create a LangGraph
@@ -35,7 +35,7 @@ agent project, add deployment and CD to an existing one, or move a project to a 
 ## Prerequisite: clarify requirements (MANDATORY for new projects)
 
 **Before scaffolding, load `/graph-agents-cli-workflow` and complete Phase 0** (or the project's
-declared process). Ask what the agent does, which product API operations it needs, which model
+declared process). Ask what the agent does, which external API operations it needs, which model
 provider (and what may leave the network), and whether they want a prototype or Kubernetes.
 
 ---
@@ -51,8 +51,8 @@ provider (and what may leave the network), and whether they want a prototype or 
 | Deployment | `--deployment-target kubernetes` (default) or `none`; `--prototype` |
 | Registry | `--registry <url/org>` (default `ghcr.io/<org>`) |
 | CD mode | `--cd argocd\|helm-push\|skip` (default `skip`) |
-| Auth | `--auth-policy shared-bearer` (default) or `product-session` |
-| Product API boundary | `--product-policy <file>` seeds `product-policy.yaml` |
+| Auth | `--auth-policy shared-bearer` (default), `jwt` (per-user OIDC/JWT tokens) or `custom` (your own policy; fail-closed stub) |
+| Outbound API boundary | `--api-policy <file>` seeds `api-policy.yaml` (validated first; every API tools may call) |
 | Governing process | `--process <path>` writes `process:` to the manifest and the guidance file |
 
 ### Valid runtime x checkpointer x target combinations (enforced by `create`)
@@ -69,9 +69,11 @@ provider (and what may leave the network), and whether they want a prototype or 
 | langgraph-server | postgres | none | yes | `run` and `playground` use `langgraph dev` (in-memory) locally; `postgres` is only the recorded deployed default |
 
 Further validation: `--cd` other than `skip` requires `--deployment-target kubernetes`;
-`--deployment-target none` defaults `--checkpointer memory`; `--auth-policy product-session`
+`--deployment-target none` defaults `--checkpointer memory`; `--auth-policy custom`
 scaffolds the stub and writes `auth_policy_implemented: false` (deploy to staging/prod refuses
-until the project flips it).
+until the project flips it); an `--api-policy` with an `auth: forward` API is refused under
+`--runtime langgraph-server` (the server would persist the forwarded credentials). The retired
+`--product-policy` and `--auth-policy product-session` are refused with a rename hint.
 
 ### Prototype semantics
 
@@ -122,32 +124,34 @@ graph-agents-cli create <project-name> \
   release name and the namespace prefix (`<name>-dev`, `<name>-staging`, `<name>-prod`).
 - Do NOT `mkdir` the project directory first; `create` creates it (a pre-existing directory
   triggers enhance semantics).
-- Pass `--agent-guidance-filename` for the coding agent in use: `GEMINI.md` (Gemini CLI,
-  Antigravity), `CLAUDE.md` (Claude Code), `AGENTS.md` (Codex and others).
+- `--agent-guidance-filename` defaults to `AGENTS.md` (read by Codex and most coding agents);
+  pass `CLAUDE.md` (Claude Code) or `GEMINI.md` (Gemini CLI, Antigravity) when that agent is in use.
 - `create` copies the runtime's bundled lock (`uv-fastapi.lock` or `uv-langgraph-server.lock`)
   to `uv.lock` and runs `uv sync`.
 - Non-interactive by default: every parameter has a default (`--deployment-target kubernetes`,
   `--agent langgraph`, `--runtime fastapi`, `--model-provider openai`, `--cd skip`, ...); `-y`
   skips prompts; `-i` shows menus for a human at a terminal. An invalid combination is a
   `UsageError` (exit 2) with the table's reason.
-- `create` also renders `.github/agent.env` for every kubernetes project (used only by the CD
-  workflows) and `pr_checks.yaml` runs the eval gate with `MODEL_PROVIDER=${{ vars.MODEL_PROVIDER || 'fake' }}`,
-  so CI passes without a provider key until the repository variable is set.
+- `create` also renders `.github/agent.env` (read only by the workflows): `GRAPH_AGENTS_CLI_SPEC`,
+  the pinned source CI installs the CLI from (`uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli ...`),
+  plus the chart settings for kubernetes projects. `pr_checks.yaml` runs the eval gate with
+  `MODEL_PROVIDER=${{ vars.MODEL_PROVIDER || 'fake' }}`, so CI passes without a provider key until
+  the repository variable is set.
 
 ### Enhance an existing project
 
 ```bash
 graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/my-org
 graph-agents-cli scaffold enhance . --cd argocd
-graph-agents-cli scaffold enhance . --auth-policy product-session
+graph-agents-cli scaffold enhance . --auth-policy custom
 ```
 
 Run from inside the project (the positional argument names a template to apply, not the project;
 it is ignored when the manifest records one). Enhance renders the template for the new
 parameters and applies the 3-way merge; a backup goes to
 `~/.graph-agents-cli/backups/<project>_<timestamp>/` first. When the agent code is not in `app/`,
-pass `--agent-directory <dir>`. `--product-policy` is refused by `enhance` (copy the file into the
-project and set `product_api.policy_file` in the manifest instead). When the merge changes the
+pass `--agent-directory <dir>`. `--api-policy` is refused by `enhance` (copy the file into the
+project as `api-policy.yaml` and set `api_policy.policy_file` in the manifest instead). When the merge changes the
 manifest (for example `enhance --cd argocd`), `graph-agents-cli-manifest.yaml` is rewritten in
 block style and its comments are dropped; app files stay byte-identical. **Always ask before
 choosing the CD mode or auth policy.**
@@ -164,8 +168,9 @@ graph-agents-cli scaffold upgrade --baseline current   # explicit, logged opt-ou
 ```
 
 **Authentic baseline or stop.** `upgrade` regenerates the old template with the exact prior CLI
-version (`uvx graph-agents-cli@<old-version> scaffold create ...`). If that version cannot be
-fetched and run (index unreachable, version absent, `uvx` missing), `upgrade` **stops with a
+version (`uvx --from git+https://github.com/ss7172/graph-agents-cli@v<old-version> graph-agents-cli scaffold create ...`,
+or `GRAPH_AGENTS_CLI_INSTALL_SPEC`). If that version cannot be
+fetched and run (source unreachable, version absent, `uvx` missing), `upgrade` **stops with a
 non-zero exit and no changes**, because an inauthentic baseline would misclassify files.
 `--baseline current` compares against the current templates instead; it is an explicit opt-in,
 logged, and the result summary is labelled as such. Do not pass it just to make the error go
@@ -174,7 +179,7 @@ away; tell the user why the baseline is unavailable.
 **What upgrade never touches:**
 
 - *agent code:* `app/agent.py`, `app/tools/**`, `app/policies/**`, `app/prompts/**`, `app/graph/**`
-- *config:* `.env`, `.env.*`, `product-policy.yaml`, `deployment/helm/<name>/values-*.yaml`
+- *config:* `.env`, `.env.*`, `api-policy.yaml`, `deployment/helm/<name>/values-*.yaml`
   (the environment values), `deployment/argocd/**`, `tests/eval/datasets/**`,
   `tests/eval/eval_config.yaml`
 - files the project added that exist in neither template snapshot
@@ -198,7 +203,7 @@ After scaffolding, load `/graph-agents-cli-workflow` (lifecycle and rules) and
 `/graph-agents-cli-langgraph-code` (what to edit: `app/agent.py`, `app/tools/`, `app/policies/`).
 
 `.env` is yours. Preserve everything else the template generated; it wires serving, the auth
-adapter, the checkpointer, the product client, telemetry, and A2A.
+adapter, the checkpointer, the API client, telemetry, and A2A.
 
 Verify: `graph-agents-cli run "test prompt"` for a smoke test, then `graph-agents-cli eval run`
 for behaviour. Do not write pytest tests that assert on model output.
@@ -231,7 +236,7 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 - **`--process` when the project has a governing process**; it makes the workflow skill defer.
 - **Start with `--prototype`** for quick iteration; add deployment later with `enhance`.
 - **NEVER hand-write the A2A surface**; it is built into the scaffolded app.
-- **NEVER edit `product-policy.yaml` on your own**; it is owned by the product.
+- **NEVER edit `api-policy.yaml` on your own**; it is the project's reviewed security boundary.
 
 ---
 
@@ -241,8 +246,8 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 
 > "Build me an agent that answers questions about our incidents."
 
-1. Phase 0: purpose, product operations (`getIncident`, `listIncidents`, GET only), provider.
-2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --product-policy ./policy.yaml --agent-guidance-filename CLAUDE.md -y`
+1. Phase 0: purpose, API operations (`getIncident`, `listIncidents`, GET only), provider.
+2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --api-policy ./api-policy.yaml --agent-guidance-filename CLAUDE.md -y`
 3. Implement tools, smoke test, eval.
 4. Later: `graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme --cd argocd`.
 
@@ -286,7 +291,7 @@ Compared with google-agents-cli: `--deployment-target agent_runtime|cloud_run|gk
 `kubernetes|none`; `--session-type` became `--checkpointer`; `--cicd-runner` became `--cd`;
 `--region`, `--bq-analytics`, `--agent-gateway`, the `adk@` shortcut, and the Terraform output are
 gone; `--runtime`, `--model-provider`, `--model`, `--registry`, `--auth-policy`,
-`--product-policy`, and `--process` are new.
+`--api-policy`, and `--process` are new.
 
 ## Related skills
 

@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Structural tests for the skills bundle (DECISIONS.md D20).
+"""Structural tests for the skills bundle (installed offline by `setup`).
 
 - every ``skills/graph-agents-cli-*/`` directory has a ``SKILL.md`` with valid
   frontmatter whose ``name`` matches the directory and whose
   ``metadata.version`` is ``0.1.0``;
-- the six skill names of CONTRACTS.md Section 1 are exactly the ones present;
+- the six skill names are exactly the ones present;
 - every ``references/<file>.md`` a SKILL.md mentions exists, and every reference
   file is mentioned;
 - Google Cloud product names appear only under a "Migration note" heading;

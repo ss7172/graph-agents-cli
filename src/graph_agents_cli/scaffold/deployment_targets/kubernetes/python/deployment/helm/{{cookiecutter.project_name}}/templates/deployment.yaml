@@ -17,7 +17,7 @@ spec:
         {{- include "agent.selectorLabels" . | nindent 8 }}
       annotations:
         # Roll the pods when the non-secret configuration changes. Secret
-        # rotation is a `graph-agents-cli deploy --restart` (D14).
+        # rotation is a `graph-agents-cli deploy --restart`.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -51,7 +51,7 @@ spec:
                 optional: true
             - configMapRef:
                 name: {{ include "agent.fullname" . }}
-          # Chart-set variables; `env` wins over `envFrom` (D9).
+          # Chart-set variables; `env` wins over `envFrom`.
           env:
             - name: PORT
               value: {{ .Values.service.targetPort | quote }}

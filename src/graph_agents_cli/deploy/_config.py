@@ -13,10 +13,10 @@
 # limitations under the License.
 """Deployment settings read from the project manifest.
 
-Adapts ``ProjectConfig`` (CONTRACTS section 2 field names) to the small set of
+Adapts ``ProjectConfig`` (the manifest's field names) to the small set of
 values deploy, secrets, and infra need. Attributes are read defensively so the
 commands work while ``_project.py`` is being finalised; every fallback follows
-the manifest schema and Section 7 defaults.
+the manifest schema and the CLI's defaults.
 """
 
 from __future__ import annotations
@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from graph_agents_cli import _project
-from graph_agents_cli._defaults import ENVIRONMENTS, default_secret_keys
+from graph_agents_cli._defaults import (
+    ENVIRONMENTS,
+    auth_policy_implemented_default,
+    default_secret_keys,
+    normalize_auth_policy,
+)
 from graph_agents_cli.deploy._kube import ConfigError, Target
 
 
@@ -110,10 +115,10 @@ class DeploySettings:
             )
         runtime = pick("runtime", "fastapi")
         model_provider = pick("model_provider", "openai")
-        auth_policy = pick("auth_policy", "shared-bearer")
+        auth_policy = normalize_auth_policy(pick("auth_policy", "shared-bearer"), warn=False)
         implemented = pick("auth_policy_implemented", None)
         if implemented is None:
-            implemented = auth_policy != "product-session"
+            implemented = auth_policy_implemented_default(auth_policy)
 
         environments: dict[str, dict[str, str]] = {}
         raw_envs = getattr(cfg, "environments", None)

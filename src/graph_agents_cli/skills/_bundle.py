@@ -18,7 +18,7 @@
 The canonical skills live in ``data/`` next to this file
 (``src/graph_agents_cli/skills/data/``). Because that directory is inside the
 package, it's automatically bundled in the wheel - so ``graph-agents-cli setup``
-can install skills with no ``git`` and no network (DECISIONS.md D20, D25).
+can install skills with no ``git`` and no network (disconnected installs).
 
 The repository keeps a byte-identical copy under ``skills/`` at the repo root
 for ``npx skills add <repo>`` and the plugin manifests; CONTRIBUTING.md

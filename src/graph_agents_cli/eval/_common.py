@@ -27,7 +27,7 @@ from typing import Any
 import click
 import yaml
 
-# Exit codes of the evaluation gate (DECISIONS.md D24, CONTRACTS.md section 11).
+# Exit codes of the evaluation gate (see gate.py).
 EXIT_OK = 0
 EXIT_GATE_FAILED = 1
 EXIT_INCOMPLETE = 2

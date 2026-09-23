@@ -18,8 +18,8 @@ The ``_shared`` layer renders ``graph-agents-cli-manifest.yaml`` from the
 cookiecutter variables. ``finalize_manifest`` then guarantees the contract
 whatever the template rendered: every create parameter is recorded, the
 ``environments`` block exists only for the kubernetes target, ``secrets.keys``
-is never empty (and carries the bearer token variable of an ``auth: bearer``
-product policy), ``product_api`` is present only with a policy file, and
+is never empty (and carries the ``token_env`` of every ``auth: bearer`` API in
+``api-policy.yaml``), ``api_policy`` is present only with a policy file, and
 ``process`` is always a key. Values the template already rendered correctly
 are left alone; the file is rewritten only when something had to change.
 """
@@ -33,11 +33,20 @@ from typing import Any
 
 import yaml
 
-from graph_agents_cli._defaults import ENVIRONMENTS, default_secret_keys
+from graph_agents_cli._api_policy import (
+    POLICY_FILENAME as API_POLICY_FILENAME,
+)
+from graph_agents_cli._api_policy import (
+    ApiSummary,
+    bearer_token_envs,
+)
+from graph_agents_cli._defaults import (
+    ENVIRONMENTS,
+    auth_policy_implemented_default,
+    default_secret_keys,
+)
 
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
-PRODUCT_POLICY_FILENAME = "product-policy.yaml"
-DEFAULT_PRODUCT_TOKEN_ENV = "PRODUCT_API_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -52,21 +61,25 @@ class CreateParams:
     registry: str
     cd: str
     auth_policy: str
-    has_product_policy: bool = False
+    has_api_policy: bool = False
     process: str | None = None
     # ``None`` derives the flag from ``auth_policy`` (a fresh scaffold). A recorded
     # value is carried through by ``enhance``/``upgrade`` so the developer's flip
-    # after implementing the product-session stub survives (Section 7 item 11).
+    # after implementing the ``custom`` stub survives a re-render.
     auth_policy_implemented: bool | None = None
-    # The variable holding the bearer token when the product policy sets
-    # ``auth: bearer`` (``token_env``, default ``PRODUCT_API_TOKEN``); it joins
-    # ``secrets.keys`` (Section 7 item 21, CONTRACTS section 4).
-    product_token_env: str | None = None
+    # The APIs declared in ``api-policy.yaml`` (empty without a policy): the
+    # templates document their variables and every ``auth: bearer`` API's
+    # ``token_env`` joins ``secrets.keys`` so the token reaches the Secret.
+    apis: tuple[ApiSummary, ...] = ()
+
+    @property
+    def api_token_envs(self) -> list[str]:
+        return bearer_token_envs(self.apis)
 
     def resolved_auth_policy_implemented(self) -> bool:
         if self.auth_policy_implemented is not None:
             return bool(self.auth_policy_implemented)
-        return self.auth_policy != "product-session"
+        return auth_policy_implemented_default(self.auth_policy)
 
     def as_manifest_dict(self) -> dict[str, Any]:
         """The ``create_params`` keys this object owns (agent_guidance_filename excluded)."""
@@ -81,35 +94,6 @@ class CreateParams:
             "auth_policy": self.auth_policy,
             "auth_policy_implemented": self.resolved_auth_policy_implemented(),
         }
-
-
-def bearer_token_env(path: str | pathlib.Path | None) -> str | None:
-    """The token variable an ``auth: bearer`` product policy reads, else ``None``.
-
-    Accepts the documented shape (top-level ``product_api:``) and a file whose
-    keys are the policy fields directly. A missing, unreadable or non-bearer
-    policy yields ``None`` (with a warning when the file exists but cannot be
-    parsed), so the caller adds nothing to ``secrets.keys``.
-    """
-    if not path:
-        return None
-    policy_path = pathlib.Path(path)
-    if not policy_path.is_file():
-        return None
-    try:
-        with open(policy_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError) as e:
-        logging.warning("Could not read %s to derive the token variable: %s", policy_path, e)
-        return None
-    if not isinstance(data, dict):
-        return None
-    section = data.get("product_api", data)
-    if not isinstance(section, dict):
-        return None
-    if str(section.get("auth") or "none") != "bearer":
-        return None
-    return str(section.get("token_env") or DEFAULT_PRODUCT_TOKEN_ENV)
 
 
 def default_environments(project_name: str) -> dict[str, dict[str, str]]:
@@ -197,10 +181,10 @@ def finalize_manifest(
         raw_keys = [raw_keys]
     keys = [str(k) for k in raw_keys] if raw_keys else []
     if not keys:
-        keys = default_secret_keys(params.model_provider, params.runtime, params.product_token_env)
-    elif params.product_token_env and params.product_token_env not in keys:
-        # A bearer product policy needs its token in the Secret (CONTRACTS section 4).
-        keys = [*keys, params.product_token_env]
+        keys = default_secret_keys(params.model_provider, params.runtime, params.api_token_envs)
+    else:
+        # Every bearer API needs its token in the Secret; user-added keys stay.
+        keys = [*keys, *(k for k in params.api_token_envs if k not in keys)]
     if secrets.get("keys") != keys:
         secrets["keys"] = keys
         changed = True
@@ -208,13 +192,13 @@ def finalize_manifest(
         secrets["owner"] = ""
         changed = True
 
-    if params.has_product_policy:
-        product_api = data.get("product_api")
-        if not isinstance(product_api, dict) or not product_api.get("policy_file"):
-            data["product_api"] = {"policy_file": PRODUCT_POLICY_FILENAME}
+    if params.has_api_policy:
+        api_policy = data.get("api_policy")
+        if not isinstance(api_policy, dict) or not api_policy.get("policy_file"):
+            data["api_policy"] = {"policy_file": API_POLICY_FILENAME}
             changed = True
-    elif "product_api" in data:
-        del data["product_api"]
+    elif "api_policy" in data:
+        del data["api_policy"]
         changed = True
 
     process = params.process or None

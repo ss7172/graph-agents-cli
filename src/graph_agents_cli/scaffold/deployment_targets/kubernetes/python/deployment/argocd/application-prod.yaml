@@ -1,4 +1,4 @@
-# Argo CD Application for the prod environment (DECISIONS.md D9, D12).
+# Argo CD Application for the prod environment.
 # Argo reconciles from main, so nothing reaches the cluster until a PR merges.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -22,7 +22,7 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: {{cookiecutter.project_name}}-prod
-  # Production has NO automated sync (ASSUMPTIONS item 16): after the values-prod.yaml
+  # Production has NO automated sync (a human syncs it): after the values-prod.yaml
   # PR merges, an operator syncs the application in Argo CD.
   syncPolicy:
     syncOptions:

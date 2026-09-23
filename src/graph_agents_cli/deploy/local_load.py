@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Load a locally built image into a single-node dev cluster (ASSUMPTIONS item 10).
+"""Load a locally built image into a single-node dev cluster (kind, k3s, minikube, Docker Desktop).
 
 The mechanism is chosen from the kube context name. Only the ``docker`` CLI is
 supported for builds; Docker Desktop, Rancher Desktop and OrbStack share the

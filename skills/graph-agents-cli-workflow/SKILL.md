@@ -19,7 +19,7 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # Agent Development Workflow and Guidelines
@@ -29,7 +29,7 @@ metadata:
 with any coding agent (Claude Code, Codex, Gemini CLI, Cursor, Antigravity, others). The agent's
 model is a scaffold-time and runtime choice among OpenAI, Anthropic, Gemini (AI Studio API key),
 and any OpenAI-compatible endpoint (Ollama, vLLM, TGI, OpenRouter). Install with
-`uv tool install graph-agents-cli` and `graph-agents-cli setup`.
+`uv tool install git+https://github.com/ss7172/graph-agents-cli` and `graph-agents-cli setup`.
 
 > **Before writing agent code, make sure a scaffolded project exists (see Phase 1).** Skipping the
 > scaffold loses the chat API, the auth policy adapter, the eval gate, the Helm chart, and the
@@ -49,7 +49,7 @@ Context compaction may have dropped earlier skill content. If skills are missing
 |-------|-------|--------------|
 | 0 - Understand | this skill, `references/brainstorming.md` | Read the project's process document if one is declared (see *Process deference*), else `.graph-agents-cli-spec.md` if present, else clarify goals with the user |
 | 1 - Scaffold | `/graph-agents-cli-scaffold` | Before creating, enhancing, or upgrading a project |
-| 2 - Build | `/graph-agents-cli-langgraph-code` | Before writing agent code: graph, tools, checkpointer, streaming, interrupts, auth policy, product client |
+| 2 - Build | `/graph-agents-cli-langgraph-code` | Before writing agent code: graph, tools, checkpointer, streaming, interrupts, auth policy, API client |
 | 3 - Evaluate | `/graph-agents-cli-eval` | Before running any eval: dataset schema, expect checks, judge metrics, the gate rule and exit codes |
 | 4 - Deploy | `/graph-agents-cli-deploy` | Before deploying: modes, environments, secrets, GitOps PR flow, GitHub settings, `infra check` |
 | 5 - Observe | `/graph-agents-cli-observability` | After deploying: tracing opt-in, capture policy, LangSmith or OTLP, run records |
@@ -61,7 +61,7 @@ Context compaction may have dropped earlier skill content. If skills are missing
 If `graph-agents-cli` is not installed:
 
 ```bash
-uv tool install graph-agents-cli
+uv tool install git+https://github.com/ss7172/graph-agents-cli   # or a pinned tag: ...@v<version>
 graph-agents-cli setup          # installs the six skills into detected coding agents
 ```
 
@@ -80,7 +80,7 @@ records that in two places:
 
 - the project manifest `graph-agents-cli-manifest.yaml`, key `process:` (a path to the governing
   process document, or `null`); this is what `info` and `scaffold upgrade` read;
-- the project guidance file (`GEMINI.md`, `CLAUDE.md`, or `AGENTS.md`), which renders the same
+- the project guidance file (`AGENTS.md` by default, or `CLAUDE.md` / `GEMINI.md`), which renders the same
   value; this is what you, the coding agent, read.
 
 **Rule.** If the guidance file or the manifest declares `process:`:
@@ -93,8 +93,8 @@ records that in two places:
    process has not given.
 3. Where the process is silent, the rules below still apply (code preservation, never change the
    model, human approval before deploy, the eval gate, the 3-strikes breaker).
-4. Product-level choices that the process owns stay with the process: the product API policy
-   (`product-policy.yaml`), which sessions and roles the auth policy validates, data-egress and
+4. Choices that the process owns stay with the process: the outbound API policy
+   (`api-policy.yaml`), which credentials and roles the auth policy validates, data-egress and
    trace-capture decisions, and whether the project may be deployed at all.
 
 If no process is declared, the generic gate in Phase 0 applies.
@@ -116,15 +116,16 @@ process, until that process's approvals exist). Do not assume, research, or fill
 your own; the user's intent drives everything.
 
 **Scale the ceremony to complexity:** a trivial agent (single tool, fixed persona) needs a couple
-of questions, a 2-3 sentence spec, and one approval; a complex agent (multi-step graph, product API
-access, sessions and roles, safety-critical) gets the full treatment in `references/brainstorming.md`.
+of questions, a 2-3 sentence spec, and one approval; a complex agent (multi-step graph, external API
+access, per-user identity and roles, safety-critical) gets the full treatment in `references/brainstorming.md`.
 
 **Topics to cover** (one question at a time):
 
 1. **What problem will the agent solve?** Core purpose, capabilities, who calls it.
-2. **External APIs or data sources?** Which product API operations the agent may call, and with
-   what credential. Any product API access is declared in `product-policy.yaml` (see
-   `/graph-agents-cli-langgraph-code`); the agent never gets a generic "call any endpoint" tool.
+2. **External APIs or data sources?** Which API operations the agent may call, and with what
+   credential (none, a service token, or the caller's own). Every outbound API is declared in
+   `api-policy.yaml` (see `/graph-agents-cli-langgraph-code`); the agent never gets a generic
+   "call any endpoint" tool.
 3. **Safety constraints?** What the agent must NOT do; which tool calls need human approval
    (LangGraph interrupts); what may leave the network (model egress, traces).
 4. **Model provider?** `openai`, `anthropic`, `gemini`, or `openai-compatible` (on-network servers
@@ -132,16 +133,17 @@ access, sessions and roles, safety-critical) gets the full treatment in `referen
    context to that provider; the user must decide that explicitly.
 5. **Deployment preference?** Prototype first (recommended, `--prototype`, no deployment files) or
    Kubernetes from the start. If Kubernetes: runtime `fastapi` (default) or `langgraph-server`;
-   CD mode `skip`, `helm-push`, or `argocd`; registry; auth policy `shared-bearer` or
-   `product-session`.
+   CD mode `skip`, `helm-push`, or `argocd`; registry; auth policy `shared-bearer`, `jwt` or
+   `custom`.
 
 **Ask based on context:**
 
 - Persistent conversations across restarts or replicas: `--checkpointer postgres` (the default
   for Kubernetes); local development uses `CHECKPOINTER=memory` from `.env` and needs no database.
-- Callers already have a product session (cookie or session token): `--auth-policy
-  product-session`; the template ships the interface and a stub that fails closed until the
-  project implements it.
+- Callers are individual users with an OIDC identity provider: `--auth-policy jwt` (per-user
+  principals from verified tokens). Callers already carry another credential (for example an
+  existing application's session cookie): `--auth-policy custom`; the template ships the
+  interface and a stub that fails closed until the project implements it.
 - Disconnected or air-gapped cluster: the **disconnected profile** (`openai-compatible` model and
   judge on-network, runtime `fastapi`, tracing off or OTLP in-cluster, `cd: skip` unless an
   on-network GitHub Enterprise Server exists). See `/graph-agents-cli-deploy`.
@@ -179,20 +181,19 @@ combinations, prototype semantics, and what `upgrade` never touches.
 4. Interactive testing: `graph-agents-cli playground` (the selected application with reload and
    the `/playground` dev page). `playground --graph` opens LangGraph Studio through `langgraph dev`;
    it bypasses the auth policy and the chat API, so use it for graph debugging only.
-5. `graph-agents-cli lint` runs ruff and the product-policy check: every module under
-   `app/tools/` declares a literal `PRODUCT_CALLS` (and `TOOLS`), which the CLI reads statically
-   with `ast` and checks against `product-policy.yaml` (and the OpenAPI spec when the policy
-   names one).
+5. `graph-agents-cli lint` runs ruff and the API-policy check: every module under
+   `app/tools/` declares a literal `API_CALLS` (and `TOOLS`), which the CLI reads statically
+   with `ast` and checks against `api-policy.yaml` (and the API's OpenAPI spec when it names one).
 
 Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
-their `PRODUCT_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
+their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
 (a LangGraph pattern; resume over `/chat` is not implemented in this milestone), subgraphs,
 `init_chat_model` provider switching, the deterministic `fake` provider for tests, the auth policy
-adapter, the product client, and telemetry.
+adapter, the API client, and telemetry.
 
 > **Smoke-test only here; do not write behavioural unit tests.** Model output is
 > non-deterministic; behavioural checks belong in eval (Phase 3), not in `pytest`. Unit tests may
-> cover tools, the product client, and policy code with the `fake` provider.
+> cover tools, the API client, and policy code with the `fake` provider.
 
 ## Phase 3: Evaluate
 
@@ -206,7 +207,7 @@ the expect checks, the judge metrics, the gate rule, and the exit codes.
 **Unit tests versus `graph-agents-cli eval`:**
 
 - **Unit tests** (`uv run pytest`) test code correctness: imports, tool functions, policy
-  enforcement, the product client, with the `fake` model provider. They never test whether the
+  enforcement, the API client, with the `fake` model provider. They never test whether the
   agent behaves well.
 - **`graph-agents-cli eval run`** tests agent behaviour: response content, tool trajectories,
   latency, tokens, and subjective quality through a model judge.
@@ -263,7 +264,7 @@ policy, hashed principal ids, and run records.
 | "The project has a process document, but a quick spec is faster" | The process owns the gates. A generic spec cannot stand in for the approvals it requires. |
 | "It answered correctly in `run`, so eval is unnecessary" | One prompt is not a test suite. The eval gate catches regressions, tool trajectory errors, and edge cases. |
 | "I'll switch to a newer/better model" | The provider and model were chosen deliberately and written to `.env` and the manifest. Changing them without being asked violates code preservation and is an egress decision the user owns. |
-| "I'll add a generic HTTP tool so the agent can call whatever it needs" | The product client is the only path to the product API and it enforces `product-policy.yaml`. A generic tool bypasses the policy and fails `lint`. |
+| "I'll add a generic HTTP tool so the agent can call whatever it needs" | `app_utils.api_client` is the only path to external APIs and it enforces `api-policy.yaml`. A generic tool bypasses the policy the team reviewed. |
 | "I'll `helm upgrade` / `kubectl apply` directly, it's quicker" | In `argocd` mode the cluster follows `main`; direct changes are drift that self-heal reverts, and they skip the production gate. |
 | "I can skip the scaffold and set up manually" | Manual setup misses the chat API, auth adapter, eval gate, chart, and workflows. Use `create` even for experiments (`--prototype`). |
 

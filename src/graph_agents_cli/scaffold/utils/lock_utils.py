@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bundled uv lock files for the ``langgraph`` template (DECISIONS.md Section 7 item 14).
+"""Bundled uv lock files for the ``langgraph`` template (one per runtime).
 
 The template ships one lock per runtime, ``uv-fastapi.lock`` and
 ``uv-langgraph-server.lock``; ``create`` renames the matching one to
@@ -66,8 +66,7 @@ def render_pyproject(
 ) -> str:
     """Render the template's ``pyproject.toml`` for ``runtime``.
 
-    Uses the same variables ``create`` passes to cookiecutter (CONTRACTS
-    section 3) with placeholder values, so the resolved lock matches a
+    Uses the same variables ``create`` passes to cookiecutter, with placeholder values, so the resolved lock matches a
     rendered project. ``overrides`` replace individual variables.
     """
     from .template import build_cookiecutter_context

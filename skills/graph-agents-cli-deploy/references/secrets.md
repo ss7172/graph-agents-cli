@@ -24,7 +24,7 @@ Scaffold default:
 | `DATABASE_URI`, `REDIS_URI` | runtime `langgraph-server` |
 | `API_KEY` | always (shared-bearer) |
 | `LANGSMITH_API_KEY` | always (used only when tracing is enabled) |
-| `PRODUCT_API_TOKEN` | when `product-policy.yaml` sets `auth: bearer` |
+| each `auth: bearer` API's `token_env` | when `api-policy.yaml` declares that API |
 
 Only these are exported from the env file, never the whole file. Edit the list in the manifest
 when the project adds a secret variable (for example a tool credential); `scaffold enhance`
@@ -86,7 +86,7 @@ can replace this procedure later.
 ## What is never a secret
 
 `MODEL_PROVIDER`, `MODEL_NAME`, `OPENAI_BASE_URL`, `CHECKPOINTER`, `AUTH_POLICY`,
-`AUTH_READ_ACROSS_ROLES`, `PRODUCT_API_BASE_URL`, `TRACING_ENABLED`, `TRACE_CAPTURE`,
+`AUTH_READ_ACROSS_ROLES`, each API's `base_url_env`, `TRACING_ENABLED`, `TRACE_CAPTURE`,
 `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `APP_ENV`, `PORT`: these
 live in `values-<env>.yaml` `env:`.
 

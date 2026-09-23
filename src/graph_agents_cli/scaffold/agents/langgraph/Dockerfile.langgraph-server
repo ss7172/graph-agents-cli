@@ -4,6 +4,9 @@
 # registry and change the FROM line accordingly.
 FROM langchain/langgraph-api:3.12
 
+# The whole project (minus .dockerignore) is the dependency, so api-policy.yaml,
+# the outbound API policy the API client enforces, is in the image when the
+# project has one.
 ADD . /deps/{{cookiecutter.project_name}}
 
 RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir -c /api/constraints.txt -e /deps/{{cookiecutter.project_name}}

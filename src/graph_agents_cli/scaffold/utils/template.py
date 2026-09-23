@@ -15,10 +15,10 @@
 
 """Template engine: four-layer cookiecutter rendering and conditional files.
 
-Layers (DECISIONS.md D4): ``base_templates/_shared`` -> ``base_templates/python``
--> ``deployment_targets/<target>/{_shared,python}`` -> ``agents/<name>`` overlay.
-Runtime-specific files are selected with ``CONDITIONAL_FILES`` and
-``select_runtime_files`` (CONTRACTS section 3), not with a fifth layer.
+Layers, later ones overwriting earlier ones: ``base_templates/_shared`` ->
+``base_templates/python`` -> ``deployment_targets/<target>/{_shared,python}``
+-> ``agents/<name>`` overlay. Runtime-specific files are selected with
+``CONDITIONAL_FILES`` and ``select_runtime_files``, not with a fifth layer.
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ from cookiecutter.main import cookiecutter
 from rich.prompt import Confirm, IntPrompt
 
 from graph_agents_cli import _defaults
+from graph_agents_cli._api_policy import POLICY_FILENAME as API_POLICY_FILENAME
+from graph_agents_cli._api_policy import ApiSummary, bearer_token_envs
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_AUTH_POLICY,
@@ -48,13 +50,14 @@ from graph_agents_cli._defaults import (
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_MODELS,
     PROVIDER_KEY_VARS,
+    auth_policy_implemented_default,
     default_secret_keys,
 )
 from graph_agents_cli._output import Console
 
 from .lock_utils import LOCK_FILENAMES, lock_filename, replace_lock_project_name
 from .remote_template import get_base_template_name
-from .version import agents_cli_version_pin, get_current_version
+from .version import cli_install_spec, get_current_version
 
 # Root of the scaffold package: agents/, base_templates/, deployment_targets/.
 # Module-level so tests can point the engine at a scratch tree.
@@ -62,7 +65,7 @@ SCAFFOLD_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 TEMPLATE_CONFIG_FILE = "templateconfig.yaml"
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
-PRODUCT_POLICY_FILENAME = "product-policy.yaml"
+EXAMPLE_API_TOOL = "{agent_directory}/tools/example_api.py"
 LANGGRAPH_SERVER_DOCKERFILE = "Dockerfile.langgraph-server"
 
 
@@ -144,20 +147,25 @@ AUTH_POLICIES: dict[str, dict[str, str]] = {
         "display_name": "shared-bearer",
         "description": "Authorization: Bearer <API_KEY>",
     },
-    "product-session": {
-        "display_name": "product-session",
-        "description": "Validate the product's session (stub until implemented)",
+    "jwt": {
+        "display_name": "jwt",
+        "description": "Per-user principals from a verified OIDC/JWT bearer token",
+    },
+    "custom": {
+        "display_name": "custom",
+        "description": "Your own policy in app/policies/custom.py (fail-closed stub until implemented)",
     },
 }
 assert tuple(AUTH_POLICIES) == _defaults.AUTH_POLICIES
 
 
 # =============================================================================
-# D6 combination table (runtime x checkpointer x target)
+# Combination table (runtime x checkpointer x target)
 # =============================================================================
 
-# (runtime, checkpointer, deployment_target) -> (valid, note)
-D6_COMBINATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {
+# (runtime, checkpointer, deployment_target) -> (valid, note). An in-memory
+# checkpointer is refused on kubernetes: replicas and restarts would lose state.
+COMBINATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {
     ("fastapi", "memory", "none"): (True, "local dev under uvicorn; state lost on restart"),
     ("fastapi", "memory", "kubernetes"): (
         False,
@@ -183,7 +191,7 @@ D6_COMBINATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {
 
 
 def default_checkpointer(deployment_target: str) -> str:
-    """Section 7 item 24: ``none`` defaults to memory, kubernetes to postgres."""
+    """``none`` (local only) defaults to memory, kubernetes to postgres."""
     return "postgres" if deployment_target == "kubernetes" else "memory"
 
 
@@ -193,9 +201,9 @@ def validate_combination(
     deployment_target: str,
     cd: str | None = None,
 ) -> None:
-    """Enforce the D6 table and the ``--cd`` rule; raise ValueError with the table reason."""
+    """Enforce the combination table and the ``--cd`` rule; raise ValueError with the reason."""
     key = (runtime, checkpointer, deployment_target)
-    entry = D6_COMBINATIONS.get(key)
+    entry = COMBINATIONS.get(key)
     if entry is None:
         raise ValueError(
             f"Unknown combination runtime={runtime} checkpointer={checkpointer} "
@@ -206,7 +214,8 @@ def validate_combination(
         raise ValueError(
             f"Invalid combination: runtime={runtime} checkpointer={checkpointer} "
             f"deployment_target={deployment_target} ({note}).\n"
-            "  See the runtime x checkpointer x target table in DECISIONS.md D6."
+            "  Valid: fastapi or langgraph-server with postgres on kubernetes; any "
+            "checkpointer with --deployment-target none."
         )
     if cd is not None and cd != "skip" and deployment_target != "kubernetes":
         raise ValueError(
@@ -216,12 +225,12 @@ def validate_combination(
 
 
 # =============================================================================
-# Conditional files (CONTRACTS section 3)
+# Conditional files
 # =============================================================================
 # Maps a path in the rendered project to its inclusion condition. Paths that
 # fail their condition are renamed to unused_* and removed afterwards.
 #
-# The config dict carries: deployment_target, runtime, cd, has_product_policy.
+# The config dict carries: deployment_target, runtime, cd, has_api_policy.
 # `deployment/argocd` is listed before `deployment` so its own rule is applied
 # even when the whole directory is kept.
 
@@ -231,7 +240,8 @@ CONDITIONAL_FILES: dict[str, Any] = {
     ".github/CODEOWNERS": lambda c: c.get("cd", "skip") != "skip",
     "deployment/argocd": lambda c: c.get("cd") == "argocd",
     "deployment": lambda c: c.get("deployment_target") == "kubernetes",
-    PRODUCT_POLICY_FILENAME: lambda c: bool(c.get("has_product_policy", False)),
+    API_POLICY_FILENAME: lambda c: bool(c.get("has_api_policy", False)),
+    EXAMPLE_API_TOOL: lambda c: bool(c.get("has_api_policy", False)),
 }
 
 
@@ -244,7 +254,7 @@ def apply_conditional_files(
 
     Args:
         project_path: Path to the generated project directory
-        config: dict with deployment_target, runtime, cd, has_product_policy
+        config: dict with deployment_target, runtime, cd, has_api_policy
         agent_directory: replaces the ``{agent_directory}`` placeholder in paths
     """
     for rel_path_template, condition_fn in CONDITIONAL_FILES.items():
@@ -287,7 +297,7 @@ def _remove_unused_paths(project_path: pathlib.Path) -> None:
 
 
 def select_runtime_files(project_path: pathlib.Path, runtime: str, project_name: str) -> None:
-    """Pick the runtime's Dockerfile and bundled lock (CONTRACTS section 3).
+    """Pick the runtime's Dockerfile and bundled lock.
 
     The template ships ``Dockerfile`` (fastapi) and ``Dockerfile.langgraph-server``;
     under ``langgraph-server`` the latter replaces the former, otherwise it is
@@ -454,7 +464,7 @@ def validate_agent_directory_name(
     Args:
         agent_dir: The agent directory name to validate
         allow_dot: If True, allows "." as a special value indicating flat structure
-        language: Kept for call compatibility; only ``python`` exists (D3)
+        language: Kept for call compatibility; only ``python`` exists
 
     Raises:
         ValueError: If the agent directory name is not valid
@@ -585,7 +595,7 @@ def load_template_config(template_dir: pathlib.Path) -> dict[str, Any]:
 
 
 def get_agent_language(agent_name: str, remote_config: dict[str, Any] | None = None) -> str:
-    """The template language: always ``python`` (D3); anything else is refused."""
+    """The template language: always ``python``; anything else is refused."""
     if remote_config:
         config = remote_config
     else:
@@ -714,7 +724,7 @@ def prompt_auth_policy(default_value: str | None = None) -> str:
 
 
 # =============================================================================
-# Cookiecutter context (CONTRACTS section 3)
+# Cookiecutter context
 # =============================================================================
 
 COPY_WITHOUT_RENDER: list[str] = [
@@ -743,29 +753,31 @@ def build_cookiecutter_context(
     registry: str = "",
     cd: str = DEFAULT_CD,
     auth_policy: str = DEFAULT_AUTH_POLICY,
-    has_product_policy: bool = False,
+    has_api_policy: bool = False,
+    apis: tuple[ApiSummary, ...] | list[ApiSummary] = (),
     process: str | None = None,
     agent_guidance_filename: str = DEFAULT_AGENT_GUIDANCE_FILENAME,
     agent_directory: str = "app",
     template_config: dict[str, Any] | None = None,
     recorded_base_template: str | None = None,
     generated_at: str | None = None,
-    product_token_env: str | None = None,
     auth_policy_implemented: bool | None = None,
 ) -> dict[str, Any]:
-    """The variables every template may use, exactly as CONTRACTS section 3 lists them.
+    """The variables every template may use.
 
     List-valued variables are wrapped in a one-element list because cookiecutter
-    treats a bare list as a choice and would keep only its first item.
-    ``product_token_env`` (the bearer token variable of the product policy) joins
-    ``secret_keys``; ``auth_policy_implemented`` is derived from ``auth_policy``
-    unless a recorded value is passed (an in-folder re-render keeps the
-    developer's flip).
+    treats a bare list as a choice and would keep only its first item. ``apis``
+    summarises the declared APIs of ``api-policy.yaml`` (name, base_url_env,
+    auth, token_env; the first one drives the example tool) and every
+    ``auth: bearer`` API's ``token_env`` joins ``secret_keys``.
+    ``auth_policy_implemented`` is derived from ``auth_policy`` unless a
+    recorded value is passed (an in-folder re-render keeps the developer's flip).
     """
     settings = (template_config or {}).get("settings", {})
     tags = settings.get("tags", []) or []
     model = model or DEFAULT_MODELS.get(model_provider, "")
     checkpointer = checkpointer or default_checkpointer(deployment_target)
+    api_summaries = list(apis) if has_api_policy else []
     return {
         "project_name": project_name,
         "agent_name": agent_name,
@@ -782,19 +794,21 @@ def build_cookiecutter_context(
         "registry": registry or "",
         "cd": cd,
         "auth_policy": auth_policy,
-        # Not in the contract list; provided so the manifest template need not
-        # derive it (Section 7 item 11).
+        # Provided so the manifest template need not derive it.
         "auth_policy_implemented": (
-            auth_policy != "product-session"
+            auth_policy_implemented_default(auth_policy)
             if auth_policy_implemented is None
             else bool(auth_policy_implemented)
         ),
         "agent_guidance_filename": agent_guidance_filename,
         "process": process or "",
-        "has_product_policy": bool(has_product_policy),
-        "secret_keys": [default_secret_keys(model_provider, runtime, product_token_env)],
+        "has_api_policy": bool(has_api_policy),
+        "apis": [[summary.as_context() for summary in api_summaries]],
+        "secret_keys": [
+            default_secret_keys(model_provider, runtime, bearer_token_envs(api_summaries))
+        ],
         "default_judge_model": model,
-        "cli_version_pin": agents_cli_version_pin(),
+        "cli_install_spec": cli_install_spec(),
         "tags": [list(tags)],
         "settings": settings,
         "recorded_base_template": recorded_base_template or agent_name,
@@ -851,7 +865,8 @@ def process_template(
     registry: str = "",
     cd: str = DEFAULT_CD,
     auth_policy: str = DEFAULT_AUTH_POLICY,
-    has_product_policy: bool = False,
+    has_api_policy: bool = False,
+    apis: tuple[ApiSummary, ...] | list[ApiSummary] = (),
     process: str | None = None,
     output_dir: pathlib.Path | None = None,
     remote_template_path: pathlib.Path | None = None,
@@ -862,7 +877,6 @@ def process_template(
     remote_spec: Any | None = None,
     recorded_base_template: str | None = None,
     agent_guidance_filename: str = DEFAULT_AGENT_GUIDANCE_FILENAME,
-    product_token_env: str | None = None,
     auth_policy_implemented: bool | None = None,
 ) -> pathlib.Path:
     """Render the template layers into a new project and return its path.
@@ -874,7 +888,8 @@ def process_template(
         deployment_target: ``kubernetes`` or ``none``
         runtime, model_provider, model, checkpointer, registry, cd, auth_policy:
             the create parameters (validated by the caller)
-        has_product_policy: keep ``product-policy.yaml``
+        has_api_policy: keep ``api-policy.yaml`` and the example API tool
+        apis: the APIs the policy declares (see ``build_cookiecutter_context``)
         process: governing process document (path or string), recorded verbatim
         output_dir: Optional output directory path, defaults to current directory
         remote_template_path: Optional path to remote template for overlay
@@ -888,7 +903,6 @@ def process_template(
         remote_spec: the parsed remote spec, when any (unused, kept for callers)
         recorded_base_template: what the manifest records as base_template
         agent_guidance_filename: name of the root guidance file
-        product_token_env: bearer token variable of the product policy (joins secret_keys)
         auth_policy_implemented: recorded flag to keep on an in-folder re-render (None derives it)
     """
     logging.debug("Processing template from %s", template_dir)
@@ -1026,13 +1040,13 @@ def process_template(
                 registry=registry,
                 cd=cd,
                 auth_policy=auth_policy,
-                has_product_policy=has_product_policy,
+                has_api_policy=has_api_policy,
+                apis=apis,
                 process=process,
                 agent_guidance_filename=agent_guidance_filename,
                 agent_directory=agent_directory,
                 template_config=template_config,
                 recorded_base_template=recorded_base_template,
-                product_token_env=product_token_env,
                 auth_policy_implemented=auth_policy_implemented,
             )
             with open(
@@ -1114,7 +1128,7 @@ def process_template(
                 "deployment_target": deployment_target,
                 "runtime": runtime,
                 "cd": cd,
-                "has_product_policy": has_product_policy,
+                "has_api_policy": has_api_policy,
             }
             apply_conditional_files(final_destination, conditional_config, agent_directory)
             _remove_unused_paths(final_destination)

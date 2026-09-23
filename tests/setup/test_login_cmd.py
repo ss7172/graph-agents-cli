@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for `graph-agents-cli login` (D19 preflight, D25 disconnected profile)."""
+"""Tests for `graph-agents-cli login` (preflight, disconnected profile)."""
 
 from __future__ import annotations
 
@@ -141,7 +141,7 @@ def test_manifest_provider_is_the_fallback(runner, project, kubectl, monkeypatch
 
 
 def test_env_provider_wins_over_manifest(runner, project, kubectl, monkeypatch):
-    # MODEL_PROVIDER is what the app reads at runtime (CONTRACTS section 4); the
+    # MODEL_PROVIDER is what the app reads at runtime; the
     # manifest only records the scaffold-time choice.
     write_manifest(project, model_provider="gemini")
     monkeypatch.setenv("MODEL_PROVIDER", "openai")
@@ -502,7 +502,7 @@ def test_write_env_keeps_existing_api_key(runner, project, kubectl, monkeypatch)
 
 @pytest.mark.parametrize(
     ("manifest_policy", "env_policy"),
-    [("product-session", ""), ("shared-bearer", "product-session")],
+    [("custom", ""), ("jwt", ""), ("shared-bearer", "custom"), ("product-session", "")],
 )
 def test_write_env_no_api_key_without_shared_bearer(
     runner, project, kubectl, monkeypatch, manifest_policy, env_policy

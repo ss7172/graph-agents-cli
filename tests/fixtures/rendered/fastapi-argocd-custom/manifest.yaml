@@ -1,4 +1,4 @@
-# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Project manifest written by `graph-agents-cli create`.
 # Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
 name: 'p3-argocd'
 cli_version: '0.1.0'
@@ -14,10 +14,10 @@ create_params:
   checkpointer: 'postgres'
   registry: 'ghcr.io/e2e'
   cd: 'argocd'
-  auth_policy: 'product-session'
-  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
+  auth_policy: 'custom'
+  # false while the custom auth policy stub is in place; deploy --env staging|prod refuses until true
   auth_policy_implemented: false
-  agent_guidance_filename: 'GEMINI.md'
+  agent_guidance_filename: 'AGENTS.md'
 environments:
   dev: { context: "", namespace: p3-argocd-dev }
   staging: { context: "", namespace: p3-argocd-staging }

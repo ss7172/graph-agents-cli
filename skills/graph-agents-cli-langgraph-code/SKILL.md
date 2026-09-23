@@ -5,12 +5,12 @@ description: >
   "build an agent with LangGraph", "add a tool", "add a node to the graph",
   "use a checkpointer", "stream events", "add human-in-the-loop",
   "add a subgraph", "switch the model provider", "implement the auth policy",
-  "call the product API from a tool", or needs LangGraph and LangChain
+  "call an external API from a tool", or needs LangGraph and LangChain
   patterns for a graph-agents-cli project. Covers create_agent and
-  StateGraph, tools with the PRODUCT_CALLS declaration, memory vs postgres
+  StateGraph, tools with the API_CALLS declaration, memory vs postgres
   checkpointers and thread_id, streaming, interrupts, subgraphs,
   init_chat_model provider switching, the fake provider for tests, the auth
-  policy adapter, the product client and product-policy.yaml, and telemetry
+  policy adapter, the API client and api-policy.yaml, and telemetry
   opt-in. Do NOT use for scaffolding (graph-agents-cli-scaffold), evaluation
   (graph-agents-cli-eval), or deployment (graph-agents-cli-deploy).
 metadata:
@@ -20,25 +20,25 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # LangGraph and LangChain patterns for graph-agents-cli projects
 
 > **Prerequisite:** a scaffolded project (`graph-agents-cli info` succeeds). If not, load
 > `/graph-agents-cli-scaffold` first. The template wires the chat API, the auth policy, the
-> checkpointer binding, the product client, and telemetry; you write the graph and the tools.
+> checkpointer binding, the API client, and telemetry; you write the graph and the tools.
 
 ## What you edit and what you leave alone
 
 | Path | Category | Rule |
 |---|---|---|
 | `app/agent.py` | agent code | yours; exports `graph`, an unbound compiled `StateGraph` |
-| `app/tools/**` | agent code | yours; one module per tool or tool group, each with `PRODUCT_CALLS` |
-| `app/policies/**` | agent code | yours; `AuthPolicy` implementations (`product_session.py` ships as a fail-closed stub) |
+| `app/tools/**` | agent code | yours; one module per tool or tool group, each with `API_CALLS` |
+| `app/policies/**` | agent code | yours; `AuthPolicy` implementations (`custom.py` ships as a fail-closed stub) |
 | `app/prompts/**`, `app/graph/**` | agent code (reserved) | yours to create; `upgrade` never touches them |
 | `app/fast_api_app.py`, `app/app_utils/**`, `Dockerfile`, `langgraph.json`, workflows, chart templates | scaffolding | template-owned; 3-way merged on upgrade; change only when the user asks and expect merge conflicts later |
-| `.env`, `.env.*`, `product-policy.yaml`, `values-*.yaml`, `tests/eval/**` | config | yours; never overwritten by upgrade; never commit `.env` |
+| `.env`, `.env.*`, `api-policy.yaml`, `values-*.yaml`, `tests/eval/**` | config | yours; never overwritten by upgrade; never commit `.env` |
 
 **Never change the model in code.** `app/app_utils/model.py` builds the model from
 `MODEL_PROVIDER` and `MODEL_NAME` through `init_chat_model`; the agent code calls `get_model()`.
@@ -47,7 +47,7 @@ metadata:
 
 | File | Contents |
 |---|---|
-| `references/template-contract.md` | File layout, env contract, chat SSE API, auth policy interface, product client, exactly as the template implements them |
+| `references/template-contract.md` | File layout, env contract, chat SSE API, auth policy interface, API client, exactly as the template implements them |
 | `references/langgraph.md` | `create_agent`, `StateGraph`/`MessagesState`, tools, checkpointers and `thread_id`, streaming, interrupts (not wired to `/chat` in this milestone), subgraphs, testing with the `fake` provider |
 | `references/langchain-models.md` | `init_chat_model` provider switching, provider env variables, tool-capable open models, the judge configuration |
 
@@ -84,40 +84,44 @@ Rules:
   human-approval step, or subgraphs. `references/langgraph.md` has the pattern; keep the same
   export and stay unbound.
 
-## 2. Tools and the `PRODUCT_CALLS` declaration
+## 2. Tools and the `API_CALLS` declaration
 
 Tools are plain functions decorated with `@tool` (or a docstring-typed function; `create_agent`
-accepts both). A tool that reaches the product API **must** go through `ProductClient` and
-**must** declare its calls at module level so `lint` can check them against `product-policy.yaml`:
+accepts both). A tool that calls an external API **must** go through
+`app_utils.api_client.get_client("<api>")` and **must** declare its calls at module level so
+`lint` can check them against `api-policy.yaml`:
 
 ```python
 # app/tools/incidents.py
 import json
+from typing import Any
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
-from app.app_utils.product_client import get_product_client
+from app.app_utils.api_client import get_client
 
 # Static declaration read by `graph-agents-cli lint` (the CLI parses this literal with `ast`;
-# the module is never imported by lint). Use [] when the module calls no product API.
-PRODUCT_CALLS: list[dict[str, str]] = [
-    {"method": "GET", "operation_id": "getIncident"},
-    {"method": "GET", "path": "/sites/{siteId}/incidents"},
+# the module is never imported by lint). Use [] when the module calls no external API.
+API_CALLS: list[dict[str, str]] = [
+    {"api": "incidents", "method": "GET", "operation_id": "getIncident",
+     "path": "/incidents/{incident_id}"},
 ]
 
 
 @tool
-async def get_incident(incident_id: str) -> str:
-    """Return the incident record for INCIDENT_ID from the product API."""
-    client = get_product_client()
+async def get_incident(incident_id: str, runtime: ToolRuntime) -> str:
+    """Return the incident record for INCIDENT_ID."""
+    context: Any = getattr(runtime, "context", None)  # the caller, for auth: forward
+    client = get_client("incidents", context=context)
     # Pass the declared template plus path_params: the client encodes the value as one
     # segment and refuses `.`/`..`/slashes, so model input cannot reach another endpoint.
     # Never f-string user or model input into `path`.
-    # PolicyViolation propagates: agent.py's middleware turns it into a tool error the model reads.
-    data = await client.request(
-        "GET",
+    # ApiPolicyError / ApiCallError propagate: agent.py's middleware turns them into a
+    # tool error the model reads.
+    data = await client.get(
+        "/incidents/{incident_id}",
         operation_id="getIncident",
-        path="/incidents/{incident_id}",
         path_params={"incident_id": incident_id},
     )
     return data if isinstance(data, str) else json.dumps(data)
@@ -126,37 +130,42 @@ async def get_incident(incident_id: str) -> str:
 TOOLS = [get_incident]
 ```
 
-The convention, as the template implements it (`app/tools/weather.py`, `app/tools/product_lookup.py`):
+The convention, as the template implements it (`app/tools/weather.py`, and `app/tools/example_api.py`
+when the project declares an API policy):
 
 - **Every** module under `app/tools/` (except `__init__.py`) declares two module-level names:
-  `PRODUCT_CALLS`, a **literal** list of `{"method": ..., "operation_id": ...}` or
-  `{"method": ..., "path": ...}` dicts (`[]` when it calls no product API; an annotated
-  assignment `PRODUCT_CALLS: list[...] = [...]` is fine), and `TOOLS`, the list of tool objects
-  it contributes. `app/tools/__init__.py` collects `TOOLS` from every module and warns about a
-  module without `PRODUCT_CALLS`.
+  `API_CALLS`, a **literal** list of `{"api", "method", "operation_id", "path"}` dicts (`api`
+  and `method` required, plus `operation_id` and/or `path`; `[]` when it calls no external API;
+  an annotated assignment `API_CALLS: list[...] = [...]` is fine), and `TOOLS`, the list of tool
+  objects it contributes. `app/tools/__init__.py` collects `TOOLS` from every module and warns
+  about a module without `API_CALLS`.
 - `graph-agents-cli lint` runs the CLI's own checker (`dev/policy_check.py`), which reads
-  `PRODUCT_CALLS` **statically with `ast`** (no import, no model SDK loaded) and checks each entry
-  against `product-policy.yaml` (`allowed_methods`, `allowed_operations`, `denied_operations`)
-  and, when the policy names an `openapi:` spec, against that spec (by `operationId`, or by
-  `path` + `method`). A computed (non-literal) `PRODUCT_CALLS` is reported as invalid. The
-  template additionally exposes `app_utils.product_client.check_tool_declarations()`, an
-  import-based check its own unit tests use; `lint` does not run it.
-- `client.request(method, operation_id=None, path=None, path_params=None, **kw)` refuses, before
-  sending, any method or operation outside the policy and raises `PolicyViolation`. Policy `path`
-  entries are templates (`{param}` matches one segment, for `lint` and the client alike; a rule
-  pinning both `operationId` and `path` needs both). Pass `path` as the declared template and the
-  values in `path_params`; a concrete path is validated (no dot segments, encoded slashes, empty
-  segments, query or fragment). Let it propagate: the
-  scaffolded `agent.py` middleware turns it into a `ToolMessage(status="error")` the model can
-  read; never swallow it silently.
-- The client forwards the caller's session cookie (`auth: forwarded-session`) or
-  `PRODUCT_API_TOKEN` (`auth: bearer`) per the policy; tools never handle credentials.
-- No generic "call any URL" tool. If a tool needs a new operation, add it to `PRODUCT_CALLS` **and**
-  ask the product owner to allow it in `product-policy.yaml`; the policy file is theirs.
-- Without a `product-policy.yaml` the client is unrestricted and logs one warning at startup;
-  `lint` then reports every declared call as allowed.
-- Unit-test tools with `respx` against `PRODUCT_API_BASE_URL` and the `fake` model; never with a
-  live product.
+  `API_CALLS` **statically with `ast`** (no import, no model SDK loaded), validates
+  `api-policy.yaml` with the same strict schema the runtime uses, and checks each entry against
+  the named API (`allowed_methods`, `allowed_operations`, `denied_operations`) and, when the API
+  names an `openapi:` spec, against that spec (by `operationId`, or by `path` + `method`). A
+  computed (non-literal) `API_CALLS` is invalid, and a leftover `PRODUCT_CALLS` is an error with
+  a rename hint.
+- `get_client(name)` fails closed: no `api-policy.yaml`, an invalid one, or an undeclared API
+  raises `ApiPolicyError`. `client.request(method, path, operation_id=None, path_params=None,
+  params=None, json_body=None, headers=None)` (and `client.get(...)`) refuses, before sending,
+  any method or operation outside the policy with `ApiPolicyError`. Policy `path` entries are
+  templates (`{param}` matches one segment, for `lint` and the client alike); an entry pinning
+  both `operationId` and `path` needs both to match; denials win. Pass `path` as the declared
+  template and the values in `path_params`; a concrete path is validated (no dot segments,
+  encoded slashes, empty segments, query or fragment). A base URL with a path prefix works (the
+  path is joined under it), `pagination.max_page_size` is enforced, redirects are never followed.
+  Let the errors propagate: the scaffolded `agent.py` middleware turns them into a
+  `ToolMessage(status="error")` the model can read; never swallow them silently.
+- Credentials come from the policy, never from the tool: `auth: bearer` sends the API's
+  `token_env`; `auth: forward` sends the calling principal's own
+  `attributes["credentials"][<api>]` (set by the auth policy) in `forward_header`
+  (`Authorization` by default), and refuses to send when the caller has none; `auth: none`
+  sends nothing. `forward` is refused under `langgraph-server` (the server persists run context).
+- No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS` **and**
+  ask the owner of `api-policy.yaml` to allow it; the policy is a reviewed security boundary.
+- Unit-test tools with an `httpx.MockTransport` passed as `get_client(..., transport=...)` (or
+  `respx`) and the `fake` model; never against a live API.
 
 ## 3. Checkpointers, threads, and run records
 
@@ -170,14 +179,14 @@ The convention, as the template implements it (`app/tools/weather.py`, `app/tool
 - Continuity is the `thread_id` in the `/chat` request (`config={"configurable": {"thread_id": ...}}`
   inside the app). A missing `thread_id` starts a new thread; the response's `message.start` and
   `message.end` events carry the id back.
-- Under `product-session`, thread ownership is enforced in-app under both runtimes (`threads`
+- Under a per-user policy (`jwt` or `custom`), thread ownership is enforced in-app under both runtimes (`threads`
   side table under `fastapi`; the thread metadata the app writes at creation under
   `langgraph-server`, because the SDK loopback bypasses the server's own auth filters); a thread
   id alone never crosses a principal boundary. Roles in `AUTH_READ_ACROSS_ROLES` may read other
   principals' threads (without tool arguments under `TRACE_CAPTURE=metadata`) but never continue
   or delete them.
 - The agent's database is agent-owned: its own credentials and migrations. Never connect the
-  graph to the product's operational database.
+  graph to another application's operational database.
 
 ## 4. Streaming
 
@@ -256,12 +265,16 @@ maximum.
 `app/app_utils/auth.py` defines `Principal` and the `AuthPolicy` protocol
 (`authenticate(request) -> Principal`, `authorize(principal, action, resource)`), and
 `get_policy()` selects the implementation from `AUTH_POLICY`. `SharedBearerPolicy` (default)
-checks `Authorization: Bearer <API_KEY>` and returns `Principal(id="shared")`.
-`ProductSessionPolicy` in `app/policies/product_session.py` fails closed with an
+checks `Authorization: Bearer <API_KEY>` and returns `Principal(id="shared")`. `JwtPolicy`
+(`AUTH_POLICY=jwt`) gives each user a principal from a verified OIDC/JWT bearer token
+(`AUTH_JWT_*` settings). `CustomPolicy` in `app/policies/custom.py` fails closed with an
 `HTTPException(503)` whose `detail` carries the implementation instructions (`require()` also
-maps a `NotImplementedError` to 503) until you implement it: validate the forwarded cookie or `X-Session-Token` through
-`ProductClient` (that call must itself be allowed by the policy), load roles and permissions on
-every request, enforce thread ownership, honour `AUTH_READ_ACROSS_ROLES`. Then set
+maps a `NotImplementedError` to 503) until you implement it: validate whatever credential your
+callers carry (for example an existing application's session cookie), load roles and
+permissions on every request, honour `AUTH_READ_ACROSS_ROLES`. To let tools call an
+`auth: forward` API with the caller's own credential, put it in
+`attributes["credentials"][<api>]`; it is the only attribute that may hold a secret
+(`Principal.public_attributes()` is what may be persisted, logged or traced). Then set
 `auth_policy_implemented: true` in the manifest; `deploy --env staging|prod` refuses until you do.
 The same policy object is applied as ASGI middleware under `fastapi` and as the server auth
 handler under `langgraph-server` (`langgraph.json` `auth`).
@@ -283,13 +296,13 @@ and results. Do not add ad-hoc exporters or `print` prompts in nodes. See
 |---|---|
 | `create_agent(..., checkpointer=InMemorySaver())` in `agent.py` | remove it; the app binds the checkpointer per `CHECKPOINTER` |
 | `ChatOpenAI(model="...")` or a hard-coded model in `agent.py` | `get_model()`; the model is `.env` configuration |
-| `httpx.get(f"{base}/anything")` inside a tool | `ProductClient().request(...)` with a `PRODUCT_CALLS` entry |
-| Tool module without a literal `PRODUCT_CALLS` (or `TOOLS`) | `lint` flags it; add the declaration (`[]` when it calls no product API) |
-| `PRODUCT_CALLS` built at runtime (comprehension, function call) | `lint` reads it with `ast` and reports it invalid; write the literal list |
+| `httpx.get(f"{base}/anything")` inside a tool | `get_client("<api>").request(...)` with an `API_CALLS` entry |
+| Tool module without a literal `API_CALLS` (or `TOOLS`) | add the declaration (`[]` when it calls no external API) |
+| `API_CALLS` built at runtime (comprehension, function call) | `lint` reads it with `ast` and reports it invalid; write the literal list |
 | `interrupt()` in the served graph expecting the client to resume | not wired to `/chat` in this milestone; see section 5 |
-| Catching `PolicyViolation` and returning `""` | return the refusal text so the model can adapt |
+| Catching `ApiPolicyError` and returning `""` | return the refusal text so the model can adapt |
 | `pytest` asserting on model wording | move it to an eval case |
-| Editing `fast_api_app.py` to add a route the product wants | ask first; it is scaffolding and will conflict on upgrade; prefer a tool or a node |
+| Editing `fast_api_app.py` to add a route | ask first; it is scaffolding and will conflict on upgrade; prefer a tool or a node |
 
 ## Not covered by this skill
 
@@ -304,4 +317,4 @@ and results. Do not add ad-hoc exporters or `print` prompts in nodes. See
 
 This skill replaces the ADK code skill of google-agents-cli. ADK `Agent`/`App`, callbacks, session
 state, and the Vertex AI model wiring have no equivalent here; the LangGraph graph, tools with
-`PRODUCT_CALLS`, the checkpointer, and `init_chat_model` take their place.
+`API_CALLS`, the checkpointer, and `init_chat_model` take their place.

@@ -16,7 +16,7 @@
 # On every push to main: build and push the image tagged with the SHORT commit
 # SHA (${GITHUB_SHA::7}, the same value `git rev-parse --short HEAD` gives a
 # workstation `graph-agents-cli deploy --env <env>` in argocd mode), then land
-# it in staging according to CD in .github/agent.env (D12):
+# it in staging according to CD in .github/agent.env:
 #   argocd:    update values-staging.yaml image.tag and open a PR with auto-merge
 #   helm-push: run `graph-agents-cli deploy --env staging --image ...` on a
 #              self-hosted runner that holds the kubeconfig as a repository secret
@@ -47,7 +47,7 @@ jobs:
       tag: ${{ steps.settings.outputs.tag }}
       image: ${{ steps.settings.outputs.image }}
       chart_path: ${{ steps.settings.outputs.chart_path }}
-      cli_version_pin: ${{ steps.settings.outputs.cli_version_pin }}
+      graph_agents_cli_spec: ${{ steps.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
           echo "chart_path=${CHART_PATH}" >> "$GITHUB_OUTPUT"
-          echo "cli_version_pin=${CLI_VERSION_PIN}" >> "$GITHUB_OUTPUT"
+          echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}" >> "$GITHUB_OUTPUT"
           echo "REGISTRY_HOST=${IMAGE_REPOSITORY%%/*}" >> "$GITHUB_ENV"
           echo "IMAGE=${IMAGE_REPOSITORY}:${TAG}" >> "$GITHUB_ENV"
 
@@ -115,7 +115,7 @@ jobs:
       - name: Open the staging PR with auto-merge
         # Same branch name as a workstation `graph-agents-cli deploy --env staging`
         # (deploy/<env>/<short sha>). Requires branch protection on main to permit
-        # auto-merge for the token (ASSUMPTIONS item 21) and pr_checks to be green.
+        # auto-merge for the token and pr_checks to be green.
         # The branch is bot-owned and deterministic (same sha -> same content), so a
         # re-run replaces it: actions/checkout is a shallow clone with no
         # origin/<branch> ref, and a bare --force-with-lease is rejected ("stale
@@ -166,6 +166,6 @@ jobs:
         env:
           GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
           IMAGE: ${{ needs.build.outputs.image }}
-          CLI_VERSION_PIN: ${{ needs.build.outputs.cli_version_pin }}
+          GRAPH_AGENTS_CLI_SPEC: ${{ needs.build.outputs.graph_agents_cli_spec }}
         run: |
-          uvx "graph-agents-cli${CLI_VERSION_PIN}" deploy --env staging --image "$IMAGE"
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env staging --image "$IMAGE"

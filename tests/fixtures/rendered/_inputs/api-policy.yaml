@@ -1,0 +1,10 @@
+# Sample API policy used by scripts/regen_fixtures.py and the e2e tests:
+# read-only access to one API with a bearer token.
+apis:
+  example:
+    base_url_env: EXAMPLE_API_BASE_URL
+    auth: bearer
+    token_env: EXAMPLE_API_TOKEN
+    allowed_methods: [GET]
+    denied_operations: []
+    timeouts_ms: {connect: 2000, read: 5000}

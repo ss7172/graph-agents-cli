@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Regenerate the rendered-project snapshot fixtures (CONTRACTS section 12).
+"""Regenerate the rendered-project snapshot fixtures.
 
 For every combination in ``COMBINATIONS`` the real ``graph-agents-cli create``
 command renders the bundled template (``-y --skip-checks --skip-deps``, nothing
@@ -44,7 +44,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "rendered"
 INPUTS_DIR = FIXTURES_DIR / "_inputs"
-SAMPLE_POLICY = INPUTS_DIR / "product-policy.yaml"
+SAMPLE_POLICY = INPUTS_DIR / "api-policy.yaml"
 
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
 GENERATED_AT_PLACEHOLDER = "<generated_at>"
@@ -57,8 +57,9 @@ class Combination:
 
     project_name: str
     args: tuple[str, ...]
-    # Files the combination must contain / must not contain (CONTRACTS 2 and 3),
-    # checked by the snapshot test on top of the exact file-list comparison.
+    # Files the combination must contain / must not contain (the conditional
+    # files of the target, CD mode, runtime and API policy), checked by the
+    # snapshot test on top of the exact file-list comparison.
     expect_present: tuple[str, ...] = ()
     expect_absent: tuple[str, ...] = ()
     manifest: dict[str, object] = field(default_factory=dict)
@@ -78,7 +79,7 @@ COMBINATIONS: dict[str, Combination] = {
             "deployment",
             ".github/workflows/staging.yaml",
             ".github/CODEOWNERS",
-            "product-policy.yaml",
+            "api-policy.yaml",
             "uv-fastapi.lock",
             "uv-langgraph-server.lock",
             "Dockerfile.langgraph-server",
@@ -90,7 +91,7 @@ COMBINATIONS: dict[str, Combination] = {
             "cd": "skip",
             "registry": "",
             "environments": False,
-            "product_api": False,
+            "api_policy": False,
             "secret_keys": [
                 "OPENAI_API_KEY",
                 "JUDGE_API_KEY",
@@ -117,7 +118,7 @@ COMBINATIONS: dict[str, Combination] = {
             ".github/workflows/staging.yaml",
             ".github/workflows/promote-to-prod.yaml",
             ".github/CODEOWNERS",
-            "product-policy.yaml",
+            "api-policy.yaml",
         ),
         manifest={
             "deployment_target": "kubernetes",
@@ -126,11 +127,11 @@ COMBINATIONS: dict[str, Combination] = {
             "cd": "skip",
             "registry": "ghcr.io/e2e",
             "environments": True,
-            "product_api": False,
+            "api_policy": False,
         },
     ),
-    # 3. fastapi, cd argocd, postgres, kubernetes, --auth-policy product-session
-    "fastapi-argocd-product-session": Combination(
+    # 3. fastapi, cd argocd, postgres, kubernetes, --auth-policy custom
+    "fastapi-argocd-custom": Combination(
         "p3-argocd",
         (
             "--runtime",
@@ -142,7 +143,7 @@ COMBINATIONS: dict[str, Combination] = {
             "-d",
             "kubernetes",
             "--auth-policy",
-            "product-session",
+            "custom",
         ),
         expect_present=(
             "deployment/argocd/application-dev.yaml",
@@ -151,12 +152,12 @@ COMBINATIONS: dict[str, Combination] = {
             ".github/workflows/staging.yaml",
             ".github/workflows/promote-to-prod.yaml",
             ".github/CODEOWNERS",
-            "app/policies/product_session.py",
+            "app/policies/custom.py",
         ),
-        expect_absent=("product-policy.yaml",),
+        expect_absent=("api-policy.yaml", "app/tools/example_api.py"),
         manifest={
             "cd": "argocd",
-            "auth_policy": "product-session",
+            "auth_policy": "custom",
             "auth_policy_implemented": False,
             "environments": True,
         },
@@ -182,7 +183,7 @@ COMBINATIONS: dict[str, Combination] = {
             ".github/workflows/promote-to-prod.yaml",
             ".github/CODEOWNERS",
         ),
-        expect_absent=("deployment/argocd", "product-policy.yaml", "Dockerfile.langgraph-server"),
+        expect_absent=("deployment/argocd", "api-policy.yaml", "Dockerfile.langgraph-server"),
         manifest={
             "runtime": "langgraph-server",
             "cd": "helm-push",
@@ -197,7 +198,7 @@ COMBINATIONS: dict[str, Combination] = {
             ],
         },
     ),
-    # 5. fastapi, cd skip, kubernetes, --product-policy <sample> --process docs/process.md
+    # 5. fastapi, cd skip, kubernetes, --api-policy <sample> --process docs/process.md
     "fastapi-k8s-policy-process": Combination(
         "p5-policy",
         (
@@ -207,17 +208,31 @@ COMBINATIONS: dict[str, Combination] = {
             "skip",
             "-d",
             "kubernetes",
-            "--product-policy",
+            "--api-policy",
             str(SAMPLE_POLICY),
             "--process",
             "docs/process.md",
         ),
-        expect_present=("product-policy.yaml", "uv.lock"),
+        expect_present=("api-policy.yaml", "app/tools/example_api.py", "uv.lock"),
         expect_absent=("deployment/argocd", ".github/CODEOWNERS"),
         manifest={
-            "product_api": True,
+            "api_policy": True,
             "process": "docs/process.md",
             "environments": True,
+        },
+    ),
+    # 6. fastapi, cd skip, target none, --auth-policy jwt
+    "fastapi-none-jwt": Combination(
+        "p6-jwt",
+        ("--runtime", "fastapi", "-d", "none", "--auth-policy", "jwt"),
+        expect_present=("Dockerfile", ".github/agent.env", ".github/workflows/pr_checks.yaml"),
+        expect_absent=("deployment", "api-policy.yaml", "app/tools/example_api.py"),
+        manifest={
+            "deployment_target": "none",
+            "auth_policy": "jwt",
+            "auth_policy_implemented": True,
+            "environments": False,
+            "api_policy": False,
         },
     ),
 }

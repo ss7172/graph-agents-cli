@@ -15,9 +15,9 @@ The agent's purpose, who calls it, and how it works in two or three sentences.
 Concrete examples with expected inputs and outputs. These become the first eval cases.
 
 ## Tools Required
-Each tool with its purpose. For product API tools: the HTTP method and operationId (or path) it
-calls, and the credential (`forwarded-session`, `bearer`, or `none`). Every product operation
-listed here must be allowed by `product-policy.yaml`.
+Each tool with its purpose. For tools that call an external API: the API name, the HTTP method and
+operationId (or path) it calls, and the credential (`forward`, `bearer`, or `none`). Every
+operation listed here must be allowed by `api-policy.yaml`.
 
 ## Model and Egress
 Provider (`openai` | `anthropic` | `gemini` | `openai-compatible`) and model. State explicitly what
@@ -30,8 +30,9 @@ whether threads must survive restarts; whether any tool call requires a human-in
 interrupt.
 
 ## Authentication
-`shared-bearer` (internal tools, dev) or `product-session` (validates the product's own session and
-roles; conversation ownership enforced; read-across roles listed).
+`shared-bearer` (internal tools, dev), `jwt` (per-user OIDC tokens; conversation ownership
+enforced; read-across roles listed), or `custom` (the project's own policy, for example an existing
+application's session).
 
 ## Constraints and Safety Rules
 Specific rules, not generic statements: what the agent must never do, which operations are denied,

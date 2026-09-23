@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""graph-agents-cli infra commands — read-only prerequisite checks (D10)."""
+"""graph-agents-cli infra commands — read-only prerequisite checks (nothing is installed)."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ _STYLES = {
     "profile",
     type=click.Choice(_checks.PROFILES),
     default=None,
-    help="Also verify the named profile (D25).",
+    help="Also verify the named profile (disconnected: no hosted dependency).",
 )
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON.")
 def cmd_infra_check(env: str | None, profile: str | None, as_json: bool) -> None:

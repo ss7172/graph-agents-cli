@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The evaluation gate (DECISIONS.md D24): case statuses, quality rates, exit codes.
+"""The evaluation gate: case statuses, quality rates, exit codes.
 
 One rule: complete case accounting, every deterministic check and every
 mandatory judge metric must pass. Only judge metrics listed under

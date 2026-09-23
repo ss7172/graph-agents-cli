@@ -14,11 +14,11 @@
 
 """App-owned tables beside the checkpointer schema, and the run-record store.
 
-Run records follow the checkpointer (DECISIONS.md D8, ASSUMPTIONS item 22):
+Run records follow the checkpointer:
 durable rows in the agent's own Postgres under `CHECKPOINTER=postgres`
 (`CREATE TABLE IF NOT EXISTS` at startup, no retention job), an in-process
 dict under `CHECKPOINTER=memory`. They always hold the `metadata` capture set
-and hold request/response content only under `TRACE_CAPTURE=full` (D17).
+and hold request/response content only under `TRACE_CAPTURE=full`.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS threads_principal_id_idx ON threads (principal_id);
 
 
 def capture_full() -> bool:
-    """True when `TRACE_CAPTURE=full` (D17); the default is `metadata`."""
+    """True when `TRACE_CAPTURE=full`; the default is `metadata`."""
     return (os.environ.get("TRACE_CAPTURE") or "metadata").strip().lower() == "full"
 
 

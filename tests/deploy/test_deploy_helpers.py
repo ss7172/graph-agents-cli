@@ -228,12 +228,17 @@ def test_settings_defaults_when_optional_fields_missing(cfg_factory):
     del cfg.secrets
     del cfg.auth_policy_implemented
     cfg.create_params.pop("auth_policy_implemented")
-    cfg.create_params["auth_policy"] = "product-session"
-    cfg.auth_policy = "product-session"
+    cfg.create_params["auth_policy"] = "custom"
+    cfg.auth_policy = "custom"
     settings = DeploySettings.from_project(cfg)
     assert settings.target("staging").namespace == "my-agent-staging"
     assert settings.target("staging").context is None
+    assert settings.auth_policy == "custom"
     assert settings.auth_policy_implemented is False
+    # A retired name recorded before the rename still reads as the stub policy.
+    cfg.auth_policy = "product-session"
+    assert DeploySettings.from_project(cfg).auth_policy == "custom"
+    assert DeploySettings.from_project(cfg).auth_policy_implemented is False
     assert settings.secret_keys[0] == "OPENAI_API_KEY"
 
 

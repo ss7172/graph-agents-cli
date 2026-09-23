@@ -38,17 +38,18 @@ COMBOS: dict[str, Combo] = {
     "none": Combo(
         runtime="fastapi", cd="skip", deployment_target="none", checkpointer="memory", registry=""
     ),
-    "compat-product-session": Combo(
+    "compat-custom": Combo(
         runtime="fastapi",
         cd="helm-push",
         model_provider="openai-compatible",
-        auth_policy="product-session",
+        auth_policy="custom",
     ),
+    "jwt": Combo(runtime="fastapi", cd="skip", auth_policy="jwt"),
     "custom-dir": Combo(
         runtime="fastapi",
         cd="skip",
         agent_directory="my_agent",
-        has_product_policy=True,
+        has_api_policy=True,
         process="agentic-template/workflow.md",
     ),
 }

@@ -64,6 +64,7 @@ def fake_project(monkeypatch, tmp_path: Path) -> SimpleNamespace:
         checkpointer="memory",
         registry="ghcr.io/acme",
         language="python",
+        api_policy_file=None,
     )
     from graph_agents_cli.dev import cmd_build, cmd_install, cmd_lint, cmd_playground
 

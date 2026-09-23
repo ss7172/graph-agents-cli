@@ -5,7 +5,7 @@ Bundled templates that `graph-agents-cli create --agent <name>` renders on top o
 
 | Template | Purpose |
 |---|---|
-| `langgraph` | The LangGraph agent: `app/agent.py` exports `graph`, `app/fast_api_app.py` exports `app` (chat SSE API, A2A, health, dev playground), auth policy adapter, product-API client, tests, evals, two runtime locks, both Dockerfiles. Targets: `kubernetes`, `none`. |
+| `langgraph` | The LangGraph agent: `app/agent.py` exports `graph`, `app/fast_api_app.py` exports `app` (chat SSE API, A2A, health, dev playground), auth policy adapter (shared-bearer, jwt, custom), policy-enforcing API client (`api-policy.yaml`), tests, evals, two runtime locks, both Dockerfiles. Targets: `kubernetes`, `none`. |
 | `empty_py` | Hidden, framework-neutral base a framework template builds on. Ships no agent, dependencies or lock. |
 
 Layering (see `utils/template.py`): `base_templates/_shared` -> `base_templates/python`

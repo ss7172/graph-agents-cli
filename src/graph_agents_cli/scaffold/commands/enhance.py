@@ -28,16 +28,19 @@ import click
 from packaging import version as pkg_version
 from rich.prompt import IntPrompt, Prompt
 
+from graph_agents_cli import _api_policy
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_REGISTRY_HOST,
     DEFAULT_REGISTRY_PLACEHOLDER,
+    normalize_auth_policy,
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import (
-    PRODUCT_POLICY_FILENAME,
+    API_POLICY_FILENAME,
     ProjectConfig,
     find_project_config,
+    find_project_root,
 )
 from graph_agents_cli._runner import run_resolved
 from graph_agents_cli._tools import ToolNotFoundError, require_tool
@@ -53,7 +56,7 @@ from ..utils.language import (
     validate_agent_file,
 )
 from ..utils.logging import display_welcome_banner
-from ..utils.manifest import CreateParams, bearer_token_env, finalize_manifest
+from ..utils.manifest import CreateParams, finalize_manifest
 from ..utils.merge import run_three_way_merge
 from ..utils.template import (
     default_checkpointer,
@@ -69,7 +72,7 @@ from ..utils.template import (
     validate_combination,
 )
 from ..utils.upgrade import update_cli_metadata
-from ..utils.version import get_current_version
+from ..utils.version import get_current_version, install_spec
 from .create import _git_origin_owner, create
 
 console = Console()
@@ -109,15 +112,19 @@ def build_args_from_config(
     project_config: ProjectConfig,
     auto_approve: bool = False,
     cli_overrides: dict[str, Any] | None = None,
+    cli_version: str | None = None,
 ) -> list[str]:
-    """Build the ``scaffold enhance`` argv that replays the saved config plus overrides."""
+    """Build the ``scaffold enhance`` argv that replays the saved config plus overrides.
+
+    ``cli_version`` is the CLI that will run the argv when it is not this one.
+    """
     # --skip-deps: dependencies were installed on first run; --skip-welcome: one banner
     args = ["scaffold", "enhance", "--skip-deps", "--skip-welcome"]
 
     if auto_approve:
         args.append("--auto-approve")
 
-    args.extend(metadata_to_cli_args(project_config, for_enhance=True))
+    args.extend(metadata_to_cli_args(project_config, for_enhance=True, cli_version=cli_version))
 
     if cli_overrides:
         for arg_name, value in cli_overrides.items():
@@ -131,8 +138,8 @@ def build_args_from_config(
         new_target = cli_overrides.get("deployment_target")
         if new_target and new_target != project_config.deployment_target:
             # A target change re-derives the checkpointer, cd and registry
-            # (Section 7 item 24) unless the caller pinned them; replaying the
-            # saved values would fail the D6 table in the subprocess.
+            # unless the caller pinned them; replaying the saved values would
+            # fail the combination table in the subprocess (memory on kubernetes).
             for name in ("checkpointer", "cd", "registry"):
                 if name not in cli_overrides:
                     _drop_flag(args, f"--{name}")
@@ -222,7 +229,7 @@ def _execute_with_saved_config(
     if use_different_version and project_version:
         console.print(f"📦 Using graph-agents-cli version {project_version}...", style="dim")
         _ensure_uvx_available(project_version)
-        cmd = ["uvx", f"graph-agents-cli@{project_version}", *args]
+        cmd = ["uvx", "--from", install_spec(project_version), "graph-agents-cli", *args]
     else:
         console.print("✅ Using saved configuration", style="dim")
         cmd = [sys.executable, "-m", "graph_agents_cli.main", *args]
@@ -286,7 +293,12 @@ def check_and_execute_with_saved_config(
     if interactive:
         return _prompt_customize_overrides(project_config)
 
-    args = build_args_from_config(project_config, auto_approve, cli_overrides)
+    args = build_args_from_config(
+        project_config,
+        auto_approve,
+        cli_overrides,
+        cli_version=project_version if use_different_version else None,
+    )
     is_older_version = (
         use_different_version
         and bool(project_version)
@@ -477,9 +489,9 @@ def _build_enhance_create_args(
 ) -> list[str]:
     """Build ``create`` args for the enhanced snapshot from the effective parameters.
 
-    Every create parameter comes from ``_effective_params`` (the values the D6
-    validation checked), so a target change renders with the checkpointer, cd
-    and registry it re-derives instead of replaying the saved ones.
+    Every create parameter comes from ``_effective_params`` (the values the
+    combination check validated), so a target change renders with the
+    checkpointer, cd and registry it re-derives instead of replaying the saved ones.
     """
     overrides = cli_overrides or {}
     params = _effective_params(project_config, cli_overrides, project_dir)
@@ -492,8 +504,7 @@ def _build_enhance_create_args(
     if agent_directory and agent_directory != "app":
         args.extend(["--agent-directory", str(agent_directory)])
     guidance = overrides.get("agent_guidance_filename") or project_config.agent_guidance_filename
-    if guidance != DEFAULT_AGENT_GUIDANCE_FILENAME:
-        args.extend(["--agent-guidance-filename", str(guidance)])
+    args.extend(["--agent-guidance-filename", str(guidance)])
 
     args.extend(["--deployment-target", params.deployment_target])
     args.extend(["--runtime", params.runtime])
@@ -519,8 +530,8 @@ def _effective_params(
 ) -> CreateParams:
     """The create parameters after applying ``cli_overrides`` to the saved config.
 
-    A target change re-derives the checkpointer (Section 7 item 24) and the
-    registry unless overridden. An explicit ``--cd`` is kept as given so
+    A target change re-derives the checkpointer (postgres for kubernetes,
+    memory for none) and the registry unless overridden. An explicit ``--cd`` is kept as given so
     ``validate_combination`` enforces the kubernetes rule the way ``create``
     does (``--prototype`` forces ``skip``, also like ``create``); only the saved
     cd is forced to ``skip`` when the target leaves kubernetes. The recorded
@@ -557,10 +568,10 @@ def _effective_params(
         if auth_policy == project_config.auth_policy
         else None
     )
-    has_policy = bool(project_config.product_policy_file)
-    token_env = None
+    has_policy = bool(project_config.api_policy_file)
+    apis: tuple[_api_policy.ApiSummary, ...] = ()
     if has_policy and project_dir is not None:
-        token_env = bearer_token_env(project_dir / str(project_config.product_policy_file))
+        apis = _api_policy.read_summaries(project_dir / str(project_config.api_policy_file))
     process = overrides.get("process", project_config.process)
     return CreateParams(
         deployment_target=target,
@@ -571,10 +582,10 @@ def _effective_params(
         registry=registry,
         cd=cd,
         auth_policy=auth_policy,
-        has_product_policy=has_policy,
+        has_api_policy=has_policy,
         process=str(process) if process else None,
         auth_policy_implemented=implemented,
-        product_token_env=token_env,
+        apis=apis,
     )
 
 
@@ -601,7 +612,7 @@ def _backfill_create_params_from_config(
 
     When the CLI changes the deployment target, the saved checkpointer, cd and
     registry are not carried over: the checkpointer follows the new target's
-    default (Section 7 item 24) and ``create`` derives cd and registry.
+    default and ``create`` derives cd and registry.
     """
     config = find_project_config(current_dir)
     if not config:
@@ -623,6 +634,9 @@ def _backfill_create_params_from_config(
             continue
         if key in saved and saved[key] not in (None, ""):
             result[key] = saved[key]
+    if result.get("auth_policy"):
+        # A manifest may still record a retired policy name.
+        result["auth_policy"] = normalize_auth_policy(str(result["auth_policy"]))
     return result
 
 
@@ -659,16 +673,14 @@ def _run_smart_merge(
     def _update_metadata(proj_dir: pathlib.Path, lang: str) -> None:
         if not cli_overrides:
             return
-        has_policy = params.has_product_policy or (proj_dir / PRODUCT_POLICY_FILENAME).is_file()
-        token_env = bearer_token_env(proj_dir / PRODUCT_POLICY_FILENAME) if has_policy else None
+        has_policy = params.has_api_policy or (proj_dir / API_POLICY_FILENAME).is_file()
+        apis = _api_policy.read_summaries(proj_dir / API_POLICY_FILENAME) if has_policy else ()
         finalize_manifest(
             proj_dir,
             project_name=project_name,
             # dataclasses.replace keeps auth_policy_implemented and every other
             # field of the validated params; only the policy facts are refreshed.
-            params=dataclasses.replace(
-                params, has_product_policy=has_policy, product_token_env=token_env
-            ),
+            params=dataclasses.replace(params, has_api_policy=has_policy, apis=apis),
             cli_version=get_current_version(),
         )
         extra: dict[str, Any] = {}
@@ -747,7 +759,7 @@ def enhance(
     registry: str | None,
     cd: str | None,
     auth_policy: str | None,
-    product_policy: str | None,
+    api_policy: str | None,
     process: str | None,
     prototype: bool,
     agent_directory: str | None,
@@ -779,7 +791,7 @@ def enhance(
     --base-template is separate. It names a base template this CLI ships, which
     sits underneath whatever TEMPLATE_PATH supplies.
 
-    product-policy.yaml is never touched by enhance (DECISIONS.md D28).
+    api-policy.yaml is never touched by enhance: it belongs to the project.
 
     Use --dry-run to preview changes before applying them.
     """
@@ -791,14 +803,16 @@ def enhance(
         console.print("> Debug mode enabled")
         logging.debug("Starting enhance command in debug mode")
 
-    if product_policy:
+    if api_policy:
         raise click.UsageError(
-            "--product-policy is not accepted by enhance: product-policy.yaml is owned by "
-            "the product and never edited after scaffolding. Copy the file into the project "
-            "root and set product_api.policy_file in the manifest instead."
+            "--api-policy is not accepted by enhance: api-policy.yaml belongs to the "
+            "project and is never edited after scaffolding. Copy the file to the project "
+            "root as api-policy.yaml and set api_policy: {policy_file: api-policy.yaml} "
+            "in graph-agents-cli-manifest.yaml instead."
         )
 
     current_dir = pathlib.Path.cwd()
+    _api_policy.ensure_no_legacy_api_policy(find_project_root(current_dir) or current_dir)
 
     cli_override_args: dict[str, Any] = {}
     for key, value in (
@@ -1099,6 +1113,10 @@ def enhance(
     existing_config = find_project_config(current_dir)
     recorded_base = existing_config.base_template if existing_config else None
     effective_process = process or (existing_config.process if existing_config else None)
+    # Keep the recorded guidance file unless one was asked for explicitly.
+    effective_guidance = agent_guidance_filename
+    if agent_guidance_filename == DEFAULT_AGENT_GUIDANCE_FILENAME and existing_config:
+        effective_guidance = existing_config.agent_guidance_filename
 
     ctx.invoke(
         create,
@@ -1113,13 +1131,13 @@ def enhance(
         registry=effective_create_params["registry"],
         cd=effective_create_params["cd"],
         auth_policy=effective_create_params["auth_policy"],
-        product_policy=None,
+        api_policy=None,
         process=effective_process,
         prototype=prototype,
         agent_directory=final_agent_directory
         if template_path == pathlib.Path(".")
         else agent_directory,
-        agent_guidance_filename=agent_guidance_filename,
+        agent_guidance_filename=effective_guidance,
         base_template=base_template,
         interactive=interactive,
         auto_approve=auto_approve,

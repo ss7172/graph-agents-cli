@@ -1,4 +1,4 @@
-"""Rendered create parameters, one per CONTRACTS section 3 variable."""
+"""Rendered create parameters, one per cookiecutter variable the engine provides."""
 
 PROJECT_NAME = "{{cookiecutter.project_name}}"
 AGENT_NAME = "{{cookiecutter.agent_name}}"
@@ -15,10 +15,11 @@ CD = "{{cookiecutter.cd}}"
 AUTH_POLICY = "{{cookiecutter.auth_policy}}"
 AGENT_GUIDANCE_FILENAME = "{{cookiecutter.agent_guidance_filename}}"
 PROCESS = "{{cookiecutter.process}}"
-HAS_PRODUCT_POLICY = {{cookiecutter.has_product_policy}}
+HAS_API_POLICY = {{cookiecutter.has_api_policy}}
+APIS = {{cookiecutter.apis}}
 SECRET_KEYS = {{cookiecutter.secret_keys}}
 DEFAULT_JUDGE_MODEL = "{{cookiecutter.default_judge_model}}"
-CLI_VERSION_PIN = "{{cookiecutter.cli_version_pin}}"
+CLI_INSTALL_SPEC = "{{cookiecutter.cli_install_spec}}"
 TAGS = {{cookiecutter.tags}}
 RECORDED_BASE_TEMPLATE = "{{cookiecutter.recorded_base_template}}"
 

@@ -21,7 +21,7 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # Deployment guide
@@ -115,7 +115,7 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
 6. **Verify:** `graph-agents-cli deploy --status --env <env>` (rollout status or `argocd app
    get`), then `graph-agents-cli run --url https://<host> --mode chat "hello"` with the
    environment's credential (`--header 'Authorization: Bearer ...'` or `GRAPH_AGENTS_CLI_API_KEY`;
-   `--cookie` / `--session-token` under `product-session`). `GET /health` reports runtime and
+   a user's token under `jwt`; `--header` / `--cookie` under `custom`). `GET /health` reports runtime and
    checkpointer.
 
 ## Secrets and rotation (summary)
@@ -123,7 +123,7 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
 - Only variables in the manifest's `secrets.keys` are exported: the provider key
   (`OPENAI_API_KEY` | `ANTHROPIC_API_KEY` | `GOOGLE_API_KEY` | `MODEL_API_KEY`), `JUDGE_API_KEY`,
   `POSTGRES_DSN` (fastapi) or `DATABASE_URI` + `REDIS_URI` (langgraph-server), `API_KEY`,
-  `LANGSMITH_API_KEY`, and `PRODUCT_API_TOKEN` when the product policy uses `auth: bearer`.
+  `LANGSMITH_API_KEY`, and the `token_env` of every `auth: bearer` API in `api-policy.yaml`.
   Never the whole `.env`.
 - `secrets apply` generates `API_KEY` (32 random bytes, hex) only when it is absent from the env
   file and from the live Secret, and prints it once; an existing key is kept, so one key per
@@ -137,7 +137,7 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
 ## argocd PR flow and the single production gate (summary)
 
 - Staging: the `staging` workflow (on `main`) builds and pushes `<registry>/<name>:<short sha>`
-  (`${GITHUB_SHA::7}`), then runs `uvx graph-agents-cli deploy --env staging --image ...`, which
+  (`${GITHUB_SHA::7}`), then runs `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env staging --image ...`, which
   opens a PR from `deploy/staging/<short sha>` updating `values-staging.yaml` with auto-merge
   enabled; Argo syncs staging with self-heal. A PR opened with the workflow `GITHUB_TOKEN` never
   triggers `pr_checks`, so auto-merge on that required check needs a fine-grained PAT or GitHub
@@ -214,7 +214,7 @@ disconnected" (this profile).
 |---|---|
 | `deploy` exit 1 "refused: helm-push mode" | run from the CI runner, or `--force-direct` for a deliberate workstation deploy to staging/prod (dev is always allowed) |
 | `deploy` exit 1 "refused: argocd mode touches the cluster only via --status/--restart" | expected; `deploy --env <env> --image <ref>` opens a PR instead |
-| `deploy` exit 1 "auth_policy_implemented is false" | implement `app/policies/product_session.py`, flip the manifest flag |
+| `deploy` exit 1 "auth_policy_implemented is false" | implement `app/policies/custom.py`, flip the manifest flag |
 | `deploy` exit 3 "gateway.parentRef.name is blank" | set `gateway.parentRef.name` in `values-<env>.yaml` (or `gateway.enabled: false` / `ingress.enabled: true`); checked before any tool runs |
 | `deploy` exit 3 "is a digest reference" | pass `<registry>/<repo>:<tag>`; the chart has no `image.digest` |
 | `deploy` exit 3 "not committed on origin/main" (argocd) | commit `values-<env>.yaml` on `main` first; the PR is built from the base branch's copy, never the working tree |
@@ -231,9 +231,9 @@ disconnected" (this profile).
 | No route / 404 at the hostname | `gateway.className` / `parentRef` or `ingress.className` unset; `infra check` lists classes |
 | TLS errors | `tls.existingSecret` name wrong, or cert-manager not installed while `tls.certManager.enabled` |
 | 401 from `run --url` | `API_KEY` mismatch; `secrets status`; pass `--header` |
-| 503 on every request under `product-session` | the stub is still in place |
+| 503 on every request under `custom` | the stub is still in place |
 | Argo shows `OutOfSync` after `--restart` | self-heal reverted the restart annotation; use an Argo resource action |
-| `PolicyViolation` in tool results after deploy | the deployed `product-policy.yaml` differs from local; it is config and travels with the repo |
+| `ApiPolicyError` in tool results after deploy | the deployed `api-policy.yaml` differs from local (it is baked into the image; rebuild), or a base URL / token variable is missing in the pod |
 
 ## Not covered by this skill
 

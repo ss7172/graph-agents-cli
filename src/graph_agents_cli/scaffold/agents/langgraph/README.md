@@ -14,14 +14,18 @@ A LangGraph agent scaffolded by graph-agents-cli.
 ## Quick start
 
 ```bash
-cp .env.example .env            # set {{cookiecutter.provider_key_var}} and API_KEY
+cp .env.example .env            # set {{cookiecutter.provider_key_var}}{% if cookiecutter.auth_policy == 'shared-bearer' %} and API_KEY{% endif %}
 uv sync                          # from the committed uv.lock
 graph-agents-cli playground      # http://127.0.0.1:8000/playground (APP_ENV=dev)
 graph-agents-cli run "What's the weather in San Francisco?"
 ```
 
+{%- if cookiecutter.auth_policy == 'shared-bearer' %}
 `API_KEY` is the shared bearer key every client sends (`Authorization: Bearer ...`);
 generate one with `python -c "import secrets; print(secrets.token_hex(32))"`.
+{%- else %}
+Authentication follows `AUTH_POLICY={{cookiecutter.auth_policy}}` (see Authentication below).
+{%- endif %}
 Local development needs no database: `.env.example` sets `CHECKPOINTER=memory`.
 
 ## Layout
@@ -30,9 +34,9 @@ Local development needs no database: `.env.example` sets `CHECKPOINTER=memory`.
 {{cookiecutter.agent_directory}}/
 ├── agent.py                 # exports `graph` (compiled LangGraph agent, no checkpointer bound)
 ├── fast_api_app.py          # exports `app`: POST /chat (SSE), GET /health, /threads/{id}/messages, /playground, A2A
-├── app_utils/               # model, checkpointer, db (run records), threads, auth, product_client, telemetry, a2a, chat
-├── policies/                # AuthPolicy implementations (product_session.py is a fail-closed stub)
-└── tools/                   # every module declares PRODUCT_CALLS and TOOLS
+├── app_utils/               # model, checkpointer, db (run records), threads, auth, api_client, telemetry, a2a, chat
+├── policies/                # AuthPolicy implementations (custom.py is a fail-closed stub)
+└── tools/                   # every module declares API_CALLS and TOOLS
 tests/{unit,integration,eval,load_test}
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
 deployment/helm/{{cookiecutter.project_name}}/   # chart, values.yaml, values-{dev,staging,prod}.yaml
@@ -41,6 +45,9 @@ deployment/argocd/           # application-{dev,staging,prod}.yaml
 {%- endif %}
 {%- endif %}
 langgraph.json               # graph, custom app and auth handler (LangGraph Studio / Server)
+{%- if cookiecutter.has_api_policy %}
+api-policy.yaml              # the external APIs tools may call, and how (enforced at runtime and by lint)
+{%- endif %}
 Dockerfile                   # {{cookiecutter.runtime}} image
 .env.example                 # the full environment contract
 graph-agents-cli-manifest.yaml
@@ -54,7 +61,7 @@ graph-agents-cli-manifest.yaml
 | `graph-agents-cli run "prompt" [--mode a2a] [--url URL] [--thread-id ID]` | One-shot chat; `--url` targets a deployed agent with `--header` / `GRAPH_AGENTS_CLI_API_KEY` |
 | `uv run pytest tests/unit tests/integration` | Tests with the deterministic `fake` model and the in-memory checkpointer |
 | `graph-agents-cli eval run` | Generate traces (`artifacts/traces/`) and grade them against the gate in `tests/eval/eval_config.yaml` |
-| `graph-agents-cli lint` | ruff plus the product-policy check of every tool's `PRODUCT_CALLS` |
+| `graph-agents-cli lint` | ruff plus the API-policy check of every tool's `API_CALLS` |
 | `graph-agents-cli build` | `docker build` with the runtime's Dockerfile |
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
 | `graph-agents-cli infra check --env <env>` | Read-only report of cluster and GitHub prerequisites |
@@ -82,26 +89,34 @@ uses `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL`, `JUDGE_API_KE
 values. Selecting a hosted provider sends prompts, tool results and context to that provider: decide what may
 leave and publish a privacy notice before connecting one.
 
-## Product API access
+## Outbound API access
 
-Tools reach the product only through `{{cookiecutter.agent_directory}}/app_utils/product_client.py`, which loads
-`product-policy.yaml` once at startup and refuses any method or operation outside it before sending.
-{%- if cookiecutter.has_product_policy %}
-This project declares `product-policy.yaml`; set `PRODUCT_API_BASE_URL` (and `PRODUCT_API_TOKEN` when the
-policy uses bearer auth).
+Tools reach external APIs only through `get_client("<api>")` of
+`{{cookiecutter.agent_directory}}/app_utils/api_client.py`, which enforces `api-policy.yaml` and refuses, before
+sending, any API, method or operation outside it. It fails closed: without the file every outbound call is
+refused. Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`none`, `bearer` with
+`token_env`, or `forward`, which sends the caller's own `attributes["credentials"][<api>]`; not available
+under langgraph-server, which would persist it), the required `allowed_methods`, and optional
+`allowed_operations` / `denied_operations` (an entry pinning both `operationId` and `path` needs both to
+match; denials win), `openapi`, `timeouts_ms` and `pagination` (`max_page_size` is enforced). Unknown keys are
+errors, so a typo never widens access.
+{%- if cookiecutter.has_api_policy %}
+This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
 {%- else %}
-No policy is declared, so the client is unrestricted and logs one warning; seed one with
-`graph-agents-cli create --product-policy <file>` or write `product-policy.yaml` by hand (schema in the CLI's DECISIONS.md D28).
+No policy is declared yet: seed one with `graph-agents-cli create --api-policy <file>`, or write
+`api-policy.yaml` by hand and add `api_policy: {policy_file: api-policy.yaml}` to the manifest.
 {%- endif %}
-Every tool module declares `PRODUCT_CALLS`; `graph-agents-cli lint` fails on an undeclared or disallowed call.
+Every tool module declares `API_CALLS`; `graph-agents-cli lint` fails on an undeclared or disallowed call.
 
 ## Authentication
 
-`AUTH_POLICY=shared-bearer` (default) checks `Authorization: Bearer <API_KEY>` with a constant-time compare.
-`AUTH_POLICY=product-session` ships as a fail-closed stub in `{{cookiecutter.agent_directory}}/policies/product_session.py`:
-implement it (validate the caller's session through the product client, load roles and permissions), then set
-`auth_policy_implemented: true` in the manifest. Thread ownership is enforced per principal; roles listed in
-`AUTH_READ_ACROSS_ROLES` may read other principals' threads.
+`AUTH_POLICY=shared-bearer` (default) checks `Authorization: Bearer <API_KEY>` with a constant-time compare;
+every caller is the same principal. `AUTH_POLICY=jwt` gives each user their own principal from a verified
+OIDC/JWT bearer token (`AUTH_JWT_JWKS_URL` or `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`;
+see `.env.example`). `AUTH_POLICY=custom` ships as a fail-closed stub in
+`{{cookiecutter.agent_directory}}/policies/custom.py` for anything else (for example an existing application's
+session): implement it, then set `auth_policy_implemented: true` in the manifest. Thread ownership is enforced
+per principal; roles listed in `AUTH_READ_ACROSS_ROLES` may read other principals' threads.
 
 ## Tracing
 
@@ -133,7 +148,7 @@ Before the first deploy, fetch the chart dependencies once: `helm dependency bui
 
 The chart never templates the app Secret; it mounts `<release>-app` (`existingSecret`) with `envFrom`.
 Only the keys listed under `secrets.keys` in the manifest are exported from an env file:
-`{{ cookiecutter.secret_keys | join('`, `') }}`{% if cookiecutter.has_product_policy %} plus `PRODUCT_API_TOKEN` when the product policy uses bearer auth{% endif %}.
+`{{ cookiecutter.secret_keys | join('`, `') }}` (the token of every `auth: bearer` API in `api-policy.yaml` included).
 
 ```bash
 graph-agents-cli secrets apply --env staging --env-file .env.staging   # create or update

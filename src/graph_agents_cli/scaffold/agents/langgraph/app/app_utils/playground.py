@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The dev-only chat page served at `/playground` when `APP_ENV=dev` (D22).
+"""The dev-only chat page served at `/playground` when `APP_ENV=dev`.
 
 Plain HTML and JS, no build step. It talks to `POST /chat` with the bearer key
 typed into the page, through the same policy adapter every client uses, and

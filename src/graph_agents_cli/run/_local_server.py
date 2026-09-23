@@ -15,7 +15,7 @@
 
 """Background local server management for ``run`` and ``eval generate``.
 
-CONTRACTS section 10: the pid file is ``.graph-agents-cli/run_server.json``
+The pid file is ``.graph-agents-cli/run_server.json``
 with keys ``{pid, port, started_at, last_activity, runtime, checkpointer}``.
 The command depends on the manifest ``runtime``:
 

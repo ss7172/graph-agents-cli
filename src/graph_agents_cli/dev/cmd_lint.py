@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""graph-agents-cli lint command: ruff plus the product-policy check (D28)."""
+"""graph-agents-cli lint command: ruff plus the API-policy check of every tool."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from pathlib import Path
 
 import click
 
+from graph_agents_cli._api_policy import POLICY_FILENAME, ensure_no_legacy_api_policy
 from graph_agents_cli._project import chdir_project_root, read_project_config
 from graph_agents_cli._runner import run
 from graph_agents_cli.dev.policy_check import run_policy_check
@@ -33,27 +34,35 @@ from graph_agents_cli.dev.policy_check import run_policy_check
     "policy_only",
     is_flag=True,
     default=False,
-    help="Run only the product-policy check (skip ruff).",
+    help="Run only the API-policy check (skip ruff).",
 )
 def cmd_lint(fix: bool, policy_only: bool) -> None:
-    """Run code quality checks and the product-policy check.
+    """Run code quality checks and the API-policy check.
 
     \b
     ruff check .            (--fix applies fixes)
     ruff format . --check   (--fix reformats in place)
-    product-policy check    every tool's declared product API call must be
-                            allowed by product-policy.yaml and, when the policy
-                            names an OpenAPI spec, exist in it
+    API-policy check        api-policy.yaml must pass the strict schema, and
+                            every API_CALLS entry of every tool must name a
+                            declared API and be allowed by its rules (and
+                            exist in its OpenAPI spec when one is named)
     """
     chdir_project_root()
     cfg = read_project_config()
+    ensure_no_legacy_api_policy(Path.cwd())
     if not policy_only:
         lint_python(fix=fix)
-    violations = run_policy_check(Path.cwd(), cfg.agent_directory)
+    violations = run_policy_check(
+        Path.cwd(),
+        cfg.agent_directory,
+        policy_file=cfg.api_policy_file or POLICY_FILENAME,
+        runtime=cfg.runtime,
+        policy_declared=bool(cfg.api_policy_file),
+    )
     if violations:
         raise click.ClickException(
-            f"Product-policy check failed: {violations} violation(s). "
-            "Fix the tool declarations or update product-policy.yaml."
+            f"API policy check failed: {violations} violation(s). "
+            "Fix the tool declarations or update api-policy.yaml."
         )
 
 

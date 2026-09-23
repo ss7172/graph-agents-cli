@@ -39,10 +39,10 @@ choosing flags or editing configuration.
 | User says | CLI value |
 |---|---|
 | "API key", "bearer token", "shared secret", "internal tool" | `--auth-policy shared-bearer`; `API_KEY` in the Secret; clients send `Authorization: Bearer` |
-| "our users' sessions", "SSO cookie", "session token", "existing roles", "who owns the conversation" | `--auth-policy product-session` (stub fails closed until implemented in `app/policies/product_session.py`); clients use `--cookie` or `--session-token` |
-| "OIDC", "oauth2-proxy" | a documented future policy; not in the first milestone |
-| "which endpoints may the agent call", "read-only", "GET only", "allow-list" | `product-policy.yaml` (`allowed_methods`, `allowed_operations`, `denied_operations`), seeded by `create --product-policy <file>` |
-| "call the product API", "backend client" | `app/app_utils/product_client.py`, the only HTTP path to the product; tools declare `PRODUCT_CALLS` |
+| "OIDC", "SSO", "JWT", "access token", "per-user identity", "who owns the conversation" | `--auth-policy jwt` (per-user principals from a verified token: `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, JWKS or public key) |
+| "our app's session cookie", "existing roles", "custom header" | `--auth-policy custom` (stub fails closed until implemented in `app/policies/custom.py`); clients use `--header` or `--cookie` |
+| "which endpoints may the agent call", "read-only", "GET only", "allow-list" | `api-policy.yaml` (`apis: <name>:` with `allowed_methods`, `allowed_operations`, `denied_operations`), seeded by `create --api-policy <file>` |
+| "call our backend API", "backend client", "call the service as the user" | `get_client("<api>")` from `app/app_utils/api_client.py`, the only HTTP path to external APIs (`auth: none`, `bearer`, or `forward` for the caller's own credential); tools declare `API_CALLS` |
 
 ## Deployment
 

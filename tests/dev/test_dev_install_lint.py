@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import pytest
 from click.testing import CliRunner
 
 from graph_agents_cli.dev import cmd_lint
@@ -66,7 +67,7 @@ def test_lint_runs_ruff_check_and_format_check_then_policy(
     monkeypatch.setattr(
         cmd_lint,
         "run_policy_check",
-        lambda root, agent_dir: policy_calls.append((root, agent_dir)) or 0,
+        lambda root, agent_dir, **kw: policy_calls.append((root, agent_dir, kw)) or 0,
     )
     result = CliRunner().invoke(lint, [], catch_exceptions=False)
     assert result.exit_code == 0, result.output
@@ -74,11 +75,17 @@ def test_lint_runs_ruff_check_and_format_check_then_policy(
         ["uv", "run", "ruff", "check", "."],
         ["uv", "run", "ruff", "format", ".", "--check"],
     ]
-    assert policy_calls == [(fake_project.root, "app")]
+    assert policy_calls == [
+        (
+            fake_project.root,
+            "app",
+            {"policy_file": "api-policy.yaml", "runtime": "fastapi", "policy_declared": False},
+        )
+    ]
 
 
 def test_lint_fix(fake_project, recorded_runs, monkeypatch):
-    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir: 0)
+    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir, **kw: 0)
     result = CliRunner().invoke(lint, ["--fix"], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     assert recorded_runs.commands == [
@@ -90,7 +97,7 @@ def test_lint_fix(fake_project, recorded_runs, monkeypatch):
 def test_lint_policy_only_skips_ruff_and_fails_on_violation(
     fake_project, recorded_runs, monkeypatch
 ):
-    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir: 2)
+    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir, **kw: 2)
     result = CliRunner().invoke(lint, ["--policy-only"])
     assert result.exit_code == 1
     assert recorded_runs.commands == []
@@ -99,7 +106,9 @@ def test_lint_policy_only_skips_ruff_and_fails_on_violation(
 
 def test_lint_ruff_failure_stops_before_policy(fake_project, recorded_runs, monkeypatch):
     called = []
-    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir: called.append(1) or 0)
+    monkeypatch.setattr(
+        cmd_lint, "run_policy_check", lambda root, agent_dir, **kw: called.append(1) or 0
+    )
     recorded_runs.returncodes = [1]
     result = CliRunner().invoke(lint, [])
     assert result.exit_code == 1
@@ -111,12 +120,30 @@ def test_lint_policy_only_end_to_end_with_real_check(fake_project, recorded_runs
     tools = fake_project.root / "app" / "tools"
     tools.mkdir()
     (tools / "incidents.py").write_text(
-        'PRODUCT_CALLS = [{"method": "POST", "operation_id": "closeIncident"}]\n'
+        'API_CALLS = [{"api": "incidents", "method": "POST", "operation_id": "closeIncident"}]\n'
     )
-    (fake_project.root / "product-policy.yaml").write_text(
-        "product_api:\n  allowed_methods: [GET]\n"
+    (fake_project.root / "api-policy.yaml").write_text(
+        "apis:\n  incidents:\n    base_url_env: I\n    auth: none\n    allowed_methods: [GET]\n"
     )
     result = CliRunner().invoke(lint, ["--policy-only"])
     assert result.exit_code == 1
     assert "closeIncident" in result.output
     assert "denied" in result.output
+
+
+@pytest.mark.parametrize(
+    ("legacy_file", "content"),
+    [
+        ("product-policy.yaml", "product_api:\n  allowed_methods: [GET]\n"),
+        ("graph-agents-cli-manifest.yaml", "name: my-agent\nproduct_api:\n  policy_file: p.yaml\n"),
+    ],
+)
+def test_lint_stops_with_a_migration_message_on_the_retired_policy(
+    fake_project, recorded_runs, legacy_file, content
+):
+    (fake_project.root / legacy_file).write_text(content)
+    result = CliRunner().invoke(lint, [])
+    assert result.exit_code == 3
+    assert recorded_runs.commands == []  # nothing ran
+    assert "Migrate it to api-policy.yaml" in result.output
+    assert "API_CALLS" in result.output and "allowed_methods" in result.output

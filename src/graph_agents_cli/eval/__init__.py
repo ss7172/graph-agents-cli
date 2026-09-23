@@ -16,7 +16,7 @@
 """Evaluation commands: ``generate -> grade -> compare / analyze / submit``.
 
 Nothing in this package imports a model SDK, LangChain, or LangGraph at import
-time (DECISIONS.md D26). Deterministic checks run in the CLI process; model
+time, so the CLI starts fast and installs light. Deterministic checks run in the CLI process; model
 judges and custom metrics run inside the project's own environment through the
 staged ``_judge_runner.py`` script (see ``_judge.py``).
 """

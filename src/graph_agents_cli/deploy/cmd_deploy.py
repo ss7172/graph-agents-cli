@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""graph-agents-cli deploy command — deploy the agent to Kubernetes (D9)."""
+"""graph-agents-cli deploy command — deploy the agent to Kubernetes."""
 
 from __future__ import annotations
 
@@ -101,8 +101,9 @@ def cmd_deploy(
     if env in PROTECTED_ENVS and not settings.auth_policy_implemented:
         raise Refused(
             f"Refusing to deploy to {env}: the manifest records auth_policy_implemented: false.\n"
-            "  Replace the product-session stub in app/policies/product_session.py, then set\n"
-            "  auth_policy_implemented: true in graph-agents-cli-manifest.yaml."
+            f"  Implement the {settings.auth_policy} auth policy (the custom stub lives in\n"
+            "  <agent_directory>/policies/custom.py), then set auth_policy_implemented: true\n"
+            "  in graph-agents-cli-manifest.yaml."
         )
 
     if restart:
@@ -265,7 +266,7 @@ def _deploy_argocd(
     )
     if env == "prod":
         console.print(
-            "  The production change lands only when the PR merges after code-owner review (D12)."
+            "  The production change lands only when the PR merges after code-owner review."
         )
 
 

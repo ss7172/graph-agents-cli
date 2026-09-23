@@ -246,7 +246,7 @@ def grade_traces(
 
     results_doc = {
         "dataset_hash": planned.hash or meta.get("dataset_hash"),
-        # Provenance (additive, CONTRACTS section 11): the dataset the traces were
+        # Provenance (additive fields): the dataset the traces were
         # generated from, which differs from dataset_hash after `--dataset`.
         "traces_dataset_hash": meta.get("dataset_hash"),
         "graded_at": utc_now_iso(),

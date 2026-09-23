@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared Click options for ``create`` and ``scaffold enhance`` (DECISIONS.md section 6)."""
+"""Shared Click options for ``create`` and ``scaffold enhance``."""
 
 from collections.abc import Callable
+from typing import Any
 
 import click
 
@@ -25,9 +26,32 @@ from graph_agents_cli._defaults import (
     CHECKPOINTERS,
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEPLOYMENT_TARGETS,
+    LEGACY_AUTH_POLICY_ALIASES,
     MODEL_PROVIDERS,
     RUNTIMES,
 )
+
+
+class AuthPolicyChoice(click.Choice):
+    """``--auth-policy`` choices; a retired name is refused with a hint to its new name."""
+
+    def convert(self, value: Any, param: click.Parameter | None, ctx: click.Context | None) -> Any:
+        renamed = LEGACY_AUTH_POLICY_ALIASES.get(str(value).strip().lower())
+        if renamed:
+            self.fail(
+                f"'{value}' was renamed to '{renamed}'; use --auth-policy {renamed}.", param, ctx
+            )
+        return super().convert(value, param, ctx)
+
+
+def _refuse_product_policy(ctx: click.Context, param: click.Parameter, value: Any) -> None:
+    """``--product-policy`` is the retired name of ``--api-policy``."""
+    if value is not None:
+        raise click.UsageError(
+            "--product-policy was renamed to --api-policy, and the file format changed "
+            "(api-policy.yaml declares apis: <name>: ... with required allowed_methods).",
+            ctx=ctx,
+        )
 
 
 def shared_template_options(f: Callable) -> Callable:
@@ -72,7 +96,7 @@ def shared_template_options(f: Callable) -> Callable:
         "--agent-guidance-filename",
         default=DEFAULT_AGENT_GUIDANCE_FILENAME,
         show_default=True,
-        help="Filename for agent guidance (e.g. GEMINI.md, CLAUDE.md, AGENTS.md)",
+        help="Filename for agent guidance (e.g. AGENTS.md, CLAUDE.md, GEMINI.md)",
     )(f)
     f = click.option(
         "--agent-directory",
@@ -99,14 +123,28 @@ def shared_template_options(f: Callable) -> Callable:
     )(f)
     f = click.option(
         "--product-policy",
-        "product_policy",
+        hidden=True,
+        expose_value=False,
+        is_eager=True,
+        callback=_refuse_product_policy,
+        help="Renamed to --api-policy",
+    )(f)
+    f = click.option(
+        "--api-policy",
+        "api_policy",
         type=click.Path(exists=True, dir_okay=False, resolve_path=True),
-        help="Seed product-policy.yaml from this file (DECISIONS.md D28)",
+        help=(
+            "Seed api-policy.yaml (the outbound APIs tools may call, and how) from this file; "
+            "validated before the project is created"
+        ),
     )(f)
     f = click.option(
         "--auth-policy",
-        type=click.Choice(list(AUTH_POLICIES)),
-        help="Authentication policy (default: shared-bearer)",
+        type=AuthPolicyChoice(list(AUTH_POLICIES)),
+        help=(
+            "Authentication policy (default: shared-bearer). jwt verifies per-user OIDC "
+            "tokens; custom is a fail-closed stub the project implements"
+        ),
     )(f)
     f = click.option(
         "--cd",

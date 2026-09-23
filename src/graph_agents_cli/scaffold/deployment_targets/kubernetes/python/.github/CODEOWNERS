@@ -1,5 +1,5 @@
 # Production desired state changes only through a pull request reviewed by
-# these owners (DECISIONS.md D12). Replace the placeholder with the team or
+# these owners (the production gate). Replace the placeholder with the team or
 # users who approve production changes; branch protection on main must
 # require code-owner review, dismiss stale approvals and prevent self-approval.
 deployment/helm/{{cookiecutter.project_name}}/values-prod.yaml @CHANGE-ME/production-approvers

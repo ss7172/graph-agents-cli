@@ -1,4 +1,4 @@
-# Argo CD Application for the staging environment (DECISIONS.md D9, D12).
+# Argo CD Application for the staging environment.
 # Argo reconciles from main, so nothing reaches the cluster until a PR merges.
 apiVersion: argoproj.io/v1alpha1
 kind: Application

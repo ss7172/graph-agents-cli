@@ -11,7 +11,7 @@ never runs helm and never merges; it writes desired state and opens a pull reque
   `dev` and `staging` have automated sync with self-heal; **prod has no automated sync** (an
   operator syncs in Argo after the merge).
 - `.github/workflows/pr_checks.yaml`: ruff, unit, integration, the eval gate when a dataset is
-  present, the product-policy check.
+  present, the API-policy check.
 - `.github/workflows/staging.yaml` (on `main`): builds and pushes
   `<registry>/<name>:<short sha>` (`${GITHUB_SHA::7}`, exposed as the `tag` job output), then
   opens a PR from branch `deploy/staging/<short sha>` updating `image.tag` in
@@ -23,14 +23,16 @@ never runs helm and never merges; it writes desired state and opens a pull reque
 - `.github/workflows/promote-to-prod.yaml`: runs in the GitHub `production` environment (which
   controls who may *initiate* a promotion from CI); its `image_tag` input is the short sha. It
   installs uv, sets a git identity and runs
-  `uvx graph-agents-cli deploy --env prod --image <registry>/<name>:<short sha>`, which opens a
+  `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image <registry>/<name>:<short sha>`, which opens a
   PR updating `values-prod.yaml`. It does not merge.
 - Both workflows set `GH_TOKEN: ${{ secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN }}`. A pull
   request opened with the workflow `GITHUB_TOKEN` does not trigger `pr_checks` (GitHub never
   starts workflows from `GITHUB_TOKEN` events), so auto-merge on a required check needs a
   fine-grained PAT or GitHub App token stored as the `GH_PR_TOKEN` repository secret.
-- `.github/agent.env` (rendered for every kubernetes project, read only by these workflows):
-  `IMAGE_REPOSITORY`, `RELEASE_NAME`, `CHART_PATH`, `RUNTIME`, `CD`, `CLI_VERSION_PIN`.
+- `.github/agent.env` (rendered for every project, read only by the workflows):
+  `GRAPH_AGENTS_CLI_SPEC` (where CI installs the CLI: the creating version's git tag) and, for
+  kubernetes projects, `IMAGE_REPOSITORY`, `RELEASE_NAME`, `CHART_PATH`, `RUNTIME`, `CD`.
+  `pr_checks` loads it with comments and blank lines stripped (the `GITHUB_ENV` file format).
 - `.github/CODEOWNERS`: `deployment/helm/<name>/values-prod.yaml` and
   `deployment/argocd/application-prod.yaml` -> `@<org>/production-approvers` (placeholder to fill).
 

@@ -17,7 +17,7 @@ metadata:
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
 ---
 
 # Observability guide
@@ -100,7 +100,7 @@ principal, model, token counts, latency, status; payload (prompt, completion, to
 
 - Prompt and completion text, tool arguments and results, error messages (only under `full`).
 - Raw principal ids, session cookies, session tokens, bearer keys (never, under any setting).
-- Product API payloads beyond what a tool returns into the trace (governed by `full`).
+- External API payloads beyond what a tool returns into the trace (governed by `full`).
 - Anything at all while `TRACING_ENABLED=false`.
 
 ## Procedure: enable tracing for an environment

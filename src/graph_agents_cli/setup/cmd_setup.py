@@ -15,7 +15,7 @@
 
 """graph-agents-cli setup command — install the CLI and skills via npx skills.
 
-Skills install ladder (DECISIONS.md D20, C20):
+Skills install ladder (each step is tried only when the previous one is unavailable):
 
 1. ``npx skills add <source>`` from ``--skills-source`` or DEFAULT_SKILLS_SOURCE
    (needs ``git`` and network).
@@ -24,8 +24,11 @@ Skills install ladder (DECISIONS.md D20, C20):
 3. Copy the bundled skills straight into ``~/.agents/skills`` (or
    ``./.agents/skills`` with ``--workspace``) when ``npx`` is unavailable.
 
-No authentication step: the CLI stores no credentials (D19); run
+No authentication step: the CLI stores no credentials; run
 ``graph-agents-cli login`` for the preflight instead.
+
+The CLI itself is installed from ``install_spec()`` (a pinned git reference to
+the GitHub repository, or ``GRAPH_AGENTS_CLI_INSTALL_SPEC``).
 """
 
 from __future__ import annotations
@@ -220,7 +223,11 @@ def _resolve_skills_source(skills_source, *, dev):
 
 
 def _cli_install_args(*, dev):
-    """Return the ``uv tool install`` argv for the CLI itself."""
+    """Return the ``uv tool install`` argv for the CLI itself.
+
+    Outside ``--dev`` the CLI installs from ``install_spec()`` pinned to the
+    running version, so ``setup`` reproduces the CLI the user is running.
+    """
     if dev:
         project_root = _get_source_root()
         if not project_root:
@@ -228,7 +235,9 @@ def _cli_install_args(*, dev):
                 f"--dev requires running from the root of the {PACKAGE_NAME} repository"
             )
         return ["uv", "tool", "install", "--force", "--editable", str(project_root)]
-    return ["uv", "tool", "install", PACKAGE_NAME]
+    from graph_agents_cli.scaffold.utils.version import get_current_version, install_spec
+
+    return ["uv", "tool", "install", install_spec(get_current_version())]
 
 
 @click.command("setup")
@@ -341,7 +350,7 @@ def cmd_setup(*, workspace, dry_run, dev, skills_source, agent):
                 fg="yellow",
             )
             click.secho(
-                f"  Run 'uv tool upgrade {PACKAGE_NAME}' to update.",
+                f"  Run '{PACKAGE_NAME} update' to update.",
                 dim=True,
             )
         else:

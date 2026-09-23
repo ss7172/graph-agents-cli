@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Language configuration for CLI commands: Python only (DECISIONS.md D3).
+"""Language configuration for CLI commands: Python only.
 
 The single-entry table keeps the ``dispatch_language`` shape the command
 modules were written against, so adding a language later is additive.
@@ -50,7 +50,7 @@ LANGUAGE_CONFIGS: dict[str, dict[str, Any]] = {
         "lock_command_name": "uv lock",
         "display_name": "Python",
         "agent_file": "agent.py",
-        # `app/agent.py` exports the compiled graph (D5).
+        # `app/agent.py` exports the compiled graph.
         "agent_variable": "graph",
         "agent_in_subdirectory": False,
         "version_reader": _read_python_version,

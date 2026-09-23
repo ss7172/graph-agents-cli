@@ -49,10 +49,10 @@ human-approval node. Keep the export `graph`.
 ```python
 from langchain_core.tools import tool
 
-PRODUCT_CALLS = [{"method": "GET", "operation_id": "getSite"}]
+API_CALLS = [{"api": "sites", "method": "GET", "operation_id": "getSite", "path": "/sites/{site_id}"}]
 
 @tool
-def get_site(site_id: str) -> str:
+async def get_site(site_id: str) -> str:
     """Return the site record for SITE_ID."""
     ...
 ```
@@ -60,9 +60,11 @@ def get_site(site_id: str) -> str:
 - The docstring is the model's description of the tool; write it for the model.
 - Typed parameters become the schema; keep them simple (str, int, bool, small models).
 - Return strings or JSON-serialisable data; long payloads bloat the context and the trace.
-- Tools that call the product API use `ProductClient` and declare `PRODUCT_CALLS`.
-- Tools that need the caller's identity read it from the runtime context the app injects
-  (`config["configurable"]["principal"]`); never from a global.
+- Tools that call an external API use `get_client("<api>")` from `app_utils.api_client` and
+  declare `API_CALLS`.
+- Tools that need the caller's identity read it from the run context the app sets
+  (`runtime: ToolRuntime` parameter, `runtime.context`: `principal_id`, `roles`, `attributes`);
+  never from a global.
 
 ## Checkpointers and `thread_id`
 
@@ -175,10 +177,10 @@ to test:
 
 - the SSE mapping (`/chat` returns `message.start`, deltas, `tool.call`/`tool.result`,
   `message.end`);
-- tool routing (`get_weather`) and the policy middleware turning `PolicyViolation` into a tool
-  error;
-- policy enforcement (401 without the bearer, 403 on a foreign thread under `product-session`
-  once implemented).
+- tool routing (`get_weather`) and the middleware turning `ApiPolicyError` / `ApiCallError`
+  into a tool error;
+- policy enforcement (401 without the bearer, 403 on a foreign thread under a per-user policy
+  such as `jwt` or an implemented `custom`).
 
 Never test model behaviour here; that is `graph-agents-cli eval`.
 

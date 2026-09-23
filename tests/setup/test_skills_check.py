@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the skills-version check opt-out and offline behaviour (D21)."""
+"""Tests for the skills-version check opt-out and offline behaviour."""
 
 from __future__ import annotations
 

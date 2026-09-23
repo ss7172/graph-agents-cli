@@ -14,7 +14,7 @@
 
 """``tests/eval/eval_config.yaml``: judge identity, quality metrics, rubrics.
 
-Shape (CONTRACTS.md section 11)::
+Shape::
 
     judge: { provider: null, model: null }          # null = agent's provider/model
     quality_metrics:                                 # only these may be below 100 percent
@@ -294,7 +294,7 @@ def resolve_threshold(config: EvalConfig, metric: str, case_spec: dict[str, Any]
 
     Precedence: the case's ``judge.<metric>.threshold`` > ``quality_metrics.<metric>.threshold``
     > ``judges.<metric>.threshold`` > a custom metric's threshold. None of them
-    is a configuration error (D24: "a quality metric with no threshold").
+    is a configuration error (a quality metric with no threshold cannot gate).
     """
     if case_spec and case_spec.get("threshold") is not None:
         return float(case_spec["threshold"])

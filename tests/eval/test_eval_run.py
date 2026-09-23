@@ -177,7 +177,7 @@ def test_run_honours_generate_override(
 def test_run_forwards_non_default_timeouts_to_overrides(
     project: Path, runner: CliRunner, fake_judge: FakeJudge, overrides
 ) -> None:
-    """D24 parity: `eval run --timeout/--judge-timeout` reach the stage overrides."""
+    """`eval run --timeout/--judge-timeout` reach the stage overrides."""
     overrides.installed["eval.generate"] = _override("eval.generate", ("gen",))
     overrides.installed["eval.grade"] = _override("eval.grade", ("grader",))
     overrides.codes[("gen",)] = _fake_generate_writing_traces(project)

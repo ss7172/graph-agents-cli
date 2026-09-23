@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Eval dataset loading and validation (CONTRACTS.md section 11).
+"""Eval dataset loading and validation (``tests/eval/datasets/*.json``).
 
 Dataset shape::
 

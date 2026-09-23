@@ -1,4 +1,4 @@
-# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Project manifest written by `graph-agents-cli create`.
 # Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
 name: '{{cookiecutter.project_name}}'
 cli_version: '{{cookiecutter.package_version}}'
@@ -15,8 +15,8 @@ create_params:
   registry: '{{cookiecutter.registry}}'
   cd: '{{cookiecutter.cd}}'
   auth_policy: '{{cookiecutter.auth_policy}}'
-  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
-  auth_policy_implemented: {{ 'false' if cookiecutter.auth_policy == 'product-session' else 'true' }}
+  # false while the custom auth policy stub is in place; deploy --env staging|prod refuses until true
+  auth_policy_implemented: {{ 'false' if cookiecutter.auth_policy == 'custom' else 'true' }}
   agent_guidance_filename: '{{cookiecutter.agent_guidance_filename}}'
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
 environments:
@@ -29,8 +29,8 @@ secrets:
   keys: [{{ cookiecutter.secret_keys | join(', ') }}]
   # Team or role responsible for provisioning and rotating the Secret (free text).
   owner: ""
-{%- if cookiecutter.has_product_policy %}
-product_api:
-  policy_file: product-policy.yaml
+{%- if cookiecutter.has_api_policy %}
+api_policy:
+  policy_file: api-policy.yaml
 {%- endif %}
 process: {{ cookiecutter.process if cookiecutter.process else 'null' }}

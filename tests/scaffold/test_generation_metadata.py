@@ -16,8 +16,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from graph_agents_cli._project import ProjectConfig, read_project_config
-from graph_agents_cli.scaffold.utils.generation_metadata import metadata_to_cli_args
+from graph_agents_cli.scaffold.utils.generation_metadata import (
+    auth_policy_for_version,
+    metadata_to_cli_args,
+)
 
 from .conftest import CreateRunner, read_manifest
 
@@ -40,8 +45,8 @@ def test_metadata_to_cli_args_maps_every_create_param() -> None:
                 "checkpointer": "postgres",
                 "registry": "ghcr.io/org",
                 "cd": "argocd",
-                "auth_policy": "product-session",
-                "agent_guidance_filename": "AGENTS.md",
+                "auth_policy": "custom",
+                "agent_guidance_filename": "CLAUDE.md",
             },
             "process": "docs/process.md",
         }
@@ -50,7 +55,7 @@ def test_metadata_to_cli_args_maps_every_create_param() -> None:
     assert _pairs(args) == {
         "--agent": "langgraph",
         "--agent-directory": "bot",
-        "--agent-guidance-filename": "AGENTS.md",
+        "--agent-guidance-filename": "CLAUDE.md",
         "--deployment-target": "kubernetes",
         "--runtime": "langgraph-server",
         "--model-provider": "anthropic",
@@ -58,7 +63,7 @@ def test_metadata_to_cli_args_maps_every_create_param() -> None:
         "--checkpointer": "postgres",
         "--registry": "ghcr.io/org",
         "--cd": "argocd",
-        "--auth-policy": "product-session",
+        "--auth-policy": "custom",
         "--process": "docs/process.md",
     }
 
@@ -76,6 +81,34 @@ def test_metadata_to_cli_args_none_target_has_no_registry() -> None:
     assert "--registry" not in pairs
     assert "--process" not in pairs
     assert "--agent-directory" not in pairs
+    # Always explicit, so a CLI with another default re-renders the same file.
+    assert pairs["--agent-guidance-filename"] == "AGENTS.md"
+
+
+def test_a_retired_auth_policy_name_is_replayed_as_its_replacement(capsys) -> None:
+    cfg = ProjectConfig.from_dict(
+        {"name": "svc", "create_params": {"auth_policy": "product-session"}}
+    )
+    assert _pairs(metadata_to_cli_args(cfg))["--auth-policy"] == "custom"
+    assert "deprecated" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("policy", "version", "expected"),
+    [
+        ("custom", None, "custom"),
+        ("custom", "0.1.0", "product-session"),
+        ("custom", "0.1.9", "product-session"),
+        ("custom", "0.2.0", "custom"),
+        ("custom", "1.0.0", "custom"),
+        ("custom", "not-a-version", "custom"),
+        ("shared-bearer", "0.1.0", "shared-bearer"),
+    ],
+)
+def test_an_older_cli_baseline_gets_the_name_it_knows(policy, version, expected) -> None:
+    assert auth_policy_for_version(policy, version) == expected
+    cfg = ProjectConfig.from_dict({"name": "svc", "create_params": {"auth_policy": policy}})
+    assert _pairs(metadata_to_cli_args(cfg, cli_version=version))["--auth-policy"] == expected
 
 
 def test_remote_spec_goes_positional_for_enhance() -> None:
@@ -97,7 +130,7 @@ def test_round_trip_create_manifest_create(run_create: CreateRunner) -> None:
         "--cd",
         "argocd",
         "--auth-policy",
-        "product-session",
+        "custom",
         "--process",
         "docs/process.md",
         "--agent-directory",

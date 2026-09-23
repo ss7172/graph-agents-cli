@@ -15,7 +15,7 @@
 
 """graph-agents-cli login — preflight for provider keys, tracing, and kubeconfig.
 
-DECISIONS.md D19 replaces the gcloud/ADC login with a preflight check. The
+The CLI stores no credentials, so ``login`` is a preflight check. The
 command reads the project manifest when run inside a project, inspects the
 process environment and the project's ``.env``, and reports whether:
 
@@ -28,7 +28,7 @@ process environment and the project's ``.env``, and reports whether:
   ``kubectl cluster-info`` succeeds);
 * under the ``shared-bearer`` auth policy, ``API_KEY`` is set (the local
   server answers 503 to every request without it);
-* under ``--profile disconnected`` (D25), nothing hosted is configured: no
+* under ``--profile disconnected``, nothing hosted is configured: no
   hosted model provider, no LangSmith, no GitHub-hosted CI, ``fastapi`` runtime.
 
 ``--write-env`` prompts for the missing keys and appends them to ``.env``
@@ -57,6 +57,7 @@ from graph_agents_cli._defaults import (
     FAKE_PROVIDER,
     MODEL_PROVIDERS,
     PROVIDER_KEY_VARS,
+    normalize_auth_policy,
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
@@ -68,13 +69,13 @@ MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
 PROFILES = ("default", "disconnected")
 HOSTED_PROVIDERS = frozenset(p for p in MODEL_PROVIDERS if p != "openai-compatible")
 
-# Reachability probe for openai-compatible servers (D7, D25).
+# Reachability probe for openai-compatible servers (self-hosted models).
 MODELS_PROBE_TIMEOUT_S = 3.0
 KUBECTL_TIMEOUT_S = 5
 CLUSTER_INFO_TIMEOUT_S = 15
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-# GitHub-hosted runner labels (D25: only an on-network GHES keeps CD in profile).
+# GitHub-hosted runner labels (disconnected: only an on-network GHES keeps CD in profile).
 _HOSTED_RUNNER_RE = re.compile(
     r"runs-on:\s*\[?\s*['\"]?(ubuntu|windows|macos)-(latest|\d+(\.\d+)?)", re.IGNORECASE
 )
@@ -165,7 +166,7 @@ def load_project_info(cwd: Path | None = None) -> ProjectInfo:
     info.runtime = str(params.get("runtime") or DEFAULT_RUNTIME)
     info.deployment_target = str(params.get("deployment_target") or "kubernetes")
     info.cd = str(params.get("cd") or "skip")
-    info.auth_policy = str(params.get("auth_policy") or DEFAULT_AUTH_POLICY)
+    info.auth_policy = normalize_auth_policy(params.get("auth_policy"), warn=False)
     envs = data.get("environments") or {}
     if isinstance(envs, dict):
         info.environments = {
@@ -202,7 +203,7 @@ def resolve_provider(info: ProjectInfo, env: EnvView) -> tuple[str, str]:
     """Provider precedence: MODEL_PROVIDER (environment or .env), then the manifest, then the default.
 
     The manifest records the provider chosen at scaffold time; the app itself
-    reads ``MODEL_PROVIDER`` at runtime (CONTRACTS section 4), so a value in the
+    reads ``MODEL_PROVIDER`` at runtime, so a value in the
     environment or ``.env`` (for example ``fake`` for a local check) is what the
     preflight must judge.
     """
@@ -497,7 +498,7 @@ def _hosted_ci_indicators(root: Path | None, env: EnvView) -> list[str]:
 
 
 def check_disconnected_profile(info: ProjectInfo, env: EnvView) -> list[Check]:
-    """Extra D25 checks that only apply under ``--profile disconnected``."""
+    """Extra checks that only apply under ``--profile disconnected``."""
     checks: list[Check] = []
 
     if info.root is not None:
@@ -544,7 +545,7 @@ def check_disconnected_profile(info: ProjectInfo, env: EnvView) -> list[Check]:
                 "profile.update_check",
                 WARN,
                 f"{NO_UPDATE_CHECK_ENV} is not 1; the CLI will try PyPI and npx on each run",
-                f"Export {NO_UPDATE_CHECK_ENV}=1 (D21).",
+                f"Export {NO_UPDATE_CHECK_ENV}=1.",
             )
         )
     return checks
@@ -740,7 +741,7 @@ def print_report(report: dict[str, Any], console: Console) -> None:
     type=click.Choice(PROFILES),
     default="default",
     show_default=True,
-    help="'disconnected' fails on any hosted dependency (DECISIONS.md D25).",
+    help="'disconnected' fails on any hosted dependency.",
 )
 @click.option(
     "--cluster",

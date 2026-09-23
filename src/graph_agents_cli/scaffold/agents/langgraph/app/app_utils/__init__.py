@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Application utilities: model wiring, persistence, auth, product client, telemetry, A2A."""
+"""Application utilities: model wiring, persistence, auth, API client, telemetry, A2A."""

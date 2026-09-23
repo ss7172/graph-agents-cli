@@ -15,7 +15,7 @@
 
 """graph-agents-cli run command: run the agent with a single prompt.
 
-Client side of CONTRACTS sections 5, 6 and 10. ``chat`` mode streams the SSE
+Client side of the chat API, the auth policies and the local server. ``chat`` mode streams the SSE
 events of ``POST /chat``; ``a2a`` mode talks JSON-RPC through ``a2a-sdk``
 (optional extra). Locally the server is started per the manifest runtime and
 tracked in ``.graph-agents-cli/run_server.json``.
@@ -79,11 +79,15 @@ _SENSITIVE_HEADER_NAMES = frozenset(
     }
 )
 _SENSITIVE_HEADER_HINTS = ("auth", "token", "secret", "key", "cookie")
-_A2A_INSTALL_HINT = (
-    "A2A mode needs the optional 'a2a' extra: install it with "
-    "`uv tool install 'graph-agents-cli[a2a]'` (or `pip install 'graph-agents-cli[a2a]'`), "
-    "or use --mode chat."
-)
+
+
+def _a2a_install_hint() -> str:
+    from graph_agents_cli.scaffold.utils.version import get_current_version, install_command
+
+    return (
+        "A2A mode needs the optional 'a2a' extra: install it with "
+        f"`{install_command('a2a', version=get_current_version())}`, or use --mode chat."
+    )
 
 
 def _require_a2a_sdk() -> None:
@@ -98,7 +102,7 @@ def _require_a2a_sdk() -> None:
     except (ImportError, ValueError):  # a blocked/None entry in sys.modules
         found = False
     if not found:
-        raise click.ClickException(_A2A_INSTALL_HINT)
+        raise click.ClickException(_a2a_install_hint())
 
 
 class RunTarget(NamedTuple):
@@ -144,7 +148,7 @@ class AgentError(Exception):
 def compose_message(message: str, files: Iterable[str] = ()) -> str:
     """Append each ``--file`` as extra context lines after the prompt.
 
-    Attachments are text only (D3: no multimodal input in this CLI); a file
+    Attachments are text only (no multimodal input in this CLI); a file
     that does not decode as UTF-8 is refused with a clear message.
     """
     parts = [message]
@@ -177,7 +181,7 @@ def _json_preview(value: Any, limit: int | None) -> str:
 
 
 class _ChatRenderer:
-    """Prints CONTRACTS section 5 events to the terminal as they stream."""
+    """Prints the chat API's events to the terminal as they stream."""
 
     def __init__(self, *, verbose: bool = False) -> None:
         self.verbose = verbose
@@ -460,7 +464,7 @@ def _query_a2a(
             TransportProtocol,
         )
     except ImportError as exc:
-        raise click.ClickException(_A2A_INSTALL_HINT) from exc
+        raise click.ClickException(_a2a_install_hint()) from exc
 
     click.echo(f"[user]: {display_message}")
 
@@ -560,7 +564,8 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
         return (
             "\n  Authentication failed. For shared-bearer set "
             f"{API_KEY_ENV} or pass --header 'Authorization: Bearer <API_KEY>';"
-            "\n  for product-session pass --cookie name=value or --session-token <token>."
+            "\n  for jwt pass --header 'Authorization: Bearer <token>'; for a custom policy"
+            "\n  pass whatever it reads with --header 'Name: value' or --cookie name=value."
         )
     if exc.status_code == 404 and thread_id:
         return f"\n  Thread {thread_id} was not found." + (
@@ -606,12 +611,13 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     "--cookie",
     "cookie",
     multiple=True,
-    help="Cookie ('name=value') for product-session auth. Repeatable.",
+    help="Cookie ('name=value'), for a custom auth policy that reads cookies. Repeatable.",
 )
 @click.option(
     "--session-token",
     default=None,
-    help="Session token for product-session auth (sent as X-Session-Token).",
+    hidden=True,
+    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
 )
 @click.option(
     "--file",
@@ -677,7 +683,8 @@ def cmd_run(
     Use --url to query a deployed agent instead. --mode selects the protocol
     (default chat). Credentials follow the project's auth policy:
       shared-bearer     --header 'Authorization: Bearer ...' or GRAPH_AGENTS_CLI_API_KEY
-      product-session   --cookie name=value or --session-token <token>
+      jwt               --header 'Authorization: Bearer <token>'
+      custom            --header 'Name: value' or --cookie name=value
 
     \b
     --thread-id continues a conversation; the footer of every run prints the
@@ -731,7 +738,7 @@ def cmd_run(
         except httpx.ReadTimeout as exc:
             # The server answered and then went quiet (a long tool call or a
             # non-streaming model phase): it is neither unreachable nor wedged,
-            # so a reused/persistent server is left alone (C18) and the message
+            # so a reused/persistent server is left alone and the message
             # says what happened. ReadTimeout is a TransportError: keep this first.
             raise click.ClickException(_read_timeout_message(thread_id, resume_flags)) from exc
         except httpx.TransportError as exc:

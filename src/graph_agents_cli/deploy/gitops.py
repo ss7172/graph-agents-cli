@@ -13,13 +13,13 @@
 # limitations under the License.
 """argocd-mode desired-state writer: values tag rewrite, branch, pull request.
 
-``deploy`` never runs helm in argocd mode (D9). It takes ``values-<env>.yaml``
+``deploy`` never runs helm in argocd mode (Argo CD applies the change). It takes ``values-<env>.yaml``
 as ``origin/main`` holds it (the pull request's base; ``HEAD`` when that ref
 is unavailable), rewrites ``image.tag`` in that text and nothing else, commits
 the one file on ``deploy/<env>/<tag>`` with git plumbing (the developer's
 checkout, index and working tree are left alone), pushes, and opens or
 updates a pull request through ``gh``, or the GitHub REST API with
-``GITHUB_TOKEN`` when ``gh`` is not installed (ASSUMPTIONS item 20). Only
+``GITHUB_TOKEN`` when ``gh`` is not installed. Only
 GitHub and GitHub Enterprise Server remotes are supported. Index paths are
 relative to the repository root, so a project below the git root is handled.
 """

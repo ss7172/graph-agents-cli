@@ -14,9 +14,10 @@
 
 """graph-agents-cli eval submit command: upload a dataset and results to LangSmith.
 
-Optional and never required (D16): needs ``LANGSMITH_API_KEY`` and the
-``langsmith`` extra (``uv tool install 'graph-agents-cli[langsmith]'``). The
-SDK is imported lazily so the CLI works without it.
+Optional and never required (nothing hosted is needed to evaluate): needs
+``LANGSMITH_API_KEY`` and the ``langsmith`` extra (the error names the install
+command when it is missing). The SDK is imported lazily so the CLI works
+without it.
 """
 
 from __future__ import annotations
@@ -49,9 +50,11 @@ def _langsmith_client(api_key: str, endpoint: str | None) -> Any:
     try:
         import langsmith
     except ImportError as exc:
+        from graph_agents_cli.scaffold.utils.version import get_current_version, install_command
+
         raise EvalConfigError(
             "the langsmith package is not installed; install the extra: "
-            "uv tool install 'graph-agents-cli[langsmith]'"
+            + install_command("langsmith", version=get_current_version())
         ) from exc
     kwargs: dict[str, Any] = {"api_key": api_key}
     if endpoint:

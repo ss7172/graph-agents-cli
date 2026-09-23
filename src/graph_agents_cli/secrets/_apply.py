@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shared Secret provisioning used by ``secrets apply`` and direct-mode ``deploy`` (D14).
+"""Shared Secret provisioning used by ``secrets apply`` and direct-mode ``deploy``.
 
 Only the manifest's allow-listed keys are exported from the env file. ``API_KEY``
 is generated when allow-listed, absent from the env file and absent from the
-live Secret (ASSUMPTIONS item 8: one key per environment, generated on first
+live Secret (one key per environment, generated on first
 provisioning); an existing value is kept, because ``kubectl apply`` replaces
 ``data`` and would otherwise rotate it on every deploy. The Secret is built
 with ``kubectl create secret generic --from-env-file --dry-run=client -o yaml``
@@ -47,7 +47,7 @@ PENDING_PLACEHOLDER = "<kept-or-generated>"
 
 
 def resolve_env_file(env: str, explicit: str | None) -> Path | None:
-    """``--env-file`` when given (must exist), else ``.env.<env>`` then ``.env`` (Section 7 item 29)."""
+    """``--env-file`` when given (must exist), else ``.env.<env>`` then ``.env``."""
     if explicit:
         path = Path(explicit)
         if not path.is_file():
@@ -76,7 +76,7 @@ def generate_api_key() -> str:
 
 
 def _reject_multiline(data: dict[str, str]) -> None:
-    """Refuse values ``--from-env-file`` cannot carry (CONTRACTS section 9: one key per variable).
+    """Refuse values ``--from-env-file`` cannot carry (one single-line value per key).
 
     kubectl splits the env file on newlines: the value would be truncated and
     the remaining lines read as extra keys (a bare ``NAME`` line is even looked
@@ -333,7 +333,7 @@ def secret_keys_present(
 
 
 def provisioning_procedure(*, project: str, env: str, owner: str, mode: str) -> str:
-    """Text printed when deploy refuses to touch Secrets in a CD mode (D14)."""
+    """Text printed when deploy refuses to touch Secrets in a CD mode."""
     who = owner or "the platform operator named in secrets.owner"
     return (
         f"In {mode} mode `deploy` never touches Secrets. {who} provisions the Secret "

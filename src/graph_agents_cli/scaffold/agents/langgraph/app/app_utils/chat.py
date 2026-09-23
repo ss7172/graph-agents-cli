@@ -14,7 +14,7 @@
 
 """The one graph invocation path behind `/chat`, A2A and the playground.
 
-`ChatRuntime.stream()` yields the events of CONTRACTS section 5
+`ChatRuntime.stream()` yields the events of the chat API
 (`message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end`,
 `error`) from either:
 
@@ -22,7 +22,7 @@
 * the LangGraph Server this app is mounted in (`langgraph-server`), through the
   SDK's loopback client, so the server keeps owning persistence and threads.
 
-It writes the run record (D8) and enforces thread ownership (D23) under both
+It writes the run record and enforces thread ownership (one principal per thread) under both
 runtimes: through the `threads` table under fastapi, and through the thread
 metadata `{principal_id, tenant}` under langgraph-server. The SDK loopback
 client runs under the server's `/noauth` root path, so the server's own
@@ -431,7 +431,7 @@ class ChatRuntime:
         if record is None:
             raise HTTPException(status_code=404, detail="Unknown thread.")
         assert_access(principal, record)
-        # Tool arguments reach a non-owner only under TRACE_CAPTURE=full (CONTRACTS section 5).
+        # Tool arguments reach a non-owner only under TRACE_CAPTURE=full.
         include_args = is_owner(principal, record) or capture_full()
         from {{cookiecutter.agent_directory}}.agent import graph
 
@@ -531,7 +531,7 @@ class ChatRuntime:
         if record is None:
             raise HTTPException(status_code=404, detail="Unknown thread.")
         assert_access(principal, record)
-        # Tool arguments reach a non-owner only under TRACE_CAPTURE=full (CONTRACTS section 5).
+        # Tool arguments reach a non-owner only under TRACE_CAPTURE=full.
         include_args = is_owner(principal, record) or capture_full()
         try:
             state = await client.threads.get_state(thread_id)

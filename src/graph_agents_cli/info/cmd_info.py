@@ -86,7 +86,7 @@ def _print_installed_skills(skills: list[dict] | None) -> None:
 
 
 def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
-    """The project block of ``info``: what the manifest records (CONTRACTS section 2)."""
+    """The project block of ``info``: what the manifest records."""
     return {
         "project_root": str(project_root),
         "project_name": cfg.project_name,
@@ -103,7 +103,7 @@ def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
         "cd": cfg.cd,
         "auth_policy": cfg.auth_policy,
         "auth_policy_implemented": cfg.auth_policy_implemented,
-        "product_policy_file": cfg.product_policy_file,
+        "api_policy_file": cfg.api_policy_file,
         "process": cfg.process,
         "environments": cfg.environments,
         "secret_keys": cfg.secret_keys,
@@ -127,7 +127,7 @@ def _print_project(project_root: Path, cfg: ProjectConfig) -> None:
     click.echo(f"CD:                 {cfg.cd}")
     implemented = "" if cfg.auth_policy_implemented else "  (stub, not yet implemented)"
     click.echo(f"Auth policy:        {cfg.auth_policy}{implemented}")
-    click.echo(f"Product policy:     {cfg.product_policy_file or 'none'}")
+    click.echo(f"API policy:         {cfg.api_policy_file or 'none'}")
     click.echo(f"Process:            {cfg.process or 'none'}")
     if cfg.environments:
         click.echo("Environments:")

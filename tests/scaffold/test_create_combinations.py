@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""D6 combination validation and --prototype / --cd semantics of ``create``."""
+"""Combination validation and --prototype / --cd semantics of ``create``."""
 
 from __future__ import annotations
 
 import pytest
 
 from graph_agents_cli.scaffold.utils import template
-from graph_agents_cli.scaffold.utils.template import D6_COMBINATIONS, validate_combination
+from graph_agents_cli.scaffold.utils.template import COMBINATIONS, validate_combination
 
 from .conftest import CreateRunner, read_manifest
 
-ALL_COMBINATIONS = sorted(D6_COMBINATIONS)
+ALL_COMBINATIONS = sorted(COMBINATIONS)
 
 
 def test_d6_table_covers_every_combination() -> None:
@@ -33,8 +33,8 @@ def test_d6_table_covers_every_combination() -> None:
         for c in ("memory", "postgres")
         for t in ("none", "kubernetes")
     }
-    assert set(D6_COMBINATIONS) == expected
-    invalid = {k for k, (valid, _) in D6_COMBINATIONS.items() if not valid}
+    assert set(COMBINATIONS) == expected
+    invalid = {k for k, (valid, _) in COMBINATIONS.items() if not valid}
     assert invalid == {
         ("fastapi", "memory", "kubernetes"),
         ("langgraph-server", "memory", "kubernetes"),
@@ -43,7 +43,7 @@ def test_d6_table_covers_every_combination() -> None:
 
 @pytest.mark.parametrize(("runtime", "checkpointer", "target"), ALL_COMBINATIONS)
 def test_validate_combination_matches_table(runtime: str, checkpointer: str, target: str) -> None:
-    valid, note = D6_COMBINATIONS[(runtime, checkpointer, target)]
+    valid, note = COMBINATIONS[(runtime, checkpointer, target)]
     if valid:
         validate_combination(runtime, checkpointer, target)
     else:
@@ -62,7 +62,7 @@ def test_validate_combination_cd_requires_kubernetes() -> None:
 def test_create_enforces_every_combination(
     run_create: CreateRunner, runtime: str, checkpointer: str, target: str
 ) -> None:
-    valid, note = D6_COMBINATIONS[(runtime, checkpointer, target)]
+    valid, note = COMBINATIONS[(runtime, checkpointer, target)]
     result, project = run_create(
         "--runtime", runtime, "--checkpointer", checkpointer, "--deployment-target", target
     )
@@ -132,7 +132,7 @@ def test_prototype_keeps_explicit_target(run_create: CreateRunner) -> None:
     assert result.exit_code == 0, result.output
     params = read_manifest(project)["create_params"]
     assert params["deployment_target"] == "kubernetes"
-    assert params["cd"] == "skip"  # forced by --prototype (C34)
+    assert params["cd"] == "skip"  # forced by --prototype
     assert (project / "deployment" / "helm" / "mini" / "Chart.yaml").is_file()
     assert not (project / ".github" / "workflows" / "staging.yaml").exists()
 

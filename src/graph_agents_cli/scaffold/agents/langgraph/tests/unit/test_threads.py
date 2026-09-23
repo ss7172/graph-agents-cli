@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Thread ownership (D23): owner, read-across role and stranger; tool-args redaction."""
+"""Thread ownership: owner, read-across role and stranger; tool-args redaction."""
 
 from __future__ import annotations
 

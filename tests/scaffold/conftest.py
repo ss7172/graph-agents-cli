@@ -66,9 +66,9 @@ environments:
 secrets:
   keys: {{ cookiecutter.secret_keys }}
   owner: ""
-{%- if cookiecutter.has_product_policy %}
-product_api:
-  policy_file: product-policy.yaml
+{%- if cookiecutter.has_api_policy %}
+api_policy:
+  policy_file: api-policy.yaml
 {%- endif %}
 process: {{ ("'" ~ cookiecutter.process ~ "'") if cookiecutter.process else 'null' }}
 """

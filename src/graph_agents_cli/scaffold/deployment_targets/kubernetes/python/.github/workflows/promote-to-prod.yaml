@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Promote the staging image to production (D12). Runs in the GitHub
+# Promote the staging image to production. Runs in the GitHub
 # `production` environment, which controls who may initiate a promotion, and
 # only from main. Image tags are the SHORT commit SHA (${GITHUB_SHA::7}), as
 # the staging workflow pushes them. According to CD in .github/agent.env:
@@ -50,7 +50,7 @@ jobs:
       image: ${{ steps.settings.outputs.image }}
       tag: ${{ steps.settings.outputs.tag }}
       chart_path: ${{ steps.settings.outputs.chart_path }}
-      cli_version_pin: ${{ steps.settings.outputs.cli_version_pin }}
+      graph_agents_cli_spec: ${{ steps.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -85,7 +85,7 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
           echo "chart_path=${CHART_PATH}" >> "$GITHUB_OUTPUT"
-          echo "cli_version_pin=${CLI_VERSION_PIN}" >> "$GITHUB_OUTPUT"
+          echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}" >> "$GITHUB_OUTPUT"
 
   open_prod_pr:
     needs: settings
@@ -118,11 +118,11 @@ jobs:
         # a git identity.
         env:
           IMAGE: ${{ needs.settings.outputs.image }}
-          CLI_VERSION_PIN: ${{ needs.settings.outputs.cli_version_pin }}
+          GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          uvx "graph-agents-cli${CLI_VERSION_PIN}" deploy --env prod --image "$IMAGE"
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE"
 
   deploy_helm_push:
     needs: settings
@@ -151,6 +151,6 @@ jobs:
         env:
           GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
           IMAGE: ${{ needs.settings.outputs.image }}
-          CLI_VERSION_PIN: ${{ needs.settings.outputs.cli_version_pin }}
+          GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
         run: |
-          uvx "graph-agents-cli${CLI_VERSION_PIN}" deploy --env prod --image "$IMAGE"
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE"

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FastAPI application: `app` (CONTRACTS section 5).
+"""FastAPI application: `app` (the chat API, threads, health, playground and A2A).
 
 Routes:
   * `POST /chat` (SSE): `message.start`, `message.delta`, `tool.call`,

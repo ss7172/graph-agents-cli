@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Drive one eval case through ``POST /chat`` (CONTRACTS.md section 5) into a trace.
+"""Drive one eval case through ``POST /chat`` (the app's SSE chat API) into a trace.
 
 The SSE transport is ``graph_agents_cli._chat_client.post_chat``; it is imported
-lazily so tests can replace it. A trace (CONTRACTS.md section 11) is derived
+lazily so tests can replace it. A trace (one JSON object per case) is derived
 from the events: ``message.delta`` text becomes ``response``, ``tool.call`` /
 ``tool.result`` pairs become ``tool_calls``, ``message.end`` supplies ``usage``,
 ``latency_ms``, ``thread_id`` and ``run_id``; an ``error`` event or any

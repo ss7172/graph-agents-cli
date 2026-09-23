@@ -40,14 +40,14 @@ Rules for tests:
   project or run helm are marked `slow` (registered in `pyproject.toml`) and are
   deselected by `-m "not slow"`.
 - Rendered-project snapshots live under `tests/fixtures/rendered/<combo>/` and are
-  regenerated with `uv run python scripts/regen_fixtures.py`. The script renders five
-  combinations (`fastapi-none-memory`, `fastapi-k8s-postgres`,
-  `fastapi-argocd-product-session`, `server-helm-push`, `fastapi-k8s-policy-process`)
+  regenerated with `uv run python scripts/regen_fixtures.py`. The script renders six
+  combinations (`fastapi-none-memory`, `fastapi-k8s-postgres`, `fastapi-argocd-custom`,
+  `server-helm-push`, `fastapi-k8s-policy-process`, `fastapi-none-jwt`)
   through the real `create -y --skip-checks --skip-deps --registry ghcr.io/e2e`
   (`--skip-deps` is a hidden `create` flag) and writes `files.json` (sorted relative
   file list) and `manifest.yaml` (`generated_at` replaced by `<generated_at>`) per
   combination; the sample policy input lives in
-  `tests/fixtures/rendered/_inputs/product-policy.yaml`. Run it after a deliberate
+  `tests/fixtures/rendered/_inputs/api-policy.yaml`. Run it after a deliberate
   template change and review the diff of a regenerated fixture as carefully as the
   template change that caused it.
 - `tests/integration/test_render_snapshots.py` (fast, offline) compares fresh renders to
@@ -102,7 +102,15 @@ and its tests when adding a variable.
 
 The manifest written into every project (`graph-agents-cli-manifest.yaml`) records the
 create parameters so `scaffold upgrade` can regenerate the exact prior baseline with the
-prior CLI version (`uvx graph-agents-cli@<version>`) and 3-way merge it.
+prior CLI version (`uvx --from <install_spec(version)> graph-agents-cli`, see
+`scaffold/utils/version.py`) and 3-way merge it.
+
+The API policy rules (`api-policy.yaml` schema and call matching) exist twice: in
+`src/graph_agents_cli/_api_policy.py` (used by `create` and `lint`) and in the template's
+`app/app_utils/api_client.py` (the runtime). The block between the `SHARED API POLICY RULES`
+markers must stay byte-identical; `tests/dev/test_api_policy_parity.py` enforces it and feeds
+the same valid and invalid policies to both. Change the CLI copy, then copy the block into the
+template.
 
 ## How locks are regenerated
 

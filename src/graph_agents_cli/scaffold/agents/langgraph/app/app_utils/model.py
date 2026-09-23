@@ -48,7 +48,7 @@ PROVIDER_TO_LANGCHAIN: dict[str, str] = {
     "openai-compatible": "openai",
 }
 
-# Provider -> the environment variable holding its key (CONTRACTS section 2).
+# Provider -> the environment variable holding its key.
 PROVIDER_KEY_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",

@@ -16,7 +16,7 @@
 """Skills version drift detection for graph-agents-cli.
 
 Owns the ``graph-agents-cli-`` skills prefix filter that ``info`` relies on.
-The check is opt-out for disconnected installs (DECISIONS.md D21): it is
+The check is opt-out for disconnected installs: it is
 skipped when ``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`` or a CI marker is set, and
 it degrades silently (debug log only) when ``npx`` or the network is absent.
 """
@@ -36,7 +36,7 @@ SKILLS_NPX_PACKAGE = "skills@1.5.9"
 
 SKILL_PREFIX = "graph-agents-cli-"
 
-# Opt-out for the update and skills-version checks (D21). `main.py` reads the
+# Opt-out for the update and skills-version checks (disconnected installs). `main.py` reads the
 # same variable before importing this module; the check re-reads it so that a
 # direct call honours the opt-out too.
 NO_UPDATE_CHECK_ENV = "GRAPH_AGENTS_CLI_NO_UPDATE_CHECK"
@@ -191,7 +191,7 @@ def _is_ci() -> bool:
 
 
 def _is_opted_out() -> bool:
-    """Return True when the user disabled the check (D21)."""
+    """Return True when the user disabled the check."""
     return os.environ.get(NO_UPDATE_CHECK_ENV) == "1"
 
 
@@ -222,7 +222,7 @@ def check_skills_version() -> None:
     Scans all installed ``graph-agents-cli-*`` skills, compares each
     ``metadata.version`` with the running ``__version__``, and lists
     the mismatched ones.  Never blocks execution. Skipped entirely in CI
-    and when ``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`` (D21). Silent offline.
+    and when ``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1``. Silent offline.
     """
     if _is_opted_out() or _is_ci() or not _skills_check_is_due():
         return

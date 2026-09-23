@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tracing setup (DECISIONS.md D17): explicit opt-in, LangSmith or OpenTelemetry.
+"""Tracing setup: explicit opt-in, LangSmith or OpenTelemetry.
 
 Nothing is configured unless `TRACING_ENABLED=true`. Then:
 

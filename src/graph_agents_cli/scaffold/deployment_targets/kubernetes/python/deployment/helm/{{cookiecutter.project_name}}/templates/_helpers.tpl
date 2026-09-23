@@ -6,7 +6,7 @@ Helpers for the graph-agents-cli agent chart. Copied verbatim into projects.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{/* Release name = project name (D9); resources are named after the release. */}}
+{{/* Release name = project name; resources are named after the release. */}}
 {{- define "agent.fullname" -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
@@ -36,7 +36,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/* The app Secret: existingSecret, default "<release>-app" (D14). */}}
+{{/* The app Secret: existingSecret, default "<release>-app". */}}
 {{- define "agent.secretName" -}}
 {{- default (printf "%s-app" (include "agent.fullname" .)) .Values.existingSecret -}}
 {{- end -}}

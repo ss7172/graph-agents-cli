@@ -23,6 +23,7 @@ and review the fixture diff.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,7 @@ def test_manifest_matches_fixture(rendered: dict[str, Path], name: str) -> None:
 
 @pytest.mark.parametrize("name", list(rf.COMBINATIONS))
 def test_layout_follows_contracts(rendered: dict[str, Path], name: str) -> None:
-    """CONTRACTS sections 2 and 3, independent of the exact fixture content."""
+    """The manifest and conditional-file rules, independent of the exact fixture content."""
     combo = rf.COMBINATIONS[name]
     project = rendered[name]
     for rel in combo.expect_present:
@@ -79,10 +80,10 @@ def test_layout_follows_contracts(rendered: dict[str, Path], name: str) -> None:
                 assert set(manifest["environments"]) == {"dev", "staging", "prod"}
                 for env, block in manifest["environments"].items():
                     assert block["namespace"] == f"{combo.project_name}-{env}"
-        elif key == "product_api":
-            assert ("product_api" in manifest) is value, f"{name}: product_api block"
+        elif key == "api_policy":
+            assert ("api_policy" in manifest) is value, f"{name}: api_policy block"
             if value:
-                assert manifest["product_api"]["policy_file"] == "product-policy.yaml"
+                assert manifest["api_policy"]["policy_file"] == "api-policy.yaml"
         elif key == "secret_keys":
             assert manifest["secrets"]["keys"] == value, f"{name}: secrets.keys"
         elif key == "process":
@@ -110,3 +111,76 @@ def test_fixture_directories_are_complete() -> None:
         "tests/fixtures/rendered/ and scripts/regen_fixtures.py COMBINATIONS disagree; "
         "run `uv run python scripts/regen_fixtures.py`"
     )
+
+
+# --- .github/agent.env as the GitHub runner reads it ---------------------------
+
+# pr_checks.yaml loads agent.env with: grep -Ev '^[[:space:]]*(#|$)' .github/agent.env >> "$GITHUB_ENV"
+_WORKFLOW_FILTER = re.compile(r"^[ \t\n\r\f\v]*(#|$)")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _workflow_filter(text: str) -> str:
+    """What the pr_checks `grep -Ev` keeps."""
+    return "".join(
+        line for line in text.splitlines(keepends=True) if not _WORKFLOW_FILTER.match(line)
+    )
+
+
+def _parse_github_env_file(text: str) -> dict[str, str]:
+    """Port of the runner's GITHUB_ENV file parser (actions/runner, FileCommandManager).
+
+    Each non-empty line is ``NAME=VALUE`` or opens a ``NAME<<DELIMITER`` heredoc;
+    anything else fails the step with ``Invalid format '<line>'``.
+    """
+    lines = text.replace("\r\n", "\n").split("\n")
+    entries: dict[str, str] = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if line == "":
+            continue
+        equals, heredoc = line.find("="), line.find("<<")
+        if equals >= 0 and (heredoc < 0 or equals < heredoc):
+            name, value = line.split("=", 1)
+            if not name:
+                raise ValueError(f"Invalid format '{line}'. Name must not be empty")
+            entries[name] = value
+        elif heredoc >= 0 and (equals < 0 or heredoc < equals):
+            name, delimiter = line.split("<<", 1)
+            body: list[str] = []
+            while index < len(lines) and lines[index] != delimiter:
+                body.append(lines[index])
+                index += 1
+            if index >= len(lines):
+                raise ValueError(f"Invalid value. Matching delimiter not found '{delimiter}'")
+            index += 1
+            entries[name] = "\n".join(body)
+        else:
+            raise ValueError(f"Invalid format '{line}'")
+    return entries
+
+
+def test_the_workflow_filter_is_what_pr_checks_runs() -> None:
+    pr_checks = (
+        rf.REPO_ROOT
+        / "src/graph_agents_cli/scaffold/base_templates/python/.github/workflows/pr_checks.yaml"
+    ).read_text(encoding="utf-8")
+    assert "grep -Ev '^[[:space:]]*(#|$)' .github/agent.env" in pr_checks
+
+
+@pytest.mark.parametrize("name", list(rf.COMBINATIONS))
+def test_agent_env_loads_into_github_env(rendered: dict[str, Path], name: str) -> None:
+    """Every rendered agent.env, filtered as pr_checks does, parses with the runner's rules."""
+    text = (rendered[name] / ".github" / "agent.env").read_text(encoding="utf-8")
+    entries = _parse_github_env_file(_workflow_filter(text))
+    assert all(_ENV_NAME.match(key) for key in entries), entries
+    spec = entries["GRAPH_AGENTS_CLI_SPEC"]
+    assert spec.startswith("git+https://github.com/ss7172/graph-agents-cli"), spec
+    assert "CLI_VERSION_PIN" not in entries
+    if rf.COMBINATIONS[name].manifest.get("environments", True):
+        assert {"IMAGE_REPOSITORY", "RELEASE_NAME", "CHART_PATH", "RUNTIME", "CD"} <= set(entries)
+    # Unfiltered, the comment line is exactly what broke pr_checks before.
+    with pytest.raises(ValueError, match="Invalid format"):
+        _parse_github_env_file(text)

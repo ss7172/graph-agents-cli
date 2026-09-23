@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Merge engine: D26 categories, three_way_compare, and the authentic-baseline stop."""
+"""Merge engine: preservation categories, three_way_compare, and the authentic-baseline stop."""
 
 from __future__ import annotations
 
@@ -40,12 +40,12 @@ from .conftest import CreateRunner, read_manifest
         ("app/agent.py", "agent_code"),
         ("app/tools/search.py", "agent_code"),
         ("app/tools/nested/deep.py", "agent_code"),
-        ("app/policies/product_session.py", "agent_code"),
+        ("app/policies/custom.py", "agent_code"),
         ("app/prompts/system.md", "agent_code"),
         ("app/graph/nodes.py", "agent_code"),
         (".env", "config_files"),
         (".env.dev", "config_files"),
-        ("product-policy.yaml", "config_files"),
+        ("api-policy.yaml", "config_files"),
         ("deployment/helm/my-agent/values-dev.yaml", "config_files"),
         ("deployment/helm/my-agent/values-prod.yaml", "config_files"),
         ("deployment/argocd/application-prod.yaml", "config_files"),
@@ -253,11 +253,18 @@ def test_authentic_baseline_stops_when_uvx_fails(
     from graph_agents_cli.scaffold.utils import version as version_module
 
     monkeypatch.setattr(version_module, "get_current_version", lambda: "0.2.0")
+    monkeypatch.delenv(version_module.INSTALL_SPEC_ENV, raising=False)
     ok = merge.run_create_command(["--cd", "skip"], tmp_path, "p", "0.1.0")
     assert ok is False
     assert vendored_calls == []  # no silent fallback to the current templates
     assert len(uvx_calls) == 1
-    assert uvx_calls[0][:4] == ["uvx", "graph-agents-cli@0.1.0", "scaffold", "create"]
+    assert uvx_calls[0][:5] == [
+        "uvx",
+        "--from",
+        "git+https://github.com/ss7172/graph-agents-cli@v0.1.0",
+        "graph-agents-cli",
+        "scaffold",
+    ]
     assert "--baseline current" in caplog.text
 
 

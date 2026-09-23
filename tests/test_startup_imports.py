@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Startup must import no agent framework, model SDK, or cluster client (D26, C1).
+"""Startup must import no agent framework, model SDK, or cluster client.
 
 Each check runs in a fresh interpreter so imports made by other tests in the
 session cannot leak into ``sys.modules``.

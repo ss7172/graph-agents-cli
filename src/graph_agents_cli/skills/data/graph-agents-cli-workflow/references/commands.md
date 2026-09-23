@@ -27,7 +27,8 @@ graph-agents-cli update [--workspace] [-i/--interactive] [-y/--yes]
 graph-agents-cli login [--profile default|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]
 ```
 
-- `setup` installs the CLI (`uv tool install graph-agents-cli`) and the six
+- `setup` installs the CLI (`uv tool install <install spec>`: the running version's git tag, or
+  `GRAPH_AGENTS_CLI_INSTALL_SPEC`) and the six
   `graph-agents-cli-*` skills into detected coding agents through `npx skills add`, falling back to
   the wheel-bundled copy, then to a direct copy into `~/.agents/skills` (`./.agents/skills` with
   `--workspace`). `--agent` is repeatable (`claude-code`, `cursor`, ... or `all`); `--dev` installs
@@ -61,19 +62,19 @@ graph-agents-cli create [PROJECT_NAME]
   -d/--deployment-target kubernetes | none                          (default: kubernetes)
   --registry TEXT                                                   (default: ghcr.io/<git origin owner>)
   --cd argocd | helm-push | skip                                    (default: skip; requires --deployment-target kubernetes)
-  --auth-policy shared-bearer | product-session                     (default: shared-bearer)
-  --product-policy FILE                                             (seeds product-policy.yaml)
+  --auth-policy shared-bearer | jwt | custom                        (default: shared-bearer)
+  --api-policy FILE                                                 (validated, then seeds api-policy.yaml)
   --process TEXT                                                    (path or string recorded as process: and rendered into the guidance file)
   -p/--prototype                                                    (target defaults to none unless given; CD forced to skip)
-  -dir/--agent-directory TEXT   --agent-guidance-filename TEXT (default GEMINI.md)   -bt/--base-template TEXT (remote templates only)
+  -dir/--agent-directory TEXT   --agent-guidance-filename TEXT (default AGENTS.md)   -bt/--base-template TEXT (remote templates only)
   -i/--interactive   -y/--auto-approve/--yes   -s/--skip-checks (skips only the uv-on-PATH preflight)   --debug
 graph-agents-cli scaffold create [PROJECT_NAME] ...                 (same command)
 graph-agents-cli scaffold enhance [TEMPLATE_PATH]
   -n/--name TEXT plus every create flag above (--runtime, --model-provider, --model, --checkpointer,
-  -d/--deployment-target, --registry, --cd, --auth-policy, --product-policy, --process, -p, -dir,
+  -d/--deployment-target, --registry, --cd, --auth-policy, --api-policy, --process, -p, -dir,
   --agent-guidance-filename, -bt, -i, -y, -s, --debug) and
   --force   --dry-run/--dryrun   --prefer-new
-  (--product-policy is refused by enhance: product-policy.yaml is owned by the product)
+  (--api-policy is refused by enhance: api-policy.yaml belongs to the project and is never edited)
 graph-agents-cli scaffold upgrade [PROJECT_PATH] [--dry-run/--dryrun] [-y/--auto-approve/--yes] [-i/--interactive]
   [--baseline authentic|current] [--debug]
 ```
@@ -87,7 +88,7 @@ the `flags.md` reference of `/graph-agents-cli-scaffold`.
 ```
 graph-agents-cli playground [--port INTEGER] [--graph] [--no-open]
 graph-agents-cli run MESSAGE [--mode chat|a2a] [--url TEXT] [--thread-id TEXT]
-  [-H/--header 'Key: Value']... [--cookie name=value]... [--session-token TEXT] [-f/--file FILE]...
+  [-H/--header 'Key: Value']... [--cookie name=value]... [-f/--file FILE]...
   [--start-server] [--stop-server] [-v/--verbose]
 graph-agents-cli install [--clean] [--locked]
 graph-agents-cli lint [--fix] [--policy-only]
@@ -100,20 +101,22 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
 - `run`: default `--mode chat` against the local server it starts (tracked in
   `.graph-agents-cli/run_server.json`), or against `--url`. Credentials per auth policy:
   `--header` or `GRAPH_AGENTS_CLI_API_KEY` for `shared-bearer` (a local run falls back to the
-  `API_KEY` in `.env`); `--cookie` or `--session-token` (sent as `X-Session-Token`) for
-  `product-session`. `--file` attaches UTF-8 text files as extra context. `--start-server` keeps
+  `API_KEY` in `.env`); `--header 'Authorization: Bearer <token>'` for `jwt`; `--header` or
+  `--cookie` for `custom`. `--file` attaches UTF-8 text files as extra context. `--start-server` keeps
   the local server for later runs (idle timeout 30 minutes); `--stop-server` stops it. `-v` prints
   every SSE event as JSON. The footer's "Resume with" line prints credential flags redacted
-  (`--header 'Authorization: <redacted>'`, `--cookie name=<redacted>`, `--session-token <redacted>`);
+  (`--header 'Authorization: <redacted>'`, `--cookie name=<redacted>`);
   re-supply them. A turn silent for 600 s is reported as "no event from the agent" and leaves the
   server running (a one-off server is still stopped). `--mode a2a` needs the optional `a2a` extra
-  (`uv tool install 'graph-agents-cli[a2a]'`) and fails with a one-line hint before any server
+  (the hint prints the `uv tool install` command) and fails with a one-line hint before any server
   starts when it is absent.
 - `install`: `uv sync` (`--clean` recreates `.venv`; `--locked` asserts `uv.lock` matches
   `pyproject.toml`) plus re-materialising vendored extensions.
 - `lint`: `ruff check` and `ruff format --check` (`--fix` applies both) plus the static
-  product-policy check: every module under `app/tools/` declares a literal `PRODUCT_CALLS`, read
-  with `ast` by the CLI and checked against `product-policy.yaml` and, when set, the OpenAPI spec.
+  API-policy check: `api-policy.yaml` passes the strict schema, and every module under
+  `app/tools/` declares a literal `API_CALLS`, read with `ast` by the CLI and checked against the
+  named API's rules and, when set, its OpenAPI spec. A leftover `PRODUCT_CALLS` is an error; a
+  project still on `product-policy.yaml` stops with migration steps (exit 3).
   `--policy-only` skips ruff.
 - `build`: `docker build -t <registry>/<name>:<tag> -f Dockerfile .` (default tag `latest`;
   `--registry` overrides the manifest; `--push` pushes; `--dry-run` prints the commands). Exit `2`
@@ -122,11 +125,11 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
 ## Evaluate
 
 ```
-graph-agents-cli eval run      [--dataset TEXT] [--url TEXT] [--concurrency N] [-H/--header]... [--cookie]... [--session-token TEXT]
+graph-agents-cli eval run      [--dataset TEXT] [--url TEXT] [--concurrency N] [-H/--header]... [--cookie]...
                                [--app-name TEXT] [--timeout SECONDS] [--config PATH] [-o/--output TEXT]
                                [--judge-provider TEXT] [--judge-model TEXT] [--judge-timeout SECONDS]
 graph-agents-cli eval generate [--dataset TEXT] [-o/--output TEXT] [--url TEXT] [--concurrency N] [-H/--header]... [--cookie]...
-                               [--session-token TEXT] [--app-name TEXT] [--timeout SECONDS]
+                               [--app-name TEXT] [--timeout SECONDS]
 graph-agents-cli eval grade    [--traces PATH] [--dataset TEXT] [--config PATH] [-o/--output TEXT]
                                [--judge-provider TEXT] [--judge-model TEXT] [--judge-timeout SECONDS]
 graph-agents-cli eval compare  BASELINE CANDIDATE [--fail-on-regression] [--json]
@@ -158,7 +161,7 @@ graph-agents-cli deploy --env TEXT [--image TEXT] [--env-file TEXT] [--status] [
   Argo CD (only when `cd: argocd`), metrics-server (only when `hpa.enabled`), the namespace, the
   image pull secret, the app Secret (required in `helm-push`/`argocd` modes), and, when `gh` is
   logged in, the GitHub `production`/`staging` environments and `main` branch protection.
-  `--profile disconnected` adds the D25 checks. Never creates anything.
+  `--profile disconnected` adds the disconnected-profile checks (no hosted dependency). Never creates anything.
 - `secrets apply` creates or updates the Opaque Secret `<release>-app` in the environment's
   namespace from the allow-listed keys (`secrets.keys` in the manifest) present in `--env-file`
   (default `.env.<env>` then `.env`) through a 0600 temporary `--from-env-file` piped into
@@ -188,7 +191,7 @@ graph-agents-cli info [--json]
 
 `info` prints the CLI version and install path plus, inside a project: name, base template,
 agent directory, runtime, model provider and model, checkpointer, deployment target, registry,
-CD mode, auth policy, the product-policy file (or none), `process`, the environments with their
+CD mode, auth policy, the API policy file (or none), `process`, the environments with their
 namespaces, and active extensions with their sources and conflicts.
 
 ## Environment variables (CLI side)

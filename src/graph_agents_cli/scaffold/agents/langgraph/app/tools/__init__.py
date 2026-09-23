@@ -14,12 +14,12 @@
 
 """Tool registry.
 
-Convention (DECISIONS.md D28): every module in this package declares
-``PRODUCT_CALLS``, a module-level list of ``{"method", "operation_id", "path"}``
-dicts naming every product API call it makes (``[]`` when it makes none), and
-``TOOLS``, the list of tool objects it contributes. Product calls go through
-``app_utils.product_client`` only. `graph-agents-cli lint` checks the
-declarations against `product-policy.yaml`.
+Convention: every module in this package declares ``API_CALLS``, a
+module-level list of ``{"api", "method", "operation_id", "path"}`` dicts naming
+every external API call it makes (``[]`` when it makes none), and ``TOOLS``,
+the list of tool objects it contributes. External calls go through
+``app_utils.api_client.get_client`` only, which enforces `api-policy.yaml` at
+runtime; `graph-agents-cli lint` checks the declarations against the same file.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ def get_tools() -> list[Any]:
     tools: list[Any] = []
     for info in sorted(pkgutil.iter_modules(__path__), key=lambda i: i.name):
         module = importlib.import_module(f"{__name__}.{info.name}")
-        if not hasattr(module, "PRODUCT_CALLS"):
+        if not hasattr(module, "API_CALLS"):
             logger.warning(
-                "%s declares no PRODUCT_CALLS; `graph-agents-cli lint` will flag it.",
+                "%s declares no API_CALLS (use [] when it calls no external API).",
                 module.__name__,
             )
         tools.extend(getattr(module, "TOOLS", []))

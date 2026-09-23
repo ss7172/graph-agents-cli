@@ -62,7 +62,7 @@ def test_conditional_files_for_target_none(run_create: CreateRunner) -> None:
     assert _exists(project, ".github/workflows/pr_checks.yaml")
     assert not _exists(project, ".github/workflows/staging.yaml")
     assert not _exists(project, ".github/CODEOWNERS")
-    assert not _exists(project, "product-policy.yaml")
+    assert not _exists(project, "api-policy.yaml")
     manifest = read_manifest(project)
     assert "environments" not in manifest
     assert manifest["create_params"]["registry"] == ""
@@ -75,7 +75,8 @@ def test_conditional_files_table_matches_contract() -> None:
         ".github/CODEOWNERS",
         "deployment/argocd",
         "deployment",
-        "product-policy.yaml",
+        "api-policy.yaml",
+        "{agent_directory}/tools/example_api.py",
     }
     for pattern in (
         "deployment/helm/*/templates/*",
@@ -170,7 +171,7 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
         "--cd",
         "helm-push",
         "--auth-policy",
-        "product-session",
+        "custom",
         "--process",
         "docs/workflow.md",
         "--agent-guidance-filename",
@@ -193,7 +194,7 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
         "checkpointer": "postgres",
         "registry": "registry.example.com/team",
         "cd": "helm-push",
-        "auth_policy": "product-session",
+        "auth_policy": "custom",
         "auth_policy_implemented": False,
         "agent_guidance_filename": "CLAUDE.md",
     }
@@ -208,7 +209,7 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
     }
     assert manifest["secrets"]["keys"][0] == "GOOGLE_API_KEY"
     assert "DATABASE_URI" in manifest["secrets"]["keys"]
-    assert "product_api" not in manifest
+    assert "api_policy" not in manifest
     assert manifest["process"] == "docs/workflow.md"
 
     # The typed reader agrees with the file.
@@ -220,7 +221,7 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
 
     # Guidance file and env example are rendered with the new variables.
     assert (project / "CLAUDE.md").read_text() == "# my-agent\n\nprocess: docs/workflow.md\n"
-    assert not _exists(project, "GEMINI.md")
+    assert not _exists(project, "AGENTS.md")
     env_example = (project / ".env.example").read_text()
     assert "MODEL_PROVIDER=gemini" in env_example
     assert "GOOGLE_API_KEY=" in env_example
@@ -229,7 +230,9 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
     assert 'PROVIDER_KEY_VAR = "GOOGLE_API_KEY"' in rendered
     assert 'DEFAULT_JUDGE_MODEL = "gemini-x"' in rendered
     assert "SECRET_KEYS = ['GOOGLE_API_KEY'" in rendered
-    assert "HAS_PRODUCT_POLICY = False" in rendered
+    assert "HAS_API_POLICY = False" in rendered
+    assert "APIS = []" in rendered
+    assert 'CLI_INSTALL_SPEC = "git+https://github.com/ss7172/graph-agents-cli' in rendered
     assert "TAGS = ['langgraph']" in rendered
     assert 'RECORDED_BASE_TEMPLATE = "mini_agent"' in rendered
 
@@ -239,65 +242,122 @@ def test_process_defaults_to_null(run_create: CreateRunner) -> None:
     assert result.exit_code == 0, result.output
     manifest = read_manifest(project)
     assert "process" in manifest and manifest["process"] is None
-    assert (project / "GEMINI.md").read_text() == "# my-agent\n\nprocess: none\n"
+    # AGENTS.md is the default guidance file (read by most coding agents).
+    assert (project / "AGENTS.md").read_text() == "# my-agent\n\nprocess: none\n"
 
 
-def test_product_policy_is_seeded(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
+POLICY = """\
+apis:
+  billing:
+    base_url_env: BILLING_API_BASE_URL
+    auth: bearer
+    token_env: BILLING_API_TOKEN
+    allowed_methods: [GET]
+  directory:
+    base_url_env: DIRECTORY_API_BASE_URL
+    auth: none
+    allowed_methods: ["*"]
+"""
+
+
+def test_api_policy_is_seeded(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
     policy = tmp_path / "policy.yaml"
-    policy.write_text("product_api:\n  auth: bearer\n  allowed_methods: [GET]\n")
-    result, project = run_create("--product-policy", str(policy))
+    policy.write_text(POLICY)
+    result, project = run_create("--api-policy", str(policy))
     assert result.exit_code == 0, result.output
-    assert (project / "product-policy.yaml").read_text() == policy.read_text()
+    assert (project / "api-policy.yaml").read_text() == policy.read_text()
     manifest = read_manifest(project)
-    assert manifest["product_api"] == {"policy_file": "product-policy.yaml"}
-    assert read_project_config(str(project)).product_policy_file == "product-policy.yaml"
-    assert "HAS_PRODUCT_POLICY = True" in (project / "app" / "fast_api_app.py").read_text()
-    # A bearer policy's token joins secrets.keys (Section 7 item 21, CONTRACTS section 4).
+    assert manifest["api_policy"] == {"policy_file": "api-policy.yaml"}
+    assert read_project_config(str(project)).api_policy_file == "api-policy.yaml"
+    rendered = (project / "app" / "fast_api_app.py").read_text()
+    assert "HAS_API_POLICY = True" in rendered
+    # The templates see every declared API (the example tool uses the first).
+    assert "'name': 'billing'" in rendered and "'name': 'directory'" in rendered
+    # A bearer API's token joins secrets.keys so it reaches the Secret.
     assert manifest["secrets"]["keys"] == [
         *default_secret_keys("openai", "fastapi"),
-        "PRODUCT_API_TOKEN",
+        "BILLING_API_TOKEN",
     ]
-    assert "PRODUCT_API_TOKEN" in read_project_config(str(project)).secret_keys
 
 
 @pytest.mark.parametrize(
-    ("policy_text", "expected_extra"),
+    ("policy_text", "fragment"),
     [
-        ("product_api:\n  auth: bearer\n  token_env: MY_TOKEN\n", ["MY_TOKEN"]),
-        ("auth: bearer\n", ["PRODUCT_API_TOKEN"]),  # unwrapped shape
-        ("product_api:\n  auth: forwarded-session\n", []),
-        ("product_api:\n  allowed_methods: [GET]\n", []),
+        ("product_api:\n  auth: bearer\n  allowed_methods: [GET]\n", "retired single-API format"),
+        ("apis:\n  a:\n    base_url_env: A\n    auth: none\n", "allowed_methods: required"),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+            "    allowed_operation: []\n",
+            "unknown key 'allowed_operation'",
+        ),
+        ("apis: [\n", "not valid YAML"),
     ],
 )
-def test_secret_keys_follow_the_policy_token_env(
-    run_create: CreateRunner, tmp_path: pathlib.Path, policy_text: str, expected_extra: list[str]
+def test_invalid_api_policy_is_refused_before_rendering(
+    run_create: CreateRunner, tmp_path: pathlib.Path, policy_text: str, fragment: str
 ) -> None:
     policy = tmp_path / "policy.yaml"
     policy.write_text(policy_text)
-    result, project = run_create("--product-policy", str(policy))
-    assert result.exit_code == 0, result.output
-    assert read_manifest(project)["secrets"]["keys"] == [
-        *default_secret_keys("openai", "fastapi"),
-        *expected_extra,
-    ]
+    result, project = run_create("--api-policy", str(policy))
+    assert result.exit_code == 3, result.output
+    assert fragment in result.output
+    assert not project.exists()
 
 
-def test_product_policy_must_exist(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
-    result, project = run_create("--product-policy", str(tmp_path / "missing.yaml"))
+def test_forward_auth_is_refused_under_langgraph_server(
+    run_create: CreateRunner, tmp_path: pathlib.Path
+) -> None:
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(
+        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET]\n"
+    )
+    result, project = run_create("--runtime", "langgraph-server", "--api-policy", str(policy))
+    assert result.exit_code == 2, result.output
+    assert "auth: forward" in result.output and "langgraph-server" in result.output
+    assert not project.exists()
+    ok, _ = run_create("--api-policy", str(policy), name="fastapi-forward")
+    assert ok.exit_code == 0, ok.output
+
+
+def test_api_policy_must_exist(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
+    result, project = run_create("--api-policy", str(tmp_path / "missing.yaml"))
     assert result.exit_code != 0
     assert not project.exists()
+
+
+def test_retired_policy_flag_and_auth_name_are_refused_with_a_hint(
+    run_create: CreateRunner, tmp_path: pathlib.Path
+) -> None:
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(POLICY)
+    result, project = run_create("--product-policy", str(policy))
+    assert result.exit_code == 2
+    assert "--api-policy" in result.output
+    assert not project.exists()
+    result, project = run_create("--auth-policy", "product-session")
+    assert result.exit_code == 2
+    assert "use --auth-policy custom" in result.output
+    assert not project.exists()
+
+
+@pytest.mark.parametrize(("policy", "implemented"), [("jwt", True), ("custom", False)])
+def test_auth_policy_choices(run_create: CreateRunner, policy: str, implemented: bool) -> None:
+    result, project = run_create("--auth-policy", policy)
+    assert result.exit_code == 0, result.output
+    params = read_manifest(project)["create_params"]
+    assert params["auth_policy"] == policy
+    assert params["auth_policy_implemented"] is implemented
+    assert read_project_config(str(project)).auth_policy == policy
 
 
 def test_template_shipped_policy_is_dropped_without_flag(
     run_create: CreateRunner, scaffold_root: pathlib.Path
 ) -> None:
-    (scaffold_root / "agents" / "mini_agent" / "product-policy.yaml").write_text(
-        "product_api: {}\n"
-    )
+    (scaffold_root / "agents" / "mini_agent" / "api-policy.yaml").write_text("apis: {}\n")
     result, project = run_create()
     assert result.exit_code == 0, result.output
-    assert not _exists(project, "product-policy.yaml")
-    assert "product_api" not in read_manifest(project)
+    assert not _exists(project, "api-policy.yaml")
+    assert "api_policy" not in read_manifest(project)
 
 
 def test_registry_defaults_to_placeholder_without_git_remote(run_create: CreateRunner) -> None:

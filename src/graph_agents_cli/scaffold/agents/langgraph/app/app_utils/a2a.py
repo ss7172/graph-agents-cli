@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A2A protocol layer: the executor, the agent card, and the routes (D15).
+"""A2A protocol layer: the executor, the agent card, and the routes.
 
 The executor drives the same invocation path as `/chat` (`ChatRuntime`), so
 the A2A `contextId` is the chat thread id and the same policy, run records
@@ -57,7 +57,7 @@ from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH, PROTOCOL_VERSION_1_0
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from {{cookiecutter.agent_directory}}.app_utils.auth import PRODUCT_SESSION, Principal, policy_name
+from {{cookiecutter.agent_directory}}.app_utils.auth import CUSTOM, JWT, Principal, policy_name
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
     EVENT_DELTA,
     EVENT_ERROR,
@@ -162,18 +162,32 @@ class LangGraphAgentExecutor(AgentExecutor):
 
 
 def _security() -> tuple[dict[str, SecurityScheme], str]:
-    if policy_name() == PRODUCT_SESSION:
+    name = policy_name()
+    if name == JWT:
         return (
             {
-                "session": SecurityScheme(
-                    api_key_security_scheme=APIKeySecurityScheme(
-                        name="X-Session-Token",
-                        location="header",
-                        description="Product session token (forwarded session cookie also accepted).",
+                "bearer": SecurityScheme(
+                    http_auth_security_scheme=HTTPAuthSecurityScheme(
+                        scheme="bearer",
+                        bearer_format="JWT",
+                        description="OIDC/JWT access token of the calling user.",
                     )
                 )
             },
-            "session",
+            "bearer",
+        )
+    if name == CUSTOM:
+        return (
+            {
+                "custom": SecurityScheme(
+                    api_key_security_scheme=APIKeySecurityScheme(
+                        name="Authorization",
+                        location="header",
+                        description="Credential defined by the project's custom auth policy.",
+                    )
+                )
+            },
+            "custom",
         )
     return (
         {

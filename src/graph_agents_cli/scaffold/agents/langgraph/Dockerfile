@@ -20,6 +20,12 @@ COPY {{cookiecutter.agent_directory}} ./{{cookiecutter.agent_directory}}
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
+# The outbound API policy travels with the image: without it the API client
+# refuses every call. The glob copies api-policy.yaml when the project has one
+# and nothing otherwise (pyproject.toml is repeated only so the COPY always has
+# a source).
+COPY pyproject.toml api-policy.yam[l] ./
+
 ENV PATH="/app/.venv/bin:$PATH" \
     HOST=0.0.0.0 \
     PORT=8000

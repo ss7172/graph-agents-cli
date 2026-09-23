@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Synchronous client for the chat API of a scaffolded agent (CONTRACTS section 5).
+"""Synchronous client for the chat API (``POST /chat``, SSE) of a scaffolded agent.
 
 The server side is ``POST /chat`` streaming server-sent events, ``GET /health``,
 and ``GET /threads/{thread_id}/messages``. This module is the only client-side
@@ -29,7 +29,7 @@ from typing import Any, NamedTuple
 
 import httpx
 
-# Event names defined by CONTRACTS section 5.
+# Event names the scaffolded app streams from POST /chat.
 EVENT_MESSAGE_START = "message.start"
 EVENT_MESSAGE_DELTA = "message.delta"
 EVENT_TOOL_CALL = "tool.call"

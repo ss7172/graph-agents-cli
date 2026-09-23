@@ -192,10 +192,15 @@ async def test_chat_error_event_replaces_message_end_and_records_the_run(
     assert record.status == "error" and record.error_type == "RuntimeError"
 
 
-async def test_product_session_stub_answers_503_on_every_surface(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("policy", "marker"),
+    [("custom", "AUTH_POLICY=custom"), ("jwt", "AUTH_POLICY=jwt"), ("product-session", "custom")],
+)
+async def test_stub_policies_answer_503_on_every_surface(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, policy: str, marker: str
 ) -> None:
-    monkeypatch.setenv("AUTH_POLICY", "product-session")
+    """`custom` (and its retired name) and the `jwt` placeholder fail closed everywhere."""
+    monkeypatch.setenv("AUTH_POLICY", policy)
     reset_policy_cache()
     try:
         assert (await client.get("/health")).status_code == 200
@@ -208,7 +213,7 @@ async def test_product_session_stub_answers_503_on_every_surface(
         ):
             r = await client.request(method, path, **kwargs)
             assert r.status_code == 503, (method, path, r.text)
-            assert "product-session" in r.json()["detail"]
+            assert marker in r.json()["detail"]
     finally:
         reset_policy_cache()
 

@@ -1,4 +1,4 @@
-# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Project manifest written by `graph-agents-cli create`.
 # Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
 name: 'p2-k8s'
 cli_version: '0.1.0'
@@ -15,9 +15,9 @@ create_params:
   registry: 'ghcr.io/e2e'
   cd: 'skip'
   auth_policy: 'shared-bearer'
-  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
+  # false while the custom auth policy stub is in place; deploy --env staging|prod refuses until true
   auth_policy_implemented: true
-  agent_guidance_filename: 'GEMINI.md'
+  agent_guidance_filename: 'AGENTS.md'
 environments:
   dev: { context: "", namespace: p2-k8s-dev }
   staging: { context: "", namespace: p2-k8s-staging }

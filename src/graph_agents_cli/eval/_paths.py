@@ -15,8 +15,7 @@
 
 """Canonical paths and file-name conventions for the eval module.
 
-Single source of truth so eval commands stay consistent (CONTRACTS.md
-section 11). Lifecycle stages:
+Single source of truth so eval commands stay consistent. Lifecycle stages:
 
   Stage 1 — datasets: ``tests/eval/datasets/*.json``. ``eval generate``
       defaults to ``basic-dataset.json`` when it exists, else to every
@@ -78,7 +77,7 @@ DEFAULT_INPUT_DATASET = f"{DATASETS_DIR}/basic-dataset.json"
 # Stage 3 — the eval config scaffolded by ``graph-agents-cli create``.
 DEFAULT_EVAL_CONFIG = "tests/eval/eval_config.yaml"
 
-# Run-state directory in a project (CONTRACTS.md section 1); the judge runner
+# Run-state directory in a project (git-ignored); the judge runner
 # and its input/output files are staged here.
 STAGE_DIR = ".graph-agents-cli"
 

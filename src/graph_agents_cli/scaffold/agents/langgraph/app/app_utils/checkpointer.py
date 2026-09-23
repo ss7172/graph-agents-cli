@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Checkpointer selection for the fastapi runtime (DECISIONS.md D8).
+"""Checkpointer selection for the fastapi runtime (memory or postgres).
 
 `CHECKPOINTER=memory` gives an `InMemorySaver` (no database, state lost on
 restart); `CHECKPOINTER=postgres` gives an `AsyncPostgresSaver` on

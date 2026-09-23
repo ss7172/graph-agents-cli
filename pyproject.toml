@@ -59,7 +59,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/graph_agents_cli"]
 # Templates, skills, locks and schemas ship inside the wheel so `setup` and
-# `create` work offline (D25). Hatch includes every file under the package
+# `create` work offline (disconnected installs). Hatch includes every file under the package
 # directory; nested .gitignore files belong to the templates and are data.
 artifacts = ["src/graph_agents_cli/**"]
 

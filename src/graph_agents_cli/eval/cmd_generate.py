@@ -296,10 +296,15 @@ def generate_traces(
     help="Extra HTTP header 'Key: Value' (repeatable), e.g. 'Authorization: Bearer ...'.",
 )
 @click.option(
-    "--cookie", multiple=True, help="Cookie 'name=value' (repeatable) for product-session auth."
+    "--cookie",
+    multiple=True,
+    help="Cookie 'name=value' (repeatable), for a custom auth policy that reads cookies.",
 )
 @click.option(
-    "--session-token", default=None, help="Sent as X-Session-Token (product-session auth)."
+    "--session-token",
+    default=None,
+    hidden=True,
+    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
 )
 @click.option(
     "--app-name",
@@ -335,7 +340,7 @@ def cmd_generate(
     Without --url the local server is started through `run`'s server manager
     and stopped after the run. With --url, credentials follow the auth policy:
     --header 'Authorization: Bearer ...' or GRAPH_AGENTS_CLI_API_KEY for
-    shared-bearer; --cookie or --session-token for product-session.
+    shared-bearer and jwt; --header or --cookie for a custom policy.
 
     \b
     Exit codes:

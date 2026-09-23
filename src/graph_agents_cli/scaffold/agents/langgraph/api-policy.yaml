@@ -1,0 +1,28 @@
+# Outbound API access policy for {{cookiecutter.project_name}}.
+#
+# Declares every external API the agent's tools may call, and how. Owned by the
+# project: `graph-agents-cli scaffold upgrade` and `enhance` never overwrite it.
+# `{{cookiecutter.agent_directory}}/app_utils/api_client.py` loads it (path from
+# API_POLICY_PATH, default ./api-policy.yaml) and refuses, before sending, any
+# request outside it; without this file every outbound call is refused.
+# `graph-agents-cli lint` checks every tool's API_CALLS against it with the
+# same rules. Unknown keys are errors at every level, so a typo never widens access.
+#
+# Replace the example with your own APIs; add one entry per API under `apis:`.
+apis:
+  example:                                  # [a-z][a-z0-9_]*, at most 32 characters
+    base_url_env: EXAMPLE_API_BASE_URL      # required; the URL may carry a path prefix
+    auth: bearer                            # required: none | bearer | forward
+    token_env: EXAMPLE_API_TOKEN            # required iff auth: bearer (joins secrets.keys)
+    # forward_header: Authorization         # auth: forward only: sends the caller's
+    #                                       # attributes["credentials"]["example"]
+    allowed_methods: [GET]                  # required, non-empty; ["*"] = every method
+    allowed_operations:                     # optional; omit = every operation within
+      - operationId: getItem                # allowed_methods. An entry pinning both
+        path: /items/{item_id}              # operationId and path needs both to match.
+        methods: [GET]
+    denied_operations: []                   # same entry shape; denials win. Pin `path`
+                                            # for a denial enforced on the wire.
+    # openapi: docs/example-openapi.yaml    # optional; lint validates declared calls against it
+    timeouts_ms: {connect: 2000, read: 5000}
+    pagination: {page_size_param: pageSize, max_page_size: 200}  # enforced at runtime

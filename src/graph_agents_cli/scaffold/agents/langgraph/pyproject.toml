@@ -20,6 +20,9 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "pydantic>=2.7,<3",
     "pyyaml>=6.0,<7",
+    # Auth (AUTH_POLICY=jwt verifies OIDC tokens) and Prometheus metrics
+    "pyjwt[crypto]>=2.8,<3",
+    "prometheus-client>=0.20,<1",
     # Persistence (fastapi runtime binds the checkpointer itself)
     "langgraph-checkpoint-postgres>=2.0,<4",
     "psycopg[binary]>=3.1,<4",

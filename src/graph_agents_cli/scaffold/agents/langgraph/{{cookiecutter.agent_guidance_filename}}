@@ -21,8 +21,9 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 ## The loop
 
 1. Build in `{{cookiecutter.agent_directory}}/`. Tools live in `{{cookiecutter.agent_directory}}/tools/`; every tool module
-   declares `PRODUCT_CALLS` (empty when it calls no product API) and reaches the
-   product only through `{{cookiecutter.agent_directory}}/app_utils/product_client.py`.
+   declares `API_CALLS` (empty when it calls no external API) and reaches an
+   external API only through `get_client("<api>")` of `{{cookiecutter.agent_directory}}/app_utils/api_client.py`,
+   which enforces `api-policy.yaml`.
 2. Try it: `graph-agents-cli playground` (the app with `/playground`), or
    `graph-agents-cli run "prompt"`. `graph-agents-cli playground --graph` opens
    LangGraph Studio against the graph directly (bypasses the auth policy).
@@ -40,7 +41,7 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 | `graph-agents-cli run "prompt"` | One-shot chat (`--mode a2a` for the A2A path, `--url` for a deployed agent) |
 | `uv run pytest tests/unit tests/integration` | Unit and integration tests (fake model, in-memory checkpointer) |
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
-| `graph-agents-cli lint` | ruff plus the product-policy check of every tool |
+| `graph-agents-cli lint` | ruff plus the API-policy check of every tool |
 | `graph-agents-cli build` | Build the container image from the runtime's Dockerfile |
 | `graph-agents-cli deploy --env <env>` | Deploy (direct modes) or open the desired-state PR (argocd) |
 | `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from an env file |
@@ -56,11 +57,13 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 - **Human approval before deploy.** Never run `graph-agents-cli deploy` without the user's explicit go-ahead.
 - **Run Python through uv**: `uv run python script.py`, after `uv sync`.
 - **Three strikes.** The same error three times means fix the cause, not retry.
-- **Tools declare their product calls.** Add `PRODUCT_CALLS` entries for every
-  product API call a tool makes; `graph-agents-cli lint` refuses undeclared or
-  disallowed calls. Never bypass `product_client.py` with a raw HTTP client.
-- **Never edit `product-policy.yaml`, `graph-agents-cli-manifest.yaml` or
-  `values-prod.yaml`** unless the user asks; production desired state changes only
-  through a pull request reviewed by the code owners.
+- **Tools declare their API calls.** Add an `API_CALLS` entry (`api`, `method`,
+  `operation_id` and/or `path`) for every external API call a tool makes;
+  `graph-agents-cli lint` refuses undeclared or disallowed calls. Never bypass
+  `api_client.py` with a raw HTTP client.
+- **Never edit `api-policy.yaml`, `graph-agents-cli-manifest.yaml` or
+  `values-prod.yaml`** unless the user asks: the API policy is a security
+  boundary, and production desired state changes only through a pull request
+  reviewed by the code owners.
 - **Do not export prompts or user data** to a hosted tracing destination unless
   the user has decided so (`TRACING_ENABLED`, `TRACE_CAPTURE=full`).

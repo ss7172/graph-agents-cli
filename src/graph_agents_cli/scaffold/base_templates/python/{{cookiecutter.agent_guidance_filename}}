@@ -31,5 +31,5 @@ before writing code.
 | `graph-agents-cli run "prompt"` | One-shot chat against the local or a deployed agent |
 | `uv run pytest tests/unit tests/integration` | Unit and integration tests |
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
-| `graph-agents-cli lint` | Code quality and product-policy check |
+| `graph-agents-cli lint` | Code quality and API-policy check |
 | `graph-agents-cli deploy --env <env>` | Deploy (only after the user approves) |

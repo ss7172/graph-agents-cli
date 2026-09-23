@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""An in-process fake of the CONTRACTS section 5 chat API for the run tests.
+"""An in-process fake of the scaffolded chat API for the run tests.
 
 Served by ``http.server`` on a free loopback port in a daemon thread: no
 network beyond 127.0.0.1, no model, no framework.
@@ -38,7 +38,7 @@ def contract_sequence(
     *,
     deltas: tuple[str, ...] = ("Hello", ", world"),
 ) -> list[tuple[str, Any]]:
-    """The full event sequence of CONTRACTS section 5 for one turn."""
+    """The full chat API event sequence for one turn."""
     events: list[tuple[str, Any]] = [
         ("message.start", {"thread_id": thread_id, "run_id": run_id}),
         ("message.delta", {"text": deltas[0]}),

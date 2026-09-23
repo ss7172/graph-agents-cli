@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""App-owned thread ownership (DECISIONS.md D23).
+"""App-owned thread ownership: one principal per thread.
 
 Under `fastapi` the `threads` table (`thread_id`, `principal_id`, `tenant`,
 `created_at`) lives beside the library-owned checkpointer schema; the

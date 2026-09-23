@@ -17,14 +17,14 @@
 
 Transport-neutral so every caller (``run``, ``eval generate``) agrees on which
 credentials a ``--url`` gets and where the chat or A2A surface lives.
-Credentials follow the auth policy of CONTRACTS section 6:
+Credentials follow the project's auth policy:
 
 * ``--header 'Authorization: Bearer ...'`` or ``GRAPH_AGENTS_CLI_API_KEY``
-  for ``shared-bearer``;
-* ``--cookie name=value`` or ``--session-token value`` (sent as
-  ``X-Session-Token``) for ``product-session``.
+  for ``shared-bearer`` (and a JWT in the same header for ``jwt``);
+* ``--header 'Name: value'`` or ``--cookie name=value`` for a ``custom``
+  policy (``--session-token`` is kept as a shortcut for ``X-Session-Token``).
 
-No cloud SDK is consulted; the CLI stores no credentials (D19).
+No cloud SDK is consulted; the CLI stores no credentials.
 """
 
 from __future__ import annotations
@@ -126,8 +126,7 @@ class RemoteTarget(NamedTuple):
 def a2a_candidates(base_url: str, agent_directory: str | None) -> list[str]:
     """A2A base URLs to probe for a card, in order.
 
-    The scaffolded app serves the card at ``/a2a/<agent_directory>`` (CONTRACTS
-    section 5); the bare URL is tried second so a ``--url`` that already points
+    The scaffolded app serves the card at ``/a2a/<agent_directory>``; the bare URL is tried second so a ``--url`` that already points
     at the A2A base, or a spec-canonical root card, still works.
     """
     base = base_url.rstrip("/")

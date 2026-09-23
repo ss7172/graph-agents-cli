@@ -1,5 +1,5 @@
 # prod: external Postgres (POSTGRES_DSN / DATABASE_URI from the Secret), gateway on.
-# Changes to this file reach the cluster only through a reviewed pull request (D12).
+# Changes to this file reach the cluster only through a reviewed pull request.
 env:
   APP_ENV: prod
 postgresql:

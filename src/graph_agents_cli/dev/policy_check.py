@@ -12,41 +12,61 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Static product-policy check (DECISIONS D28, CONTRACTS section 7).
+"""Static API-policy check run by ``graph-agents-cli lint``.
 
-Every tool module under ``<agent_dir>/tools/*.py`` may declare, at module
-level, the product API calls it makes::
+Every tool module under ``<agent_dir>/tools/*.py`` declares, at module level,
+the external API calls it makes::
 
-    PRODUCT_CALLS = [
-        {"method": "GET", "operation_id": "getIncident"},
-        {"method": "GET", "path": "/sites/{siteId}/topology"},
+    API_CALLS = [
+        {"api": "example", "method": "GET", "operation_id": "getItem"},
+        {"api": "example", "method": "GET", "path": "/items/{item_id}"},
     ]
 
-The list is read with :mod:`ast` (``ast.literal_eval`` on the assigned
-value), so the check never imports a tool module and therefore never loads a
-model SDK or the product client. Each declared call must be allowed by
-``product-policy.yaml`` (``allowed_methods``, ``allowed_operations``,
-``denied_operations``; denials win) and, when the policy sets ``openapi:``,
-must exist in that spec by ``operationId`` or by ``path`` + ``method``.
+The list is read with :mod:`ast` (``ast.literal_eval`` on the assigned value),
+so the check never imports a tool module and therefore never loads a model SDK
+or the API client. Each declared call must name an API declared in
+``api-policy.yaml`` and be allowed by that API's rules. The file is validated
+with the same strict schema, and calls are matched with the same rules, as the
+runtime client of the scaffolded project (``graph_agents_cli._api_policy``
+holds the shared copy). When an API sets ``openapi:``, every call must also
+exist in that spec by ``operationId`` or by ``path`` + ``method``.
+
+Fail closed: without a policy file every declared call is refused, as the
+runtime would refuse it. A module that still declares the retired
+``PRODUCT_CALLS`` is an error with a rename hint, and ``auth: forward`` is an
+error under the ``langgraph-server`` runtime.
 """
 
 from __future__ import annotations
 
 import ast
 import json
-import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+from rich.markup import escape
 from rich.table import Table
 
+from graph_agents_cli._api_policy import (
+    CALLS_NAME,
+    HTTP_METHODS,
+    LEGACY_CALLS_NAME,
+    POLICY_FILENAME,
+    ApiPolicyFileError,
+    forward_runtime_problem,
+    load_policy_document,
+    path_matches,
+    path_template_problem,
+    refusal_reason,
+    summarize,
+)
 from graph_agents_cli._output import Console
 
-POLICY_FILENAME = "product-policy.yaml"
-PRODUCT_CALLS_NAME = "PRODUCT_CALLS"
 TOOLS_SUBDIR = "tools"
+_CALL_KEYS = ("api", "method", "operation_id", "path")
 
 STATUS_ALLOWED = "allowed"
 STATUS_DENIED = "denied"
@@ -57,18 +77,19 @@ VIOLATION_STATUSES = frozenset({STATUS_DENIED, STATUS_UNKNOWN, STATUS_INVALID})
 
 @dataclass(frozen=True)
 class DeclaredCall:
-    """One entry of a tool's ``PRODUCT_CALLS`` list."""
+    """One entry of a tool's ``API_CALLS`` list (or a problem's location)."""
 
     tool: str
     method: str
+    api: str = ""
     operation_id: str | None = None
     path: str | None = None
 
     @property
     def operation(self) -> str:
-        if self.operation_id:
-            return self.operation_id
-        return self.path or "?"
+        if self.operation_id and self.path:
+            return f"{self.operation_id} {self.path}"
+        return self.operation_id or self.path or "-"
 
 
 @dataclass(frozen=True)
@@ -89,32 +110,21 @@ class PolicyReport:
     results: list[CheckResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     policy_path: Path | None = None
-    openapi_path: Path | None = None
+    openapi_paths: dict[str, Path] = field(default_factory=dict)
 
     @property
     def violations(self) -> int:
         return sum(1 for r in self.results if r.is_violation)
 
+    def invalid(self, where: str, reason: str) -> None:
+        self.results.append(
+            CheckResult(DeclaredCall(tool=where, method="-"), STATUS_INVALID, reason)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
-
-
-def load_policy(path: Path) -> dict[str, Any]:
-    """Load ``product-policy.yaml`` and return its ``product_api`` mapping.
-
-    Accepts both the documented shape (top-level ``product_api:``) and a file
-    whose keys are the policy fields directly.
-    """
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a mapping at the top level")
-    policy = data.get("product_api", data)
-    if not isinstance(policy, dict):
-        raise ValueError(f"{path}: product_api must be a mapping")
-    return policy
 
 
 def load_openapi(path: Path) -> dict[str, Any]:
@@ -136,12 +146,46 @@ def _literal(node: ast.AST) -> Any:
         return None
 
 
-def read_product_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
-    """Return the ``PRODUCT_CALLS`` declared in ``tool_path`` plus any problems.
+def _assigned_names(node: ast.stmt) -> tuple[list[str], ast.expr | None]:
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)], node.value
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id], node.value
+    return [], None
 
-    A tool without the name declares no calls. A ``PRODUCT_CALLS`` that is not a
+
+def _entry_problem(entry: Any) -> str | None:
+    """Why an ``API_CALLS`` entry is malformed, or None."""
+    if not isinstance(entry, dict):
+        return "is not a dict"
+    unknown = sorted(set(entry) - set(_CALL_KEYS), key=str)
+    if unknown:
+        return (
+            f"has unknown key(s) {', '.join(map(repr, unknown))} (allowed: {', '.join(_CALL_KEYS)})"
+        )
+    if not isinstance(entry.get("api"), str) or not entry.get("api"):
+        return 'has no "api" (the name of an API in api-policy.yaml)'
+    method = entry.get("method")
+    if not isinstance(method, str) or method.upper() not in HTTP_METHODS:
+        return f"has no valid method (one of {', '.join(HTTP_METHODS)})"
+    operation_id, path = entry.get("operation_id"), entry.get("path")
+    if not operation_id and not path:
+        return "has neither operation_id nor path"
+    if operation_id is not None and not isinstance(operation_id, str):
+        return "has a non-string operation_id"
+    if path is not None:
+        problem = path_template_problem(path)
+        if problem:
+            return f"path {problem}"
+    return None
+
+
+def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
+    """Return the ``API_CALLS`` declared in ``tool_path`` plus any problems.
+
+    A tool without the name declares no calls. An ``API_CALLS`` that is not a
     literal list of dicts is reported as a problem (the check cannot vouch for
-    it), as is an entry without a method or without both operation_id and path.
+    it), as is a malformed entry and a leftover ``PRODUCT_CALLS``.
     """
     problems: list[str] = []
     try:
@@ -151,47 +195,34 @@ def read_product_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
 
     calls: list[DeclaredCall] = []
     for node in tree.body:
-        targets: list[ast.expr]
-        value: ast.expr | None
-        if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign):
-            targets, value = [node.target], node.value
-        else:
+        names, value = _assigned_names(node)
+        if LEGACY_CALLS_NAME in names:
+            problems.append(
+                f"{tool_path.name}: {LEGACY_CALLS_NAME} was renamed to {CALLS_NAME}; rename it "
+                'and add "api": "<name of an API in api-policy.yaml>" to every entry'
+            )
             continue
-        if value is None or not any(
-            isinstance(t, ast.Name) and t.id == PRODUCT_CALLS_NAME for t in targets
-        ):
+        if CALLS_NAME not in names or value is None:
             continue
         literal = _literal(value)
         if not isinstance(literal, list | tuple):
             problems.append(
-                f"{tool_path.name}: {PRODUCT_CALLS_NAME} is not a literal list; "
+                f"{tool_path.name}: {CALLS_NAME} is not a literal list; "
                 "declare calls as plain dict literals so the check can read them"
             )
             continue
         for index, entry in enumerate(literal):
-            if not isinstance(entry, dict):
-                problems.append(f"{tool_path.name}: {PRODUCT_CALLS_NAME}[{index}] is not a dict")
-                continue
-            method = str(entry.get("method") or "").upper()
-            operation_id = entry.get("operation_id") or entry.get("operationId")
-            path = entry.get("path")
-            if not method:
-                problems.append(f"{tool_path.name}: {PRODUCT_CALLS_NAME}[{index}] has no method")
-                continue
-            if not operation_id and not path:
-                problems.append(
-                    f"{tool_path.name}: {PRODUCT_CALLS_NAME}[{index}] has neither "
-                    "operation_id nor path"
-                )
+            problem = _entry_problem(entry)
+            if problem:
+                problems.append(f"{tool_path.name}: {CALLS_NAME}[{index}] {problem}")
                 continue
             calls.append(
                 DeclaredCall(
                     tool=tool_path.name,
-                    method=method,
-                    operation_id=str(operation_id) if operation_id else None,
-                    path=str(path) if path else None,
+                    api=str(entry["api"]),
+                    method=str(entry["method"]).upper(),
+                    operation_id=entry.get("operation_id") or None,
+                    path=entry.get("path") or None,
                 )
             )
     return calls, problems
@@ -206,7 +237,7 @@ def collect_declared_calls(tools_dir: Path) -> tuple[list[DeclaredCall], list[st
     for tool_path in sorted(tools_dir.glob("*.py")):
         if tool_path.name.startswith("_"):
             continue
-        found, found_problems = read_product_calls(tool_path)
+        found, found_problems = read_api_calls(tool_path)
         calls.extend(found)
         problems.extend(found_problems)
     return calls, problems
@@ -215,45 +246,6 @@ def collect_declared_calls(tools_dir: Path) -> tuple[list[DeclaredCall], list[st
 # ---------------------------------------------------------------------------
 # Matching
 # ---------------------------------------------------------------------------
-
-
-def _path_matches(template: str, path: str) -> bool:
-    """Mirror of the template's ``product_client._path_matches``: ``{param}`` segments are wildcards.
-
-    ``/sites/{siteId}/topology`` matches ``/sites/42/topology``,
-    ``/sites/{site_id}/topology`` and itself, so lint and the runtime client
-    agree on what a policy path covers. Kept in sync by hand (the template
-    module is cookiecutter data and is never imported here).
-    """
-    if template == path:
-        return True
-    pattern = re.sub(
-        r"\{[^/]+\}", r"[^/]+", re.escape(template).replace(r"\{", "{").replace(r"\}", "}")
-    )
-    return re.fullmatch(pattern, path.split("?", 1)[0]) is not None
-
-
-def _entry_matches(entry: Any, call: DeclaredCall) -> bool:
-    """Whether an ``allowed_operations``/``denied_operations`` entry covers ``call``.
-
-    An entry that pins both ``operationId`` and ``path`` needs the id to match
-    and, when the declaration carries a concrete path, that path to match the
-    template too (the runtime client applies the same rule).
-    """
-    if isinstance(entry, str):
-        return entry == call.operation_id or bool(call.path and _path_matches(entry, call.path))
-    if not isinstance(entry, dict):
-        return False
-    methods = entry.get("methods")
-    if methods and call.method not in {str(m).upper() for m in methods}:
-        return False
-    op_id = entry.get("operationId") or entry.get("operation_id")
-    path = entry.get("path")
-    id_ok = bool(op_id and call.operation_id and op_id == call.operation_id)
-    path_ok = bool(path and call.path and _path_matches(str(path), call.path))
-    if op_id and path:
-        return id_ok and (call.path is None or path_ok)
-    return id_ok or path_ok
 
 
 def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], set[tuple[str, str]]]:
@@ -279,33 +271,29 @@ def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], se
 
 def check_call(
     call: DeclaredCall,
-    policy: dict[str, Any] | None,
-    spec: dict[str, Any] | None = None,
+    document: Mapping[str, Any] | None,
+    specs: Mapping[str, dict[str, Any]] | None = None,
+    *,
+    policy_file: str = POLICY_FILENAME,
 ) -> CheckResult:
-    """Evaluate one declared call against the policy and (optionally) the spec."""
-    if policy is None:
-        return CheckResult(call, STATUS_ALLOWED, "no product-policy.yaml (unrestricted)")
+    """Evaluate one declared call against the policy and (optionally) the API's spec."""
+    if document is None:
+        return CheckResult(
+            call, STATUS_DENIED, f"no {policy_file}: outbound API calls are refused (fail closed)"
+        )
+    api = document["apis"].get(call.api)
+    if api is None:
+        declared = ", ".join(sorted(document["apis"])) or "none"
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            f"API {call.api!r} is not declared in {policy_file} (declared: {declared})",
+        )
+    reason = refusal_reason(api, call.method, call.operation_id, call.path)
+    if reason:
+        return CheckResult(call, STATUS_DENIED, reason)
 
-    denied = policy.get("denied_operations") or []
-    for entry in denied:
-        if _entry_matches(entry, call):
-            return CheckResult(call, STATUS_DENIED, "listed in denied_operations")
-
-    allowed_methods = policy.get("allowed_methods") or []
-    if allowed_methods:
-        methods = {str(m).upper() for m in allowed_methods}
-        if call.method not in methods:
-            return CheckResult(
-                call,
-                STATUS_DENIED,
-                f"method {call.method} not in allowed_methods {sorted(methods)}",
-            )
-
-    allowed_ops = policy.get("allowed_operations")
-    if allowed_ops:
-        if not any(_entry_matches(entry, call) for entry in allowed_ops):
-            return CheckResult(call, STATUS_DENIED, "not listed in allowed_operations")
-
+    spec = (specs or {}).get(call.api)
     if spec is not None:
         by_id, pairs = _index_openapi(spec)
         if call.operation_id and call.operation_id in by_id:
@@ -317,10 +305,17 @@ def check_call(
                     f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
                     f"not {call.method}",
                 )
+            if call.path and not path_matches(spec_path, call.path):
+                return CheckResult(
+                    call,
+                    STATUS_UNKNOWN,
+                    f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
+                    f"not {call.path}",
+                )
             return CheckResult(call, STATUS_ALLOWED, f"spec: {spec_method} {spec_path}")
         if call.path:
             for spec_path, spec_method in sorted(pairs):
-                if spec_method == call.method and _path_matches(spec_path, call.path):
+                if spec_method == call.method and path_matches(spec_path, call.path):
                     return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}")
         return CheckResult(call, STATUS_UNKNOWN, "not found in the OpenAPI spec")
 
@@ -337,71 +332,74 @@ def build_report(
     agent_dir: str,
     *,
     policy_file: str = POLICY_FILENAME,
+    runtime: str = "fastapi",
+    policy_declared: bool = False,
 ) -> PolicyReport:
-    """Run the check for a project and return the report (nothing printed)."""
+    """Run the check for a project and return the report (nothing printed).
+
+    ``policy_declared`` is True when the manifest names the policy file: a
+    missing file is then an error rather than a note.
+    """
     report = PolicyReport()
-    policy: dict[str, Any] | None = None
-    spec: dict[str, Any] | None = None
+    document: dict[str, Any] | None = None
+    specs: dict[str, dict[str, Any]] = {}
 
     policy_path = project_root / policy_file
     if policy_path.is_file():
         report.policy_path = policy_path
         try:
-            policy = load_policy(policy_path)
-        except (OSError, ValueError, yaml.YAMLError) as exc:
-            report.notes.append(f"invalid {policy_file}: {exc}")
-            report.results.append(
-                CheckResult(DeclaredCall(tool=policy_file, method="-"), STATUS_INVALID, str(exc))
-            )
+            document = load_policy_document(policy_path)
+        except ApiPolicyFileError as exc:
+            for error in exc.errors:
+                report.invalid(policy_file, error)
             return report
-        openapi_ref = policy.get("openapi")
-        if openapi_ref:
+        problem = forward_runtime_problem(summarize(document), runtime)
+        if problem:
+            report.invalid(policy_file, problem)
+        for name, api in document["apis"].items():
+            openapi_ref = api.get("openapi")
+            if not openapi_ref:
+                continue
             openapi_path = Path(openapi_ref)
             if not openapi_path.is_absolute():
                 openapi_path = project_root / openapi_path
-            report.openapi_path = openapi_path
+            report.openapi_paths[name] = openapi_path
             try:
-                spec = load_openapi(openapi_path)
+                specs[name] = load_openapi(openapi_path)
             except (OSError, ValueError, yaml.YAMLError) as exc:
-                report.notes.append(f"cannot load OpenAPI spec {openapi_ref}: {exc}")
-                report.results.append(
-                    CheckResult(
-                        DeclaredCall(tool=policy_file, method="-", path=str(openapi_ref)),
-                        STATUS_INVALID,
-                        f"openapi spec unreadable: {exc}",
-                    )
+                report.invalid(
+                    policy_file, f"apis.{name}.openapi: cannot load {openapi_ref}: {exc}"
                 )
-                return report
-    else:
-        report.notes.append(
-            f"no {policy_file} at the project root: product API access is unrestricted"
+    elif policy_declared:
+        report.invalid(
+            policy_file,
+            f"the manifest declares {policy_file} but the file does not exist; every API call "
+            "would be refused at runtime",
         )
+    else:
+        report.notes.append(f"no {policy_file} at the project root: outbound API calls are refused")
 
     tools_dir = project_root / agent_dir / TOOLS_SUBDIR
     calls, problems = collect_declared_calls(tools_dir)
     for problem in problems:
-        tool_name = problem.split(":", 1)[0]
-        report.results.append(
-            CheckResult(DeclaredCall(tool=tool_name, method="-"), STATUS_INVALID, problem)
-        )
+        report.invalid(problem.split(":", 1)[0], problem)
     for call in calls:
-        report.results.append(check_call(call, policy, spec))
+        report.results.append(check_call(call, document, specs, policy_file=policy_file))
     if not calls and not problems:
-        report.notes.append(
-            f"no {PRODUCT_CALLS_NAME} declarations under {agent_dir}/{TOOLS_SUBDIR}/"
-        )
+        report.notes.append(f"no {CALLS_NAME} declarations under {agent_dir}/{TOOLS_SUBDIR}/")
     return report
 
 
 def print_report(report: PolicyReport, console: Console | None = None) -> None:
     console = console or Console()
     for note in report.notes:
-        console.print(f"[dim]policy check: {note}[/]")
+        console.print(f"[dim]policy check: {escape(note)}[/]")
     if not report.results:
-        console.print("[green]Product-policy check: nothing to check.[/]")
+        console.print("[green]API policy check: nothing to check.[/]")
         return
-    table = Table(title="Product-policy check", show_lines=False)
+    table = Table(title="API policy check", show_lines=False)
     table.add_column("Tool")
+    table.add_column("API")
     table.add_column("Method")
     table.add_column("Operation")
     table.add_column("Status")
@@ -415,17 +413,18 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
     for result in report.results:
         style = styles.get(result.status, "")
         table.add_row(
-            result.call.tool,
-            result.call.method,
-            result.call.operation,
+            escape(result.call.tool),
+            escape(result.call.api or "-"),
+            escape(result.call.method),
+            escape(result.call.operation),
             f"[{style}]{result.status}[/]" if style else result.status,
-            result.reason,
+            escape(result.reason),
         )
     console.print(table)
     if report.violations:
         console.print(f"[red]{report.violations} violation(s).[/]")
     else:
-        console.print("[green]All declared product API calls are allowed.[/]")
+        console.print("[green]All declared API calls are allowed.[/]")
 
 
 def run_policy_check(
@@ -433,9 +432,17 @@ def run_policy_check(
     agent_dir: str,
     *,
     policy_file: str = POLICY_FILENAME,
+    runtime: str = "fastapi",
+    policy_declared: bool = False,
     console: Console | None = None,
 ) -> int:
     """Run the check, print the table, and return the number of violations."""
-    report = build_report(project_root, agent_dir, policy_file=policy_file)
+    report = build_report(
+        project_root,
+        agent_dir,
+        policy_file=policy_file,
+        runtime=runtime,
+        policy_declared=policy_declared,
+    )
     print_report(report, console)
     return report.violations

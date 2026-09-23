@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ProjectConfig parsing and defaults (CONTRACTS section 2)."""
+"""ProjectConfig parsing and defaults."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ FULL_MANIFEST = {
         "checkpointer": "postgres",
         "registry": "ghcr.io/my-org",
         "cd": "argocd",
-        "auth_policy": "product-session",
+        "auth_policy": "custom",
         "auth_policy_implemented": False,
         "agent_guidance_filename": "CLAUDE.md",
     },
@@ -60,7 +60,7 @@ FULL_MANIFEST = {
         "keys": ["ANTHROPIC_API_KEY", "JUDGE_API_KEY", "DATABASE_URI", "REDIS_URI", "API_KEY"],
         "owner": "platform-team",
     },
-    "product_api": {"policy_file": "product-policy.yaml"},
+    "api_policy": {"policy_file": "api-policy.yaml"},
     "process": "agentic-template/workflow.md",
 }
 
@@ -83,19 +83,47 @@ def test_full_manifest_is_exposed_as_attributes() -> None:
     assert cfg.checkpointer == "postgres"
     assert cfg.registry == "ghcr.io/my-org"
     assert cfg.cd == "argocd"
-    assert cfg.auth_policy == "product-session"
+    assert cfg.auth_policy == "custom"
     assert cfg.auth_policy_implemented is False
     assert cfg.agent_guidance_filename == "CLAUDE.md"
     assert cfg.environments["prod"] == {"context": "prod-cluster", "namespace": "agents-prod"}
     assert cfg.secrets.keys == FULL_MANIFEST["secrets"]["keys"]
     assert cfg.secret_keys == FULL_MANIFEST["secrets"]["keys"]
     assert cfg.secrets.owner == "platform-team"
-    assert cfg.product_api.policy_file == "product-policy.yaml"
-    assert cfg.product_policy_file == "product-policy.yaml"
+    assert cfg.api_policy.policy_file == "api-policy.yaml"
+    assert cfg.api_policy_file == "api-policy.yaml"
+    assert cfg.has_legacy_product_api is False
     assert cfg.process == "agentic-template/workflow.md"
     assert cfg.provider_key_var() == "ANTHROPIC_API_KEY"
     assert cfg.environment("dev") == ("kind-dev", "my-agent-dev")
     assert cfg.environment("prod") == ("prod-cluster", "agents-prod")
+
+
+def test_retired_names_are_read_with_a_warning(capsys) -> None:
+    from graph_agents_cli import _defaults
+
+    _defaults._warned_aliases.clear()
+    cfg = ProjectConfig.from_dict(
+        {
+            "name": "old",
+            "create_params": {"auth_policy": "product-session"},
+            "product_api": {"policy_file": "product-policy.yaml"},
+        }
+    )
+    assert cfg.auth_policy == "custom"
+    assert cfg.auth_policy == "custom"
+    # Unrecorded implemented flag: a stub policy is not implemented.
+    assert cfg.auth_policy_implemented is False
+    assert cfg.has_legacy_product_api is True
+    assert cfg.api_policy_file is None
+    assert capsys.readouterr().err.count("deprecated") == 1
+
+
+@pytest.mark.parametrize(("policy", "implemented"), [("jwt", True), ("custom", False)])
+def test_auth_policy_implemented_defaults(policy: str, implemented: bool) -> None:
+    cfg = ProjectConfig.from_dict({"name": "x", "create_params": {"auth_policy": policy}})
+    assert cfg.auth_policy == policy
+    assert cfg.auth_policy_implemented is implemented
 
 
 def test_minimal_manifest_defaults() -> None:
@@ -110,12 +138,12 @@ def test_minimal_manifest_defaults() -> None:
     assert cfg.cd == "skip"
     assert cfg.auth_policy == "shared-bearer"
     assert cfg.auth_policy_implemented is True
-    assert cfg.agent_guidance_filename == "GEMINI.md"
+    assert cfg.agent_guidance_filename == "AGENTS.md"
     assert cfg.environments == {}
-    assert cfg.product_policy_file is None
+    assert cfg.api_policy_file is None
     assert cfg.process is None
     assert cfg.provider_key_var() == "OPENAI_API_KEY"
-    # Section 7 item 21 default allow-list for openai + fastapi
+    # The default allow-list for openai + fastapi
     assert cfg.secret_keys == [
         "OPENAI_API_KEY",
         "JUDGE_API_KEY",
@@ -174,14 +202,12 @@ def test_kubernetes_target_defaults_checkpointer_to_postgres() -> None:
 
 
 def test_auth_policy_implemented_defaults_from_policy() -> None:
-    stub = ProjectConfig.from_dict(
-        {"name": "x", "create_params": {"auth_policy": "product-session"}}
-    )
+    stub = ProjectConfig.from_dict({"name": "x", "create_params": {"auth_policy": "custom"}})
     assert stub.auth_policy_implemented is False
     flipped = ProjectConfig.from_dict(
         {
             "name": "x",
-            "create_params": {"auth_policy": "product-session", "auth_policy_implemented": True},
+            "create_params": {"auth_policy": "custom", "auth_policy_implemented": True},
         }
     )
     assert flipped.auth_policy_implemented is True

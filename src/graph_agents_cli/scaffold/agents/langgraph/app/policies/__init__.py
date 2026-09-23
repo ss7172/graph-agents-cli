@@ -15,7 +15,7 @@
 """AuthPolicy registry: `AUTH_POLICY` value -> policy factory.
 
 Agent code, never touched by `graph-agents-cli scaffold upgrade`. Add a policy
-by registering its factory here (an `OIDCPolicy` is a documented future one).
+by registering its factory here.
 """
 
 from __future__ import annotations
@@ -23,22 +23,25 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
-    PRODUCT_SESSION,
+    CUSTOM,
+    JWT,
     SHARED_BEARER,
     AuthPolicy,
+    JwtPolicy,
     SharedBearerPolicy,
 )
 
 
-def _product_session() -> AuthPolicy:
-    from {{cookiecutter.agent_directory}}.policies.product_session import ProductSessionPolicy
+def _custom() -> AuthPolicy:
+    from {{cookiecutter.agent_directory}}.policies.custom import CustomPolicy
 
-    return ProductSessionPolicy()
+    return CustomPolicy()
 
 
 REGISTRY: dict[str, Callable[[], AuthPolicy]] = {
     SHARED_BEARER: SharedBearerPolicy,
-    PRODUCT_SESSION: _product_session,
+    JWT: JwtPolicy,
+    CUSTOM: _custom,
 }
 
 

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Deployment mode derivation (DECISIONS.md D9) and dev-cluster detection."""
+"""Deployment mode derivation (direct, argocd, helm-push) and dev-cluster detection."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ ARGOCD = "argocd"
 
 DIRECT_MODES = (LOCAL_LOAD, REGISTRY)
 
-# Kube context names that identify a single-node dev cluster (ASSUMPTIONS item 10).
+# Kube context names that identify a single-node dev cluster (kind, k3s, minikube, ...).
 DEV_CONTEXT_PREFIXES = ("kind-", "k3d-", "minikube", "k3s")
 DEV_CONTEXT_NAMES = ("minikube", "docker-desktop", "rancher-desktop", "orbstack", "k3s")
 

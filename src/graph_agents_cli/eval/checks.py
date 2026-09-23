@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deterministic checks (CONTRACTS.md section 11, DECISIONS.md D24).
+"""Deterministic checks: the ``expect`` block of a case, evaluated in the CLI process.
 
 Every check is a pure function returning ``(passed, reason)``; ``reason`` is
 a short human sentence (empty when passed). ``run_checks`` applies the checks a

@@ -38,9 +38,11 @@ def test_info_json_in_project(
     run_create: CreateRunner, quiet_info, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     policy = tmp_path / "policy.yaml"
-    policy.write_text("product_api: {allowed_methods: [GET]}\n")
+    policy.write_text(
+        "apis:\n  crm:\n    base_url_env: CRM_URL\n    auth: none\n    allowed_methods: [GET]\n"
+    )
     result, project = run_create(
-        "--cd", "argocd", "--product-policy", str(policy), "--process", "docs/p.md"
+        "--cd", "argocd", "--api-policy", str(policy), "--process", "docs/p.md"
     )
     assert result.exit_code == 0, result.output
 
@@ -63,7 +65,7 @@ def test_info_json_in_project(
     assert proj["cd"] == "argocd"
     assert proj["auth_policy"] == "shared-bearer"
     assert proj["auth_policy_implemented"] is True
-    assert proj["product_policy_file"] == "product-policy.yaml"
+    assert proj["api_policy_file"] == "api-policy.yaml"
     assert proj["process"] == "docs/p.md"
     assert set(proj["environments"]) == {"dev", "staging", "prod"}
     assert proj["environments"]["dev"]["namespace"] == "my-agent-dev"
@@ -86,7 +88,7 @@ def test_info_text_in_project(
         "Registry:           (none)",
         "CD:                 skip",
         "Auth policy:        shared-bearer",
-        "Product policy:     none",
+        "API policy:         none",
         "Process:            none",
         "Environments:       none",
     ):
@@ -277,7 +279,7 @@ def test_enhance_keeps_auth_policy_implemented_flag(
     """The developer's flip after implementing the stub survives every enhance path."""
     import graph_agents_cli.scaffold.commands.enhance as enhance_mod
 
-    result, project = run_create("--auth-policy", "product-session")
+    result, project = run_create("--auth-policy", "custom")
     assert result.exit_code == 0, result.output
     assert read_manifest(project)["create_params"]["auth_policy_implemented"] is False
     _set_implemented(project, True)
@@ -308,26 +310,27 @@ def test_enhance_keeps_auth_policy_implemented_flag(
     assert read_manifest(project)["create_params"]["auth_policy_implemented"] is True
 
     # Switching the policy re-derives the flag: back to shared-bearer -> true,
-    # then into product-session again -> false (a fresh stub is being added).
+    # then into custom again -> false (a fresh stub is being added).
     result = CliRunner().invoke(enhance, ["--auth-policy", "shared-bearer", "-y", "--skip-checks"])
     assert result.exit_code == 0, result.output
     assert read_manifest(project)["create_params"]["auth_policy_implemented"] is True
-    result = CliRunner().invoke(
-        enhance, ["--auth-policy", "product-session", "-y", "--skip-checks"]
-    )
+    result = CliRunner().invoke(enhance, ["--auth-policy", "custom", "-y", "--skip-checks"])
     assert result.exit_code == 0, result.output
     assert read_manifest(project)["create_params"]["auth_policy_implemented"] is False
 
 
-def test_enhance_force_keeps_the_project_product_policy(
+def test_enhance_force_keeps_the_project_api_policy(
     run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    """product-policy.yaml is product-owned (D28): overwrite mode must not replace or drop it."""
+    """api-policy.yaml belongs to the project: overwrite mode must not replace or drop it."""
     import graph_agents_cli.scaffold.commands.enhance as enhance_mod
 
     policy = tmp_path / "policy.yaml"
-    policy.write_text("product_api:\n  auth: bearer\n  token_env: MY_TOKEN\n")
-    result, project = run_create("--product-policy", str(policy))
+    policy.write_text(
+        "apis:\n  crm:\n    base_url_env: CRM_URL\n    auth: bearer\n    token_env: MY_TOKEN\n"
+        "    allowed_methods: [GET]\n"
+    )
+    result, project = run_create("--api-policy", str(policy))
     assert result.exit_code == 0, result.output
     assert "MY_TOKEN" in read_manifest(project)["secrets"]["keys"]
     monkeypatch.chdir(project)
@@ -346,23 +349,53 @@ def test_enhance_force_keeps_the_project_product_policy(
         enhance, ["--force", "-y", "--skip-checks", "--skip-deps"], catch_exceptions=False
     )
     assert result.exit_code == 0, result.output
-    assert (project / "product-policy.yaml").read_text() == policy.read_text()
+    assert (project / "api-policy.yaml").read_text() == policy.read_text()
     manifest = read_manifest(project)
-    assert manifest["product_api"] == {"policy_file": "product-policy.yaml"}
+    assert manifest["api_policy"] == {"policy_file": "api-policy.yaml"}
     assert "MY_TOKEN" in manifest["secrets"]["keys"]
 
 
-def test_enhance_refuses_product_policy(
+def test_enhance_refuses_a_policy_flag(
     run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     result, project = run_create()
     assert result.exit_code == 0, result.output
     policy = tmp_path / "policy.yaml"
-    policy.write_text("product_api: {}\n")
+    policy.write_text("apis: {}\n")
     monkeypatch.chdir(project)
-    result = CliRunner().invoke(enhance, ["--product-policy", str(policy), "-y"])
+    result = CliRunner().invoke(enhance, ["--api-policy", str(policy), "-y"])
     assert result.exit_code != 0
     assert "never edited" in result.output
+    # The retired flag is refused with the rename hint.
+    result = CliRunner().invoke(enhance, ["--product-policy", str(policy), "-y"])
+    assert result.exit_code == 2
+    assert "--api-policy" in result.output
+
+
+@pytest.mark.parametrize("legacy", ["file", "manifest"])
+def test_enhance_and_upgrade_stop_on_the_retired_product_policy(
+    run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, legacy: str
+) -> None:
+    from graph_agents_cli.scaffold.commands.upgrade import upgrade
+
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    if legacy == "file":
+        (project / "product-policy.yaml").write_text("product_api:\n  auth: none\n")
+    else:
+        manifest = project / "graph-agents-cli-manifest.yaml"
+        manifest.write_text(
+            manifest.read_text() + "product_api:\n  policy_file: product-policy.yaml\n"
+        )
+    before = {p: p.read_bytes() for p in project.rglob("*") if p.is_file()}
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(enhance, ["--cd", "argocd", "-y", "--skip-checks"])
+    assert result.exit_code == 3, result.output
+    assert "Migrate it to api-policy.yaml" in result.output
+    result = CliRunner().invoke(upgrade, ["-y"])
+    assert result.exit_code == 3, result.output
+    assert "Migrate it to api-policy.yaml" in result.output
+    assert {p: p.read_bytes() for p in project.rglob("*") if p.is_file()} == before
 
 
 def test_build_enhance_create_args_overrides_and_normalizes() -> None:
@@ -418,7 +451,7 @@ def test_effective_params_derive_target_defaults_and_keep_explicit_cd(
                 "checkpointer": "memory",
                 "cd": "skip",
                 "registry": "",
-                "auth_policy": "product-session",
+                "auth_policy": "custom",
                 "auth_policy_implemented": True,
             },
         }
@@ -481,3 +514,85 @@ def test_backfill_create_params_follows_a_target_change(
     same = dict(cli, deployment_target=None)
     filled = enhance_module._backfill_create_params_from_config(project, same)
     assert filled["checkpointer"] == "postgres" and filled["cd"] == "argocd"
+
+
+def test_enhance_rewrites_a_retired_auth_policy_name(
+    run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest recorded before the rename (`product-session`) comes out as `custom`."""
+    import graph_agents_cli.scaffold.commands.enhance as enhance_mod
+
+    result, project = run_create("--auth-policy", "custom")
+    assert result.exit_code == 0, result.output
+    manifest = project / "graph-agents-cli-manifest.yaml"
+    manifest.write_text(
+        manifest.read_text().replace("auth_policy: 'custom'", "auth_policy: 'product-session'")
+    )
+    assert "product-session" in manifest.read_text()
+    monkeypatch.chdir(project)
+
+    # Smart merge with an override.
+    result = CliRunner().invoke(enhance, ["--cd", "argocd", "-y", "--skip-checks"])
+    assert result.exit_code == 0, result.output
+    params = read_manifest(project)["create_params"]
+    assert params["auth_policy"] == "custom" and params["auth_policy_implemented"] is False
+
+    # Overwrite mode through the saved-config replay.
+    manifest.write_text(
+        manifest.read_text().replace("auth_policy: custom", "auth_policy: product-session")
+    )
+
+    def fake_execute(args, project_version, use_different_version):
+        assert args[args.index("--auth-policy") + 1] == "custom"
+        monkeypatch.setenv(enhance_mod._ENV_USING_SAVED_CONFIG, "1")
+        try:
+            sub = CliRunner().invoke(enhance, args[2:], catch_exceptions=False)
+        finally:
+            monkeypatch.delenv(enhance_mod._ENV_USING_SAVED_CONFIG, raising=False)
+        assert sub.exit_code == 0, sub.output
+        return True
+
+    monkeypatch.setattr(enhance_mod, "_execute_with_saved_config", fake_execute)
+    result = CliRunner().invoke(
+        enhance, ["--force", "-y", "--skip-checks", "--skip-deps"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    assert read_manifest(project)["create_params"]["auth_policy"] == "custom"
+
+
+def test_version_locked_enhance_runs_the_projects_cli_from_its_install_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project scaffolded by another version replays through that version's git tag."""
+    import graph_agents_cli.scaffold.commands.enhance as enhance_mod
+    from graph_agents_cli.scaffold.utils import version as version_mod
+
+    calls: list[list[str]] = []
+    monkeypatch.delenv(version_mod.INSTALL_SPEC_ENV, raising=False)
+    monkeypatch.setattr(enhance_mod, "_ensure_uvx_available", lambda v: None)
+    monkeypatch.setattr(enhance_mod, "run_resolved", lambda cmd, **kw: calls.append(list(cmd)))
+    assert enhance_mod._execute_with_saved_config(["scaffold", "enhance"], "0.1.0", True)
+    assert calls == [
+        [
+            "uvx",
+            "--from",
+            "git+https://github.com/ss7172/graph-agents-cli@v0.1.0",
+            "graph-agents-cli",
+            "scaffold",
+            "enhance",
+        ]
+    ]
+
+
+def test_cli_version_mismatch_hint_uses_the_install_spec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import graph_agents_cli
+    from graph_agents_cli._project import ProjectConfig, check_cli_version
+    from graph_agents_cli.scaffold.utils import version as version_mod
+
+    monkeypatch.delenv(version_mod.INSTALL_SPEC_ENV, raising=False)
+    monkeypatch.setattr(graph_agents_cli, "__version__", "0.1.0")
+    check_cli_version(ProjectConfig.from_dict({"name": "x", "cli_version": "0.3.0"}))
+    err = capsys.readouterr().err
+    assert "git+https://github.com/ss7172/graph-agents-cli@v0.3.0" in err
