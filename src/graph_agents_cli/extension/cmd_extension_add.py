@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -42,7 +43,12 @@ from graph_agents_cli.extension._paths import (
     user_config_root,
     vendored_extensions_dir,
 )
-from graph_agents_cli.extension._refs import RefParseError, parse_ref
+from graph_agents_cli.extension._refs import (
+    ExtensionRef,
+    RefParseError,
+    anchor_local,
+    parse_ref,
+)
 from graph_agents_cli.extension._resolver import ResolverError, materialize, resolve_sha
 from graph_agents_cli.extension._spec import (
     EXTENSION_FILE,
@@ -50,6 +56,35 @@ from graph_agents_cli.extension._spec import (
     ExtensionSpecError,
 )
 from graph_agents_cli.extension._trust import confirm_trust
+
+
+def _recorded_local_source(ref: ExtensionRef, root: Path, scope: str) -> str:
+    """The ``local@`` source to record, resolvable from the scope root later.
+
+    ``install`` and ``update`` resolve a relative local source against the scope
+    root, so the path typed here (relative to wherever the command ran) is
+    rewritten: relative to the project root for project scope, which keeps the
+    committed entry portable, absolute for user scope.
+    """
+    absolute = (ref.local_path or Path.cwd()).resolve()
+    path = absolute.as_posix()
+    if scope == "project":
+        try:
+            path = Path(os.path.relpath(absolute, root.resolve())).as_posix()
+        except ValueError:  # another drive on Windows: only an absolute path works
+            pass
+    selector = f"#{ref.selector}" if ref.selector else ""
+    return f"local@{path}{selector}"
+
+
+def _resolve_hint(reference: str, ref: ExtensionRef) -> str:
+    """A pointer to ``local@`` when a repo shorthand also names a local directory."""
+    if ref.kind in ("github", "first_party") and Path(reference.split("#", 1)[0]).is_dir():
+        return (
+            f"\n  {reference!r} is also a local directory: to install it from disk, use "
+            f"local@{reference} (or ./{reference})."
+        )
+    return ""
 
 
 def _parse_or_fail(extension_dir: Path) -> ExtensionSpec | None:
@@ -175,11 +210,21 @@ def cmd_add(
         )
     project_root = root if scope == "project" else find_project_root(Path.cwd())
 
+    source = ref.raw
+    if ref.kind == "local":
+        # Resolved against the current directory now; recorded against the root.
+        ref = anchor_local(ref, Path.cwd())
+        source = _recorded_local_source(ref, root, scope)
+
     try:
         sha = resolve_sha(ref)
         name, extension_dir = materialize(ref, sha, vendored_extensions_dir(root))
     except ResolverError as e:
-        raise click.ClickException(str(e)) from e
+        error = click.ClickException(f"{e}{_resolve_hint(reference, ref)}")
+        # A local path that is not an extension is a configuration error (3);
+        # git or the network failing to resolve a repo is a tool failure (2).
+        error.exit_code = 3 if ref.kind == "local" else 2
+        raise error from e
 
     # Every gate runs before anything is recorded, so a refused install leaves
     # no entry to roll back. The vendored copy has to exist first (the gates read
@@ -202,10 +247,10 @@ def cmd_add(
             ) from e
         raise
 
-    entry = ExtensionEntry(name=name, source=ref.raw, ref=ref.ref or "HEAD", sha=sha, scope=scope)
+    entry = ExtensionEntry(name=name, source=source, ref=ref.ref or "HEAD", sha=sha, scope=scope)
     upsert_extension_entry(root / EXTENSIONS_FILE, entry)
 
-    click.secho(f"Added extension {name!r} ({scope} scope) from {ref.raw}.", fg="green")
+    click.secho(f"Added extension {name!r} ({scope} scope) from {source}.", fg="green")
     click.secho(
         "Extensions are experimental; the manifest format may still change.",
         dim=True,
