@@ -1,3 +1,4 @@
+{{- include "agent.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,13 +29,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "agent.serviceAccountName" . }}
+      # The agent never calls the Kubernetes API: no token in the pod.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: agent
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ include "agent.imageTag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -57,6 +61,15 @@ spec:
               value: {{ .Values.service.targetPort | quote }}
             - name: HOST
               value: "0.0.0.0"
+            {{- if not (hasKey .Values.env "PYTHONDONTWRITEBYTECODE") }}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            {{- end }}
+            {{- if and (dig "readOnlyRootFilesystem" false (.Values.securityContext | default dict)) (not (hasKey .Values.env "HOME")) }}
+            # The root filesystem is read-only: caches under ~ go to the /tmp emptyDir.
+            - name: HOME
+              value: /tmp
+            {{- end }}
             {{- $appUrl := include "agent.appUrl" . }}
             {{- if $appUrl }}
             - name: APP_URL
@@ -96,28 +109,61 @@ spec:
             - name: REDIS_URI
               value: {{ include "agent.redis.uri" . | quote }}
             {{- end }}
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 15
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+          # Liveness and startup: the process answers. Readiness: its database
+          # answers too, so traffic stops (without a restart) while it does not.
           startupProbe:
             httpGet:
-              path: /health
+              path: {{ .Values.probes.startup.path }}
               port: http
-            failureThreshold: 30
-            periodSeconds: 5
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        # Writable scratch space; everything else is read-only.
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmpVolume.medium }}
+            medium: {{ . }}
+            {{- end }}
+            {{- with .Values.tmpVolume.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "agent.selectorLabels" . | nindent 14 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

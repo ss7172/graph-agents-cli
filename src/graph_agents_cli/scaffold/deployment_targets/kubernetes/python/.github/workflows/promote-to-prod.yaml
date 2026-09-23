@@ -20,9 +20,13 @@
 #   argocd:    `graph-agents-cli deploy --env prod --image ...` updates
 #              values-prod.yaml on deploy/prod/<tag> and opens a PR; it is NOT
 #              merged here. The merge (code-owner review, no self-approval,
-#              pr_checks green) is the single production gate.
+#              pr_checks green) is the single production gate. After the merge
+#              an operator syncs Argo CD, whose health checks (the readiness
+#              probe, /ready) show whether the rollout landed.
 #   helm-push: `graph-agents-cli deploy --env prod --image ...` on the
-#              self-hosted runner runs helm with the already pushed image.
+#              self-hosted runner runs helm with the already pushed image, with
+#              the kubeconfig of the `production` environment, then verifies the
+#              rollout (rollout status, /health and /ready through a port-forward).
 # This file is copied verbatim into the project (not rendered).
 
 name: promote-to-prod
@@ -50,10 +54,62 @@ jobs:
       image: ${{ steps.settings.outputs.image }}
       tag: ${{ steps.settings.outputs.tag }}
       chart_path: ${{ steps.settings.outputs.chart_path }}
+      release: ${{ steps.settings.outputs.release }}
+      namespace: ${{ steps.settings.outputs.namespace }}
       graph_agents_cli_spec: ${{ steps.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Load project settings
+        run: |
+          # .github/agent.env is data and is never sourced: each NAME=VALUE line is
+          # checked and copied to GITHUB_ENV, so a value may hold spaces or shell
+          # metacharacters (a PEP 508 install spec, for example). Comment and blank
+          # lines are skipped; blanks around the value, one pair of quotes around it
+          # and a trailing " # comment" are dropped (no escapes, no expansion).
+          file=.github/agent.env
+          if [ ! -f "$file" ]; then
+            echo "::error file=$file::$file is missing: it holds the project settings these workflows read." >&2
+            exit 1
+          fi
+          lineno=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            lineno=$((lineno + 1))
+            line="${line%$'\r'}"
+            if [ "$lineno" -eq 1 ]; then
+              line="${line#$'\xef\xbb\xbf'}"
+            fi
+            if [[ "$line" =~ ^[[:space:]]*(#|$) ]]; then
+              continue
+            fi
+            if ! [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+              echo "::error file=$file,line=$lineno::expected NAME=VALUE, got: $line" >&2
+              exit 1
+            fi
+            name="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            case "$name" in
+              GITHUB_* | RUNNER_* | ACTIONS_* | PATH | HOME | BASH_ENV | ENV | NODE_OPTIONS | LD_*)
+                echo "::error file=$file,line=$lineno::$name cannot be set from $file." >&2
+                exit 1
+                ;;
+            esac
+            value="${value#"${value%%[![:space:]]*}"}"
+            quote="${value:0:1}"
+            if [ "$quote" = '"' ] || [ "$quote" = "'" ]; then
+              rest="${value:1}"
+              if [[ "$rest" != *"$quote"* ]]; then
+                echo "::error file=$file,line=$lineno::$name: unterminated $quote quote." >&2
+                exit 1
+              fi
+              value="${rest%%"$quote"*}"
+            else
+              value="${value%%[[:space:]]#*}"
+              value="${value%"${value##*[![:space:]]}"}"
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+          done < "$file"
 
       - name: Resolve the tag to promote
         id: settings
@@ -63,14 +119,27 @@ jobs:
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          set -a; . .github/agent.env; set +a
+          for var in IMAGE_REPOSITORY RELEASE_NAME CHART_PATH CD GRAPH_AGENTS_CLI_SPEC; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error file=.github/agent.env::$var is not set in .github/agent.env." >&2
+              exit 1
+            fi
+          done
+          if [ "$CD" != argocd ] && [ "$CD" != helm-push ]; then
+            echo "::error file=.github/agent.env::CD must be argocd or helm-push for this workflow, got '$CD'." >&2
+            exit 1
+          fi
+          if [[ "$IMAGE_REPOSITORY" == *CHANGE-ME* ]] || ! [[ "$IMAGE_REPOSITORY" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$ ]]; then
+            echo "::error file=.github/agent.env::IMAGE_REPOSITORY must be <registry>/<path> in lowercase with no placeholder, got '$IMAGE_REPOSITORY'." >&2
+            exit 1
+          fi
           TAG="$IMAGE_TAG"
           if [ -n "$TAG" ] && ! [[ "$TAG" =~ ^[0-9a-f]{7,40}$ ]]; then
             echo "image_tag must be a short commit SHA (7-40 hex characters), got '$TAG'." >&2
             exit 1
           fi
           if [ -z "$TAG" ]; then
-            TAG="$(yq '.image.tag' "${CHART_PATH}/values-staging.yaml")"
+            TAG="$(yq -r '.image.tag // ""' "${CHART_PATH}/values-staging.yaml")"
           fi
           if [ -z "$TAG" ] || [ "$TAG" = "latest" ] || [ "$TAG" = "null" ]; then
             echo "No promotable tag: pass image_tag or land a staging build first." >&2
@@ -81,11 +150,28 @@ jobs:
             echo "Invalid image tag: '$TAG'" >&2
             exit 1
           fi
-          echo "cd=${CD}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "image=${IMAGE_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
-          echo "chart_path=${CHART_PATH}" >> "$GITHUB_OUTPUT"
-          echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}" >> "$GITHUB_OUTPUT"
+          manifest=graph-agents-cli-manifest.yaml
+          NAMESPACE="$(yq -r '.environments.prod.namespace // ""' "$manifest")"
+          if [ -z "$NAMESPACE" ]; then
+            NAMESPACE="$(yq -r '.name // ""' "$manifest")-prod"
+          fi
+          if ! [[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+            echo "::error file=$manifest::Invalid prod namespace '$NAMESPACE'." >&2
+            exit 1
+          fi
+          if ! [[ "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]{0,51}[a-z0-9])?$ ]]; then
+            echo "::error file=.github/agent.env::Invalid RELEASE_NAME '$RELEASE_NAME'." >&2
+            exit 1
+          fi
+          {
+            echo "cd=${CD}"
+            echo "tag=${TAG}"
+            echo "image=${IMAGE_REPOSITORY}:${TAG}"
+            echo "chart_path=${CHART_PATH}"
+            echo "release=${RELEASE_NAME}"
+            echo "namespace=${NAMESPACE}"
+            echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}"
+          } >> "$GITHUB_OUTPUT"
 
   open_prod_pr:
     needs: settings
@@ -115,22 +201,32 @@ jobs:
         # In argocd mode `deploy` never runs helm: it rewrites image.tag in
         # values-prod.yaml, commits that one file on deploy/prod/<tag> from
         # origin/main and opens (or updates) the pull request. The commit needs
-        # a git identity.
+        # a git identity. --yes: no prompt (this runner has no cluster context).
         env:
           IMAGE: ${{ needs.settings.outputs.image }}
           GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE"
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE" --yes
 
   deploy_helm_push:
+    # The cluster credentials are the DEPLOY_KUBECONFIG secret of the
+    # `production` environment: an environment secret, never a repository
+    # secret, so only jobs that pass this environment's protection rules
+    # (required reviewers, main only) can read it.
     needs: settings
     if: needs.settings.outputs.cd == 'helm-push'
     runs-on: self-hosted
     environment: production
     permissions:
       contents: read
+    env:
+      GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+      IMAGE: ${{ needs.settings.outputs.image }}
+      RELEASE: ${{ needs.settings.outputs.release }}
+      NAMESPACE: ${{ needs.settings.outputs.namespace }}
+      GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -141,16 +237,66 @@ jobs:
           python-version: "3.12"
 
       - name: Configure kubeconfig
+        # Written to the job's temporary directory (owner-only) and removed by
+        # the last step, whatever happens: nothing is left on the runner.
+        env:
+          DEPLOY_KUBECONFIG: ${{ secrets.DEPLOY_KUBECONFIG }}
         run: |
-          install -m 0700 -d "$HOME/.kube"
-          printf '%s' "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
-          chmod 0600 "$HOME/.kube/config"
+          if [ -z "$DEPLOY_KUBECONFIG" ]; then
+            echo "::error::DEPLOY_KUBECONFIG is empty: store the cluster credentials as the DEPLOY_KUBECONFIG secret of the production environment (Settings > Environments > production)." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$DEPLOY_KUBECONFIG" > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
 
       - name: Deploy to production
-        # `deploy --image` in helm-push mode runs helm only (the image is already pushed).
-        env:
-          GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
-          IMAGE: ${{ needs.settings.outputs.image }}
-          GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
+        # `deploy --image` in helm-push mode runs helm only (the image is already
+        # pushed); --yes accepts the kubeconfig's current context without a prompt.
         run: |
-          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE"
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE" --yes
+
+      - name: Verify the rollout
+        run: |
+          : "${NAMESPACE:?the settings job resolved no namespace}" "${RELEASE:?the settings job resolved no release}"
+          if ! command -v kubectl >/dev/null 2>&1; then
+            echo "::error::kubectl is not on the runner's PATH; it is needed to verify the rollout." >&2
+            exit 1
+          fi
+          kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE" --timeout=300s
+          log="$RUNNER_TEMP/port-forward.log"
+          kubectl -n "$NAMESPACE" port-forward "service/$RELEASE" :http > "$log" 2>&1 &
+          forward=$!
+          trap 'kill "$forward" 2>/dev/null || true' EXIT
+          port=""
+          for _ in $(seq 1 30); do
+            port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9][0-9]*\) .*/\1/p' "$log" | head -n 1)"
+            if [ -n "$port" ] || ! kill -0 "$forward" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$port" ]; then
+            echo "::error::kubectl port-forward to service/$RELEASE failed: $(cat "$log")" >&2
+            exit 1
+          fi
+          for path in /health /ready; do
+            ok=""
+            for _ in $(seq 1 10); do
+              if curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${port}${path}"; then
+                ok=1
+                break
+              fi
+              sleep 3
+            done
+            echo
+            if [ -z "$ok" ]; then
+              echo "::error::${path} did not answer 2xx on the production deployment ($NAMESPACE/$RELEASE)." >&2
+              exit 1
+            fi
+          done
+          echo "production runs ${IMAGE} and answers /health and /ready."
+
+      - name: Remove kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig" "$RUNNER_TEMP/port-forward.log"

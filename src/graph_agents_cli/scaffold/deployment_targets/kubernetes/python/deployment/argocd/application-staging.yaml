@@ -1,5 +1,8 @@
 # Argo CD Application for the staging environment.
 # Argo reconciles from main, so nothing reaches the cluster until a PR merges.
+# The chart refuses to render until values-staging.yaml names an image tag
+# (the staging workflow opens the PR that sets it): until then Argo CD reports
+# a comparison error and deploys nothing.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -22,9 +25,19 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: {{cookiecutter.project_name}}-staging
+  # The bundled Postgres's credentials Secret is generated on the first sync
+  # (Argo CD renders without cluster access, so every render would otherwise
+  # produce a new password the database volume no longer accepts): keep the
+  # live values. Only exists when postgresql.enabled (dev by default).
+  ignoreDifferences:
+    - kind: Secret
+      name: {{cookiecutter.project_name}}-postgresql-auth
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true

@@ -10,7 +10,10 @@ redis:
 gateway:
   enabled: false
 image:
-  tag: latest
+  # Set per deploy (`graph-agents-cli deploy --env dev` passes the tag it built;
+  # in argocd mode it writes it here). Empty until then: the chart refuses to
+  # render without a tag rather than roll out an image that was never pushed.
+  tag: ""
   pullPolicy: IfNotPresent
 tracing:
   enabled: false

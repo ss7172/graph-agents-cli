@@ -185,7 +185,9 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     assert (argocd / ".github" / "workflows" / "staging.yaml").exists()
     assert (argocd / ".github" / "workflows" / "promote-to-prod.yaml").exists()
     assert (argocd / ".github" / "CODEOWNERS").exists()
-    assert "weather-agent/values-prod.yaml" in (argocd / ".github" / "CODEOWNERS").read_text()
+    codeowners = (argocd / ".github" / "CODEOWNERS").read_text()
+    assert "/deployment/ @CHANGE-ME/production-approvers" in codeowners
+    assert "/.github/ @CHANGE-ME/production-approvers" in codeowners
     assert not (argocd / "api-policy.yaml").exists()
     assert not (argocd / "app" / "tools" / "example_api.py").exists()
     assert (argocd / "app" / "policies" / "custom.py").exists()
@@ -294,8 +296,8 @@ def test_workflows_install_the_cli_from_the_pinned_spec() -> None:
     pr_checks = (
         SCAFFOLD / "base_templates" / "python" / ".github" / "workflows" / "pr_checks.yaml"
     ).read_text()
-    # GITHUB_ENV takes NAME=VALUE lines only: comments and blank lines are filtered out.
-    assert "grep -Ev '^[[:space:]]*(#|$)' .github/agent.env" in pr_checks
+    # agent.env is read as NAME=VALUE data (tests/template/test_workflows.py runs the loader).
+    assert 'done < "$file"' in pr_checks
     workflows = {
         "pr_checks.yaml": pr_checks,
         "staging.yaml": (KUBE / ".github" / "workflows" / "staging.yaml").read_text(),
@@ -352,7 +354,7 @@ def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
     agent_env = dict(
         line.split("=", 1)
         for line in (project / ".github" / "agent.env").read_text().splitlines()
-        if "=" in line
+        if "=" in line and not line.startswith("#")
     )
     assert agent_env == {
         "IMAGE_REPOSITORY": "ghcr.io/acme/weather-agent",
@@ -394,6 +396,66 @@ def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
         "CHECKPOINTER" not in server_values["env"]
         and server_values["runtime"] == "langgraph-server"
     )
+
+
+def test_chart_defaults_are_production_shaped(rendered: dict[str, Path]) -> None:
+    """Probes, sizing, hardening, pinned dependencies and no `latest` default tag."""
+    import re
+
+    for name in ("fastapi-argocd", "server-helm-push"):
+        chart = rendered[name] / "deployment" / "helm" / "weather-agent"
+        values = yaml.safe_load((chart / "values.yaml").read_text())
+        assert values["probes"]["readiness"]["path"] == "/ready"
+        assert values["probes"]["liveness"]["path"] == "/health"
+        assert values["probes"]["startup"]["path"] == "/health"
+        # /ready bounds its own database check at 2 s.
+        assert values["probes"]["readiness"]["timeoutSeconds"] > 2
+        assert values["resources"] == {
+            "requests": {"cpu": "100m", "memory": "256Mi"},
+            "limits": {"memory": "1Gi"},
+        }
+        pod, container = values["podSecurityContext"], values["securityContext"]
+        assert (pod["runAsUser"], pod["runAsGroup"], pod["fsGroup"]) == (1000, 1000, 1000)
+        assert pod["runAsNonRoot"] is True and pod["seccompProfile"] == {"type": "RuntimeDefault"}
+        assert container["readOnlyRootFilesystem"] is True
+        assert container["allowPrivilegeEscalation"] is False
+        assert container["capabilities"] == {"drop": ["ALL"]}
+        assert values["tmpVolume"]["sizeLimit"]
+        assert values["networkPolicy"]["enabled"] is False
+        assert values["hpa"]["enabled"] is False
+        assert values["hpa"]["minReplicas"] > values["pdb"]["minAvailable"]
+        # No environment defaults to a moving tag: the chart refuses an empty one.
+        for env_file in (
+            "values.yaml",
+            "values-dev.yaml",
+            "values-staging.yaml",
+            "values-prod.yaml",
+        ):
+            env_values = yaml.safe_load((chart / env_file).read_text())
+            assert env_values["image"]["tag"] == "", env_file
+        prod = yaml.safe_load((chart / "values-prod.yaml").read_text())
+        assert prod["resources"]["requests"] and prod["resources"]["limits"]["memory"]
+        assert prod["pdb"]["enabled"] is True and prod["replicaCount"] > prod["pdb"]["minAvailable"]
+        assert prod["topologySpread"]["enabled"] is True
+        # Subcharts pinned exactly, their images by digest; the dev database password is a
+        # Secret this chart keeps (never regenerated on a render).
+        deps = yaml.safe_load((chart / "Chart.yaml").read_text())["dependencies"]
+        assert {d["name"] for d in deps} == {"postgresql", "redis"}
+        for dep in deps:
+            assert re.fullmatch(r"\d+\.\d+\.\d+", dep["version"]), dep
+            assert re.fullmatch(r"sha256:[0-9a-f]{64}", values[dep["name"]]["image"]["digest"])
+        assert values["postgresql"]["auth"]["existingSecret"] == "weather-agent-postgresql-auth"
+        assert values["postgresqlSecret"]["create"] is True
+    for env in ("dev", "staging", "prod"):
+        app = yaml.safe_load(
+            (
+                rendered["fastapi-argocd"] / "deployment" / "argocd" / f"application-{env}.yaml"
+            ).read_text()
+        )
+        assert app["spec"]["ignoreDifferences"] == [
+            {"kind": "Secret", "name": "weather-agent-postgresql-auth", "jsonPointers": ["/data"]}
+        ]
+        assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
 
 
 def test_langgraph_json_env_and_guidance(rendered: dict[str, Path]) -> None:
@@ -586,148 +648,229 @@ def test_server_project_lock_matches_its_pyproject(rendered: dict[str, Path]) ->
     assert compiled.returncode == 0, compiled.stdout
 
 
+# What `graph-agents-cli deploy` passes: the tag it deploys, and the Gateway the
+# scaffolded staging/prod values leave for the operator to name.
+DEPLOY_SET = ("--set", "image.tag=0123abc", "--set", "gateway.parentRef.name=gw")
+
+
+def _helm(chart: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return _run([HELM or "helm", *args], chart)
+
+
+def _template(chart: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return _helm(chart, "template", "weather-agent", str(chart), *args)
+
+
+def _docs(manifests: str) -> list[dict]:
+    return [doc for doc in yaml.safe_load_all(manifests) if doc]
+
+
+def _agent_deployment(manifests: str) -> dict:
+    for doc in _docs(manifests):
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "weather-agent":
+            return doc
+    raise AssertionError("no agent Deployment rendered")
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(HELM is None, reason="helm is not on PATH")
 def test_helm_chart_lints_and_renders(rendered: dict[str, Path]) -> None:
     for name in ("fastapi-argocd", "server-helm-push"):
         chart = rendered[name] / "deployment" / "helm" / "weather-agent"
-        deps = _run([HELM or "helm", "dependency", "build", str(chart)], chart)
+        deps = _helm(chart, "dependency", "build", str(chart))
         if deps.returncode != 0:
             pytest.skip(f"helm dependency build failed (no registry access?): {deps.stderr[-300:]}")
         for env in ("dev", "staging", "prod"):
-            lint = _run(
-                [
-                    HELM or "helm",
-                    "lint",
-                    str(chart),
-                    "-f",
-                    str(chart / f"values-{env}.yaml"),
-                    "--set",
-                    "gateway.parentRef.name=gw",
-                ],
-                chart,
-            )
+            env_values = ("-f", str(chart / f"values-{env}.yaml"))
+            lint = _helm(chart, "lint", str(chart), *env_values, *DEPLOY_SET)
             assert lint.returncode == 0, f"{name}/{env}: {lint.stdout}{lint.stderr}"
-            tpl = _run(
-                [
-                    HELM or "helm",
-                    "template",
-                    "weather-agent",
-                    str(chart),
-                    "-f",
-                    str(chart / f"values-{env}.yaml"),
-                    "--set",
-                    "gateway.parentRef.name=gw",
-                    "--namespace",
-                    f"weather-agent-{env}",
-                ],
-                chart,
-            )
+            tpl = _template(chart, *env_values, *DEPLOY_SET, "--namespace", f"weather-agent-{env}")
             assert tpl.returncode == 0, f"{name}/{env}: {tpl.stderr}"
-            out = tpl.stdout
-            assert "kind: Deployment" in out and "name: weather-agent-app" in out
-            # No hostname and no appUrl: APP_URL is not set (the pod warns instead).
-            assert "name: APP_URL" not in out
-            if env == "dev":
-                assert "@weather-agent-postgresql:5432/agent" in out
-                assert ("DATABASE_URI" in out) == (name == "server-helm-push")
-                assert ("REDIS_URI" in out) == (name == "server-helm-push")
-            else:
-                assert "kind: HTTPRoute" in out and "POSTGRES_PASSWORD" not in out
-        # The scaffolded staging/prod values leave gateway.parentRef.name blank on
-        # purpose (the operator names the Gateway): the render fails until it is set.
-        blank = _run(
-            [
-                HELM or "helm",
-                "template",
-                "weather-agent",
-                str(chart),
-                "-f",
-                str(chart / "values-prod.yaml"),
-            ],
-            chart,
-        )
-        assert blank.returncode != 0
-        assert "gateway.parentRef.name is required" in blank.stderr
-        # APP_URL derives from the gateway hostname (https) and an explicit appUrl / env.APP_URL wins.
-        for extra, expected in (
-            (["--set", "gateway.hostname=agent.example.com"], "https://agent.example.com"),
+            _check_environment(name, env, tpl.stdout)
+        _check_refusals(chart)
+        _check_app_url(chart)
+        _check_optional_resources(chart)
+        _check_database_secret_options(chart)
+
+
+def _check_environment(name: str, env: str, out: str) -> None:
+    assert "kind: Deployment" in out and "name: weather-agent-app" in out
+    # No hostname and no appUrl: APP_URL is not set (the pod warns instead).
+    assert "name: APP_URL" not in out
+    pod = _agent_deployment(out)["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["image"] == "ghcr.io/acme/weather-agent:0123abc"
+    assert container["readinessProbe"]["httpGet"]["path"] == "/ready"
+    assert container["livenessProbe"]["httpGet"]["path"] == "/health"
+    assert container["startupProbe"]["httpGet"]["path"] == "/health"
+    assert container["resources"]["requests"]["cpu"]
+    assert container["resources"]["limits"]["memory"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert {"name": "tmp", "mountPath": "/tmp"} in container["volumeMounts"]
+    assert {"name": "HOME", "value": "/tmp"} in container["env"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsGroup"] == 1000
+    assert ("topologySpreadConstraints" in pod) == (env == "prod")
+    if env != "dev":
+        assert "kind: HTTPRoute" in out and "POSTGRES_PASSWORD" not in out
+        assert "kind: Secret" not in out
+        return
+    assert "@weather-agent-postgresql:5432/agent" in out
+    assert ("DATABASE_URI" in out) == (name == "server-helm-push")
+    assert ("REDIS_URI" in out) == (name == "server-helm-push")
+    # One database Secret, created by this chart and kept: the subchart generates none.
+    secrets = [d for d in _docs(out) if d["kind"] == "Secret"]
+    assert [s["metadata"]["name"] for s in secrets] == ["weather-agent-postgresql-auth"]
+    annotations = secrets[0]["metadata"]["annotations"]
+    assert annotations["helm.sh/resource-policy"] == "keep"
+    assert annotations["argocd.argoproj.io/sync-options"] == "Delete=false"
+    assert set(secrets[0]["data"]) == {"password", "postgres-password"}
+    database = next(
+        d
+        for d in _docs(out)
+        if d["kind"] == "StatefulSet" and d["metadata"]["name"] == "weather-agent-postgresql"
+    )
+    assert "weather-agent-postgresql-auth" in json.dumps(database)
+    assert "bitnami/postgresql@sha256:" in json.dumps(database)
+    env_vars = {e["name"]: e for e in container["env"]}
+    assert env_vars["POSTGRES_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "weather-agent-postgresql-auth",
+        "key": "password",
+    }
+
+
+def _check_database_secret_options(chart: Path) -> None:
+    """Exactly one database Secret whatever the options: never two with the same name."""
+    dev = ("-f", str(chart / "values-dev.yaml"), *DEPLOY_SET)
+    for extra, secret_names, referenced in (
+        # Your own Secret under the configured name: the chart creates none.
+        (("--set", "postgresqlSecret.create=false"), [], "weather-agent-postgresql-auth"),
+        # No name: back to the subchart's generated Secret, and this chart creates none.
+        (
+            ("--set", "postgresql.auth.existingSecret="),
+            ["weather-agent-postgresql"],
+            "weather-agent-postgresql",
+        ),
+    ):
+        result = _template(chart, *dev, *extra)
+        assert result.returncode == 0, (extra, result.stderr)
+        docs = _docs(result.stdout)
+        assert [d["metadata"]["name"] for d in docs if d["kind"] == "Secret"] == secret_names
+        container = _agent_deployment(result.stdout)["spec"]["template"]["spec"]["containers"][0]
+        password = next(e for e in container["env"] if e["name"] == "POSTGRES_PASSWORD")
+        assert password["valueFrom"]["secretKeyRef"]["name"] == referenced
+
+
+def _check_refusals(chart: Path) -> None:
+    """No tag (every environment's default), an HPA that could never scale, no Gateway."""
+    for extra, message in (
+        ((), "image.tag is empty"),
+        (("--set", "image.tag="), "image.tag is empty"),
+        (
+            ("--set", "image.tag=x", "--set", "hpa.enabled=true"),
+            None,
+        ),
+        (
             (
-                [
-                    "--set",
-                    "gateway.hostname=agent.example.com",
-                    "--set",
-                    "appUrl=https://a.example",
-                ],
-                "https://a.example",
-            ),
-            (
-                [
-                    "--set",
-                    "gateway.hostname=agent.example.com",
-                    "--set",
-                    "env.APP_URL=https://cm.example",
-                ],
-                "https://cm.example",
-            ),
-            (
-                [
-                    "--set",
-                    "gateway.enabled=false",
-                    "--set",
-                    "ingress.enabled=true",
-                    "--set",
-                    "ingress.hostname=plain.example",
-                ],
-                "http://plain.example",
-            ),
-        ):
-            url = _run(
-                [
-                    HELM or "helm",
-                    "template",
-                    "weather-agent",
-                    str(chart),
-                    "--set",
-                    "gateway.parentRef.name=gw",
-                    *extra,
-                ],
-                chart,
-            )
-            assert url.returncode == 0, url.stderr
-            assert "name: APP_URL" in url.stdout
-            assert f'value: "{expected}"' in url.stdout, expected
-        tls = _run(
-            [
-                HELM or "helm",
-                "template",
-                "weather-agent",
-                str(chart),
                 "--set",
-                "gateway.parentRef.name=gw",
-                "--set",
-                "tls.certManager.enabled=true",
-                "--set",
-                "tls.certManager.issuerRef.name=letsencrypt",
-                "--set",
-                "gateway.hostname=agent.example.com",
-                "--set",
-                "ingress.enabled=true",
-                "--set",
-                "ingress.hostname=agent.example.com",
+                "image.tag=x",
                 "--set",
                 "hpa.enabled=true",
                 "--set",
-                "pdb.enabled=true",
-            ],
-            chart,
-        )
-        assert tls.returncode == 0, tls.stderr
-        for kind in (
-            "Certificate",
-            "Ingress",
-            "HorizontalPodAutoscaler",
-            "PodDisruptionBudget",
-            "ServiceAccount",
-        ):
-            assert f"kind: {kind}" in tls.stdout, kind
+                "resources.requests.cpu=null",
+            ),
+            "hpa.enabled needs resources.requests.cpu",
+        ),
+        (
+            ("--set", "image.tag=x", "--set", "hpa.enabled=true", "--set", "hpa.minReplicas=9"),
+            "greater than hpa.maxReplicas",
+        ),
+    ):
+        result = _template(chart, "--set", "gateway.parentRef.name=gw", *extra)
+        if message is None:
+            assert result.returncode == 0, (extra, result.stderr)
+        else:
+            assert result.returncode != 0 and message in result.stderr, (extra, result.stderr)
+    blank = _template(chart, "-f", str(chart / "values-prod.yaml"), "--set", "image.tag=x")
+    assert blank.returncode != 0
+    assert "gateway.parentRef.name is required" in blank.stderr
+    # A digits-only short SHA written unquoted in a values file stays a tag.
+    numeric = chart.parent / "numeric-tag.yaml"
+    numeric.write_text("image:\n  tag: 1234567\n")
+    tagged = _template(chart, "-f", str(numeric), "--set", "gateway.parentRef.name=gw")
+    assert tagged.returncode == 0, tagged.stderr
+    image = _agent_deployment(tagged.stdout)["spec"]["template"]["spec"]["containers"][0]["image"]
+    assert image == "ghcr.io/acme/weather-agent:1234567"
+
+
+def _check_app_url(chart: Path) -> None:
+    """APP_URL derives from the gateway hostname (https); an explicit appUrl / env.APP_URL wins."""
+    host = ("--set", "gateway.hostname=agent.example.com")
+    for extra, expected in (
+        (host, "https://agent.example.com"),
+        ((*host, "--set", "appUrl=https://a.example"), "https://a.example"),
+        ((*host, "--set", "env.APP_URL=https://cm.example"), "https://cm.example"),
+        (
+            (
+                "--set",
+                "gateway.enabled=false",
+                "--set",
+                "ingress.enabled=true",
+                "--set",
+                "ingress.hostname=plain.example",
+            ),
+            "http://plain.example",
+        ),
+    ):
+        url = _template(chart, *DEPLOY_SET, *extra)
+        assert url.returncode == 0, url.stderr
+        assert "name: APP_URL" in url.stdout
+        assert f'value: "{expected}"' in url.stdout, expected
+
+
+def _check_optional_resources(chart: Path) -> None:
+    everything = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set",
+        "tls.certManager.enabled=true",
+        "--set",
+        "tls.certManager.issuerRef.name=letsencrypt",
+        "--set",
+        "gateway.hostname=agent.example.com",
+        "--set",
+        "ingress.enabled=true",
+        "--set",
+        "ingress.hostname=agent.example.com",
+        "--set",
+        "hpa.enabled=true",
+        "--set",
+        "pdb.enabled=true",
+        "--set",
+        "networkPolicy.enabled=true",
+        "--set",
+        "networkPolicy.restrictEgress=true",
+        "--set-json",
+        'networkPolicy.egressTo=[{"to":[{"ipBlock":{"cidr":"0.0.0.0/0"}}],"ports":[{"port":443}]}]',
+    )
+    assert everything.returncode == 0, everything.stderr
+    docs = _docs(everything.stdout)
+    assert {
+        "Certificate",
+        "Ingress",
+        "HorizontalPodAutoscaler",
+        "PodDisruptionBudget",
+        "ServiceAccount",
+        "NetworkPolicy",
+    } <= {d["kind"] for d in docs}
+    policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    assert policy["spec"]["policyTypes"] == ["Ingress", "Egress"]
+    assert policy["spec"]["ingress"] == [{"ports": [{"port": "http", "protocol": "TCP"}]}]
+    assert policy["spec"]["egress"][0]["ports"][0]["port"] == 53
+    assert policy["spec"]["egress"][1]["to"] == [{"ipBlock": {"cidr": "0.0.0.0/0"}}]
+    # The HPA owns the replica count.
+    assert "replicas" not in _agent_deployment(everything.stdout)["spec"]
+    # Off by default (values.yaml alone: no subchart either).
+    default = _template(chart, *DEPLOY_SET)
+    assert default.returncode == 0, default.stderr
+    assert "NetworkPolicy" not in {d["kind"] for d in _docs(default.stdout)}

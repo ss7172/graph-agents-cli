@@ -23,7 +23,10 @@ and review the fixture diff.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -113,18 +116,19 @@ def test_fixture_directories_are_complete() -> None:
     )
 
 
-# --- .github/agent.env as the GitHub runner reads it ---------------------------
+# --- .github/agent.env as the GitHub workflows read it -------------------------
 
-# pr_checks.yaml loads agent.env with: grep -Ev '^[[:space:]]*(#|$)' .github/agent.env >> "$GITHUB_ENV"
-_WORKFLOW_FILTER = re.compile(r"^[ \t\n\r\f\v]*(#|$)")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _workflow_filter(text: str) -> str:
-    """What the pr_checks `grep -Ev` keeps."""
-    return "".join(
-        line for line in text.splitlines(keepends=True) if not _WORKFLOW_FILTER.match(line)
-    )
+_BASH = shutil.which("bash")
+_WORKFLOWS = rf.REPO_ROOT / "src/graph_agents_cli/scaffold"
+_LOADER_STEPS = (
+    (_WORKFLOWS / "base_templates/python/.github/workflows/pr_checks.yaml", "checks"),
+    (_WORKFLOWS / "deployment_targets/kubernetes/python/.github/workflows/staging.yaml", "build"),
+    (
+        _WORKFLOWS / "deployment_targets/kubernetes/python/.github/workflows/promote-to-prod.yaml",
+        "settings",
+    ),
+)
 
 
 def _parse_github_env_file(text: str) -> dict[str, str]:
@@ -162,25 +166,81 @@ def _parse_github_env_file(text: str) -> dict[str, str]:
     return entries
 
 
-def test_the_workflow_filter_is_what_pr_checks_runs() -> None:
-    pr_checks = (
-        rf.REPO_ROOT
-        / "src/graph_agents_cli/scaffold/base_templates/python/.github/workflows/pr_checks.yaml"
-    ).read_text(encoding="utf-8")
-    assert "grep -Ev '^[[:space:]]*(#|$)' .github/agent.env" in pr_checks
+def _loader_script(workflow: Path, job: str) -> str:
+    """The `Load project settings` step of ``job`` (every workflow reads agent.env with it)."""
+    data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    steps = [s for s in data["jobs"][job]["steps"] if s.get("name") == "Load project settings"]
+    assert len(steps) == 1, workflow.name
+    return steps[0]["run"]
 
 
+def _load_like_the_workflows(project: Path, tmp_path: Path) -> dict[str, str]:
+    """Run every workflow's agent.env loader on ``project`` as the runner does; GITHUB_ENV parsed."""
+    results = []
+    for workflow, job in _LOADER_STEPS:
+        step = tmp_path / f"{workflow.stem}-load.sh"
+        step.write_text(_loader_script(workflow, job), encoding="utf-8")
+        github_env = tmp_path / f"{workflow.stem}-github-env"
+        github_env.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [_BASH or "bash", "--noprofile", "--norc", "-eo", "pipefail", str(step)],
+            cwd=project,
+            env={"PATH": os.environ.get("PATH", ""), "GITHUB_ENV": str(github_env)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, f"{workflow.name}: {proc.stderr}"
+        results.append(_parse_github_env_file(github_env.read_text(encoding="utf-8")))
+    assert all(r == results[0] for r in results), "the workflows load agent.env differently"
+    return results[0]
+
+
+@pytest.mark.skipif(_BASH is None, reason="bash is not on PATH")
 @pytest.mark.parametrize("name", list(rf.COMBINATIONS))
-def test_agent_env_loads_into_github_env(rendered: dict[str, Path], name: str) -> None:
-    """Every rendered agent.env, filtered as pr_checks does, parses with the runner's rules."""
-    text = (rendered[name] / ".github" / "agent.env").read_text(encoding="utf-8")
-    entries = _parse_github_env_file(_workflow_filter(text))
+def test_agent_env_loads_into_github_env(
+    rendered: dict[str, Path], name: str, tmp_path: Path
+) -> None:
+    """Every rendered agent.env, read by the workflows' loader, parses with the runner's rules."""
+    entries = _load_like_the_workflows(rendered[name], tmp_path)
     assert all(_ENV_NAME.match(key) for key in entries), entries
     spec = entries["GRAPH_AGENTS_CLI_SPEC"]
     assert spec.startswith("git+https://github.com/ss7172/graph-agents-cli"), spec
     assert "CLI_VERSION_PIN" not in entries
     if rf.COMBINATIONS[name].manifest.get("environments", True):
         assert {"IMAGE_REPOSITORY", "RELEASE_NAME", "CHART_PATH", "RUNTIME", "CD"} <= set(entries)
-    # Unfiltered, the comment line is exactly what broke pr_checks before.
+    # The raw file (with its comment lines) is not valid GITHUB_ENV input: the
+    # workflows must go through the loader, never append the file as is.
+    raw = (rendered[name] / ".github" / "agent.env").read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="Invalid format"):
-        _parse_github_env_file(text)
+        _parse_github_env_file(raw)
+
+
+# A mirror given as a PEP 508 requirement: spaces and `@` in the value, which a
+# shell `source` of agent.env would have run as a command.
+_PEP508_OVERRIDE = (
+    "graph-agents-cli @ git+https://git.example.com/mirror/graph-agents-cli@v{version}"
+)
+
+
+@pytest.mark.skipif(_BASH is None, reason="bash is not on PATH")
+@pytest.mark.parametrize("name", ["server-helm-push", "fastapi-argocd-custom", "fastapi-none-jwt"])
+def test_an_install_spec_override_reaches_every_workflow_intact(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from graph_agents_cli.__init__ import __version__
+    from graph_agents_cli.main import main
+
+    monkeypatch.setenv("GRAPH_AGENTS_CLI_INSTALL_SPEC", _PEP508_OVERRIDE)
+    result = CliRunner().invoke(
+        main,
+        rf.create_args(name, tmp_path / "out"),
+        env={"GRAPH_AGENTS_CLI_NO_UPDATE_CHECK": "1"},
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "out" / rf.COMBINATIONS[name].project_name
+    entries = _load_like_the_workflows(project, tmp_path)
+    assert entries["GRAPH_AGENTS_CLI_SPEC"] == _PEP508_OVERRIDE.replace("{version}", __version__)

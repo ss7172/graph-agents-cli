@@ -1,6 +1,28 @@
-# Production desired state changes only through a pull request reviewed by
-# these owners (the production gate). Replace the placeholder with the team or
-# users who approve production changes; branch protection on main must
-# require code-owner review, dismiss stale approvals and prevent self-approval.
-deployment/helm/{{cookiecutter.project_name}}/values-prod.yaml @CHANGE-ME/production-approvers
-deployment/argocd/application-prod.yaml @CHANGE-ME/production-approvers
+# Everything that decides what runs in production, or what the CI gate checks,
+# changes only through a pull request reviewed by these owners (the production
+# gate). Replace the placeholder with the team or users who approve production
+# changes (GitHub ignores an owner that does not exist, which silently removes
+# the gate; `graph-agents-cli infra check` reports a leftover placeholder).
+# Branch protection on main must require code-owner review, dismiss stale
+# approvals and prevent self-approval.
+#
+# Deployment: the chart, the shared and prod values and the Argo CD Applications.
+/deployment/ @CHANGE-ME/production-approvers
+# ...except the dev and staging values: the staging workflow's image-tag PR
+# merges automatically once pr_checks passes (a line without owners leaves
+# the file unowned, so ordinary review applies).
+/deployment/helm/*/values-dev.yaml
+/deployment/helm/*/values-staging.yaml
+# CI/CD: the workflows, their settings (.github/agent.env) and this file.
+/.github/ @CHANGE-ME/production-approvers
+# The outbound API access policy the running agent enforces.
+/api-policy.yaml @CHANGE-ME/production-approvers
+# The eval gate's datasets and thresholds.
+/tests/eval/ @CHANGE-ME/production-approvers
+# Project extensions, which can replace CLI commands (including lint and eval),
+# and the CLI's local state directory (gitignored; covered should it be committed).
+/graph-agents-cli-extensions.yaml @CHANGE-ME/production-approvers
+/extensions/ @CHANGE-ME/production-approvers
+/.graph-agents-cli/ @CHANGE-ME/production-approvers
+# Project settings the CLI reads for every command (runtime, CD mode, Secret keys).
+/graph-agents-cli-manifest.yaml @CHANGE-ME/production-approvers
