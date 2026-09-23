@@ -26,11 +26,15 @@ process environment and the project's ``.env``, and reports whether:
   ``TRACING_ENABLED=true``;
 * ``kubectl config current-context`` resolves (and, with ``--cluster``,
   ``kubectl cluster-info`` succeeds);
+* under the ``shared-bearer`` auth policy, ``API_KEY`` is set (the local
+  server answers 503 to every request without it);
 * under ``--profile disconnected`` (D25), nothing hosted is configured: no
   hosted model provider, no LangSmith, no GitHub-hosted CI, ``fastapi`` runtime.
 
 ``--write-env`` prompts for the missing keys and appends them to ``.env``
-without echoing the values. The CLI itself stores nothing.
+without echoing the values; inside a ``shared-bearer`` project it also
+generates a missing ``API_KEY`` (as ``secrets apply`` does). The CLI itself
+stores nothing.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ import click
 import yaml
 
 from graph_agents_cli._defaults import (
+    DEFAULT_AUTH_POLICY,
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_RUNTIME,
     FAKE_PROVIDER,
@@ -99,6 +104,7 @@ class ProjectInfo:
     runtime: str = DEFAULT_RUNTIME
     deployment_target: str = "kubernetes"
     cd: str = "skip"
+    auth_policy: str = DEFAULT_AUTH_POLICY
     environments: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
@@ -159,6 +165,7 @@ def load_project_info(cwd: Path | None = None) -> ProjectInfo:
     info.runtime = str(params.get("runtime") or DEFAULT_RUNTIME)
     info.deployment_target = str(params.get("deployment_target") or "kubernetes")
     info.cd = str(params.get("cd") or "skip")
+    info.auth_policy = str(params.get("auth_policy") or DEFAULT_AUTH_POLICY)
     envs = data.get("environments") or {}
     if isinstance(envs, dict):
         info.environments = {
@@ -543,9 +550,40 @@ def check_disconnected_profile(info: ProjectInfo, env: EnvView) -> list[Check]:
     return checks
 
 
+def needs_api_key(info: ProjectInfo, env: EnvView) -> bool:
+    """True inside a project whose effective auth policy is shared-bearer and API_KEY is unset.
+
+    ``AUTH_POLICY`` from the environment or ``.env`` (what the app reads at
+    runtime) wins over the manifest's ``create_params.auth_policy``.
+    """
+    if info.root is None or env.has("API_KEY"):
+        return False
+    policy = env.get("AUTH_POLICY").strip() or info.auth_policy
+    return policy == "shared-bearer"
+
+
+def check_api_key(info: ProjectInfo, env: EnvView) -> Check | None:
+    if info.root is None:
+        return None
+    if needs_api_key(info, env):
+        return Check(
+            "api_key",
+            WARN,
+            "API_KEY unset; under AUTH_POLICY=shared-bearer the local server answers 503 "
+            "to every request (run, eval, playground)",
+            "Run 'graph-agents-cli login --write-env' to generate one into .env.",
+        )
+    if env.has("API_KEY"):
+        return Check("api_key", OK, f"API_KEY set ({env.where('API_KEY')})")
+    return None
+
+
 def run_preflight(info: ProjectInfo, env: EnvView, *, profile: str, cluster: bool) -> list[Check]:
     provider, source = resolve_provider(info, env)
     checks = check_provider(provider, source, env, profile=profile)
+    api_key = check_api_key(info, env)
+    if api_key is not None:
+        checks.append(api_key)
     checks.append(check_judge(env, profile=profile))
     checks.append(check_tracing(env, profile=profile))
     checks.extend(check_kubeconfig(info, cluster=cluster))
@@ -588,15 +626,25 @@ def prompt_and_write_env(info: ProjectInfo, env: EnvView, *, profile: str, conso
     """Prompt for each missing key and append the answers to ``env.env_file``.
 
     Secret values are read with ``hide_input`` and never printed. An empty
-    answer skips that key. Returns the number of keys written.
+    answer skips that key. A missing ``API_KEY`` under the shared-bearer policy
+    is generated rather than prompted for. Returns the number of keys written.
     """
+    from graph_agents_cli.secrets._apply import GENERATED_KEY, generate_api_key
+
     missing = missing_env_keys(info, env, profile=profile)
-    if not missing:
+    generate = needs_api_key(info, env)
+    if not missing and not generate:
         console.print("  Nothing to write: every required key is already set.", style="dim")
         return 0
     console.print()
     console.print(f"  Writing missing keys to {env.env_file} (leave blank to skip).", style="bold")
     entries: dict[str, str] = {}
+    if generate:
+        entries[GENERATED_KEY] = generate_api_key()
+        console.print(
+            f"  Generated {GENERATED_KEY} for AUTH_POLICY=shared-bearer (value not shown).",
+            style="green",
+        )
     for name, secret in missing:
         value = click.prompt(
             f"  {name}",

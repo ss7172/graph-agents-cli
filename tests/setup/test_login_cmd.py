@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
+from dotenv import dotenv_values
 
 from graph_agents_cli._tools import ToolNotFoundError
 from graph_agents_cli.setup import cmd_auth
@@ -461,6 +463,69 @@ def test_write_env_nothing_missing(runner, project, kubectl, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "Nothing to write" in result.output
     assert not (project / ".env").exists()
+
+
+def test_write_env_generates_api_key_for_shared_bearer_project(runner, project, kubectl):
+    write_manifest(project)  # auth_policy defaults to shared-bearer
+    (project / ".env").write_text("APP_ENV=dev\nAPI_KEY=\n")  # blank, as in .env.example
+    result = runner.invoke(cmd_login, ["--write-env"], input="sk-typed\n")
+    assert result.exit_code == 0, result.output
+    values = dotenv_values(project / ".env")
+    assert re.fullmatch(r"[0-9a-f]{64}", values["API_KEY"])
+    assert values["API_KEY"] not in result.output
+    assert values["OPENAI_API_KEY"] == "sk-typed"
+    assert "Generated API_KEY" in result.output
+    assert "Wrote 2 key(s)" in result.output
+    assert "API_KEY set (.env)" in result.output
+
+
+def test_write_env_generates_api_key_even_when_provider_key_is_set(
+    runner, project, kubectl, monkeypatch
+):
+    write_manifest(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    result = runner.invoke(cmd_login, ["--write-env"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing to write" not in result.output
+    assert re.fullmatch(r"API_KEY=[0-9a-f]{64}\n", (project / ".env").read_text())
+
+
+def test_write_env_keeps_existing_api_key(runner, project, kubectl, monkeypatch):
+    write_manifest(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    (project / ".env").write_text("API_KEY=keep-me\n")
+    result = runner.invoke(cmd_login, ["--write-env"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing to write" in result.output
+    assert (project / ".env").read_text() == "API_KEY=keep-me\n"
+
+
+@pytest.mark.parametrize(
+    ("manifest_policy", "env_policy"),
+    [("product-session", ""), ("shared-bearer", "product-session")],
+)
+def test_write_env_no_api_key_without_shared_bearer(
+    runner, project, kubectl, monkeypatch, manifest_policy, env_policy
+):
+    write_manifest(project, auth_policy=manifest_policy)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    if env_policy:
+        monkeypatch.setenv("AUTH_POLICY", env_policy)
+    result = runner.invoke(cmd_login, ["--write-env"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing to write" in result.output
+    assert not (project / ".env").exists()
+    assert "api_key:" not in result.output
+
+
+def test_missing_api_key_is_a_warning(runner, project, kubectl, monkeypatch):
+    write_manifest(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    result = runner.invoke(cmd_login, ["--json"])
+    assert result.exit_code == 0, result.output
+    checks = {c["name"]: c for c in json.loads(result.output)["checks"]}
+    assert checks["api_key"]["status"] == "warn"
+    assert "login --write-env" in checks["api_key"]["hint"]
 
 
 def test_missing_env_keys_helper():

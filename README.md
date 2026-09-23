@@ -32,7 +32,8 @@ graph-agents-cli login               # preflight: provider key, tracing, kubecon
 wheel and finally to a plain copy into `~/.agents/skills` (`./.agents/skills` with
 `--workspace`), so it also works without git or network. Contributors use
 `graph-agents-cli setup --dev` from a checkout. The CLI stores no credentials: `login`
-only checks the environment and can append missing keys to `.env` with `--write-env`.
+only checks the environment and can append missing keys to `.env` with `--write-env`, which
+also generates the `API_KEY` the `shared-bearer` auth policy requires.
 `login` resolves the provider as `MODEL_PROVIDER` from the environment or `.env` (the
 value the app reads at runtime) > the manifest's `create_params.model_provider` >
 `openai`; `MODEL_PROVIDER=fake` is accepted as the test-only provider (warning, no key
@@ -43,7 +44,7 @@ check, allowed under the disconnected profile) and `JUDGE_MODEL_PROVIDER=fake` i
 ```bash
 graph-agents-cli create my-agent --model-provider openai      # scaffold (fastapi runtime, cd: skip)
 cd my-agent
-cp .env.example .env && graph-agents-cli login --write-env    # fill in OPENAI_API_KEY without echoing it
+cp .env.example .env && graph-agents-cli login --write-env    # fill in OPENAI_API_KEY, generate API_KEY
 graph-agents-cli install                                      # uv sync from the bundled lock
 graph-agents-cli playground                                   # app with reload + /playground chat page
 graph-agents-cli eval run                                     # generate traces, grade, enforce the gate
@@ -66,7 +67,7 @@ project (tests, `run`, `eval run`) with the deterministic test model and no key.
 |---------|-------------|
 | `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install`) and the skills into detected coding agents |
 | `update [--workspace] [-i] [-y]` | Force-reinstall the skills and upgrade the CLI (best effort) |
-| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig; writes `.env` on request; stores nothing; exit 1 on a failed check (0 with `--status`) |
+| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig; writes `.env` on request (generating `API_KEY`); stores nothing; exit 1 on a failed check (0 with `--status`) |
 | `create [NAME]` / `scaffold create [NAME]` `[-a/--agent] [-o/--output-dir] [--runtime] [--model-provider] [--model] [--checkpointer] [-d/--deployment-target] [--registry] [--cd] [--auth-policy] [--product-policy FILE] [--process] [-p/--prototype] [-dir/--agent-directory] [--agent-guidance-filename] [-bt/--base-template] [-i] [-y] [-s/--skip-checks] [--debug]` | Create a LangGraph agent project from the template |
 | `scaffold enhance [TEMPLATE_PATH]` (the `create` flags plus `[-n/--name]`, `[--force]`, `[--dry-run]`, `[--prefer-new]`; `--product-policy` is refused) | Add or change the deployment target, CD mode, or runtime of an existing project (3-way merge, backup first) |
 | `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge; stops without an authentic prior baseline |
@@ -131,7 +132,7 @@ Secrets never live in values files or the chart. The manifest's `secrets.keys` a
 only set of variables that can reach the cluster.
 
 1. Put the values in `.env.<env>` (or `.env`); `login --write-env` prompts for missing
-   keys without echoing them.
+   keys without echoing them and generates a missing `API_KEY`.
 2. `graph-agents-cli secrets apply --env <env>` creates or replaces the Opaque Secret
    `<name>-app` in the environment's namespace with one key per allow-listed variable
    that is present (`kubectl create secret generic --from-env-file=<0600 temp file>

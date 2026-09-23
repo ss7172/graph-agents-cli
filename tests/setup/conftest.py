@@ -44,6 +44,8 @@ _ENV_KEYS = (
     "BUILD_ID",
     "GITLAB_CI",
     "GRAPH_AGENTS_CLI_NO_UPDATE_CHECK",
+    "API_KEY",
+    "AUTH_POLICY",
 )
 
 

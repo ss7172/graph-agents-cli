@@ -43,7 +43,8 @@ graph-agents-cli login [--profile default|disconnected] [--cluster] [--write-env
   `MODEL_PROVIDER=fake` is accepted as the test-only provider (warning, no key check, allowed
   under the disconnected profile) and `JUDGE_MODEL_PROVIDER=fake` is ok. `--write-env` prompts for
   missing keys and appends them to `.env` (default `<project>/.env`, or `--env-file`) without
-  echoing. Exit `1` when any check fails; `--status` prints the report and exits `0`; `--json`
+  echoing; under the `shared-bearer` auth policy it also generates a missing `API_KEY` (an unset
+  one is a warning, since the local server answers 503 without it). Exit `1` when any check fails; `--status` prints the report and exits `0`; `--json`
   emits the report. `--profile disconnected` fails on any hosted dependency. The CLI stores no
   credentials.
 
