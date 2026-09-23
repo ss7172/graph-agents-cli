@@ -1,6 +1,7 @@
 [
   ".dockerignore",
   ".env.example",
+  ".github/CODEOWNERS",
   ".github/agent.env",
   ".github/workflows/pr_checks.yaml",
   ".gitignore",
@@ -46,6 +47,7 @@
   "deployment/helm/p5-policy/templates/postgresql-secret.yaml",
   "deployment/helm/p5-policy/templates/service.yaml",
   "deployment/helm/p5-policy/templates/serviceaccount.yaml",
+  "deployment/helm/p5-policy/templates/servicemonitor.yaml",
   "deployment/helm/p5-policy/values-dev.yaml",
   "deployment/helm/p5-policy/values-prod.yaml",
   "deployment/helm/p5-policy/values-staging.yaml",

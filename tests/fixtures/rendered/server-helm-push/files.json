@@ -47,6 +47,7 @@
   "deployment/helm/p4-server/templates/postgresql-secret.yaml",
   "deployment/helm/p4-server/templates/service.yaml",
   "deployment/helm/p4-server/templates/serviceaccount.yaml",
+  "deployment/helm/p4-server/templates/servicemonitor.yaml",
   "deployment/helm/p4-server/values-dev.yaml",
   "deployment/helm/p4-server/values-prod.yaml",
   "deployment/helm/p4-server/values-staging.yaml",

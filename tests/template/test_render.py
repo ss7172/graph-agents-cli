@@ -206,10 +206,11 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     skip = rendered["fastapi-skip"]
     assert not (skip / "deployment" / "argocd").exists()
     assert not (skip / ".github" / "workflows" / "staging.yaml").exists()
-    # No CD workflows: the owners file is at the root (the engine keeps
-    # .github/CODEOWNERS only next to the CD workflows).
-    assert not (skip / ".github" / "CODEOWNERS").exists()
-    assert "/.github/ @CHANGE-ME/production-approvers" in (skip / "CODEOWNERS").read_text()
+    # Every project has one owners file, in .github/, CD mode or not.
+    assert not (skip / "CODEOWNERS").exists()
+    assert (
+        "/.github/ @CHANGE-ME/production-approvers" in (skip / ".github" / "CODEOWNERS").read_text()
+    )
     assert (skip / ".github" / "workflows" / "pr_checks.yaml").exists()
     assert (skip / "deployment" / "helm" / "weather-agent" / "Chart.yaml").exists()
 
@@ -231,8 +232,8 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     assert (none / ".github" / "agent.env").read_text().count("GRAPH_AGENTS_CLI_SPEC=") == 1
     assert not (none / ".github" / "workflows" / "staging.yaml").exists()
     assert (none / ".github" / "workflows" / "pr_checks.yaml").exists()
-    assert not (none / ".github" / "CODEOWNERS").exists()
-    none_owners = (none / "CODEOWNERS").read_text()
+    assert not (none / "CODEOWNERS").exists()
+    none_owners = (none / ".github" / "CODEOWNERS").read_text()
     assert "/tests/eval/ @CHANGE-ME/production-approvers" in none_owners
     assert "/deployment/" not in none_owners
     assert (none / "langgraph.json").exists()

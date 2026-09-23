@@ -1,6 +1,7 @@
 [
   ".dockerignore",
   ".env.example",
+  ".github/CODEOWNERS",
   ".github/agent.env",
   ".github/workflows/pr_checks.yaml",
   ".gitignore",
@@ -44,6 +45,7 @@
   "deployment/helm/p2-k8s/templates/postgresql-secret.yaml",
   "deployment/helm/p2-k8s/templates/service.yaml",
   "deployment/helm/p2-k8s/templates/serviceaccount.yaml",
+  "deployment/helm/p2-k8s/templates/servicemonitor.yaml",
   "deployment/helm/p2-k8s/values-dev.yaml",
   "deployment/helm/p2-k8s/values-prod.yaml",
   "deployment/helm/p2-k8s/values-staging.yaml",

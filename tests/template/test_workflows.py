@@ -1323,11 +1323,7 @@ def test_codeowners_covers_everything_that_shapes_production_or_the_gate(
 
 
 def test_projects_without_a_cd_mode_own_the_gate_inputs_too(rendered: dict[str, Path]) -> None:
-    """No CD workflows (cd skip, or -d none): the same rules, at the repository root.
-
-    The engine keeps .github/CODEOWNERS only next to the CD workflows; GitHub reads
-    the root CODEOWNERS when .github/ has none.
-    """
+    """No CD workflows (cd skip, or -d none): the same rules, in .github/CODEOWNERS."""
     cd_rules = [
         line
         for line in (rendered["fastapi-argocd"] / ".github" / "CODEOWNERS").read_text().splitlines()
@@ -1335,10 +1331,10 @@ def test_projects_without_a_cd_mode_own_the_gate_inputs_too(rendered: dict[str, 
     ]
     for name in ("none", "fastapi-skip", "jwt", "custom-dir"):
         project = rendered[name]
-        assert not (project / ".github" / "CODEOWNERS").exists(), name
-        codeowners = (project / "CODEOWNERS").read_text()
+        assert not (project / "CODEOWNERS").exists(), name
+        codeowners = (project / ".github" / "CODEOWNERS").read_text()
         assert "cookiecutter" not in codeowners and "{%" not in codeowners
-        for path in (*GATE_INPUTS, "CODEOWNERS", ".github/workflows/staging.yaml"):
+        for path in (*GATE_INPUTS, ".github/CODEOWNERS", ".github/workflows/staging.yaml"):
             assert _owners(codeowners, path) == APPROVERS, (name, path)
         assert _owners(codeowners, "app/agent.py") == []
         rules = [line for line in codeowners.splitlines() if line and not line.startswith("#")]
@@ -1347,5 +1343,5 @@ def test_projects_without_a_cd_mode_own_the_gate_inputs_too(rendered: dict[str, 
         else:
             for path in DEPLOYMENT_INPUTS:
                 assert _owners(codeowners, path) == APPROVERS, (name, path)
-            # The kubernetes rules are the CD projects' ones, plus the file itself.
-            assert rules == [*cd_rules[:4], f"/CODEOWNERS {APPROVERS[0]}", *cd_rules[4:]], rules
+            # The kubernetes rules are exactly the CD projects' ones.
+            assert rules == cd_rules, rules

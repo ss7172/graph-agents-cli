@@ -38,11 +38,12 @@ def test_conditional_files_per_cd_on_kubernetes(run_create: CreateRunner, cd: st
     result, project = run_create("--deployment-target", "kubernetes", "--cd", cd)
     assert result.exit_code == 0, result.output
 
-    # pr_checks always; staging/promote/CODEOWNERS only with a CD mode
+    # pr_checks and .github/CODEOWNERS always; staging/promote only with a CD mode
     assert _exists(project, ".github/workflows/pr_checks.yaml")
     assert _exists(project, ".github/workflows/staging.yaml") == (cd != "skip")
     assert _exists(project, ".github/workflows/promote-to-prod.yaml") == (cd != "skip")
-    assert _exists(project, ".github/CODEOWNERS") == (cd != "skip")
+    assert _exists(project, ".github/CODEOWNERS")
+    assert not _exists(project, "CODEOWNERS")
     # argocd manifests only with argocd
     assert _exists(project, "deployment/argocd/application-dev.yaml") == (cd == "argocd")
     # the chart always ships for kubernetes, including the target layer's values files
@@ -61,7 +62,8 @@ def test_conditional_files_for_target_none(run_create: CreateRunner) -> None:
     assert not _exists(project, "deployment")
     assert _exists(project, ".github/workflows/pr_checks.yaml")
     assert not _exists(project, ".github/workflows/staging.yaml")
-    assert not _exists(project, ".github/CODEOWNERS")
+    assert _exists(project, ".github/CODEOWNERS")
+    assert not _exists(project, "CODEOWNERS")
     assert not _exists(project, "api-policy.yaml")
     manifest = read_manifest(project)
     assert "environments" not in manifest
@@ -72,7 +74,6 @@ def test_conditional_files_table_matches_contract() -> None:
     assert set(CONDITIONAL_FILES) == {
         ".github/workflows/staging.yaml",
         ".github/workflows/promote-to-prod.yaml",
-        ".github/CODEOWNERS",
         "deployment/argocd",
         "deployment",
         "api-policy.yaml",

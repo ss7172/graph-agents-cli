@@ -242,7 +242,6 @@ def validate_combination(
 CONDITIONAL_FILES: dict[str, Any] = {
     ".github/workflows/staging.yaml": lambda c: c.get("cd", "skip") != "skip",
     ".github/workflows/promote-to-prod.yaml": lambda c: c.get("cd", "skip") != "skip",
-    ".github/CODEOWNERS": lambda c: c.get("cd", "skip") != "skip",
     "deployment/argocd": lambda c: c.get("cd") == "argocd",
     "deployment": lambda c: c.get("deployment_target") == "kubernetes",
     API_POLICY_FILENAME: lambda c: bool(c.get("has_api_policy", False)),

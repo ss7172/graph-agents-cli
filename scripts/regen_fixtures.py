@@ -74,11 +74,16 @@ COMBINATIONS: dict[str, Combination] = {
     "fastapi-none-memory": Combination(
         "p1-none",
         ("--runtime", "fastapi", "--cd", "skip", "--checkpointer", "memory", "-d", "none"),
-        expect_present=("Dockerfile", "uv.lock", ".github/workflows/pr_checks.yaml"),
+        expect_present=(
+            "Dockerfile",
+            "uv.lock",
+            ".github/workflows/pr_checks.yaml",
+            ".github/CODEOWNERS",
+        ),
         expect_absent=(
             "deployment",
             ".github/workflows/staging.yaml",
-            ".github/CODEOWNERS",
+            "CODEOWNERS",
             "api-policy.yaml",
             "uv-fastapi.lock",
             "uv-langgraph-server.lock",
@@ -117,7 +122,7 @@ COMBINATIONS: dict[str, Combination] = {
             "deployment/argocd",
             ".github/workflows/staging.yaml",
             ".github/workflows/promote-to-prod.yaml",
-            ".github/CODEOWNERS",
+            "CODEOWNERS",
             "api-policy.yaml",
         ),
         manifest={
@@ -213,8 +218,13 @@ COMBINATIONS: dict[str, Combination] = {
             "--process",
             "docs/process.md",
         ),
-        expect_present=("api-policy.yaml", "app/tools/example_api.py", "uv.lock"),
-        expect_absent=("deployment/argocd", ".github/CODEOWNERS"),
+        expect_present=(
+            "api-policy.yaml",
+            "app/tools/example_api.py",
+            "uv.lock",
+            ".github/CODEOWNERS",
+        ),
+        expect_absent=("deployment/argocd", "CODEOWNERS"),
         manifest={
             "api_policy": True,
             "process": "docs/process.md",

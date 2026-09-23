@@ -1,5 +1,0 @@
-{#- Projects without a CD mode get no .github/CODEOWNERS (the engine keeps that
-    one only next to the CD workflows), so the same rules are rendered here, at
-    the repository root, which GitHub reads next. The file name renders empty,
-    and cookiecutter writes nothing, for projects with a CD mode. -#}
-{% include '.github/CODEOWNERS' -%}

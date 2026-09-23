@@ -50,6 +50,7 @@
   "deployment/helm/p3-argocd/templates/postgresql-secret.yaml",
   "deployment/helm/p3-argocd/templates/service.yaml",
   "deployment/helm/p3-argocd/templates/serviceaccount.yaml",
+  "deployment/helm/p3-argocd/templates/servicemonitor.yaml",
   "deployment/helm/p3-argocd/values-dev.yaml",
   "deployment/helm/p3-argocd/values-prod.yaml",
   "deployment/helm/p3-argocd/values-staging.yaml",
