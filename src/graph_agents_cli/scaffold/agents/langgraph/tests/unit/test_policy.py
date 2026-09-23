@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the auth policies: shared-bearer, the jwt placeholder and the custom stub.
+"""Unit tests for the auth policies: shared-bearer, the custom stub and policy selection.
 
-No network, no model key.
+The jwt policy has its own file (test_jwt_policy.py). No network, no model key.
 """
 
 from __future__ import annotations
@@ -29,9 +29,13 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import (
     JwtPolicy,
     Principal,
     SharedBearerPolicy,
+    admin_roles,
     authenticate_and_authorize,
+    check_startup,
+    dev_mode,
     get_policy,
     policy_name,
+    read_across_roles,
     require,
     reset_policy_cache,
 )
@@ -101,7 +105,7 @@ async def test_unknown_action_is_forbidden() -> None:
     assert exc.value.status_code == 403
 
 
-# --- CustomPolicy stub and the jwt placeholder: fail closed ---------------------
+# --- CustomPolicy stub and an unconfigured jwt policy: fail closed ---------------
 
 
 @pytest.fixture
@@ -128,8 +132,11 @@ async def test_custom_stub_fails_closed_on_every_action(custom_policy) -> None:
     assert exc.value.status_code == 503
 
 
-async def test_jwt_placeholder_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_unconfigured_jwt_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTH_POLICY", "jwt")
+    monkeypatch.setenv("APP_ENV", "dev")
+    for name in ("AUTH_JWT_JWKS_URL", "AUTH_JWT_PUBLIC_KEY", "AUTH_JWT_ALGORITHMS"):
+        monkeypatch.delenv(name, raising=False)
     reset_policy_cache()
     try:
         assert isinstance(get_policy(), JwtPolicy)
@@ -139,8 +146,45 @@ async def test_jwt_placeholder_fails_closed(monkeypatch: pytest.MonkeyPatch) -> 
                     _request({"Authorization": "Bearer x.y.z"}), action
                 )
             assert exc.value.status_code == 503
+            assert "AUTH_POLICY=jwt" in exc.value.detail
     finally:
         reset_policy_cache()
+
+
+# --- startup check and shared settings ------------------------------------------------
+
+
+def test_check_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    for app_env in ("dev", "prod"):
+        monkeypatch.setenv("APP_ENV", app_env)
+        # shared-bearer and the custom stub have nothing to check at startup.
+        for name in ("shared-bearer", "custom", "product-session"):
+            monkeypatch.setenv("AUTH_POLICY", name)
+            reset_policy_cache()
+            check_startup()
+        # A typo in AUTH_POLICY never starts, in any environment.
+        monkeypatch.setenv("AUTH_POLICY", "jtw")
+        reset_policy_cache()
+        with pytest.raises(RuntimeError, match="Unknown AUTH_POLICY"):
+            check_startup()
+    reset_policy_cache()
+
+
+def test_dev_mode_needs_an_explicit_app_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value, expected in (("dev", True), (" DEV ", True), ("prod", False), ("", False)):
+        monkeypatch.setenv("APP_ENV", value)
+        assert dev_mode() is expected
+    monkeypatch.delenv("APP_ENV")
+    assert dev_mode() is False
+
+
+def test_role_lists(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTH_ADMIN_ROLES", raising=False)
+    assert admin_roles() == set()  # empty = nobody
+    monkeypatch.setenv("AUTH_ADMIN_ROLES", " admin, ,platform ")
+    monkeypatch.setenv("AUTH_READ_ACROSS_ROLES", "support")
+    assert admin_roles() == {"admin", "platform"}
+    assert read_across_roles() == {"support"}
 
 
 def test_retired_policy_name_reads_as_custom(
