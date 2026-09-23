@@ -1,14 +1,24 @@
 {{ .Release.Name }} ({{ .Values.runtime }} runtime, image tag {{ include "agent.imageTag" . }}) is installed in namespace {{ .Release.Namespace }}.
 Pods receive traffic once {{ .Values.probes.readiness.path }} answers (the database is reachable).
 
-App Secret expected: {{ include "agent.secretName" . }}
+App Secret {{ if .Values.secretOptional }}expected (optional here: pods start without it){{ else }}required (pods do not start without it){{ end }}: {{ include "agent.secretName" . }}
   create or rotate it with: graph-agents-cli secrets apply --env <env> --env-file .env.<env>
   then, after rotation:     graph-agents-cli deploy --env <env> --restart
 
+{{- $published := list }}
+{{- $everything := false }}
+{{- if or .Values.gateway.enabled .Values.ingress.enabled }}
+{{- range (include "agent.publicPaths" . | fromYamlArray) }}
+{{- $published = append $published (printf "%s%s" .path (ternary "" " (prefix)" (eq .type "Exact"))) }}
+{{- if and (eq .path "/") (eq .type "PathPrefix") }}{{ $everything = true }}{{ end }}
+{{- end }}
+{{- end }}
 {{- if .Values.gateway.enabled }}
 Traffic: HTTPRoute {{ include "agent.fullname" . }} attached to Gateway {{ .Values.gateway.parentRef.name }}{{ if .Values.gateway.hostname }} for {{ .Values.gateway.hostname }}{{ end }}.
+  Published paths: {{ join ", " $published }} (route.publicPaths).
 {{- else if .Values.ingress.enabled }}
 Traffic: Ingress {{ include "agent.fullname" . }}{{ if .Values.ingress.hostname }} for {{ .Values.ingress.hostname }}{{ end }}.
+  Published paths: {{ join ", " $published }} (route.publicPaths).
 {{- else }}
 Traffic: ClusterIP only. Port-forward for a quick check:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent.fullname" . }} 8000:{{ .Values.service.port }}
@@ -30,4 +40,9 @@ node drains will wait forever on this Deployment. Lower pdb.minAvailable or rais
 WARNING: APP_URL resolves to nothing (no appUrl and no gateway/ingress hostname): the A2A
 agent card advertises the pod's bind address, which remote clients cannot dial. Set
 appUrl or a hostname in values-<env>.yaml.
+{{- end }}
+{{- if $everything }}
+
+WARNING: route.publicPaths publishes every path (PathPrefix /), /metrics, /health and
+/ready included. List only the agent's API paths.
 {{- end }}

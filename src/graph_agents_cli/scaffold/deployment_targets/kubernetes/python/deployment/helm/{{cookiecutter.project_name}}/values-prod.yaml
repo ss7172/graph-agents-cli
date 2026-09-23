@@ -2,6 +2,8 @@
 # Changes to this file reach the cluster only through a reviewed pull request.
 env:
   APP_ENV: prod
+# The app Secret is required: without it the pods do not start (no keys).
+secretOptional: false
 postgresql:
   enabled: false
 {%- if cookiecutter.runtime == 'langgraph-server' %}

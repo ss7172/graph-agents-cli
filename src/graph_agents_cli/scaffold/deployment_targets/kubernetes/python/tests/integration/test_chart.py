@@ -16,6 +16,10 @@
 
 The chart declares optional subcharts; `helm dependency build` needs the
 chart registry, so it is attempted once and the test skips when it cannot run.
+
+These tests hold whatever image tags the values files carry: in argocd mode CI
+and `graph-agents-cli deploy` commit the tag to values-<env>.yaml, and the pull
+request that does so runs them too.
 """
 
 from __future__ import annotations
@@ -29,10 +33,13 @@ import yaml
 
 PROJECT_NAME = "{{cookiecutter.project_name}}"
 CHART = Path(__file__).resolve().parents[2] / "deployment" / "helm" / PROJECT_NAME
+ENVIRONMENTS = ("dev", "staging", "prod")
 HELM = shutil.which("helm")
-# What `graph-agents-cli deploy` passes: the image tag it deploys, and the
-# Gateway the scaffolded staging/prod values leave for the operator to name.
-DEPLOY_ARGS = ("--set", "image.tag=0123abc", "--set", "gateway.parentRef.name=gw")
+# The Gateway the scaffolded staging/prod values leave for the operator to name.
+GATEWAY = ("--set", "gateway.parentRef.name=gw")
+# What `graph-agents-cli deploy` passes: the image tag it deploys (always as a
+# string), and the Gateway.
+DEPLOY_ARGS = ("--set-string", "image.tag=0123abc", *GATEWAY)
 
 pytestmark = pytest.mark.skipif(HELM is None, reason="helm is not installed")
 
@@ -54,11 +61,20 @@ def _render(env: str, *extra: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _docs(manifests: str) -> list[dict]:
+    return [doc for doc in yaml.safe_load_all(manifests) if doc]
+
+
 def _agent_deployment(manifests: str) -> dict:
-    for doc in yaml.safe_load_all(manifests):
-        if doc and doc["kind"] == "Deployment" and doc["metadata"]["name"] == PROJECT_NAME:
+    for doc in _docs(manifests):
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == PROJECT_NAME:
             return doc
     raise AssertionError("the agent Deployment was not rendered")
+
+
+def _committed_tag(env: str) -> str:
+    values = yaml.safe_load((CHART / f"values-{env}.yaml").read_text()) or {}
+    return str((values.get("image") or {}).get("tag") or "")
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +89,7 @@ def chart_with_dependencies() -> Path:
 
 
 def test_helm_lint(chart_with_dependencies: Path) -> None:
-    for env in ("dev", "staging", "prod"):
+    for env in ENVIRONMENTS:
         result = _helm(
             "lint",
             str(chart_with_dependencies),
@@ -85,12 +101,16 @@ def test_helm_lint(chart_with_dependencies: Path) -> None:
 
 
 def test_helm_template_renders_every_environment(chart_with_dependencies: Path) -> None:
-    for env in ("dev", "staging", "prod"):
+    for env in ENVIRONMENTS:
         result = _render(env, *DEPLOY_ARGS)
         assert result.returncode == 0, f"{env}: {result.stderr}"
         out = result.stdout
         assert "kind: Deployment" in out and "kind: Service" in out and "kind: ConfigMap" in out
-        assert "secretRef:" in out and f"name: {PROJECT_NAME}-app" in out
+        container = _agent_deployment(out)["spec"]["template"]["spec"]["containers"][0]
+        secret_ref = container["envFrom"][0]["secretRef"]
+        assert secret_ref["name"] == f"{PROJECT_NAME}-app"
+        # Outside dev a missing Secret keeps the pods from starting without keys.
+        assert secret_ref["optional"] is (env == "dev")
         if env == "dev":
             assert "kind: HTTPRoute" not in out
             assert f"$(POSTGRES_PASSWORD)@{PROJECT_NAME}-postgresql" in out
@@ -99,8 +119,26 @@ def test_helm_template_renders_every_environment(chart_with_dependencies: Path) 
             assert "POSTGRES_PASSWORD" not in out
 
 
+def test_the_route_publishes_the_api_but_not_probes_or_metrics(
+    chart_with_dependencies: Path,
+) -> None:
+    for env in ("staging", "prod"):
+        result = _render(env, *DEPLOY_ARGS)
+        assert result.returncode == 0, f"{env}: {result.stderr}"
+        route = next(d for d in _docs(result.stdout) if d["kind"] == "HTTPRoute")
+        paths = {
+            m["path"]["value"]: m["path"]["type"]
+            for rule in route["spec"]["rules"]
+            for m in rule["matches"]
+        }
+        assert paths["/chat"] == "Exact" and paths["/threads"] == "PathPrefix"
+        assert any(p.startswith("/a2a/") for p in paths)
+        for private in ("/", "/health", "/ready", "/metrics", "/playground"):
+            assert private not in paths, (env, private)
+
+
 def test_pods_are_hardened_probed_and_sized(chart_with_dependencies: Path) -> None:
-    for env in ("dev", "staging", "prod"):
+    for env in ENVIRONMENTS:
         result = _render(env, *DEPLOY_ARGS)
         assert result.returncode == 0, f"{env}: {result.stderr}"
         pod = _agent_deployment(result.stdout)["spec"]["template"]["spec"]
@@ -122,6 +160,20 @@ def test_pods_are_hardened_probed_and_sized(chart_with_dependencies: Path) -> No
 
 
 def test_the_chart_refuses_to_render_without_an_image_tag(chart_with_dependencies: Path) -> None:
-    result = _render("prod", "--set", "gateway.parentRef.name=gw")
-    assert result.returncode != 0
-    assert "image.tag is empty" in result.stderr
+    # An explicit empty tag: the committed values-<env>.yaml may already name one.
+    for env in ENVIRONMENTS:
+        result = _render(env, "--set-string", "image.tag=", *GATEWAY)
+        assert result.returncode != 0, env
+        assert "image.tag is empty" in result.stderr, env
+
+
+def test_committed_image_tags_are_the_ones_deployed(chart_with_dependencies: Path) -> None:
+    """A tag written into values-<env>.yaml (argocd mode) renders as Argo CD renders it."""
+    tagged = {env: tag for env in ENVIRONMENTS if (tag := _committed_tag(env))}
+    if not tagged:
+        pytest.skip("no values-<env>.yaml names an image tag yet")
+    for env, tag in tagged.items():
+        result = _render(env, *GATEWAY)
+        assert result.returncode == 0, f"{env}: {result.stderr}"
+        container = _agent_deployment(result.stdout)["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"].endswith(f":{tag}"), (env, container["image"])

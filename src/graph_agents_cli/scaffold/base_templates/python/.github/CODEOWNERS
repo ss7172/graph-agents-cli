@@ -2,10 +2,22 @@
 # changes only through a pull request reviewed by these owners (the production
 # gate). Replace the placeholder with the team or users who approve production
 # changes (GitHub ignores an owner that does not exist, which silently removes
+{%- if cookiecutter.cd != 'skip' %}
 # the gate; `graph-agents-cli infra check` reports a leftover placeholder).
+{%- else %}
+# the gate).
+{%- endif %}
 # Branch protection on main must require code-owner review, dismiss stale
 # approvals and prevent self-approval.
+{%- if cookiecutter.cd == 'skip' %}
 #
+# GitHub uses the first CODEOWNERS it finds in .github/, the repository root
+# and docs/. Without a CD mode this project keeps it at the root; adding one
+# (`graph-agents-cli scaffold enhance --cd ...`) brings .github/CODEOWNERS,
+# which then wins: delete this file.
+{%- endif %}
+#
+{%- if cookiecutter.deployment_target == 'kubernetes' %}
 # Deployment: the chart, the shared and prod values and the Argo CD Applications.
 /deployment/ @CHANGE-ME/production-approvers
 # ...except the dev and staging values: the staging workflow's image-tag PR
@@ -13,8 +25,12 @@
 # the file unowned, so ordinary review applies).
 /deployment/helm/*/values-dev.yaml
 /deployment/helm/*/values-staging.yaml
+{%- endif %}
 # CI/CD: the workflows, their settings (.github/agent.env) and this file.
 /.github/ @CHANGE-ME/production-approvers
+{%- if cookiecutter.cd == 'skip' %}
+/CODEOWNERS @CHANGE-ME/production-approvers
+{%- endif %}
 # The outbound API access policy the running agent enforces.
 /api-policy.yaml @CHANGE-ME/production-approvers
 # The eval gate's datasets and thresholds.

@@ -7,9 +7,11 @@
 image:
   repository: {{cookiecutter.registry}}/{{cookiecutter.project_name}}
   # Always an immutable build tag, never a default: `graph-agents-cli deploy`
-  # passes --set image.tag=<tag>, and in argocd mode CI (staging) or `deploy`
+  # passes it on the command line, and in argocd mode CI (staging) or `deploy`
   # (prod) writes it into values-<env>.yaml. The chart refuses to render while
-  # it is empty, so nothing rolls out an image that was never pushed.
+  # it is empty, so nothing rolls out an image that was never pushed. Keep it a
+  # quoted string ("0123456"): an unquoted number loses digits in YAML (0123456
+  # reads as octal), so the chart refuses one.
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -57,6 +59,11 @@ env:
 # Kubernetes Secret with the allow-listed keys (created by `graph-agents-cli
 # secrets apply`, never by this chart). Empty means "<release>-app".
 existingSecret: ""
+# Whether the pods may start without that Secret. false (staging, prod): a
+# missing Secret keeps the pods in CreateContainerConfigError instead of
+# running without their keys. values-dev.yaml sets true, so a dev cluster can
+# run (the fake model, say) before any Secret exists.
+secretOptional: false
 
 service:
   port: 80
@@ -83,6 +90,72 @@ ingress:
   className: ""
   hostname: ""
   annotations: {}
+
+# The paths the HTTPRoute (or Ingress) publishes: the agent's API and nothing
+# else. /health and /ready stay inside the cluster (the kubelet probes the pod
+# directly) and so does /metrics (see `metrics`). A request for any other path
+# gets the Gateway's (or ingress controller's) 404. Each entry is a `path` and a
+# `type`: PathPrefix (the path and everything below it, whole segments only:
+# /threads covers /threads/<id>/messages, never /threadsX) or Exact. With a
+# Gateway or Ingress on, the chart refuses an empty list: a Gateway API rule
+# without matches would publish every path.
+route:
+  publicPaths:
+    # POST /chat (SSE).
+    - path: /chat
+      type: Exact
+    # GET /threads, GET /threads/<id>/messages, DELETE /threads/<id>.
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+    # Under LangGraph Server this prefix also publishes the server's native
+    # thread routes (search, state, runs of a thread), which the auth handler
+    # limits to the caller's own threads; a run started there skips this app's
+    # /chat guardrails (run timeout, one run per thread, run records).
+{%- endif %}
+    - path: /threads
+      type: PathPrefix
+    # The A2A agent card (<path>/.well-known/agent-card.json) and JSON-RPC
+    # endpoint. Keep it in step with env.A2A_NAME (/a2a/<A2A_NAME>).
+    - path: /a2a/{{cookiecutter.agent_directory}}
+      type: PathPrefix
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+    # LangGraph Server's other native APIs are not published. The auth handler
+    # protects them too (assistants, crons and store writes need a role in
+    # AUTH_ADMIN_ROLES; store reads are not per user), but runs started through
+    # them skip this app's /chat guardrails and run records. Add what your
+    # clients need, for example the LangGraph SDK's:
+    # - path: /assistants
+    #   type: PathPrefix
+    # - path: /runs
+    #   type: PathPrefix
+    # - path: /store
+    #   type: PathPrefix
+    # - path: /crons
+    #   type: PathPrefix
+{%- endif %}
+  # Published as well while env.APP_ENV is dev, the only environment where the
+  # app serves them.
+  devPaths:
+    - path: /playground
+      type: Exact
+    - path: /docs
+      type: Exact
+    - path: /openapi.json
+      type: Exact
+
+# Prometheus scraping of /metrics (served on the http port unless
+# env.METRICS_ENABLED is false; never published by the route). Off by default.
+metrics:
+  # prometheus.io/scrape, /path and /port annotations on the pods, for a
+  # Prometheus that discovers pods by annotation.
+  scrapeAnnotations: false
+  # A ServiceMonitor for the Prometheus Operator (needs its CRDs installed).
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels, e.g. `release: kube-prometheus-stack`, so the Prometheus's
+    # serviceMonitorSelector picks it up.
+    labels: {}
 
 tls:
   existingSecret: ""     # operator-provided certificate Secret

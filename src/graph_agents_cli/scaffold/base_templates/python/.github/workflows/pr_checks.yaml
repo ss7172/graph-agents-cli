@@ -27,8 +27,9 @@
 # JUDGE_API_KEY secret pick a separate judge. On the fake model the gate only
 # checks the plumbing, and the run says so with a warning.
 #
-# The gate steps run the CLI's own `lint` and `eval run`: project extensions
-# cannot override them here (GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1).
+# The gate steps run the CLI's own `lint` and `eval run`: extensions (project
+# or user scope) cannot override them here (GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1
+# for the whole job).
 
 name: pr_checks
 
@@ -52,6 +53,9 @@ jobs:
       APP_ENV: ci
       TRACING_ENABLED: "false"
       GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+      # Every graph-agents-cli command of this job is the CLI's own: a project
+      # (or runner-wide) extension cannot replace the gate's lint or eval.
+      GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -60,15 +64,22 @@ jobs:
         run: |
           # .github/agent.env is data and is never sourced: each NAME=VALUE line is
           # checked and copied to GITHUB_ENV, so a value may hold spaces or shell
-          # metacharacters (a PEP 508 install spec, for example). Comment and blank
-          # lines are skipped; blanks around the value, one pair of quotes around it
-          # and a trailing " # comment" are dropped (no escapes, no expansion).
+          # metacharacters (a PEP 508 install spec, for example). Only the settings
+          # listed in `known` are accepted: any other name (BASH_ENV, SHELLOPTS, PS4,
+          # PATH, PYTHONPATH, ...) could change how later steps run. To add a setting,
+          # extend `known` in all three workflows. Comment and blank lines are skipped;
+          # blanks around the value, one pair of quotes around it and a trailing
+          # " # comment" are dropped (no escapes, no expansion). Nothing reaches
+          # GITHUB_ENV unless the whole file is valid.
           file=.github/agent.env
+          known="IMAGE_REPOSITORY RELEASE_NAME CHART_PATH RUNTIME CD GRAPH_AGENTS_CLI_SPEC"
           if [ ! -f "$file" ]; then
             echo "::error file=$file::$file is missing: it holds the project settings these workflows read." >&2
             exit 1
           fi
           lineno=0
+          seen=" "
+          settings=()
           while IFS= read -r line || [ -n "$line" ]; do
             lineno=$((lineno + 1))
             line="${line%$'\r'}"
@@ -84,12 +95,24 @@ jobs:
             fi
             name="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
-            case "$name" in
-              GITHUB_* | RUNNER_* | ACTIONS_* | PATH | HOME | BASH_ENV | ENV | NODE_OPTIONS | LD_*)
-                echo "::error file=$file,line=$lineno::$name cannot be set from $file." >&2
+            case " $known " in
+              *" $name "*) ;;
+              *)
+                hint=""
+                if [ "$name" = CLI_VERSION_PIN ]; then
+                  hint=" (replaced by GRAPH_AGENTS_CLI_SPEC=<install spec>)"
+                fi
+                echo "::error file=$file,line=$lineno::$name is not a setting these workflows read${hint}; known: $known." >&2
                 exit 1
                 ;;
             esac
+            case "$seen" in
+              *" $name "*)
+                echo "::error file=$file,line=$lineno::$name is set twice." >&2
+                exit 1
+                ;;
+            esac
+            seen="$seen$name "
             value="${value#"${value%%[![:space:]]*}"}"
             quote="${value:0:1}"
             if [ "$quote" = '"' ] || [ "$quote" = "'" ]; then
@@ -103,8 +126,15 @@ jobs:
               value="${value%%[[:space:]]#*}"
               value="${value%"${value##*[![:space:]]}"}"
             fi
-            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+            if [[ "$value" == *[[:cntrl:]]* ]]; then
+              echo "::error file=$file,line=$lineno::$name: control characters are not allowed in a value." >&2
+              exit 1
+            fi
+            settings+=("$name=$value")
           done < "$file"
+          if [ "${#settings[@]}" -gt 0 ]; then
+            printf '%s\n' "${settings[@]}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -121,15 +151,12 @@ jobs:
         run: uv run pytest tests/unit tests/integration -q
 
       - name: graph-agents-cli lint (code and API-policy check)
-        env:
-          GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
         run: |
           : "${GRAPH_AGENTS_CLI_SPEC:?GRAPH_AGENTS_CLI_SPEC is not set in .github/agent.env}"
           uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli lint
 
       - name: Eval gate
         env:
-          GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
           REPO_MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER }}
           REPO_MODEL_NAME: ${{ vars.MODEL_NAME }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}

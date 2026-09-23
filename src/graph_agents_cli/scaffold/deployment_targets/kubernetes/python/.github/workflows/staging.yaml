@@ -17,14 +17,15 @@
 # SHA (${GITHUB_SHA::7}, the same value `git rev-parse --short HEAD` gives a
 # workstation `graph-agents-cli deploy --env <env>` in argocd mode), then land
 # it in staging according to CD in .github/agent.env:
-#   argocd:    update values-staging.yaml image.tag and open a PR with auto-merge;
-#              Argo CD rolls it out and its health checks (the readiness probe,
-#              /ready) show whether it landed (`graph-agents-cli deploy --env
-#              staging --status`).
+#   argocd:    update values-staging.yaml image.tag and open a PR with auto-merge
+#              (closing older staging PRs it supersedes); Argo CD rolls it out
+#              and its health checks (the readiness probe, /ready) show whether
+#              it landed (`graph-agents-cli deploy --env staging --status`).
 #   helm-push: run `graph-agents-cli deploy --env staging --image ...` on a
 #              self-hosted runner with the kubeconfig of the `staging`
 #              environment, then verify the rollout (rollout status, /health
-#              and /ready through a port-forward).
+#              and /ready through a port-forward), both in one kube context
+#              (environments.staging.context, else the kubeconfig's current one).
 # Pushes that only change the per-environment values files (the image tags
 # this workflow, promote-to-prod and `graph-agents-cli deploy` write in argocd
 # mode) do not start it, so a merged staging PR never triggers another build.
@@ -65,6 +66,7 @@ jobs:
       chart_path: ${{ steps.settings.outputs.chart_path }}
       release: ${{ steps.settings.outputs.release }}
       namespace: ${{ steps.settings.outputs.namespace }}
+      kube_context: ${{ steps.settings.outputs.kube_context }}
       graph_agents_cli_spec: ${{ steps.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
@@ -74,15 +76,22 @@ jobs:
         run: |
           # .github/agent.env is data and is never sourced: each NAME=VALUE line is
           # checked and copied to GITHUB_ENV, so a value may hold spaces or shell
-          # metacharacters (a PEP 508 install spec, for example). Comment and blank
-          # lines are skipped; blanks around the value, one pair of quotes around it
-          # and a trailing " # comment" are dropped (no escapes, no expansion).
+          # metacharacters (a PEP 508 install spec, for example). Only the settings
+          # listed in `known` are accepted: any other name (BASH_ENV, SHELLOPTS, PS4,
+          # PATH, PYTHONPATH, ...) could change how later steps run. To add a setting,
+          # extend `known` in all three workflows. Comment and blank lines are skipped;
+          # blanks around the value, one pair of quotes around it and a trailing
+          # " # comment" are dropped (no escapes, no expansion). Nothing reaches
+          # GITHUB_ENV unless the whole file is valid.
           file=.github/agent.env
+          known="IMAGE_REPOSITORY RELEASE_NAME CHART_PATH RUNTIME CD GRAPH_AGENTS_CLI_SPEC"
           if [ ! -f "$file" ]; then
             echo "::error file=$file::$file is missing: it holds the project settings these workflows read." >&2
             exit 1
           fi
           lineno=0
+          seen=" "
+          settings=()
           while IFS= read -r line || [ -n "$line" ]; do
             lineno=$((lineno + 1))
             line="${line%$'\r'}"
@@ -98,12 +107,24 @@ jobs:
             fi
             name="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
-            case "$name" in
-              GITHUB_* | RUNNER_* | ACTIONS_* | PATH | HOME | BASH_ENV | ENV | NODE_OPTIONS | LD_*)
-                echo "::error file=$file,line=$lineno::$name cannot be set from $file." >&2
+            case " $known " in
+              *" $name "*) ;;
+              *)
+                hint=""
+                if [ "$name" = CLI_VERSION_PIN ]; then
+                  hint=" (replaced by GRAPH_AGENTS_CLI_SPEC=<install spec>)"
+                fi
+                echo "::error file=$file,line=$lineno::$name is not a setting these workflows read${hint}; known: $known." >&2
                 exit 1
                 ;;
             esac
+            case "$seen" in
+              *" $name "*)
+                echo "::error file=$file,line=$lineno::$name is set twice." >&2
+                exit 1
+                ;;
+            esac
+            seen="$seen$name "
             value="${value#"${value%%[![:space:]]*}"}"
             quote="${value:0:1}"
             if [ "$quote" = '"' ] || [ "$quote" = "'" ]; then
@@ -117,8 +138,15 @@ jobs:
               value="${value%%[[:space:]]#*}"
               value="${value%"${value##*[![:space:]]}"}"
             fi
-            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+            if [[ "$value" == *[[:cntrl:]]* ]]; then
+              echo "::error file=$file,line=$lineno::$name: control characters are not allowed in a value." >&2
+              exit 1
+            fi
+            settings+=("$name=$value")
           done < "$file"
+          if [ "${#settings[@]}" -gt 0 ]; then
+            printf '%s\n' "${settings[@]}" >> "$GITHUB_ENV"
+          fi
 
       - name: Resolve the image and the target
         id: settings
@@ -147,6 +175,12 @@ jobs:
             echo "::error file=$manifest::Invalid staging namespace '$NAMESPACE'." >&2
             exit 1
           fi
+          # The kube context `deploy` uses; empty = the kubeconfig's current one.
+          KUBE_CONTEXT="$(yq -r '.environments.staging.context // ""' "$manifest")"
+          if [ -n "$KUBE_CONTEXT" ] && { ! [[ "$KUBE_CONTEXT" =~ ^[[:graph:]]+$ ]] || [[ "$KUBE_CONTEXT" == -* ]]; }; then
+            echo "::error file=$manifest::Invalid staging kube context '$KUBE_CONTEXT'." >&2
+            exit 1
+          fi
           if ! [[ "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]{0,51}[a-z0-9])?$ ]]; then
             echo "::error file=.github/agent.env::Invalid RELEASE_NAME '$RELEASE_NAME'." >&2
             exit 1
@@ -158,6 +192,7 @@ jobs:
             echo "chart_path=${CHART_PATH}"
             echo "release=${RELEASE_NAME}"
             echo "namespace=${NAMESPACE}"
+            echo "kube_context=${KUBE_CONTEXT}"
             echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}"
           } >> "$GITHUB_OUTPUT"
           echo "REGISTRY_HOST=${IMAGE_REPOSITORY%%/*}" >> "$GITHUB_ENV"
@@ -207,31 +242,80 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Update the staging image tag
-        run: |
-          yq -i '.image.tag = strenv(TAG)' "${CHART_PATH}/values-staging.yaml"
-          git diff --stat
+        with:
+          # Full history: the next step orders staging builds by commit ancestry.
+          fetch-depth: 0
+          # Branch pushes with the PR token too, so a regenerated branch re-runs
+          # pr_checks (a push made with the workflow token starts no workflow).
+          token: ${{ secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Open the staging PR with auto-merge
         # Same branch name as a workstation `graph-agents-cli deploy --env staging`
         # (deploy/<env>/<short sha>). Requires branch protection on main to permit
         # auto-merge for the token and pr_checks to be green.
-        # The branch is bot-owned and deterministic (same sha -> same content), so a
-        # re-run replaces it: actions/checkout is a shallow clone with no
-        # origin/<branch> ref, and a bare --force-with-lease is rejected ("stale
-        # info") once the branch exists. The PR is created only when none is open.
+        # Every staging PR edits the same line, so two quick pushes would leave
+        # the second PR conflicting once the first merged. Instead each run
+        # closes the older staging PRs still open (staging only needs the newest
+        # build), then builds its branch on the latest main, and does nothing
+        # when main, or an open PR, already carries this build or a newer one:
+        # a re-run of an older build never moves staging back. The branch is
+        # bot-owned, so a re-run replaces it (the PR is created only when none
+        # is open).
         run: |
-          if git diff --quiet -- "${CHART_PATH}/values-staging.yaml"; then
-            echo "values-staging.yaml on main already deploys ${IMAGE}; nothing to open."
-            exit 0
-          fi
+          values="${CHART_PATH}/values-staging.yaml"
+          BRANCH="deploy/staging/${TAG}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          BRANCH="deploy/staging/${TAG}"
-          git checkout -b "$BRANCH"
-          git add "${CHART_PATH}/values-staging.yaml"
-          git commit -m "deploy(staging): image ${IMAGE}"
+
+          # True when commit $1 is an older ancestor of commit $2 (both known here).
+          older() {
+            local a b
+            a="$(git rev-parse --verify --quiet "${1}^{commit}")" || return 1
+            b="$(git rev-parse --verify --quiet "${2}^{commit}")" || return 1
+            [ "$a" != "$b" ] && git merge-base --is-ancestor "$a" "$b"
+          }
+          # Put the branch on the latest main; stop when main already deploys
+          # this build or a newer one.
+          sync_with_main() {
+            git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            git checkout --quiet -B "$BRANCH" refs/remotes/origin/main
+            current="$(yq -r '.image.tag // ""' "$values")"
+            if [ "$current" = "$TAG" ]; then
+              echo "values-staging.yaml on main already deploys ${IMAGE}; nothing to open."
+              exit 0
+            fi
+            if [ -n "$current" ] && older "$GITHUB_SHA" "$current"; then
+              echo "main already deploys a newer build (${current}) to staging; nothing to open."
+              exit 0
+            fi
+          }
+
+          sync_with_main
+          open_prs="$(gh pr list --base main --state open --limit 200 --json number,headRefName --jq '.[] | "\(.number) \(.headRefName)"')"
+          while read -r number head; do
+            case "$head" in
+              deploy/staging/*) ;;
+              *) continue ;;
+            esac
+            if [ "$head" = "$BRANCH" ]; then
+              continue
+            fi
+            other="${head#deploy/staging/}"
+            if older "$GITHUB_SHA" "$other"; then
+              echo "A newer staging build is pending (#${number}, ${head}); nothing to open."
+              exit 0
+            fi
+            # A branch this step cannot order (a workstation tag) is left alone.
+            if older "$other" "$GITHUB_SHA"; then
+              gh pr close "$number" --delete-branch --comment "Superseded by ${IMAGE} (${BRANCH})." \
+                || echo "::warning::Could not close the superseded staging PR #${number} (${head})."
+            fi
+          done <<< "$open_prs"
+          # Whatever merged before those PRs closed is on main now.
+          sync_with_main
+          yq -i '.image.tag = strenv(TAG) | .image.tag style="double"' "$values"
+          git add "$values"
+          git commit --quiet -m "deploy(staging): image ${IMAGE}"
           git push --force origin "$BRANCH"
           if [ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[].number')" ]; then
             gh pr create --base main --head "$BRANCH" \
@@ -257,9 +341,13 @@ jobs:
       contents: read
     env:
       GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+      # The CLI's own `deploy`: no extension (committed, or installed on the
+      # runner) can replace it while it holds the cluster credentials.
+      GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
       IMAGE: ${{ needs.build.outputs.image }}
       RELEASE: ${{ needs.build.outputs.release }}
       NAMESPACE: ${{ needs.build.outputs.namespace }}
+      MANIFEST_CONTEXT: ${{ needs.build.outputs.kube_context }}
       GRAPH_AGENTS_CLI_SPEC: ${{ needs.build.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
@@ -284,22 +372,48 @@ jobs:
           printf '%s\n' "$DEPLOY_KUBECONFIG" > "$RUNNER_TEMP/kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
 
+      - name: Resolve the kube context
+        # One context for the deploy and the checks after it, passed to both:
+        # the manifest's environments.staging.context when set, else the current
+        # context of DEPLOY_KUBECONFIG (what `deploy` itself would pick).
+        run: |
+          if ! command -v kubectl >/dev/null 2>&1; then
+            echo "::error::kubectl is not on the runner's PATH; the deploy and its checks need it." >&2
+            exit 1
+          fi
+          context="${MANIFEST_CONTEXT:-}"
+          if [ -z "$context" ]; then
+            context="$(kubectl config current-context 2>/dev/null || true)"
+          fi
+          if [ -z "$context" ]; then
+            echo "::error::No kube context: set environments.staging.context in graph-agents-cli-manifest.yaml or a current-context in DEPLOY_KUBECONFIG." >&2
+            exit 1
+          fi
+          if ! [[ "$context" =~ ^[[:graph:]]+$ ]] || [[ "$context" == -* ]]; then
+            echo "::error::Invalid kube context name '$context'." >&2
+            exit 1
+          fi
+          if ! kubectl config get-contexts "$context" >/dev/null 2>&1; then
+            echo "::error::Kube context '$context' is not in the DEPLOY_KUBECONFIG of the staging environment." >&2
+            exit 1
+          fi
+          echo "Kube context: $context"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+
       - name: Deploy to staging
         # `deploy --image` in helm-push mode runs helm only (the image is already
-        # pushed); --yes accepts the kubeconfig's current context without a prompt.
+        # pushed), in the context resolved above; --yes: no prompt.
         run: |
-          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env staging --image "$IMAGE" --yes
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env staging --image "$IMAGE" --context "$KUBE_CONTEXT" --yes
 
       - name: Verify the rollout
         run: |
           : "${NAMESPACE:?the build job resolved no namespace}" "${RELEASE:?the build job resolved no release}"
-          if ! command -v kubectl >/dev/null 2>&1; then
-            echo "::error::kubectl is not on the runner's PATH; it is needed to verify the rollout." >&2
-            exit 1
-          fi
-          kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE" --timeout=300s
+          : "${KUBE_CONTEXT:?no kube context was resolved}"
+          # The cluster `deploy` just used (the same context).
+          kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" rollout status "deployment/$RELEASE" --timeout=300s
           log="$RUNNER_TEMP/port-forward.log"
-          kubectl -n "$NAMESPACE" port-forward "service/$RELEASE" :http > "$log" 2>&1 &
+          kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" port-forward "service/$RELEASE" :http > "$log" 2>&1 &
           forward=$!
           trap 'kill "$forward" 2>/dev/null || true' EXIT
           port=""

@@ -185,6 +185,8 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     assert (argocd / ".github" / "workflows" / "staging.yaml").exists()
     assert (argocd / ".github" / "workflows" / "promote-to-prod.yaml").exists()
     assert (argocd / ".github" / "CODEOWNERS").exists()
+    # One CODEOWNERS only: GitHub would read .github/ first and ignore a root one.
+    assert not (argocd / "CODEOWNERS").exists()
     codeowners = (argocd / ".github" / "CODEOWNERS").read_text()
     assert "/deployment/ @CHANGE-ME/production-approvers" in codeowners
     assert "/.github/ @CHANGE-ME/production-approvers" in codeowners
@@ -204,7 +206,10 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     skip = rendered["fastapi-skip"]
     assert not (skip / "deployment" / "argocd").exists()
     assert not (skip / ".github" / "workflows" / "staging.yaml").exists()
+    # No CD workflows: the owners file is at the root (the engine keeps
+    # .github/CODEOWNERS only next to the CD workflows).
     assert not (skip / ".github" / "CODEOWNERS").exists()
+    assert "/.github/ @CHANGE-ME/production-approvers" in (skip / "CODEOWNERS").read_text()
     assert (skip / ".github" / "workflows" / "pr_checks.yaml").exists()
     assert (skip / "deployment" / "helm" / "weather-agent" / "Chart.yaml").exists()
 
@@ -226,6 +231,10 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     assert (none / ".github" / "agent.env").read_text().count("GRAPH_AGENTS_CLI_SPEC=") == 1
     assert not (none / ".github" / "workflows" / "staging.yaml").exists()
     assert (none / ".github" / "workflows" / "pr_checks.yaml").exists()
+    assert not (none / ".github" / "CODEOWNERS").exists()
+    none_owners = (none / "CODEOWNERS").read_text()
+    assert "/tests/eval/ @CHANGE-ME/production-approvers" in none_owners
+    assert "/deployment/" not in none_owners
     assert (none / "langgraph.json").exists()
 
     custom = rendered["custom-dir"]
@@ -312,7 +321,8 @@ def test_workflows_install_the_cli_from_the_pinned_spec() -> None:
             assert line.startswith('uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli '), (
                 f"{name}: {line}"
             )
-        assert "CLI_VERSION_PIN" not in text
+        # The old pin is named only by the loader's rename hint, never read.
+        assert "$CLI_VERSION_PIN" not in text and "{CLI_VERSION_PIN" not in text
 
 
 def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
@@ -446,6 +456,40 @@ def test_chart_defaults_are_production_shaped(rendered: dict[str, Path]) -> None
             assert re.fullmatch(r"sha256:[0-9a-f]{64}", values[dep["name"]]["image"]["digest"])
         assert values["postgresql"]["auth"]["existingSecret"] == "weather-agent-postgresql-auth"
         assert values["postgresqlSecret"]["create"] is True
+        # The app Secret is required outside dev.
+        assert values["secretOptional"] is False
+        for env, optional in (("dev", True), ("staging", False), ("prod", False)):
+            env_values = yaml.safe_load((chart / f"values-{env}.yaml").read_text())
+            assert env_values["secretOptional"] is optional, env
+        # Only the API is published; /metrics scraping is opt-in.
+        assert values["route"]["publicPaths"] == [
+            {"path": "/chat", "type": "Exact"},
+            {"path": "/threads", "type": "PathPrefix"},
+            {"path": "/a2a/app", "type": "PathPrefix"},
+        ]
+        assert values["route"]["publicPaths"][2]["path"] == f"/a2a/{values['env']['A2A_NAME']}"
+        assert [p["path"] for p in values["route"]["devPaths"]] == [
+            "/playground",
+            "/docs",
+            "/openapi.json",
+        ]
+        assert values["metrics"]["scrapeAnnotations"] is False
+        assert values["metrics"]["serviceMonitor"]["enabled"] is False
+    # The server runtime names its native APIs, unpublished unless listed.
+    server_values = (
+        rendered["server-helm-push"] / "deployment" / "helm" / "weather-agent" / "values.yaml"
+    ).read_text()
+    assert "# - path: /assistants" in server_values and "# - path: /store" in server_values
+    fastapi_values = (
+        rendered["fastapi-argocd"] / "deployment" / "helm" / "weather-agent" / "values.yaml"
+    ).read_text()
+    assert "/assistants" not in fastapi_values
+    custom = yaml.safe_load(
+        (
+            rendered["custom-dir"] / "deployment" / "helm" / "weather-agent" / "values.yaml"
+        ).read_text()
+    )
+    assert {"path": "/a2a/my_agent", "type": "PathPrefix"} in custom["route"]["publicPaths"]
     for env in ("dev", "staging", "prod"):
         app = yaml.safe_load(
             (
@@ -648,9 +692,9 @@ def test_server_project_lock_matches_its_pyproject(rendered: dict[str, Path]) ->
     assert compiled.returncode == 0, compiled.stdout
 
 
-# What `graph-agents-cli deploy` passes: the tag it deploys, and the Gateway the
-# scaffolded staging/prod values leave for the operator to name.
-DEPLOY_SET = ("--set", "image.tag=0123abc", "--set", "gateway.parentRef.name=gw")
+# What `graph-agents-cli deploy` passes: the tag it deploys (a string), and the
+# Gateway the scaffolded staging/prod values leave for the operator to name.
+DEPLOY_SET = ("--set-string", "image.tag=0123abc", "--set", "gateway.parentRef.name=gw")
 
 
 def _helm(chart: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -670,6 +714,18 @@ def _agent_deployment(manifests: str) -> dict:
         if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "weather-agent":
             return doc
     raise AssertionError("no agent Deployment rendered")
+
+
+def _route_paths(route: dict) -> dict[str, str]:
+    """An HTTPRoute's (or Ingress's) published paths: path -> match type."""
+    if route["kind"] == "Ingress":
+        return {
+            p["path"]: p["pathType"]
+            for rule in route["spec"]["rules"]
+            for p in rule["http"]["paths"]
+        }
+    assert len(route["spec"]["rules"]) == 1
+    return {m["path"]["value"]: m["path"]["type"] for m in route["spec"]["rules"][0]["matches"]}
 
 
 @pytest.mark.slow
@@ -693,6 +749,46 @@ def test_helm_chart_lints_and_renders(rendered: dict[str, Path]) -> None:
         _check_database_secret_options(chart)
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(HELM is None, reason="helm is not on PATH")
+def test_the_project_chart_tests_pass_after_an_argocd_promotion(
+    rendered: dict[str, Path], tmp_path: Path
+) -> None:
+    """argocd mode commits image tags to values-<env>.yaml, and that PR runs the project's tests.
+
+    The generated tests/integration/test_chart.py must pass on a fresh project and
+    after CI (staging) and `deploy --env prod` (the promotion PR) wrote their tags.
+    """
+    from graph_agents_cli.deploy._values import set_image_tag
+
+    project = tmp_path / "project"
+    shutil.copytree(rendered["fastapi-argocd"], project, ignore=shutil.ignore_patterns(".venv"))
+    chart = project / "deployment" / "helm" / "weather-agent"
+    if not (chart / "charts").is_dir():
+        deps = _helm(chart, "dependency", "build", str(chart))
+        if deps.returncode != 0:
+            pytest.skip(f"helm dependency build failed (no registry access?): {deps.stderr[-300:]}")
+
+    def chart_tests() -> subprocess.CompletedProcess[str]:
+        test_file = project / "tests" / "integration" / "test_chart.py"
+        return _run(
+            [sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider", str(test_file)],
+            project,
+        )
+
+    fresh = chart_tests()
+    assert fresh.returncode == 0, fresh.stdout[-4000:]
+    assert "no values-<env>.yaml names an image tag yet" in fresh.stdout
+    # The writers argocd mode uses: CI's yq (staging) writes "abc1234"; `deploy`
+    # (dev, prod) rewrites the line, quoting a tag made of digits.
+    set_image_tag(chart / "values-staging.yaml", "4f2a9c1")
+    set_image_tag(chart / "values-prod.yaml", "1234567")
+    assert 'tag: "1234567"' in (chart / "values-prod.yaml").read_text()
+    promoted = chart_tests()
+    assert promoted.returncode == 0, promoted.stdout[-4000:]
+    assert "skipped" not in promoted.stdout, promoted.stdout[-2000:]
+
+
 def _check_environment(name: str, env: str, out: str) -> None:
     assert "kind: Deployment" in out and "name: weather-agent-app" in out
     # No hostname and no appUrl: APP_URL is not set (the pod warns instead).
@@ -711,9 +807,24 @@ def _check_environment(name: str, env: str, out: str) -> None:
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsGroup"] == 1000
     assert ("topologySpreadConstraints" in pod) == (env == "prod")
+    # The app Secret: required (no Secret, no start) outside dev.
+    assert container["envFrom"][0]["secretRef"] == {
+        "name": "weather-agent-app",
+        "optional": env == "dev",
+    }
+    # No scraping unless asked for.
+    annotations = _agent_deployment(out)["spec"]["template"]["metadata"]["annotations"]
+    assert not any(key.startswith("prometheus.io/") for key in annotations)
+    assert "ServiceMonitor" not in {d["kind"] for d in _docs(out)}
     if env != "dev":
         assert "kind: HTTPRoute" in out and "POSTGRES_PASSWORD" not in out
         assert "kind: Secret" not in out
+        route = next(d for d in _docs(out) if d["kind"] == "HTTPRoute")
+        assert _route_paths(route) == {
+            "/chat": "Exact",
+            "/threads": "PathPrefix",
+            "/a2a/app": "PathPrefix",
+        }
         return
     assert "@weather-agent-postgresql:5432/agent" in out
     assert ("DATABASE_URI" in out) == (name == "server-helm-push")
@@ -794,13 +905,120 @@ def _check_refusals(chart: Path) -> None:
     blank = _template(chart, "-f", str(chart / "values-prod.yaml"), "--set", "image.tag=x")
     assert blank.returncode != 0
     assert "gateway.parentRef.name is required" in blank.stderr
-    # A digits-only short SHA written unquoted in a values file stays a tag.
-    numeric = chart.parent / "numeric-tag.yaml"
-    numeric.write_text("image:\n  tag: 1234567\n")
-    tagged = _template(chart, "-f", str(numeric), "--set", "gateway.parentRef.name=gw")
-    assert tagged.returncode == 0, tagged.stderr
-    image = _agent_deployment(tagged.stdout)["spec"]["template"]["spec"]["containers"][0]["image"]
-    assert image == "ghcr.io/acme/weather-agent:1234567"
+    _check_image_tag_types(chart)
+    gw = ("--set-string", "image.tag=x", "--set", "gateway.parentRef.name=gw")
+    for extra, message in (
+        # An empty route would publish nothing, or (a Gateway API rule without
+        # matches) everything: refused, whichever entry point is on.
+        (("--set-json", "route.publicPaths=[]"), "route.publicPaths is empty"),
+        (
+            (
+                "--set",
+                "gateway.enabled=false",
+                "--set",
+                "ingress.enabled=true",
+                "--set-json",
+                "route.publicPaths=null",
+            ),
+            "route.publicPaths is empty",
+        ),
+        (
+            ("--set-json", 'route.publicPaths=[{"path":"/chat","type":"Prefix"}]'),
+            'has type "Prefix"; use PathPrefix or Exact',
+        ),
+        (
+            ("--set-json", 'route.publicPaths=[{"path":"chat","type":"Exact"}]'),
+            "must be an absolute URL path",
+        ),
+        (
+            ("--set-json", 'route.publicPaths=[{"path":"/chat?x=1","type":"Exact"}]'),
+            "must be an absolute URL path",
+        ),
+        (("--set-json", 'route.publicPaths=["/chat"]'), "each entry is {path, type}"),
+        (
+            ("--set-json", 'route.publicPaths=[{"path":"/a2a/../metrics","type":"Exact"}]'),
+            "holds //, /./, /../ or an encoded slash",
+        ),
+        (
+            ("--set-json", 'route.publicPaths=[{"path":"/chat%2Fx","type":"Exact"}]'),
+            "holds //, /./, /../ or an encoded slash",
+        ),
+        (("--set-string", "secretOptional=yes"), "secretOptional must be true or false"),
+        (
+            (
+                "--set",
+                "metrics.serviceMonitor.enabled=true",
+                "--set-string",
+                "env.METRICS_ENABLED=false",
+            ),
+            "env.METRICS_ENABLED turns off",
+        ),
+    ):
+        result = _template(chart, *gw, *extra)
+        assert result.returncode != 0 and message in result.stderr, (extra, result.stderr)
+    # Neither entry point: the route is not checked (and nothing is published).
+    internal = _template(
+        chart,
+        "--set-string",
+        "image.tag=x",
+        "--set",
+        "gateway.enabled=false",
+        "--set-json",
+        "route.publicPaths=[]",
+    )
+    assert internal.returncode == 0, internal.stderr
+    # Publishing everything is allowed when asked for, and the install notes say so.
+    notes = _helm(
+        chart,
+        "install",
+        "weather-agent",
+        str(chart),
+        "--dry-run=client",
+        *gw,
+        "--set-json",
+        'route.publicPaths=[{"path":"/","type":"PathPrefix"}]',
+    )
+    assert notes.returncode == 0, notes.stderr
+    assert "Published paths: / (prefix)" in notes.stdout
+    assert "WARNING: route.publicPaths publishes every path" in notes.stdout
+    default_notes = _helm(chart, "install", "weather-agent", str(chart), "--dry-run=client", *gw)
+    assert default_notes.returncode == 0, default_notes.stderr
+    assert "Published paths: /chat, /threads (prefix), /a2a/app (prefix)" in default_notes.stdout
+    assert "publishes every path" not in default_notes.stdout
+    assert "App Secret required (pods do not start without it)" in default_notes.stdout
+
+
+def _check_image_tag_types(chart: Path) -> None:
+    """A tag is a string: an unquoted number in a values file may have lost digits already."""
+    gw = ("--set", "gateway.parentRef.name=gw")
+    for text, expected in (
+        ('image:\n  tag: "0123456"\n', "0123456"),
+        ('image:\n  tag: "1234567"\n', "1234567"),
+        ("image:\n  tag: 0123456\n", None),  # octal 42798 by the time the chart sees it
+        ("image:\n  tag: 1234567\n", None),
+        ("image:\n  tag: 1234e56\n", None),
+        ("image:\n  tag: true\n", None),
+    ):
+        values = chart.parent / "tag-values.yaml"
+        values.write_text(text)
+        result = _template(chart, "-f", str(values), *gw)
+        if expected is None:
+            assert result.returncode != 0, text
+            assert "image.tag must be a quoted string" in result.stderr, (text, result.stderr)
+            continue
+        assert result.returncode == 0, (text, result.stderr)
+        container = _agent_deployment(result.stdout)["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == f"ghcr.io/acme/weather-agent:{expected}"
+    # On the command line: --set-string, or the exact integer plain --set makes of digits.
+    for flag, tag in (
+        ("--set-string", "0123456"),
+        ("--set-string", "1234567"),
+        ("--set", "1234567"),
+    ):
+        result = _template(chart, flag, f"image.tag={tag}", *gw)
+        assert result.returncode == 0, (flag, tag, result.stderr)
+        container = _agent_deployment(result.stdout)["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == f"ghcr.io/acme/weather-agent:{tag}"
 
 
 def _check_app_url(chart: Path) -> None:
@@ -852,6 +1070,12 @@ def _check_optional_resources(chart: Path) -> None:
         "networkPolicy.restrictEgress=true",
         "--set-json",
         'networkPolicy.egressTo=[{"to":[{"ipBlock":{"cidr":"0.0.0.0/0"}}],"ports":[{"port":443}]}]',
+        "--set",
+        "metrics.scrapeAnnotations=true",
+        "--set",
+        "metrics.serviceMonitor.enabled=true",
+        "--set",
+        "metrics.serviceMonitor.labels.release=kube-prometheus-stack",
     )
     assert everything.returncode == 0, everything.stderr
     docs = _docs(everything.stdout)
@@ -862,7 +1086,66 @@ def _check_optional_resources(chart: Path) -> None:
         "PodDisruptionBudget",
         "ServiceAccount",
         "NetworkPolicy",
+        "ServiceMonitor",
     } <= {d["kind"] for d in docs}
+    # The Ingress publishes what the HTTPRoute does (APP_ENV prod: no dev pages).
+    ingress = next(d for d in docs if d["kind"] == "Ingress")
+    assert _route_paths(ingress) == {"/chat": "Exact", "/threads": "Prefix", "/a2a/app": "Prefix"}
+    route = next(d for d in docs if d["kind"] == "HTTPRoute")
+    assert _route_paths(route) == {
+        "/chat": "Exact",
+        "/threads": "PathPrefix",
+        "/a2a/app": "PathPrefix",
+    }
+    # /metrics is scraped in the cluster, from the Service's http port.
+    monitor = next(d for d in docs if d["kind"] == "ServiceMonitor")
+    assert monitor["metadata"]["labels"]["release"] == "kube-prometheus-stack"
+    assert monitor["spec"]["endpoints"] == [
+        {"port": "http", "path": "/metrics", "interval": "30s", "scrapeTimeout": "10s"}
+    ]
+    service = next(
+        d for d in docs if d["kind"] == "Service" and d["metadata"]["name"] == "weather-agent"
+    )
+    assert (
+        monitor["spec"]["selector"]["matchLabels"].items() <= service["metadata"]["labels"].items()
+    )
+    pod_annotations = _agent_deployment(everything.stdout)["spec"]["template"]["metadata"][
+        "annotations"
+    ]
+    assert pod_annotations["prometheus.io/scrape"] == "true"
+    assert pod_annotations["prometheus.io/path"] == "/metrics"
+    assert pod_annotations["prometheus.io/port"] == "8000"
+    # Under APP_ENV=dev the dev-only pages are published too; a list of your own replaces
+    # the default.
+    dev = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set",
+        "env.APP_ENV=dev",
+        "--set",
+        "gateway.enabled=false",
+        "--set",
+        "ingress.enabled=true",
+    )
+    assert dev.returncode == 0, dev.stderr
+    dev_ingress = next(d for d in _docs(dev.stdout) if d["kind"] == "Ingress")
+    assert set(_route_paths(dev_ingress)) == {
+        "/chat",
+        "/threads",
+        "/a2a/app",
+        "/playground",
+        "/docs",
+        "/openapi.json",
+    }
+    own = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set-json",
+        'route.publicPaths=[{"path":"/chat","type":"Exact"},{"path":"/runs","type":"PathPrefix"}]',
+    )
+    assert own.returncode == 0, own.stderr
+    own_route = next(d for d in _docs(own.stdout) if d["kind"] == "HTTPRoute")
+    assert _route_paths(own_route) == {"/chat": "Exact", "/runs": "PathPrefix"}
     policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
     assert policy["spec"]["policyTypes"] == ["Ingress", "Egress"]
     assert policy["spec"]["ingress"] == [{"ports": [{"port": "http", "protocol": "TCP"}]}]
