@@ -25,11 +25,11 @@
 #              self-hosted runner with the kubeconfig of the `staging`
 #              environment, then verify the rollout (rollout status, /health
 #              and /ready through a port-forward).
-# Pushes that only change values-staging.yaml / values-prod.yaml (the image
-# tags this workflow and promote-to-prod write) do not start it, so a merged
-# staging PR never triggers another build. Run it by hand (workflow_dispatch)
-# to re-deploy main, e.g. after changing only those values files in helm-push
-# mode.
+# Pushes that only change the per-environment values files (the image tags
+# this workflow, promote-to-prod and `graph-agents-cli deploy` write in argocd
+# mode) do not start it, so a merged staging PR never triggers another build.
+# Run it by hand (workflow_dispatch, main only) to re-deploy main, e.g. after
+# changing only values-staging.yaml in helm-push mode.
 # This file is copied verbatim into the project (not rendered).
 
 name: staging
@@ -41,6 +41,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - 'deployment/helm/*/values-dev.yaml'
       - 'deployment/helm/*/values-staging.yaml'
       - 'deployment/helm/*/values-prod.yaml'
   workflow_dispatch:

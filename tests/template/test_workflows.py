@@ -279,9 +279,11 @@ def test_staging_does_not_retrigger_itself() -> None:
     def skipped(changed: list[str]) -> bool:
         return all(any(_github_glob(p).match(path) for p in ignored) for path in changed)
 
-    # The squash-merged staging PR (and a merged prod promotion) change only a values file.
+    # The squash-merged staging PR (and a merged prod or dev promotion) change only a
+    # values file.
     assert skipped(["deployment/helm/weather-agent/values-staging.yaml"])
     assert skipped(["deployment/helm/weather-agent/values-prod.yaml"])
+    assert skipped(["deployment/helm/weather-agent/values-dev.yaml"])
     # Code, chart or shared values changes still build and deploy.
     assert not skipped(["app/agent.py"])
     assert not skipped(["deployment/helm/weather-agent/values-staging.yaml", "app/agent.py"])

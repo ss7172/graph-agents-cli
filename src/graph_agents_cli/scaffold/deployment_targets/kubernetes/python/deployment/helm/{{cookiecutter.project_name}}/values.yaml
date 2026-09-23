@@ -102,12 +102,12 @@ tls:
 # digest: renders are reproducible and `latest` moving never changes a running
 # dev database. To refresh a pin, look up the current digest
 # (`docker buildx imagetools inspect docker.io/bitnami/postgresql:latest`).
-# To use something else: set postgresql.enabled / redis.enabled to false and
-# put POSTGRES_DSN (fastapi) or DATABASE_URI + REDIS_URI (langgraph-server) in
-# the Secret, pointing at a managed database, an operator such as CloudNativePG,
-# or any other chart; or replace the dependency in Chart.yaml and keep the
-# service names this chart derives (<release>-postgresql, <release>-redis-master)
-# or set the connection strings in the Secret.
+# To use something else, either set postgresql.enabled / redis.enabled to false
+# and put POSTGRES_DSN (fastapi) or DATABASE_URI + REDIS_URI (langgraph-server)
+# in the Secret, pointing at a managed database, an operator such as
+# CloudNativePG or any other chart; or swap the dependency in Chart.yaml for a
+# chart that serves <release>-postgresql:5432 (and <release>-redis-master:6379),
+# the addresses this chart derives.
 postgresql:
   enabled: false
   image:
