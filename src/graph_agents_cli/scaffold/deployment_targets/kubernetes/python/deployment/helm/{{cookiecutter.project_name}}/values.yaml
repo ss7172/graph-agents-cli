@@ -246,7 +246,8 @@ extraVolumeMounts: []
 
 # Optional NetworkPolicy for the agent pods (off by default; needs a CNI that
 # enforces NetworkPolicy). When enabled, ingress is limited to the http port,
-# from the sources in ingressFrom (empty: from anywhere, but only that port).
+# from the sources in ingressFrom (empty: from anywhere, but only that port;
+# list the Gateway's namespace and, for /metrics, your Prometheus's).
 # With restrictEgress the pods may only reach DNS (pods labelled
 # k8s-app=kube-dns; add a node-local DNS cache address yourself) plus egressTo;
 # add the model provider, the database and every API in api-policy.yaml, e.g.:
