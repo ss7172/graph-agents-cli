@@ -127,6 +127,29 @@ def announce(
     )
 
 
+def require_known_context(
+    env: str, resolved: ResolvedContext, *, dry_run: bool, console: Console
+) -> None:
+    """Exit 3 when an explicit context (``--context`` or the manifest) is not in the kubeconfig.
+
+    A typo is a configuration error, reported the same way by every command
+    (read-only ones included), not a kubectl failure (exit 2) that a gate script
+    could mistake for an unreachable cluster. ``--dry-run`` only reports it.
+    """
+    if not (resolved.explicit and resolved.name):
+        return
+    names = _kube.context_names()
+    if not names or resolved.name in names:
+        return
+    message = (
+        f"Kube context {resolved.name!r} ({resolved.describe(env)}) is not in the "
+        f"kubeconfig. Known contexts: {', '.join(sorted(names)[:10])}."
+    )
+    if not dry_run:
+        raise ConfigError(message)
+    console.print(f"  [dry-run] {message}", style="yellow", markup=False)
+
+
 def confirm(
     env: str,
     resolved: ResolvedContext,
@@ -145,16 +168,7 @@ def confirm(
     all it is a configuration error. ``--dry-run`` never prompts (nothing is
     changed) and only reports.
     """
-    if resolved.explicit and resolved.name:
-        names = _kube.context_names()
-        if names and resolved.name not in names:
-            message = (
-                f"Kube context {resolved.name!r} ({resolved.describe(env)}) is not in the "
-                f"kubeconfig. Known contexts: {', '.join(sorted(names)[:10])}."
-            )
-            if not dry_run:
-                raise ConfigError(message)
-            console.print(f"  [dry-run] {message}", style="yellow", markup=False)
+    require_known_context(env, resolved, dry_run=dry_run, console=console)
     if is_dev_env(env) or resolved.explicit:
         return
     how = (
@@ -190,8 +204,9 @@ def confirm(
             f"Refusing to {action} {env} on the kubeconfig's current context {resolved.name!r} "
             f"without confirmation.\n  {how}, or pass --yes to accept the current context."
         )
+    # Only the first letter changes: `str.capitalize` would lowercase "Secret".
     if not click.confirm(
-        f"{action.capitalize()} {env} on context {resolved.name!r}?", default=False
+        f"{action[:1].upper()}{action[1:]} {env} on context {resolved.name!r}?", default=False
     ):
         raise Refused(f"Aborted: {env} was not changed. {how}.")
 
