@@ -274,6 +274,17 @@ class RunStore:
         )
         return [_run_from_row(r) for r in rows]
 
+    async def thread_ids_before(self, cutoff_iso: str, *, limit: int = 500) -> list[str]:
+        """Threads that have a run record older than `cutoff_iso`."""
+        if not self.db.is_postgres:
+            ids = {r.thread_id for r in self._memory.values() if r.created_at < cutoff_iso}
+            return sorted(ids)[:limit]
+        rows = await self.db.fetchall(
+            f"SELECT DISTINCT thread_id FROM {self.table} WHERE created_at < %s LIMIT %s",
+            (cutoff_iso, limit),
+        )
+        return [r["thread_id"] for r in rows]
+
     async def delete_for_thread(self, thread_id: str) -> None:
         if not self.db.is_postgres:
             for run_id in [k for k, r in self._memory.items() if r.thread_id == thread_id]:

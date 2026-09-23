@@ -295,6 +295,7 @@ class ThreadLocks:
         self._pending: set[str] = set()
         self._conn: Any = None
         self._conn_lock = asyncio.Lock()
+        self._closed = False
 
     @property
     def held(self) -> frozenset[str]:
@@ -306,7 +307,7 @@ class ThreadLocks:
             raise ThreadBusy(thread_id)
         self._pending.add(thread_id)  # no await since the check: atomic in this process
         try:
-            if self.dsn and not await self._pg_try_lock(thread_id):
+            if self.dsn and not self._closed and not await self._pg_try_lock(thread_id):
                 raise ThreadBusy(thread_id)
             self._held.add(thread_id)
         finally:
@@ -315,17 +316,22 @@ class ThreadLocks:
 
     async def _release(self, thread_id: str) -> None:
         self._held.discard(thread_id)
-        if not self.dsn:
+        if not self.dsn or self._closed:
             return
         try:
             await self._pg_execute("SELECT pg_advisory_unlock(%s)", advisory_key(thread_id))
         except Exception:
-            # Dropping the connection releases every lock it held; the next
-            # acquire reconnects and re-takes the locks still held here.
-            logger.warning("could not release the run lock of a thread; resetting", exc_info=True)
-            await self._reset()
+            # The connection was dropped, which released every lock it held:
+            # reconnect now, which re-takes the locks of the runs still going.
+            logger.warning("could not release a thread's run lock; reconnecting", exc_info=True)
+            async with self._conn_lock:
+                try:
+                    await self._connection()
+                except Exception:
+                    logger.warning("the run-lock connection is down; retrying on next use")
 
     async def close(self) -> None:
+        self._closed = True
         await self._reset()
         self._held.clear()
 
@@ -348,6 +354,12 @@ class ThreadLocks:
                     await self._reset_locked()
                     if attempt == 2 or not retry:
                         raise
+                except BaseException:
+                    # Cancelled mid-statement: whether the lock was taken is
+                    # unknown, so drop the session (and with it every lock it
+                    # holds; the next use re-takes the ones still held).
+                    await self._reset_locked()
+                    raise
         return None
 
     async def _connection(self) -> Any:

@@ -21,7 +21,9 @@ Routes:
     409 `{"code": "thread_busy"}` while the thread has a run in progress.
   * `GET /threads`: the caller's threads, most recent first (`limit`, `offset`).
   * `GET /threads/{thread_id}/messages`: ordered messages, ownership enforced.
-  * `DELETE /threads/{thread_id}`: the thread, its checkpoints and run records (owner only).
+  * `DELETE /threads/{thread_id}`: the thread, its checkpoints and run records (owner
+    only). Under langgraph-server this is the server's native route (owner-only
+    through the auth handler); retention removes the run records of deleted threads.
   * `GET /health`: liveness, process only: `{"status", "runtime", "checkpointer"}`.
   * `GET /ready`: readiness: 200 when the database answers within 2 s, else
     503 `{"status": "not_ready"}`.
@@ -57,7 +59,7 @@ generation fails at startup). Real annotations need no lookup.
 
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
@@ -98,6 +100,7 @@ from {{cookiecutter.agent_directory}}.app_utils.middleware import (
 from {{cookiecutter.agent_directory}}.app_utils.model import model_limits
 from {{cookiecutter.agent_directory}}.app_utils.playground import PLAYGROUND_HTML
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
+    bind_log_context,
     log_format,
     log_level,
     setup_logging,
@@ -230,11 +233,24 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return select_forward_headers(request.headers)
 
 
+def principal_for(action: str) -> Callable[[Request], Awaitable[Principal]]:
+    """`require(action)`, plus the caller's hashed id on every log record of the request."""
+    check = require(action)
+
+    async def dependency(request: Request) -> Principal:
+        principal = await check(request)
+        bind_log_context(principal_hash=principal.hashed_id())
+        return principal
+
+    dependency.__name__ = f"principal_for_{action.replace('.', '_')}"
+    return dependency
+
+
 @app.post("/chat")
 async def chat(
     body: ChatBody,
     request: Request,
-    principal: Principal = Depends(require("chat.send")),
+    principal: Principal = Depends(principal_for("chat.send")),
 ) -> RunStreamingResponse:
     req = ChatRequest(
         message=body.message,
@@ -283,7 +299,7 @@ async def list_threads(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=100_000),
-    principal: Principal = Depends(require("thread.list")),
+    principal: Principal = Depends(principal_for("thread.list")),
 ) -> list[dict[str, Any]]:
     return await RUNTIME.list_threads(
         principal, limit=limit, offset=offset, forward_headers=_forward_headers(request)
@@ -294,19 +310,25 @@ async def list_threads(
 async def thread_messages(
     thread_id: str,
     request: Request,
-    principal: Principal = Depends(require("thread.read")),
+    principal: Principal = Depends(principal_for("thread.read")),
 ) -> list[dict[str, Any]]:
     return await RUNTIME.messages(principal, thread_id, _forward_headers(request))
 
 
-@app.delete("/threads/{thread_id}", status_code=204)
 async def delete_thread(
     thread_id: str,
     request: Request,
-    principal: Principal = Depends(require("thread.delete")),
+    principal: Principal = Depends(principal_for("thread.delete")),
 ) -> Response:
     await RUNTIME.delete_thread(principal, thread_id, _forward_headers(request))
     return Response(status_code=204)
+
+
+# Under langgraph-server the server owns `DELETE /threads/{thread_id}` (its
+# native API, owner-only through the auth handler); a route of this app would
+# shadow it, the app's own loopback delete included.
+if detect_runtime() == FASTAPI:
+    app.delete("/threads/{thread_id}", status_code=204)(delete_thread)
 
 
 @app.get("/playground", response_class=HTMLResponse, include_in_schema=False)

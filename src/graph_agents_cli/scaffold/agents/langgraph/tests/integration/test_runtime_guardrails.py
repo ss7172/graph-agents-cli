@@ -304,6 +304,41 @@ async def test_request_bodies_over_the_cap_get_413(
     assert (await client.post("/chat", json=big)).status_code == 413
 
 
+async def test_deeply_nested_json_is_refused_not_a_crash(client: httpx.AsyncClient) -> None:
+    body = '{"message": "hi", "metadata": {"a": ' + "[" * 100_000 + "]" * 100_000 + "}}"
+    r = await client.post(
+        "/chat", content=body.encode(), headers={**AUTH, "content-type": "application/json"}
+    )
+    assert 400 <= r.status_code < 500
+
+
+async def test_a2a_style_callers_get_thread_busy_as_an_event(client: httpx.AsyncClient) -> None:
+    """`stream()` without a lease (the A2A path) takes the lock itself."""
+    thread_id = await RUNTIME.resolve_thread(SHARED, ChatRequest(message="x"))
+    lease = await RUNTIME.acquire_thread(thread_id)
+    events = [e async for e in RUNTIME.stream(SHARED, ChatRequest(message="x"), thread_id)]
+    assert events == [
+        ("error", {"code": "thread_busy", "message": "This thread already has a run in progress."})
+    ]
+    await lease.release()
+    events = [e async for e in RUNTIME.stream(SHARED, ChatRequest(message="x"), thread_id)]
+    assert events[-1][0] == "message.end"
+
+
+async def test_a_database_failure_is_a_generic_503(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert RUNTIME.threads is not None
+
+    async def down(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("connection to server at 10.0.0.7, port 5432 failed")
+
+    monkeypatch.setattr(RUNTIME.threads, "ensure", down)
+    r = await chat(client, "hello")
+    assert r.status_code == 503 and "10.0.0.7" not in r.text
+    assert r.json()["detail"].startswith("Database unavailable. Reference: ")
+
+
 @pytest.mark.parametrize(
     "metadata",
     [

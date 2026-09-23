@@ -20,7 +20,7 @@ ADD . /deps/{{cookiecutter.project_name}}
 # a lock that conflicts with the server fails the build instead of the server.
 # The base image ships uv; nothing is added to it.
 RUN cd /deps/{{cookiecutter.project_name}} \
- && uv export --frozen --no-dev --no-emit-project --no-header -o /tmp/requirements.txt \
+ && uv export --quiet --frozen --no-dev --no-emit-project --no-header -o /tmp/requirements.txt \
  && uv pip install --system --no-cache --compile-bytecode --no-deps \
       -c /api/constraints.txt -r /tmp/requirements.txt \
  && uv pip install --system --no-cache --compile-bytecode --no-deps \

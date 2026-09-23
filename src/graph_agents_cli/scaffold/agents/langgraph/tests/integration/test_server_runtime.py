@@ -43,7 +43,7 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (  # noqa: E402
     ChatRequest,
     ChatRuntime,
 )
-from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunStore  # noqa: E402
+from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunRecord, RunStore  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadLocks, ThreadStore  # noqa: E402
 
 OWNER = Principal(
@@ -553,13 +553,47 @@ async def test_list_and_delete_threads_through_the_server(server, monkeypatch) -
 async def test_retention_purges_idle_server_threads(server) -> None:
     rt, sdk = server
     fresh = "77777777-7777-7777-7777-777777777777"
+    gone = "88888888-8888-8888-8888-888888888888"  # deleted through the native API
     sdk.threads_by_id[fresh] = {
         "thread_id": fresh,
         "metadata": {"principal_id": "A"},
         "updated_at": "2999-01-01T00:00:00+00:00",
     }
+    old = "2000-01-01T00:00:00+00:00"
+    for run_id, thread_id in (("r-fresh", fresh), ("r-gone", gone)):
+        await rt.runs.record(
+            RunRecord(
+                run_id=run_id,
+                thread_id=thread_id,
+                principal_hash="h",
+                model="m",
+                status="ok",
+                created_at=old,
+            )
+        )
     assert await rt.purge_expired(30) == 1
     assert sdk.deleted == [THREAD] and fresh in sdk.threads_by_id
+    assert await rt.runs.get("r-gone") is None and await rt.runs.get("r-fresh") is not None
+
+
+def test_the_server_runtime_leaves_thread_deletion_to_the_native_api(monkeypatch) -> None:
+    """A DELETE /threads/{id} route of the app would shadow the server's own (and its loopback)."""
+    import importlib
+
+    from {{cookiecutter.agent_directory}} import fast_api_app as module
+
+    def routes(app: Any) -> set[tuple[str, str]]:
+        return {(r.path, m) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+
+    assert ("/threads/{thread_id}", "DELETE") in routes(module.app)
+    monkeypatch.setenv("RUNTIME", "langgraph-server")
+    try:
+        server_routes = routes(importlib.reload(module).app)
+        assert ("/threads/{thread_id}", "DELETE") not in server_routes
+        assert {("/threads", "GET"), ("/ready", "GET"), ("/chat", "POST")} <= server_routes
+    finally:
+        monkeypatch.setenv("RUNTIME", "fastapi")
+        importlib.reload(module)
 
 
 def test_persistence_kind_follows_database_uri(server, monkeypatch) -> None:

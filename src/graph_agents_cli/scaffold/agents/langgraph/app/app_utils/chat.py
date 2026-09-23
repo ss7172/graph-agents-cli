@@ -127,6 +127,8 @@ DEFAULT_FORWARD_HEADERS = ("authorization", "cookie")
 
 RETENTION_INTERVAL_S = 3600.0
 RETENTION_FIRST_DELAY_S = 60.0
+RETENTION_BATCH = 500
+RETENTION_MAX_BATCHES = 20
 
 
 def detect_runtime() -> str:
@@ -543,7 +545,12 @@ class ChatRuntime:
             return await self._server_resolve_thread(principal, req)
         assert self.threads is not None
         thread_id = req.thread_id or str(uuid.uuid4())
-        await self.threads.ensure(thread_id, principal)
+        try:
+            await self.threads.ensure(thread_id, principal)
+        except HTTPException:
+            raise
+        except Exception as exc:  # the database: a 503 naming an error id, not its text
+            raise unavailable("Database", exc) from exc
         return thread_id
 
     async def acquire_thread(self, thread_id: str) -> ThreadLease:
@@ -624,7 +631,12 @@ class ChatRuntime:
         await asyncio.sleep(RETENTION_FIRST_DELAY_S)
         while True:
             try:
-                purged = await self.purge_expired(days)
+                purged = 0
+                for _ in range(RETENTION_MAX_BATCHES):  # a backlog drains over a few rounds
+                    removed = await self.purge_expired(days, batch=RETENTION_BATCH)
+                    purged += removed
+                    if removed < RETENTION_BATCH:
+                        break
                 if purged:
                     logger.info("retention purge removed %d idle threads", purged)
             except asyncio.CancelledError:
@@ -659,6 +671,13 @@ class ChatRuntime:
                 purged += 1
             finally:
                 await lease.release()
+        if self.runtime == LANGGRAPH_SERVER and self.runs is not None:
+            # Threads deleted through the server's native API leave their run
+            # records behind: drop those once they are past the cutoff too.
+            client = self._sdk_client({})
+            for thread_id in await self.runs.thread_ids_before(cutoff.isoformat(), limit=batch):
+                if await self._server_thread_record(client, thread_id) is None:
+                    await self.runs.delete_for_thread(thread_id)
         return purged
 
     # -- streaming ---------------------------------------------------------
