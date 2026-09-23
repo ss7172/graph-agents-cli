@@ -365,6 +365,46 @@ def test_incomplete_secret_is_refused_before_anything_changes(project: SimpleNam
     assert fake.secrets["my-agent-app"] == {"API_KEY": "k"}
 
 
+VALUES_DEV_JWT_HS = """env:
+  APP_ENV: dev
+  AUTH_JWT_ALLOW_HS: "true"
+  AUTH_JWT_ALGORITHMS: HS256
+postgresql:
+  enabled: true
+gateway:
+  enabled: false
+"""
+
+
+def _jwt_hs_dev(project: SimpleNamespace) -> None:
+    """A jwt project whose dev chart values verify HS256 tokens."""
+    project.cfg.auth_policy = "jwt"
+    (project.chart / "values-dev.yaml").write_text(VALUES_DEV_JWT_HS)
+
+
+def test_hs_jwt_deploy_refuses_without_auth_jwt_secret(project: SimpleNamespace, fake):
+    """The pod refuses to start without the HS secret, so deploy stops before anything changes."""
+    _jwt_hs_dev(project)
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "missing required key(s): AUTH_JWT_SECRET" in result.output
+    assert "lists an HS* algorithm in AUTH_JWT_ALGORITHMS" in result.output
+    assert not fake.any("docker") and not fake.find(SSA) and not fake.find("helm upgrade")
+
+
+def test_hs_jwt_deploy_carries_auth_jwt_secret_into_the_secret(project: SimpleNamespace, fake):
+    _jwt_hs_dev(project)
+    secret = "k" * 48
+    with open(project.root / ".env", "a") as f:
+        f.write(f"AUTH_JWT_SECRET={secret}\n")
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-app"]["AUTH_JWT_SECRET"] == secret
+    assert "will hold the required key(s): OPENAI_API_KEY, AUTH_JWT_SECRET" in result.output
+    assert secret not in result.output
+    assert "NOT_ALLOWED" not in fake.secrets["my-agent-app"]
+
+
 def test_undecodable_live_api_key_is_never_replaced_silently(project: SimpleNamespace, fake):
     _git_defaults(fake)
     (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=file-key\n")
@@ -645,10 +685,29 @@ def test_dry_run_prints_commands_and_runs_helm_template_only(project: SimpleName
 
 # --------------------------------------------------------------------------- rollout failure
 
+NO_RELEASE = (1, "", "Error: release: not found")
+HELM_BUSY = "Error: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress"
 
-def _failed_upgrade(fake, history: list[dict]) -> None:
-    fake.respond("helm upgrade", rc=1, stderr="Error: context deadline exceeded")
-    fake.respond("helm history", stdout=json.dumps(history))
+
+def _history(*revisions: tuple[int, str]) -> tuple[int, str, str]:
+    """A ``helm history -o json`` answer."""
+    return 0, json.dumps([{"revision": n, "status": s} for n, s in revisions]), ""
+
+
+def _failed_upgrade(
+    fake,
+    before: tuple[int, str, str],
+    after: tuple[int, str, str],
+    *,
+    stderr: str = "Error: context deadline exceeded",
+) -> None:
+    """helm upgrade fails; ``before`` is the history until the upgrade ran, ``after`` afterwards.
+
+    deploy reads the history twice before the upgrade (the idle check before
+    anything is built or applied, then just before helm) and once after it.
+    """
+    fake.respond("helm upgrade", rc=1, stderr=stderr)
+    fake.respond_seq("helm history", [before, before, after])
     fake.respond(
         "kubectl get pods -l app.kubernetes.io/instance=my-agent -o json",
         stdout=json.dumps(
@@ -676,18 +735,22 @@ def _failed_upgrade(fake, history: list[dict]) -> None:
     fake.respond("kubectl logs my-agent-abc", stdout="OpenAIError: Missing credentials\n")
 
 
+def _release_untouched(fake, result) -> None:
+    """No diagnostics, no rollback, no uninstall."""
+    assert "diagnostics" not in result.output and not fake.any("kubectl logs")
+    assert not fake.find("helm rollback") and not fake.find("helm uninstall")
+
+
 def test_failed_rollout_prints_diagnostics_then_rolls_back(project: SimpleNamespace, fake):
     _failed_upgrade(
         fake,
-        [
-            {"revision": 3, "status": "superseded"},
-            {"revision": 4, "status": "deployed"},
-            {"revision": 5, "status": "failed"},
-        ],
+        before=_history((3, "superseded"), (4, "deployed")),
+        after=_history((3, "superseded"), (4, "deployed"), (5, "failed")),
     )
     result = invoke("--env", "dev", "--image", "x/y:1")
     assert result.exit_code == 2, result.output
     out = result.output
+    assert "Error: context deadline exceeded" in out  # helm's own error is shown
     assert "diagnostics" in out
     assert "agent: waiting CrashLoopBackOff" in out and "last run Error exit 1" in out
     assert "OpenAIError: Missing credentials" in out
@@ -702,7 +765,7 @@ def test_failed_rollout_prints_diagnostics_then_rolls_back(project: SimpleNamesp
 
 
 def test_failed_first_install_is_uninstalled(project: SimpleNamespace, fake):
-    _failed_upgrade(fake, [{"revision": 1, "status": "failed"}])
+    _failed_upgrade(fake, before=NO_RELEASE, after=_history((1, "failed")))
     result = invoke("--env", "dev", "--image", "x/y:1", "--timeout", "90")
     assert result.exit_code == 2, result.output
     assert fake.find("helm upgrade")[0].count("--timeout 90s") == 1
@@ -710,9 +773,40 @@ def test_failed_first_install_is_uninstalled(project: SimpleNamespace, fake):
     assert "failed first install was uninstalled" in result.output
 
 
+def test_reinstall_after_uninstall_keep_history_counts_as_a_first_install(
+    project: SimpleNamespace, fake
+):
+    """`helm uninstall --keep-history` leaves only uninstalled revisions: the release is gone."""
+    _failed_upgrade(
+        fake,
+        before=_history((1, "uninstalled")),
+        after=_history((1, "uninstalled"), (2, "failed")),
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert fake.find("helm uninstall my-agent")
+
+
+def test_existing_release_without_a_good_revision_is_never_uninstalled(
+    project: SimpleNamespace, fake
+):
+    """A failed first install kept with --no-atomic existed before this run: leave it."""
+    _failed_upgrade(
+        fake, before=_history((1, "failed")), after=_history((1, "failed"), (2, "failed"))
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "OpenAIError" in result.output  # this run's failure: diagnostics printed
+    assert not fake.find("helm rollback") and not fake.find("helm uninstall")
+    assert "no earlier successful revision" in result.output
+    assert "failed revision 2 was left in place" in result.output
+
+
 def test_no_atomic_keeps_the_failed_release(project: SimpleNamespace, fake):
     _failed_upgrade(
-        fake, [{"revision": 1, "status": "deployed"}, {"revision": 2, "status": "failed"}]
+        fake,
+        before=_history((1, "deployed")),
+        after=_history((1, "deployed"), (2, "failed")),
     )
     result = invoke("--env", "dev", "--image", "x/y:1", "--no-atomic")
     assert result.exit_code == 2, result.output
@@ -723,17 +817,203 @@ def test_no_atomic_keeps_the_failed_release(project: SimpleNamespace, fake):
 
 def test_failure_before_a_new_revision_needs_no_rollback(project: SimpleNamespace, fake):
     """A render or validation error records no revision: no diagnostics, no rollback."""
-    _failed_upgrade(fake, [{"revision": 7, "status": "deployed"}])
+    _failed_upgrade(fake, before=_history((7, "deployed")), after=_history((7, "deployed")))
     result = invoke("--env", "dev", "--image", "x/y:1")
     assert result.exit_code == 2, result.output
     assert "no new revision" in result.output and "nothing to roll back" in result.output
-    assert "diagnostics" not in result.output and not fake.any("kubectl logs")
-    assert not fake.find("helm rollback") and not fake.find("helm uninstall")
-    # A first install that failed before helm recorded anything: nothing to undo either.
-    fake.respond("helm history", rc=1, stderr="Error: release: not found")
+    _release_untouched(fake, result)
+
+
+def test_failed_first_install_before_any_revision_uninstalls_nothing(
+    project: SimpleNamespace, fake
+):
+    _failed_upgrade(fake, before=NO_RELEASE, after=NO_RELEASE)
     result = invoke("--env", "dev", "--image", "x/y:1")
     assert result.exit_code == 2 and "no new revision" in result.output
-    assert not fake.find("helm uninstall")
+    _release_untouched(fake, result)
+
+
+def test_a_failed_revision_kept_with_no_atomic_survives_a_later_failure(
+    project: SimpleNamespace, fake
+):
+    """The newest revision is failed, but not by this run (it failed before the rollout)."""
+    kept = _history((1, "deployed"), (2, "failed"))
+    _failed_upgrade(
+        fake, before=kept, after=kept, stderr="Error: UPGRADE FAILED: execution error at (x): boom"
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "no new revision" in result.output
+    _release_untouched(fake, result)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        # Another deploy's upgrade is pending: helm refuses this one.
+        (_history((5, "deployed"), (6, "pending-upgrade")), None),
+        # Another deploy's first install is pending.
+        (_history((1, "pending-install")), None),
+        # The other deploy started between the history read and this upgrade.
+        (_history((5, "deployed")), _history((5, "deployed"), (6, "pending-upgrade"))),
+        (NO_RELEASE, _history((1, "pending-install"))),
+    ],
+)
+def test_another_operation_in_progress_is_never_rolled_back(
+    project: SimpleNamespace, fake, before, after
+):
+    """Rolling back (or uninstalling) here would undo someone else's rollout."""
+    _failed_upgrade(fake, before=before, after=after or before, stderr=HELM_BUSY)
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "Another helm operation (install/upgrade/rollback) is in progress" in result.output
+    assert "nothing was rolled back" in result.output
+    assert "an interrupted helm left the release pending" in result.output  # stale-lock hint
+    _release_untouched(fake, result)
+    if before[1] and "pending" in before[1]:
+        # Refused before anything was built or applied (the release was already busy).
+        assert not fake.find("helm upgrade") and not fake.find(SSA)
+        assert "nothing was built, applied or deployed" in result.output
+    else:
+        # helm itself refused: its error is shown, and the upgrade touched nothing.
+        assert fake.find("helm upgrade") and HELM_BUSY in result.output
+        assert "the release was not touched" in result.output
+
+
+@pytest.mark.parametrize(
+    ("history", "hint"),
+    [
+        (
+            _history((1, "pending-install")),
+            "`helm uninstall my-agent -n my-agent-dev` (the first install never finished)",
+        ),
+        (
+            _history((3, "superseded"), (4, "deployed"), (5, "pending-upgrade")),
+            "`helm rollback my-agent 4 -n my-agent-dev` clears it",
+        ),
+        (
+            _history((4, "deployed"), (5, "failed"), (6, "pending-rollback")),
+            "`helm rollback my-agent 4 -n my-agent-dev` clears it",
+        ),
+        (
+            _history((1, "failed"), (2, "pending-upgrade")),
+            "`helm rollback my-agent <last good revision> -n my-agent-dev` clears it",
+        ),
+    ],
+)
+def test_stale_pending_hint_names_the_command_that_clears_it(
+    project: SimpleNamespace, fake, history, hint: str
+):
+    fake.respond_seq("helm history", [history])
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert hint in result.output
+    assert not fake.find("helm upgrade") and not fake.find("helm rollback")
+
+
+def test_helm_killed_mid_rollout_leaves_its_pending_revision_alone(project: SimpleNamespace, fake):
+    """helm died (signal 9) before finishing revision 12: report it, never act on it."""
+    _failed_upgrade(
+        fake,
+        before=_history((11, "deployed")),
+        after=_history((11, "deployed"), (12, "pending-upgrade")),
+        stderr="",
+    )
+    fake.respond("helm upgrade", rc=-9)
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "revision 12 is still pending-upgrade (helm stopped before finishing it" in result.output
+    assert "`helm rollback my-agent 11 -n my-agent-dev` clears it" in result.output
+    assert "another helm operation started" not in result.output
+    _release_untouched(fake, result)
+
+
+def test_a_pending_release_stops_the_deploy_before_anything_changes(project: SimpleNamespace, fake):
+    fake.respond_seq("helm history", [_history((5, "deployed"), (6, "pending-upgrade"))])
+    result = invoke("--env", "dev", "--tag", "t1")
+    assert result.exit_code == 2, result.output
+    assert "(revision 6 is pending-upgrade)" in result.output
+    assert "nothing was built, applied or deployed" in result.output
+    assert not fake.any("docker") and not fake.any("kind load")
+    assert not fake.find(SSA) and not fake.find("kubectl create namespace")
+    assert not fake.find("helm upgrade") and not fake.find("helm rollback")
+
+
+def test_a_pending_release_stops_a_helm_push_deploy(project: SimpleNamespace, fake, monkeypatch):
+    project.cfg.create_params["cd"] = "helm-push"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k", "API_KEY": "a", "POSTGRES_DSN": "d"}
+    fake.respond_seq("helm history", [_history((2, "deployed"), (3, "pending-rollback"))])
+    result = invoke("--env", "staging", "--image", "ghcr.io/my-org/my-agent:abc", "--yes")
+    assert result.exit_code == 2, result.output
+    assert "(revision 3 is pending-rollback)" in result.output
+    assert not fake.find("helm upgrade")
+
+
+def test_a_pending_revision_after_this_failure_is_left_alone(project: SimpleNamespace, fake):
+    """This run's revision 2 failed, but another deploy is already working on revision 3."""
+    _failed_upgrade(
+        fake,
+        before=_history((1, "deployed")),
+        after=_history((1, "deployed"), (2, "failed"), (3, "pending-upgrade")),
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "another helm operation started after this one failed" in result.output
+    assert "revision 3 is pending-upgrade" in result.output
+    _release_untouched(fake, result)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        # Another deploy finished between the history read and this upgrade; which
+        # failed revision is whose cannot be told apart, so nothing is undone.
+        _history((1, "superseded"), (2, "deployed"), (3, "failed")),
+        _history((1, "deployed"), (2, "failed"), (3, "failed")),
+    ],
+)
+def test_several_new_revisions_are_not_attributed_to_this_run(
+    project: SimpleNamespace, fake, after
+):
+    _failed_upgrade(fake, before=_history((1, "deployed")), after=after)
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "another deploy changed the release while this one ran" in result.output
+    assert "revisions 2 to 3 are new" in result.output
+    _release_untouched(fake, result)
+
+
+def test_a_new_revision_that_did_not_fail_is_left_alone(project: SimpleNamespace, fake):
+    _failed_upgrade(
+        fake, before=_history((1, "deployed")), after=_history((1, "superseded"), (2, "deployed"))
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "new revision 2 is deployed, so nothing was rolled back" in result.output
+    _release_untouched(fake, result)
+
+
+@pytest.mark.parametrize("unreadable", ["before", "after"])
+def test_unreadable_history_never_rolls_back(project: SimpleNamespace, fake, unreadable: str):
+    down = (1, "", "Error: Kubernetes cluster unreachable: connection refused")
+    before = down if unreadable == "before" else _history((1, "deployed"))
+    after = down if unreadable == "after" else _history((1, "deployed"), (2, "failed"))
+    _failed_upgrade(fake, before=before, after=after)
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "history could not be read" in result.output
+    _release_untouched(fake, result)
+
+
+def test_successful_upgrade_prints_helm_output(project: SimpleNamespace, fake):
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k"}
+    fake.respond("helm upgrade", stdout='Release "my-agent" has been upgraded. Happy Helming!\n')
+    result = invoke("--env", "dev", "--image", "x/y:1", "--timeout", "2m")
+    assert result.exit_code == 0, result.output
+    assert "helm waits up to 2m for the rollout." in result.output
+    assert "Happy Helming!" in result.output
+    assert len(fake.find("helm history my-agent -o json")) == 2  # idle check, pre-upgrade read
 
 
 @pytest.mark.parametrize("value", ["0", "0s", "5x", "m", "-1"])
@@ -1159,6 +1439,28 @@ def test_status_runs_rollout_status(project: SimpleNamespace, fake):
         in fake.joined
     )
     assert not fake.find("helm")
+
+
+@pytest.mark.parametrize(
+    ("args", "source"),
+    [
+        (("--env", "prod", "--context", "nope"), "--context"),
+        (("--env", "prod"), "environments.prod.context"),
+    ],
+)
+def test_status_with_an_unknown_context_is_a_config_error(
+    project: SimpleNamespace, fake, args: tuple[str, ...], source: str
+):
+    """A typo exits 3 like every other command, not 2 like an unreachable cluster."""
+    project.cfg.environments["prod"]["context"] = "prod-typo"
+    fake.respond("kubectl config get-contexts", stdout="kind-dev\nprod-cluster\n")
+    result = invoke(*args, "--status")
+    assert result.exit_code == 3, result.output
+    assert f"(from {source}) is not in the kubeconfig" in result.output
+    assert "Known contexts: kind-dev, prod-cluster" in result.output
+    assert not fake.any("rollout status")
+    dry = invoke(*args, "--status", "--dry-run")
+    assert dry.exit_code == 0 and "[dry-run] Kube context" in dry.output
 
 
 def test_status_argocd_uses_argocd_cli_when_present(project: SimpleNamespace, fake):

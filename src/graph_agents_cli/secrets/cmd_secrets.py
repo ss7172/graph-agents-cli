@@ -48,6 +48,17 @@ def _resolve(
 _CONTEXT_HELP = "Kube context to use instead of environments.<env>.context."
 
 
+def _default_env_file_values(env: str) -> dict[str, str]:
+    """The env file ``secrets apply --env <env>`` reads by default (empty when absent or unreadable)."""
+    path = _apply.resolve_env_file(env, None)
+    if path is None:
+        return {}
+    try:
+        return _apply.read_env_file(path)
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+
 @secrets_group.command("apply")
 @click.option("--env", "env", required=True, help="Target environment (dev, staging, prod).")
 @click.option(
@@ -86,9 +97,14 @@ def cmd_secrets_apply(
     settings = load_settings()
     resolved, target = _resolve(settings, env, context)
     path = _apply.resolve_env_file(env, env_file)
+    chart_values = load_chart_values(settings.chart_dir, env)
     if path is None:
-        raise _apply.missing_env_file_error(env, settings.secret_keys)
+        raise _apply.missing_env_file_error(
+            env, _required.for_environment(settings, chart_values).secret_keys
+        )
     values = _apply.read_env_file(path)
+    # The allow-list for this environment (AUTH_JWT_SECRET joins it for HS* JWTs).
+    settings = _required.for_environment(settings, chart_values, values)
     _apply.check_file_values(
         values, settings.secret_keys, rotate_api_key=rotate_api_key, source=path
     )
@@ -96,6 +112,9 @@ def cmd_secrets_apply(
     _modes.announce(env, resolved, console=console)
     _modes.confirm(
         env, resolved, yes=yes, dry_run=dry_run, console=console, action="apply the Secret for"
+    )
+    _required.print_unreached_hs_settings(
+        settings, env, chart_values, values, source=path, console=console
     )
     _apply.provision(
         name=settings.secret_name,
@@ -130,16 +149,21 @@ def cmd_secrets_status(env: str, context: str | None, strict: bool, dry_run: boo
       0  the Secret holds every required key (optional ones may be missing)
       1  the Secret is missing, or a required key is (any key with --strict)
       2  kubectl failed (unreachable cluster, credentials, RBAC)
-      3  configuration error (unknown environment, no manifest)
+      3  configuration error (unknown environment or kube context, no manifest)
     Required keys follow the environment's chart values: the model provider's key
-    (not for openai-compatible), API_KEY under shared-bearer, and POSTGRES_DSN or
-    DATABASE_URI/REDIS_URI unless the bundled subchart provides them.
+    (not for openai-compatible), API_KEY under shared-bearer, AUTH_JWT_SECRET under
+    jwt with an HS* algorithm, and POSTGRES_DSN or DATABASE_URI/REDIS_URI unless the
+    bundled subchart provides them.
     """
     console = Console()
     settings = load_settings()
     resolved, target = _resolve(settings, env, context)
     _modes.announce(env, resolved, console=console)
+    _modes.require_known_context(env, resolved, dry_run=dry_run, console=console)
     values = load_chart_values(settings.chart_dir, env)
+    # The env file `secrets apply` would read (never printed) tells whether the
+    # environment uses HS* JWTs, which adds AUTH_JWT_SECRET to the allow-list.
+    settings = _required.for_environment(settings, values, _default_env_file_values(env))
     required = _required.required_keys(settings, values)
     optional = [k for k in settings.secret_keys if k not in required]
     present = _apply.secret_keys_present(

@@ -214,6 +214,159 @@ def test_required_keys(settings, values, expected):
     assert _required.required_keys(settings, values) == expected
 
 
+# --------------------------------------------------------------------------- jwt HS*
+
+JWT = "AUTH_JWT_SECRET"
+HS_VALUES = {"env": {"AUTH_JWT_ALLOW_HS": "true", "AUTH_JWT_ALGORITHMS": "RS256,HS256"}}
+
+
+@pytest.mark.parametrize(
+    ("settings", "values", "file_values", "allowed"),
+    [
+        # HS* in the chart values or in the env file adds the key.
+        (_settings(auth_policy="jwt"), HS_VALUES, {}, True),
+        (_settings(auth_policy="jwt"), {}, {"AUTH_JWT_ALLOW_HS": "True"}, True),
+        (_settings(auth_policy="jwt"), {}, {"AUTH_JWT_ALGORITHMS": "hs512"}, True),
+        (_settings(auth_policy="jwt"), {"env": {"AUTH_JWT_ALLOW_HS": "1"}}, {}, True),
+        # The chart values' AUTH_POLICY wins over the manifest's.
+        (_settings(), {"env": {"AUTH_POLICY": "jwt", "AUTH_JWT_ALLOW_HS": "yes"}}, {}, True),
+        # No HS*: the allow-list is unchanged, so AUTH_JWT_SECRET never reaches the Secret.
+        (_settings(auth_policy="jwt"), {}, {}, False),
+        (_settings(auth_policy="jwt"), {}, {"AUTH_JWT_ALLOW_HS": "false"}, False),
+        (_settings(auth_policy="jwt"), {}, {"AUTH_JWT_ALGORITHMS": "RS256,ES256"}, False),
+        (_settings(auth_policy="jwt"), {}, {JWT: "only-the-secret"}, False),
+        # Other policies never use the key.
+        (_settings(), HS_VALUES, {"AUTH_JWT_ALLOW_HS": "true"}, False),
+        (_settings(auth_policy="custom"), HS_VALUES, {}, False),
+    ],
+)
+def test_auth_jwt_secret_joins_the_allow_list_only_for_hs_jwts(
+    settings, values, file_values, allowed
+):
+    result = _required.for_environment(settings, values, file_values)
+    assert (JWT in result.secret_keys) is allowed
+    assert result.secret_keys[: len(settings.secret_keys)] == settings.secret_keys
+    assert JWT not in settings.secret_keys  # the manifest's settings are not mutated
+
+
+def test_auth_jwt_secret_listed_in_the_manifest_is_not_added_twice():
+    settings = _settings(auth_policy="jwt", secret_keys=["OPENAI_API_KEY", JWT])
+    result = _required.for_environment(settings, HS_VALUES, {"AUTH_JWT_ALLOW_HS": "true"})
+    assert result.secret_keys == ["OPENAI_API_KEY", JWT]
+
+
+@pytest.mark.parametrize(
+    ("values", "required"),
+    [
+        # An HS* algorithm in the chart values: the pod refuses to start without the secret.
+        (HS_VALUES, True),
+        ({"env": {"AUTH_JWT_ALGORITHMS": "HS256"}}, True),
+        # Opted in but no HS* algorithm listed: allowed, not required.
+        ({"env": {"AUTH_JWT_ALLOW_HS": "true"}}, False),
+        # A plain chart env value satisfies it (as for every key).
+        ({"env": {**HS_VALUES["env"], JWT: "x" * 32}}, False),
+        ({}, False),
+    ],
+)
+def test_auth_jwt_secret_is_required_when_the_chart_lists_an_hs_algorithm(values, required):
+    settings = _settings(auth_policy="jwt")
+    assert (JWT in _required.required_keys(settings, values)) is required
+    optional = _required.optional_keys(settings, values)
+    assert (JWT in optional) is (not required and _required.jwt_hs_indicated(settings, values))
+
+
+def _jwt_project(project: SimpleNamespace, *, chart_hs: bool) -> None:
+    project.cfg.auth_policy = "jwt"
+    if chart_hs:
+        (project.chart / "values-prod.yaml").write_text(
+            "image:\n  tag: prod-old\npostgresql:\n  enabled: false\nenv:\n"
+            "  AUTH_JWT_ALLOW_HS: 'true'\n  AUTH_JWT_ALGORITHMS: HS256\n"
+        )
+
+
+def test_apply_carries_auth_jwt_secret_for_hs_jwts(project: SimpleNamespace, fake):
+    _jwt_project(project, chart_hs=True)
+    secret = "s" * 40
+    (project.root / ".env.prod").write_text(f"{PROD_ENV}{JWT}={secret}\n")
+    result = invoke("apply", "--env", "prod")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-app"][JWT] == secret
+    assert secret not in result.output
+    assert "never reach the pods" not in result.output  # the chart values set them
+
+
+def test_apply_hs_settings_only_in_the_env_file_carry_the_secret_and_warn(
+    project: SimpleNamespace, fake
+):
+    _jwt_project(project, chart_hs=False)
+    (project.root / ".env.prod").write_text(
+        f"{PROD_ENV}AUTH_JWT_ALLOW_HS=true\nAUTH_JWT_ALGORITHMS=HS256\n{JWT}={'s' * 40}\n"
+    )
+    result = invoke("apply", "--env", "prod")
+    assert result.exit_code == 0, result.output
+    stored = fake.secrets["my-agent-app"]
+    assert JWT in stored
+    # Plain settings stay out of the Secret; the user is told where they belong.
+    assert "AUTH_JWT_ALLOW_HS" not in stored and "AUTH_JWT_ALGORITHMS" not in stored
+    assert (
+        "AUTH_JWT_ALLOW_HS, AUTH_JWT_ALGORITHMS in .env.prod never reach the pods" in result.output
+    )
+    assert "deployment/helm/my-agent/values-prod.yaml" in result.output
+
+
+def test_apply_without_hs_never_exports_auth_jwt_secret(project: SimpleNamespace, fake):
+    """Fail closed: a stray secret in the env file does not widen the allow-list."""
+    _jwt_project(project, chart_hs=False)
+    (project.root / ".env.prod").write_text(f"{PROD_ENV}{JWT}={'s' * 40}\n")
+    result = invoke("apply", "--env", "prod")
+    assert result.exit_code == 0, result.output
+    assert JWT not in fake.secrets["my-agent-app"]
+
+
+def test_apply_refuses_a_multi_line_auth_jwt_secret(project: SimpleNamespace, fake):
+    _jwt_project(project, chart_hs=True)
+    (project.root / ".env.prod").write_text(f'{PROD_ENV}{JWT}="line1\nline2"\n')
+    result = invoke("apply", "--env", "prod")
+    assert result.exit_code == 3, result.output
+    assert JWT in result.output and not fake.any("kubectl apply")
+
+
+def test_status_requires_auth_jwt_secret_for_hs_jwts(project: SimpleNamespace, fake):
+    _jwt_project(project, chart_hs=True)
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=secret_json("OPENAI_API_KEY", "POSTGRES_DSN", "API_KEY"),
+    )
+    result = invoke("status", "--env", "prod")
+    assert result.exit_code == 1, result.output
+    assert f"missing required: {JWT}" in result.output
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=secret_json("OPENAI_API_KEY", "POSTGRES_DSN", JWT),
+    )
+    ok = invoke("status", "--env", "prod")
+    assert ok.exit_code == 0, ok.output
+    assert f"present: OPENAI_API_KEY, POSTGRES_DSN, {JWT}" in ok.output
+    assert "not in the allow-list" not in ok.output
+
+
+def test_status_lists_auth_jwt_secret_when_the_env_file_opts_into_hs(
+    project: SimpleNamespace, fake
+):
+    _jwt_project(project, chart_hs=False)
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=secret_json("OPENAI_API_KEY", "POSTGRES_DSN", JWT),
+    )
+    before = invoke("status", "--env", "prod")
+    assert f"not in the allow-list: {JWT}" in before.output
+    (project.root / ".env.prod").write_text(f"{PROD_ENV}AUTH_JWT_ALLOW_HS=true\n")
+    result = invoke("status", "--env", "prod")
+    assert result.exit_code == 0, result.output
+    assert f"present: OPENAI_API_KEY, POSTGRES_DSN, {JWT}" in result.output
+    assert "not in the allow-list" not in result.output
+
+
 # --------------------------------------------------------------------------- apply
 
 
@@ -536,6 +689,45 @@ def test_status_context_flag(project: SimpleNamespace, fake):
     result = invoke("status", "--env", "prod", "--context", "other")
     assert result.exit_code == 0, result.output
     assert fake.joined[-1].endswith("-n my-agent-prod --context other")
+
+
+@pytest.mark.parametrize(
+    ("args", "source"),
+    [
+        (("--env", "prod", "--context", "nope"), "--context"),
+        (("--env", "prod"), "environments.prod.context"),
+    ],
+)
+def test_status_with_an_unknown_context_is_a_config_error(
+    project: SimpleNamespace, fake, args: tuple[str, ...], source: str
+):
+    """Exit 3 (configuration), so a gate can tell a typo from an unreachable cluster (2)."""
+    project.cfg.environments["prod"]["context"] = "prod-typo"
+    fake.respond("kubectl config get-contexts", stdout="kind-dev\nprod-cluster\n")
+    result = invoke("status", *args)
+    assert result.exit_code == 3, result.output
+    assert f"(from {source}) is not in the kubeconfig" in result.output
+    assert not fake.any("kubectl get secret")
+    dry = invoke("status", *args, "--dry-run")
+    assert dry.exit_code == 0 and "[dry-run] Kube context" in dry.output
+
+
+def test_apply_prompt_keeps_the_capital_s_in_secret(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    from graph_agents_cli.deploy import _modes
+
+    (project.root / ".env.prod").write_text(PROD_ENV)
+    project.cfg.environments["prod"]["context"] = ""
+    fake.respond("kubectl config current-context", stdout="laptop\n")
+    monkeypatch.setattr(_modes, "_interactive", lambda: True)
+    result = CliRunner().invoke(
+        secrets_group, ["apply", "--env", "prod"], input="n\n", catch_exceptions=False
+    )
+    assert result.exit_code == 1, result.output
+    assert "Apply the Secret for prod on context 'laptop'? [y/N]" in result.output
+    assert "Aborted: prod was not changed" in result.output
+    assert not fake.any("kubectl apply")
 
 
 def test_status_dry_run(project: SimpleNamespace, fake):

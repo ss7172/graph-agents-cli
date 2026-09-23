@@ -309,6 +309,141 @@ def test_github_protection_reported_when_token_available(
     assert not any(j.startswith(("gh api -X", "gh api --method")) for j in fake.joined)
 
 
+REPO = "gh api repos/my-org/my-agent"
+NOT_FOUND = {"rc": 1, "stderr": "gh: Not Found (HTTP 404)"}
+FORBIDDEN = {"rc": 1, "stderr": "gh: Must have admin rights to Repository. (HTTP 403)"}
+
+
+def _github(fake, monkeypatch: pytest.MonkeyPatch, *, cd: str, project: SimpleNamespace) -> None:
+    """A reachable GitHub with both environments; secret answers are registered per test."""
+    project.cfg.create_params["cd"] = cd
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    healthy_cluster(fake)
+    fake.respond("git remote get-url origin", stdout="https://github.com/my-org/my-agent.git\n")
+    fake.respond(f"{REPO}/environments/production", stdout=json.dumps({}))
+    fake.respond(f"{REPO}/environments/staging", stdout=json.dumps({}))
+    fake.respond(f"{REPO}/branches/main/protection", **NOT_FOUND)
+    # Defaults: no environment secret, no repository secret, no organization secret.
+    fake.respond(f"{REPO}/environments/staging/secrets/DEPLOY_KUBECONFIG", **NOT_FOUND)
+    fake.respond(f"{REPO}/environments/production/secrets/DEPLOY_KUBECONFIG", **NOT_FOUND)
+    fake.respond(f"{REPO}/actions/secrets/", **NOT_FOUND)
+    # (Matched without the repo prefix: shlex quotes the path's `?per_page=100`.)
+    fake.respond("actions/organization-secrets", stdout=json.dumps({"secrets": []}))
+
+
+def test_helm_push_reports_kubeconfig_environment_secrets(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    _github(fake, monkeypatch, cd="helm-push", project=project)
+    for env in ("staging", "production"):
+        fake.respond(
+            f"{REPO}/environments/{env}/secrets/DEPLOY_KUBECONFIG",
+            stdout=json.dumps({"name": "DEPLOY_KUBECONFIG"}),
+        )
+    result = invoke("--json")
+    assert result.exit_code == 0, result.output
+    report = report_of(result)
+    for env in ("staging", "production"):
+        row = by_name(report, f"github secret: DEPLOY_KUBECONFIG ({env})")
+        assert row["status"] == "ok" and row["required"] is False
+        assert f"set in the {env} environment" in row["detail"]
+    repo_row = by_name(report, "github secret: repository-level kubeconfig")
+    assert repo_row["status"] == "ok"
+    assert (
+        "no repository or organization secret named KUBECONFIG or DEPLOY_KUBECONFIG"
+        in (repo_row["detail"])
+    )
+    # Read-only GETs of secret names only.
+    assert fake.any(f"{REPO}/actions/secrets/KUBECONFIG")
+    assert fake.any(f"{REPO}/actions/secrets/DEPLOY_KUBECONFIG")
+    assert not any(j.startswith(("gh api -X", "gh api --method", "gh secret")) for j in fake.joined)
+
+
+def test_helm_push_warns_about_a_missing_environment_secret_and_a_repository_secret(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    _github(fake, monkeypatch, cd="helm-push", project=project)
+    fake.respond(
+        f"{REPO}/environments/production/secrets/DEPLOY_KUBECONFIG",
+        stdout=json.dumps({"name": "DEPLOY_KUBECONFIG"}),
+    )
+    fake.respond(f"{REPO}/actions/secrets/KUBECONFIG", stdout=json.dumps({"name": "KUBECONFIG"}))
+    result = invoke("--json")
+    assert result.exit_code == 0, result.output  # reported, never enforced
+    report = report_of(result)
+    staging = by_name(report, "github secret: DEPLOY_KUBECONFIG (staging)")
+    assert staging["status"] == "warn" and "not set in the staging environment" in staging["detail"]
+    assert "gh secret set DEPLOY_KUBECONFIG --env staging" in staging["hint"]
+    assert by_name(report, "github secret: DEPLOY_KUBECONFIG (production)")["status"] == "ok"
+    repo_row = by_name(report, "github secret: repository-level kubeconfig")
+    assert repo_row["status"] == "warn"
+    assert "repository secret KUBECONFIG" in repo_row["detail"]
+    assert "bypassing the production gate" in repo_row["detail"]
+    assert "gh secret delete" in repo_row["hint"]
+    table = invoke()
+    assert "github secret: repository-level kubeconfig" in table.output
+    assert "gh secret delete" in table.output  # the hint is printed
+
+
+def test_helm_push_warns_about_an_organization_kubeconfig_secret(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    _github(fake, monkeypatch, cd="helm-push", project=project)
+    fake.respond(
+        "actions/organization-secrets",
+        stdout=json.dumps({"secrets": [{"name": "OTHER"}, {"name": "DEPLOY_KUBECONFIG"}]}),
+    )
+    row = by_name(report_of(invoke("--json")), "github secret: repository-level kubeconfig")
+    assert row["status"] == "warn" and "organization secret DEPLOY_KUBECONFIG" in row["detail"]
+
+
+def test_kubeconfig_secret_checks_without_admin_access_are_informational(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    _github(fake, monkeypatch, cd="helm-push", project=project)
+    for env in ("staging", "production"):
+        fake.respond(f"{REPO}/environments/{env}/secrets/DEPLOY_KUBECONFIG", **FORBIDDEN)
+    fake.respond(f"{REPO}/actions/secrets/", **FORBIDDEN)
+    fake.respond("actions/organization-secrets", **FORBIDDEN)
+    result = invoke("--json")
+    assert result.exit_code == 0, result.output
+    report = report_of(result)
+    for env in ("staging", "production"):
+        row = by_name(report, f"github secret: DEPLOY_KUBECONFIG ({env})")
+        assert row["status"] == "info" and "needs admin access" in row["detail"]
+    repo_row = by_name(report, "github secret: repository-level kubeconfig")
+    assert repo_row["status"] == "info" and "needs admin access" in repo_row["detail"]
+
+
+def test_github_checks_are_skipped_when_the_api_does_not_answer(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    _github(fake, monkeypatch, cd="helm-push", project=project)
+    fake.respond(
+        f"{REPO}/environments/production",
+        rc=1,
+        stderr="error connecting to api.github.com\ncheck your internet connection",
+    )
+    result = invoke("--json")
+    assert result.exit_code == 0, result.output
+    report = report_of(result)
+    row = by_name(report, "github protection")
+    assert row["status"] == "info"
+    assert "the GitHub API did not answer (error connecting to api.github.com)" in row["detail"]
+    assert not any(c["name"].startswith("github secret") for c in report["checks"])
+    assert len(fake.find("gh api")) == 1
+
+
+@pytest.mark.parametrize("cd", ["argocd", "skip"])
+def test_kubeconfig_secrets_are_only_checked_for_helm_push(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch, cd: str
+):
+    _github(fake, monkeypatch, cd=cd, project=project)
+    report = report_of(invoke("--json"))
+    assert not any(c["name"].startswith("github secret") for c in report["checks"])
+    assert not fake.any("/secrets")
+
+
 def test_github_protection_skipped_without_token(project: SimpleNamespace, fake):
     project.cfg.create_params["cd"] = "helm-push"
     healthy_cluster(fake)

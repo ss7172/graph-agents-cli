@@ -171,6 +171,7 @@ def cmd_deploy(
 
     if status:
         _modes.announce(env, resolved, console=console)
+        _modes.require_known_context(env, resolved, dry_run=dry_run, console=console)
         _show_status(settings, env, target, dry_run=dry_run, console=console)
         return
 
@@ -248,11 +249,17 @@ def _deploy_direct(
     _require_chart(settings, env)
     plan = _image_plan(settings, opts, console=console)
     path = secrets_apply.resolve_env_file(env, opts.env_file)
+    chart_values = load_chart_values(settings.chart_dir, env)
     if path is None and not _modes.is_dev_env(env):
-        raise secrets_apply.missing_env_file_error(env, settings.secret_keys)
+        raise secrets_apply.missing_env_file_error(
+            env, _required.for_environment(settings, chart_values).secret_keys
+        )
     values: dict[str, str] = {}
     if path is not None:
         values = secrets_apply.read_env_file(path)
+    # The allow-list for this environment (AUTH_JWT_SECRET joins it for HS* JWTs).
+    settings = _required.for_environment(settings, chart_values, values)
+    if path is not None:
         secrets_apply.check_file_values(
             values, settings.secret_keys, rotate_api_key=opts.rotate_api_key, source=path
         )
@@ -300,6 +307,7 @@ def _deploy_direct(
             dry_run=opts.dry_run,
             console=console,
         )
+    _check_release_idle(settings, target, dry_run=opts.dry_run, console=console)
 
     if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
@@ -319,6 +327,9 @@ def _deploy_direct(
     else:
         console.print(
             f"Applying Secret {settings.secret_name} from {path} (allow-listed keys only)."
+        )
+        _required.print_unreached_hs_settings(
+            settings, env, chart_values, values, source=path, console=console
         )
         secrets_apply.apply_plan(secret_plan, dry_run=opts.dry_run, console=console, live=live)
     _helm_upgrade(settings, env, target, plan, opts, console=console)
@@ -362,6 +373,7 @@ def _deploy_helm_push(
         dry_run=opts.dry_run,
         console=console,
     )
+    _check_release_idle(settings, target, dry_run=opts.dry_run, console=console)
     if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
         _kube.run_cmd(
@@ -617,13 +629,19 @@ def _verify_secret(
         f"Put them in .env.{env} and re-run deploy, or provision them with "
         f"`graph-agents-cli secrets apply --env {env}`"
     )
+    why_jwt = (
+        f"\n  {_required.JWT_SECRET_KEY} is needed because {settings.values_file(env)} (or "
+        "values.yaml) lists an HS* algorithm in AUTH_JWT_ALGORITHMS."
+        if _required.JWT_SECRET_KEY in missing
+        else ""
+    )
     raise Refused(
         f"Secret {name} in {target.namespace} is missing required key(s): "
         f"{', '.join(missing)}{absent}.\n"
         "  Without them the pods crash or answer every request with 503; nothing was built, "
         "applied or deployed.\n"
         f"  {fix}, or remove a key from secrets.keys in graph-agents-cli-manifest.yaml if "
-        f"{env} does not need it."
+        f"{env} does not need it.{why_jwt}"
     )
 
 
@@ -722,6 +740,13 @@ def _helm_upgrade(
     the failed pods and their logs, the very output that explains the failure.
     It follows helm's rule: back to the newest deployed or superseded revision,
     or uninstall a first install that never succeeded.
+
+    It only ever undoes the revision this run created. The release's newest
+    revision is recorded just before the upgrade; after a failure the CLI acts
+    only when exactly one newer revision exists and it is ``failed``. When helm
+    reports another operation in progress, or another deploy changed the
+    release meanwhile, the release is left alone: rolling back would undo (or
+    uninstall) someone else's rollout.
     """
     common = _helm_args(settings, env, plan.repository, plan.tag)
     upgrade = [
@@ -757,31 +782,90 @@ def _helm_upgrade(
         if result.stdout:
             console.print(result.stdout, highlight=False, markup=False)
         return
-    result = _kube.helm(upgrade, target, capture=False, check=False, console=console)
+    before = _release_history(settings, target, console=console)
+    _refuse_if_busy(settings, target, before, changed="the release was not touched")
+    console.print(f"  helm waits up to {opts.timeout} for the rollout.", style="dim")
+    # Captured (helm prints nothing until the rollout ends under --wait) so that
+    # helm's own "another operation is in progress" refusal can be recognised.
+    result = _kube.helm(upgrade, target, check=False, console=console)
+    for stream in (result.stdout, result.stderr):
+        if (stream or "").strip():
+            console.print(stream.rstrip(), highlight=False, markup=False)
     if result.returncode == 0:
         return
-    revisions = _release_history(settings, target, console=console)
-    latest = max(revisions, key=lambda r: int(r["revision"])) if revisions else None
-    attempted = latest is not None and str(latest.get("status", "")).lower() not in _HEALTHY
-    if attempted:
-        # Read before the rollback: it removes the failed pods and their logs.
-        _print_rollout_diagnostics(settings, target, console=console)
-    if not attempted:
-        outcome = (
-            "helm recorded no new revision (it failed before the rollout), so nothing "
-            "changed and there is nothing to roll back"
+    after = _release_history(settings, target, console=console)
+    if _HELM_BUSY in f"{result.stderr or ''}\n{result.stdout or ''}":
+        raise _kube.ToolFailed(
+            _busy_message(settings, target, after, changed="the release was not touched")
         )
-    elif opts.atomic:
-        outcome = _roll_back(settings, target, revisions, opts.timeout, console=console)
-    else:
-        outcome = (
-            "the failed release was left in place (--no-atomic); roll back with "
-            f"`helm rollback {settings.release} -n {target.namespace}`"
-        )
-    detail = (result.stderr or "").strip()
+    outcome = _failure_outcome(settings, target, before, after, opts, console=console)
     raise _kube.ToolFailed(
         f"helm upgrade failed (exit code {result.returncode}) for {settings.release} in "
-        f"{target.namespace}; {outcome}." + (f"\n{detail}" if detail else "")
+        f"{target.namespace}; {outcome}."
+    )
+
+
+def _failure_outcome(
+    settings: DeploySettings,
+    target: Target,
+    before: _History,
+    after: _History,
+    opts: _Options,
+    *,
+    console: Console,
+) -> str:
+    """Undo the failed revision this run created, if any; describe what happened to the release."""
+    check = f"check `helm history {settings.release} -n {target.namespace}`"
+    if not (before.readable and after.readable):
+        return (
+            "the release history could not be read, so the failure cannot be tied to a "
+            f"revision of this run and nothing was rolled back; {check}"
+        )
+    newer = after.newer_than(before.latest)
+    if not newer:
+        return (
+            "helm recorded no new revision (it failed before the rollout), so the release is "
+            "unchanged and there is nothing to roll back"
+        )
+    newest = newer[-1]
+    number, status = int(newest["revision"]), _status(newest)
+    if status.startswith(_PENDING):
+        if len(newer) > 1:
+            return (
+                f"another helm operation started after this one failed (revision {number} is "
+                f"{status}), so nothing was rolled back; {check}"
+            )
+        # Either this run's helm stopped before finishing its revision (killed,
+        # crashed, lost the connection) or another deploy holds the release.
+        return (
+            f"revision {number} is still {status} (helm stopped before finishing it, or "
+            "another deploy is working on the release), so nothing was rolled back; if no "
+            f"other deploy is running, {_clear_hint(settings, target, after)} clears it"
+        )
+    if len(newer) > 1:
+        return (
+            f"another deploy changed the release while this one ran (revisions "
+            f"{int(newer[0]['revision'])} to {number} are new), so nothing was rolled back; "
+            f"{check}"
+        )
+    if status != "failed":
+        return f"its new revision {number} is {status}, so nothing was rolled back; {check}"
+    # Exactly one new revision and it failed: the one this run created.
+    # Read the diagnostics before the rollback: it removes the failed pods and their logs.
+    _print_rollout_diagnostics(settings, target, console=console)
+    if not opts.atomic:
+        return (
+            f"the failed revision {number} was left in place (--no-atomic); roll back with "
+            f"`helm rollback {settings.release} -n {target.namespace}`"
+        )
+    return _roll_back(
+        settings,
+        target,
+        after,
+        number,
+        existed=before.installed,
+        timeout=opts.timeout,
+        console=console,
     )
 
 
@@ -884,12 +968,46 @@ def _print_rollout_diagnostics(
 
 
 _HEALTHY = ("deployed", "superseded")
+_PENDING = "pending-"
+# helm's refusal while the release's newest revision is pending-install/-upgrade/-rollback.
+_HELM_BUSY = "another operation (install/upgrade/rollback) is in progress"
 
 
-def _release_history(
-    settings: DeploySettings, target: Target, *, console: Console
-) -> list[dict[str, Any]]:
-    """``helm history`` of the release (``[]`` when there is none or it cannot be read)."""
+def _status(revision: dict[str, Any]) -> str:
+    return str(revision.get("status", "")).strip().lower()
+
+
+@dataclass(frozen=True)
+class _History:
+    """``helm history`` of the release; ``readable`` is False when helm could not read it."""
+
+    revisions: tuple[dict[str, Any], ...] = ()
+    readable: bool = True
+
+    @property
+    def latest(self) -> int:
+        """The newest revision number (0 when the release has none)."""
+        return max((int(r["revision"]) for r in self.revisions), default=0)
+
+    def newer_than(self, revision: int) -> list[dict[str, Any]]:
+        """Revisions after ``revision``, oldest first."""
+        newer = [r for r in self.revisions if int(r["revision"]) > revision]
+        return sorted(newer, key=lambda r: int(r["revision"]))
+
+    @property
+    def pending(self) -> dict[str, Any] | None:
+        """The newest revision when helm is (or was, if interrupted) still working on it."""
+        newest = max(self.revisions, key=lambda r: int(r["revision"]), default=None)
+        return newest if newest is not None and _status(newest).startswith(_PENDING) else None
+
+    @property
+    def installed(self) -> bool:
+        """Whether the release exists (``uninstall --keep-history`` leaves uninstalled ones)."""
+        return any(_status(r) != "uninstalled" for r in self.revisions)
+
+
+def _release_history(settings: DeploySettings, target: Target, *, console: Console) -> _History:
+    """``helm history`` of the release: empty when it does not exist, unreadable on other errors."""
     try:
         history = _kube.helm(
             ["history", settings.release, "-o", "json"],
@@ -898,31 +1016,90 @@ def _release_history(
             quiet=True,
             console=console,
         )
-        revisions = json.loads(history.stdout or "[]") if history.returncode == 0 else []
-    except (_kube.ToolFailed, json.JSONDecodeError):
-        return []
+    except _kube.ToolFailed:
+        return _History(readable=False)
+    if history.returncode != 0:
+        # `Error: release: not found` means no release yet; anything else is unknown.
+        return _History(readable="release: not found" in (history.stderr or ""))
+    try:
+        revisions = json.loads(history.stdout or "[]")
+    except json.JSONDecodeError:
+        return _History(readable=False)
     if not isinstance(revisions, list):
-        return []
-    return [r for r in revisions if isinstance(r, dict) and str(r.get("revision", "")).isdigit()]
+        return _History(readable=False)
+    return _History(
+        tuple(r for r in revisions if isinstance(r, dict) and str(r.get("revision", "")).isdigit())
+    )
+
+
+def _clear_hint(settings: DeploySettings, target: Target, history: _History) -> str:
+    """The command that clears a release left pending by an interrupted helm."""
+    release, ns = settings.release, target.namespace
+    pending = history.pending
+    below = int(pending["revision"]) if pending is not None else history.latest + 1
+    good = [
+        int(r["revision"])
+        for r in history.revisions
+        if _status(r) in _HEALTHY and int(r["revision"]) < below
+    ]
+    if good:
+        return f"`helm rollback {release} {max(good)} -n {ns}`"
+    if pending is not None and _status(pending) == "pending-install":
+        return f"`helm uninstall {release} -n {ns}` (the first install never finished)"
+    return f"`helm rollback {release} <last good revision> -n {ns}`"
+
+
+def _busy_message(
+    settings: DeploySettings, target: Target, history: _History, *, changed: str
+) -> str:
+    release, ns = settings.release, target.namespace
+    pending = history.pending
+    what = f" (revision {pending['revision']} is {_status(pending)})" if pending else ""
+    return (
+        f"Another helm operation (install/upgrade/rollback) is in progress on {release} in "
+        f"{ns}{what}; {changed}, and nothing was rolled back.\n"
+        f"  Wait for it to finish (`helm history {release} -n {ns}`) and deploy again. If no "
+        "other deploy is running, an interrupted helm left the release pending: "
+        f"{_clear_hint(settings, target, history)} clears it."
+    )
+
+
+def _refuse_if_busy(
+    settings: DeploySettings, target: Target, history: _History, *, changed: str
+) -> None:
+    """Exit 2 when another helm operation holds the release (helm itself would refuse)."""
+    if history.pending is not None:
+        raise _kube.ToolFailed(_busy_message(settings, target, history, changed=changed))
+
+
+def _check_release_idle(
+    settings: DeploySettings, target: Target, *, dry_run: bool, console: Console
+) -> None:
+    """Stop before anything is built or applied while another deploy is rolling out."""
+    if dry_run:
+        return
+    history = _release_history(settings, target, console=console)
+    _refuse_if_busy(settings, target, history, changed="nothing was built, applied or deployed")
 
 
 def _roll_back(
     settings: DeploySettings,
     target: Target,
-    revisions: list[dict[str, Any]],
-    timeout: str,
+    history: _History,
+    failed: int,
     *,
+    existed: bool,
+    timeout: str,
     console: Console,
 ) -> str:
-    """Undo a failed ``helm upgrade --install`` the way helm's ``--atomic`` would; describe it."""
+    """Undo this run's failed revision ``failed`` the way helm's ``--atomic`` would; describe it.
+
+    Back to the newest deployed or superseded revision before it; with none, a
+    release this run installed (``existed`` False) is uninstalled, and one that
+    existed before is left in place (helm's ``--atomic`` does the same).
+    """
     release = settings.release
-    latest = max(revisions, key=lambda r: int(r["revision"]))
-    good = [
-        r
-        for r in revisions
-        if str(r.get("status", "")).lower() in _HEALTHY
-        and int(r["revision"]) < int(latest["revision"])
-    ]
+    good = [r for r in history.revisions if _status(r) in _HEALTHY and int(r["revision"]) < failed]
     if good:
         revision = str(max(int(r["revision"]) for r in good))
         console.print(f"Rolling back {release} to revision {revision} (--atomic).", style="yellow")
@@ -938,6 +1115,12 @@ def _roll_back(
         return (
             f"the rollback to revision {revision} also failed (exit code {result.returncode}); "
             f"check `helm history {release} -n {target.namespace}`"
+        )
+    if existed:
+        return (
+            f"there is no earlier successful revision to roll back to, so the failed revision "
+            f"{failed} was left in place; fix the cause and deploy again, or remove it with "
+            f"`helm uninstall {release} -n {target.namespace}`"
         )
     console.print(
         f"Uninstalling {release}: the first install never succeeded (--atomic).", style="yellow"

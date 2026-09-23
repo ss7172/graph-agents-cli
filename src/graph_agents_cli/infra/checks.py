@@ -555,16 +555,149 @@ def _github_token_available() -> bool:
 
 
 def _gh_api(path: str) -> tuple[int, Any]:
+    rc, data, _err = _gh_api_detail(path)
+    return rc, data
+
+
+def _gh_api_detail(path: str) -> tuple[int, Any, str]:
+    """``gh api <path>`` (GET, read-only): ``(returncode, parsed JSON or None, stderr)``."""
     try:
         result = _kube.run_cmd(["gh", "api", path], check=False, quiet=True)
-    except ToolFailed:
-        return 1, None
+    except ToolFailed as e:
+        return 1, None, str(e)
     if result.returncode != 0:
-        return result.returncode, None
+        return result.returncode, None, (result.stderr or "").strip()
     try:
-        return 0, json.loads(result.stdout or "null")
+        return 0, json.loads(result.stdout or "null"), ""
     except json.JSONDecodeError:
-        return 0, None
+        return 0, None, ""
+
+
+# `gh api` reports an HTTP error as e.g. "gh: Not Found (HTTP 404)".
+_HTTP_STATUS = re.compile(r"\(HTTP (\d{3})\)")
+
+FOUND = "found"
+ABSENT = "absent"
+DENIED = "denied"
+UNKNOWN = "unknown"
+
+
+def _gh_lookup(path: str) -> tuple[str, Any, str]:
+    """Classify a read: FOUND, ABSENT (HTTP 404), DENIED (401/403) or UNKNOWN (network, ...)."""
+    rc, data, err = _gh_api_detail(path)
+    if rc == 0:
+        return FOUND, data, ""
+    match = _HTTP_STATUS.search(err)
+    code = int(match.group(1)) if match else 0
+    if code == 404:
+        return ABSENT, None, err
+    if code in (401, 403):
+        return DENIED, None, err
+    return UNKNOWN, None, err
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+# GitHub environments the helm-push workflows run in (staging.yaml, promote-to-prod.yaml)
+# and the environment secret holding the cluster credentials there.
+HELM_PUSH_ENVIRONMENTS = ("staging", "production")
+KUBECONFIG_SECRET = "DEPLOY_KUBECONFIG"
+REPO_KUBECONFIG_NAMES = ("KUBECONFIG", "DEPLOY_KUBECONFIG")
+
+
+def check_kubeconfig_secrets(repo: str) -> list[Check]:
+    """helm-push: the kubeconfig must be an environment secret, never a repository one.
+
+    Only jobs that pass the environment's protection rules (required reviewers
+    for production, main only) can read an environment secret. A repository or
+    organization secret with the same name is readable by every workflow job of
+    the repository, and ``secrets.DEPLOY_KUBECONFIG`` falls back to it whenever
+    the environment secret is missing, which bypasses the production gate.
+    Only secret names are read (GitHub never returns values).
+    """
+    checks: list[Check] = []
+    for environment in HELM_PUSH_ENVIRONMENTS:
+        name = f"github secret: {KUBECONFIG_SECRET} ({environment})"
+        state, _data, err = _gh_lookup(
+            f"{repo}/environments/{environment}/secrets/{KUBECONFIG_SECRET}"
+        )
+        if state == FOUND:
+            checks.append(Check(name, OK, False, f"set in the {environment} environment"))
+        elif state == ABSENT:
+            checks.append(
+                Check(
+                    name,
+                    WARN,
+                    False,
+                    f"not set in the {environment} environment (or the environment does not "
+                    "exist); the helm-push deploy job then stops at `Configure kubeconfig`, "
+                    "or uses a repository or organization secret of that name",
+                    f"gh secret set {KUBECONFIG_SECRET} --env {environment} < <kubeconfig of the "
+                    f"{environment} cluster> (an environment secret, never a repository secret)",
+                )
+            )
+        elif state == DENIED:
+            checks.append(
+                Check(
+                    name,
+                    INFO,
+                    False,
+                    "not checked: listing environment secrets needs admin access (or the "
+                    "secrets read permission) on the repository",
+                )
+            )
+        else:
+            checks.append(
+                Check(name, INFO, False, f"not checked: {_first_line(err) or 'gh api failed'}")
+            )
+
+    found: list[str] = []
+    unknown: list[str] = []
+    for secret in REPO_KUBECONFIG_NAMES:
+        state, _data, err = _gh_lookup(f"{repo}/actions/secrets/{secret}")
+        if state == FOUND:
+            found.append(f"repository secret {secret}")
+        elif state == DENIED:
+            unknown.append("reading repository secrets needs admin access on the repository")
+        elif state != ABSENT:
+            unknown.append(_first_line(err) or "gh api failed")
+    # Organization secrets shared with the repository resolve the same way (best effort).
+    state, listing, _err = _gh_lookup(f"{repo}/actions/organization-secrets?per_page=100")
+    org_checked = state == FOUND and isinstance(listing, dict)
+    if org_checked:
+        for item in listing.get("secrets") or []:
+            if isinstance(item, dict) and item.get("name") in REPO_KUBECONFIG_NAMES:
+                found.append(f"organization secret {item['name']}")
+    name = "github secret: repository-level kubeconfig"
+    if found:
+        checks.append(
+            Check(
+                name,
+                WARN,
+                False,
+                f"{', '.join(found)} exist(s): every workflow job of the repository can read "
+                f"it, and secrets.{KUBECONFIG_SECRET} falls back to it when an environment "
+                "secret is missing (bypassing the production gate)",
+                "delete it (`gh secret delete <name>`, or remove the organization secret's "
+                f"access to this repository) and keep the kubeconfig only as the "
+                f"{KUBECONFIG_SECRET} secret of the staging and production environments",
+            )
+        )
+    elif unknown:
+        checks.append(Check(name, INFO, False, f"not checked: {unknown[0]}"))
+    else:
+        scope = "repository or organization" if org_checked else "repository"
+        checks.append(
+            Check(
+                name,
+                OK,
+                False,
+                f"no {scope} secret named {' or '.join(REPO_KUBECONFIG_NAMES)}",
+            )
+        )
+    return checks
 
 
 def check_github(settings: DeploySettings) -> list[Check]:
@@ -589,7 +722,17 @@ def check_github(settings: DeploySettings) -> list[Check]:
     checks: list[Check] = []
     repo = f"repos/{remote.owner}/{remote.repo}"
 
-    rc, prod = _gh_api(f"{repo}/environments/production")
+    rc, prod, err = _gh_api_detail(f"{repo}/environments/production")
+    if rc != 0 and not _HTTP_STATUS.search(err):
+        # No HTTP answer at all (offline, DNS, proxy): nothing below can be checked.
+        return [
+            Check(
+                "github protection",
+                INFO,
+                False,
+                f"skipped: the GitHub API did not answer ({_first_line(err) or 'gh api failed'})",
+            )
+        ]
     if rc != 0 or not isinstance(prod, dict):
         checks.append(
             Check(
@@ -684,6 +827,8 @@ def check_github(settings: DeploySettings) -> list[Check]:
                 "" if ok else "the branch protection settings the production gate relies on",
             )
         )
+    if settings.cd == _modes.HELM_PUSH:
+        checks += check_kubeconfig_secrets(repo)
     return checks
 
 

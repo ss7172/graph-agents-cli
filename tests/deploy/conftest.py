@@ -53,6 +53,9 @@ class FakeRunner:
     missing_tools: set[str] = field(default_factory=set)
     env_file_contents: list[str] = field(default_factory=list)
     secrets: dict[str, dict[str, str]] = field(default_factory=dict)
+    sequences: list[tuple[Callable[[str], bool], list[tuple[int, str, str]]]] = field(
+        default_factory=list
+    )
 
     def _simulate(
         self, args: list[str], kwargs: dict[str, Any]
@@ -98,6 +101,11 @@ class FakeRunner:
         # Later registrations win so tests can override defaults.
         self.responses.insert(0, (match, rc, stdout, stderr))
 
+    def respond_seq(self, pattern: str, answers: list[tuple[int, str, str]]) -> None:
+        """Answer successive calls matching ``pattern`` in order; the last answer then repeats."""
+        queue = list(answers)
+        self.sequences.insert(0, (lambda joined, p=pattern: p in joined, queue))
+
     def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         args = list(args)
         self.calls.append((args, kwargs))
@@ -109,6 +117,10 @@ class FakeRunner:
                 if path.is_file():
                     self.env_file_contents.append(path.read_text())
         joined = shlex.join(args)
+        for match, queue in self.sequences:
+            if match(joined) and queue:
+                rc, out, err = queue.pop(0) if len(queue) > 1 else queue[0]
+                return subprocess.CompletedProcess(args, rc, out, err)
         for match, rc, out, err in self.responses:
             if match(joined):
                 return subprocess.CompletedProcess(args, rc, out, err)
