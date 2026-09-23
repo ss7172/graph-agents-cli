@@ -13,7 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tracing setup: explicit opt-in, LangSmith or OpenTelemetry.
+"""Logging and tracing setup.
+
+Logging (`setup_logging()`, fastapi runtime; LangGraph Server configures its
+own): one handler on the root logger, level `LOG_LEVEL` (default INFO),
+format `LOG_FORMAT=json|text` (default `json`, `text` under `APP_ENV=dev`).
+Every record carries the request id, and inside a run the run id, the thread
+id and the hashed principal, from context variables set by the HTTP
+middleware and the chat runtime. Nothing logs headers, bodies or credentials.
+
+Tracing: explicit opt-in, LangSmith or OpenTelemetry.
 
 Nothing is configured unless `TRACING_ENABLED=true`. Then:
 
@@ -35,15 +44,154 @@ and the span status description) and to the run records the app keeps.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import sys
+from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 
 logger = logging.getLogger(__name__)
 
 _initialized = False
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+# Correlation ids attached to every log record of the current request / run.
+LOG_CONTEXT: dict[str, ContextVar[str | None]] = {
+    "request_id": ContextVar("request_id", default=None),
+    "run_id": ContextVar("run_id", default=None),
+    "thread_id": ContextVar("thread_id", default=None),
+    "principal_hash": ContextVar("principal_hash", default=None),
+}
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+_HANDLER_FLAG = "_graph_agents_handler"
+_STANDARD_ATTRS = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+    "color_message",  # uvicorn's ANSI-coloured duplicate of the message
+    "ids",  # set by TextFormatter
+}
+
+
+def bind_log_context(**values: str | None) -> None:
+    """Set correlation ids (`request_id`, `run_id`, `thread_id`, `principal_hash`)."""
+    for name, value in values.items():
+        LOG_CONTEXT[name].set(value)
+
+
+def log_level() -> str:
+    """`LOG_LEVEL` (default INFO); an unknown level is a startup error."""
+    level = (os.environ.get("LOG_LEVEL") or "INFO").strip().upper()
+    if level not in LOG_LEVELS:
+        raise SettingsError(f"LOG_LEVEL={level!r} is not one of {', '.join(LOG_LEVELS)}.")
+    return level
+
+
+def log_format() -> str:
+    """`LOG_FORMAT` (`json` or `text`); defaults to `text` under APP_ENV=dev, else `json`."""
+    fmt = (os.environ.get("LOG_FORMAT") or "").strip().lower()
+    if not fmt:
+        dev = (os.environ.get("APP_ENV") or "").strip().lower() == "dev"
+        return "text" if dev else "json"
+    if fmt not in ("json", "text"):
+        raise SettingsError(f"LOG_FORMAT={fmt!r} must be 'json' or 'text'.")
+    return fmt
+
+
+class ContextFilter(logging.Filter):
+    """Copy the correlation ids of the current context onto each record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        for name, var in LOG_CONTEXT.items():
+            if getattr(record, name, None) is None:
+                setattr(record, name, var.get())
+        return True
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line: ts, level, logger, message, correlation ids, extras."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for name in LOG_CONTEXT:
+            value = getattr(record, name, None)
+            if value:
+                payload[name] = value
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_ATTRS or key in payload or key in LOG_CONTEXT or value is None:
+                continue
+            if key.startswith("_"):
+                continue
+            payload[key] = value if isinstance(value, str | int | float | bool) else repr(value)
+        if record.exc_info:
+            payload["exc_type"] = record.exc_info[0].__name__ if record.exc_info[0] else None
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+class TextFormatter(logging.Formatter):
+    def __init__(self) -> None:
+        super().__init__("%(asctime)s %(levelname)s %(name)s%(ids)s: %(message)s")
+
+    def format(self, record: logging.LogRecord) -> str:
+        ids = " ".join(
+            f"{name}={getattr(record, name)}"
+            for name in ("request_id", "run_id")
+            if getattr(record, name, None)
+        )
+        record.ids = f" [{ids}]" if ids else ""
+        return super().format(record)
+
+
+class _StderrHandler(logging.StreamHandler):
+    """Writes to whatever `sys.stderr` is at emit time (test runners swap it)."""
+
+    def __init__(self) -> None:
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self) -> Any:  # type: ignore[override]
+        return sys.stderr
+
+
+def setup_logging() -> None:
+    """Route every logger (uvicorn's included) through one handler; idempotent."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, _HANDLER_FLAG, False):
+            root.removeHandler(handler)
+    handler = _StderrHandler()
+    setattr(handler, _HANDLER_FLAG, True)
+    handler.addFilter(ContextFilter())
+    handler.setFormatter(JsonFormatter() if log_format() == "json" else TextFormatter())
+    root.addHandler(handler)
+    root.setLevel(log_level())
+    # uvicorn installs its own handlers before the app loads; send its records
+    # (startup, errors, access lines) through the same handler instead.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uv_logger = logging.getLogger(name)
+        uv_logger.handlers = []
+        uv_logger.propagate = True
+
+
+# ---------------------------------------------------------------------------
+# Tracing
+# ---------------------------------------------------------------------------
 
 
 def tracing_enabled() -> bool:

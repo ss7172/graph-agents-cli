@@ -18,6 +18,11 @@
 `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL` and `JUDGE_API_KEY` select the judge model
 and default to the agent's values. The agent code never names a provider.
 
+Every provider model gets a request timeout and a retry budget:
+`MODEL_TIMEOUT_S` (default 60 seconds per model request; `0` leaves the
+provider SDK's own default) and `MODEL_MAX_RETRIES` (default 2). The run as a
+whole is bounded separately by `RUN_TIMEOUT_S` (see `limits.py`).
+
 Provider `fake` is a deterministic in-process chat model for tests and CI. It
 is never offered by `graph-agents-cli create`.
 """
@@ -40,6 +45,8 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
+
 # graph-agents-cli provider name -> LangChain `model_provider`.
 PROVIDER_TO_LANGCHAIN: dict[str, str] = {
     "openai": "openai",
@@ -57,6 +64,42 @@ PROVIDER_KEY_VARS: dict[str, str] = {
 }
 
 FAKE_PROVIDER = "fake"
+
+DEFAULT_MODEL_TIMEOUT_S = 60.0
+DEFAULT_MODEL_MAX_RETRIES = 2
+
+
+def model_timeout_s() -> float | None:
+    """`MODEL_TIMEOUT_S` (default 60); `0` means the provider SDK's own default."""
+    raw = (os.environ.get("MODEL_TIMEOUT_S") or "").strip()
+    if not raw:
+        return DEFAULT_MODEL_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        raise SettingsError(f"MODEL_TIMEOUT_S={raw!r} is not a number.") from None
+    if value < 0 or value != value or value == float("inf"):
+        raise SettingsError(f"MODEL_TIMEOUT_S={raw} must be a finite number >= 0.")
+    return value or None
+
+
+def model_max_retries() -> int:
+    """`MODEL_MAX_RETRIES` (default 2): retries of a failed model request."""
+    raw = (os.environ.get("MODEL_MAX_RETRIES") or "").strip()
+    if not raw:
+        return DEFAULT_MODEL_MAX_RETRIES
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SettingsError(f"MODEL_MAX_RETRIES={raw!r} is not an integer.") from None
+    if value < 0:
+        raise SettingsError(f"MODEL_MAX_RETRIES={value} must be >= 0.")
+    return value
+
+
+def model_limits() -> tuple[float | None, int]:
+    """Both limits, validated (startup check)."""
+    return model_timeout_s(), model_max_retries()
 
 
 def model_settings(*, judge: bool = False) -> dict[str, str | None]:
@@ -103,6 +146,10 @@ def build_model(
     if not name:
         raise ValueError("MODEL_NAME is not set; put the model name in .env or the chart values.")
     params: dict[str, Any] = dict(kwargs)
+    timeout = model_timeout_s()
+    if timeout is not None:
+        params.setdefault("timeout", timeout)
+    params.setdefault("max_retries", model_max_retries())
     if api_key:
         params["api_key"] = api_key
     if provider == "openai-compatible":

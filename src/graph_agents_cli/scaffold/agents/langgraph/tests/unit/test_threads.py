@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Thread ownership: owner, read-across role and stranger; tool-args redaction."""
+"""Thread ownership (atomic claim, owner, read-across role, stranger), run locks, redaction."""
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 from fastapi import HTTPException
@@ -24,7 +26,10 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
 from {{cookiecutter.agent_directory}}.app_utils.chat import serialize_message
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
+    ThreadBusy,
+    ThreadLocks,
     ThreadStore,
+    advisory_key,
     assert_access,
     assert_owner,
     can_access,
@@ -95,3 +100,53 @@ def test_serialize_message_omits_tool_args_when_asked() -> None:
     without = serialize_message(message, include_tool_args=False)
     assert without["tool_calls"] == [{"id": "c1", "name": "get_weather"}]
     assert "args" not in without["tool_calls"][0]
+
+
+async def test_claim_is_atomic_under_concurrency(store: ThreadStore) -> None:
+    """Two principals racing for one new id: exactly one owns it, the other is refused."""
+    results = await asyncio.gather(store.claim("race", OWNER), store.claim("race", STRANGER))
+    assert sorted(created for _, created in results) == [False, True]
+    owner = next(record for record, created in results if created).principal_id
+    loser = STRANGER if owner == OWNER.id else OWNER
+    with pytest.raises(HTTPException) as exc:
+        await store.ensure("race", loser)
+    assert exc.value.status_code == 403
+
+
+async def test_continuing_a_thread_moves_its_idle_clock(store: ThreadStore) -> None:
+    record = await store.create("t1", OWNER)
+    store._memory["t1"].updated_at = "2000-01-01T00:00:00+00:00"
+    assert await store.idle_before("2001-01-01T00:00:00+00:00") == ["t1"]
+    await store.ensure("t1", OWNER)
+    assert await store.idle_before("2001-01-01T00:00:00+00:00") == []
+    assert record.public().keys() == {"thread_id", "created_at", "updated_at"}
+
+
+async def test_list_is_most_recent_first_and_paged(store: ThreadStore) -> None:
+    for i in range(3):
+        await store.create(f"t{i}", OWNER)
+        store._memory[f"t{i}"].updated_at = f"2026-01-0{i + 1}T00:00:00+00:00"
+    assert [r.thread_id for r in await store.list_for(OWNER)] == ["t2", "t1", "t0"]
+    assert [r.thread_id for r in await store.list_for(OWNER, limit=1, offset=1)] == ["t1"]
+    assert await store.list_for(STRANGER) == []
+
+
+async def test_one_run_per_thread() -> None:
+    locks = ThreadLocks()
+    lease = await locks.acquire("t1")
+    with pytest.raises(ThreadBusy):
+        await locks.acquire("t1")
+    other = await locks.acquire("t2")  # other threads are independent
+    await lease.release()
+    await lease.release()  # idempotent
+    again = await locks.acquire("t1")
+    assert locks.held == {"t1", "t2"}
+    await again.release()
+    await other.release()
+    assert locks.held == frozenset()
+
+
+def test_advisory_keys_are_stable_signed_64_bit() -> None:
+    key = advisory_key("11111111-1111-1111-1111-111111111111")
+    assert key == advisory_key("11111111-1111-1111-1111-111111111111")
+    assert -(2**63) <= key < 2**63 and key != advisory_key("other")

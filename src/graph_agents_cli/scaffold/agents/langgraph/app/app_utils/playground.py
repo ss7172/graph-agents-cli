@@ -128,7 +128,7 @@ PLAYGROUND_HTML = """<!doctype html>
           else if (event === 'tool.call') { add('tool', 'tool.call ' + data.name + '(' + JSON.stringify(data.args || {}) + ')'); }
           else if (event === 'tool.result') { add('tool', 'tool.result ' + data.name + (data.is_error ? ' [error]' : '') + ': ' + data.result); }
           else if (event === 'message.end') { add('meta', 'run ' + data.run_id + ' | ' + data.latency_ms + ' ms | tokens in ' + data.usage.input_tokens + ' out ' + data.usage.output_tokens); }
-          else if (event === 'error') { add('error', data.code + ': ' + data.message); }
+          else if (event === 'error') { add('error', data.code + ': ' + data.message + (data.detail ? '\\n' + data.detail : '')); }
         });
       }
     } catch (e) {
