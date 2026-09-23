@@ -58,6 +58,7 @@ def started(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(ls, "popen_resolved_detached", fake_popen)
     monkeypatch.setattr(ls, "_find_free_port", lambda *a, **k: 18080)
+    monkeypatch.delenv(ls.RUN_PORT_ENV, raising=False)
     # The pid file is only trusted when the port answers; the fake never opens one.
     monkeypatch.setattr(
         ls, "_fetch_health", lambda port, timeout=1.0: {"status": "ok", "checkpointer": "memory"}
@@ -139,7 +140,16 @@ def test_ensure_server_starts_and_writes_pid_file(started):
     assert call["env"]["PORT"] == "18080"
 
     data = json.loads(ls.pid_file_path(started.root).read_text())
-    assert set(data) == {"pid", "port", "started_at", "last_activity", "runtime", "checkpointer"}
+    assert set(data) == {
+        "pid",
+        "port",
+        "started_at",
+        "last_activity",
+        "runtime",
+        "checkpointer",
+        "state",
+    }
+    assert data["state"] == ls.STATE_READY
     assert data["pid"] == 4242 and data["port"] == 18080
     assert data["runtime"] == "fastapi"
     # /health reported memory, which wins over the manifest default.
@@ -351,3 +361,124 @@ def test_read_pid_file_tolerates_garbage(tmp_path):
     assert ls.read_pid_file(tmp_path) is None
     path.write_text("[1, 2]")
     assert ls.read_pid_file(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# ports and the provisional pid record
+# ---------------------------------------------------------------------------
+
+
+def _listen(port: int, host: str = "127.0.0.1"):
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(1)
+    return sock
+
+
+def test_pid_file_is_written_before_the_readiness_wait(started, monkeypatch):
+    """A CLI killed while the server boots still leaves a record to stop it by."""
+    seen = {}
+
+    def fake_wait(root, port, *, proc=None, timeout=0, sleep=None):
+        seen.update(json.loads(ls.pid_file_path(root).read_text()))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(ls, "_wait_for_ready", fake_wait)
+    ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert seen["pid"] == 4242 and seen["state"] == ls.STATE_STARTING
+    assert json.loads(ls.pid_file_path(started.root).read_text())["state"] == ls.STATE_READY
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_interrupted_startup_stops_the_server_and_removes_its_record(
+    started, monkeypatch, interrupt
+):
+    def fake_wait(*a, **k):
+        raise interrupt()
+
+    monkeypatch.setattr(ls, "_wait_for_ready", fake_wait)
+    with pytest.raises(interrupt):
+        ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert started.terminated == [4242]
+    assert not ls.pid_file_path(started.root).exists()
+
+
+def test_interrupted_startup_never_removes_another_invocations_record(started, monkeypatch):
+    def fake_wait(root, *a, **k):
+        _write_pid(root, pid=999)  # a concurrent invocation replaced the record
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ls, "_wait_for_ready", fake_wait)
+    with pytest.raises(KeyboardInterrupt):
+        ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert json.loads(ls.pid_file_path(started.root).read_text())["pid"] == 999
+
+
+def test_pinned_port_is_used_exactly(started, monkeypatch):
+    monkeypatch.setattr(ls, "port_problem", lambda port, host="127.0.0.1": None)
+    info = ls.ensure_server(started.root, "app", runtime="fastapi", port=18640)
+    assert info.port == 18640
+    assert started.popen_calls[0]["args"][-1] == "18640"
+
+    monkeypatch.setenv(ls.RUN_PORT_ENV, "18641")
+    ls.pid_file_path(started.root).unlink()
+    info = ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert info.port == 18641
+
+
+def test_pinned_port_in_use_is_refused_with_exit_3(started):
+    sock = _listen(18642)
+    try:
+        with pytest.raises(ls.PortUnavailableError) as excinfo:
+            ls.ensure_server(started.root, "app", runtime="fastapi", port=18642)
+    finally:
+        sock.close()
+    assert excinfo.value.exit_code == 3
+    assert "Cannot start the local server on port 18642" in str(excinfo.value)
+    assert ls.RUN_PORT_ENV in str(excinfo.value)
+    assert not started.popen_calls
+
+
+def test_a_wildcard_listener_counts_as_in_use():
+    """macOS lets a loopback bind succeed next to *:port, shadowing it on 127.0.0.1."""
+    sock = _listen(18643, host="0.0.0.0")
+    try:
+        assert ls.port_problem(18643) is not None
+    finally:
+        sock.close()
+    assert ls.port_problem(18643) is None
+
+
+def test_pinned_port_does_not_silently_reuse_a_server_elsewhere(started, monkeypatch):
+    _write_pid(started.root, pid=111, port=18081)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    with pytest.raises(ls.PortUnavailableError, match="already running on port 18081"):
+        ls.ensure_server(started.root, "app", runtime="fastapi", port=18644)
+    # The same port is simply reused.
+    info = ls.ensure_server(started.root, "app", runtime="fastapi", port=18081)
+    assert info.port == 18081 and not info.started
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "70000"])
+def test_invalid_port_env_is_a_config_error(monkeypatch, raw):
+    monkeypatch.setenv(ls.RUN_PORT_ENV, raw)
+    with pytest.raises(click.ClickException) as excinfo:
+        ls.requested_port()
+    assert excinfo.value.exit_code == 3
+    assert ls.RUN_PORT_ENV in str(excinfo.value)
+
+
+def test_find_free_port_skips_busy_ports(monkeypatch):
+    busy = {18080, 18081}
+
+    def fake_problem(port, host="127.0.0.1"):
+        return "busy" if port in busy else None
+
+    monkeypatch.setattr(ls, "port_problem", fake_problem)
+    assert ls._find_free_port() == 18082
+    busy.update(range(18080, 18090))
+    with pytest.raises(ls.PortUnavailableError, match="--port or GRAPH_AGENTS_CLI_RUN_PORT"):
+        ls._find_free_port()

@@ -14,7 +14,7 @@
 
 """Static API-policy check run by ``graph-agents-cli lint``.
 
-Every tool module under ``<agent_dir>/tools/*.py`` declares, at module level,
+Every tool module under ``<agent_dir>/tools/`` (subpackages included) declares, at module level,
 the external API calls it makes::
 
     API_CALLS = [
@@ -47,6 +47,7 @@ from __future__ import annotations
 import ast
 import json
 import keyword
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -276,8 +277,13 @@ def _unread_changes(tree: ast.Module, declaration: ast.stmt | None) -> list[int]
     return sorted(lines)
 
 
-def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
+def read_api_calls(
+    tool_path: Path, label: str | None = None
+) -> tuple[list[DeclaredCall], list[str]]:
     """Return the ``API_CALLS`` declared in ``tool_path`` plus any problems.
+
+    ``label`` names the module in the report (default: the file name); the
+    tools directory walk passes the path relative to ``tools/``.
 
     A tool without the name declares no calls. The declaration must be one
     module-level assignment of a literal list of dicts: anything the check
@@ -285,11 +291,15 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
     conditional assignment) is reported as a problem rather than trusted, as
     are a malformed entry and a leftover ``PRODUCT_CALLS``.
     """
+    name = label or tool_path.name
     problems: list[str] = []
     try:
         tree = ast.parse(tool_path.read_text(encoding="utf-8"), filename=str(tool_path))
     except SyntaxError as exc:
-        return [], [f"{tool_path.name}: syntax error: {exc}"]
+        return [], [f"{name}: syntax error: {exc}"]
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # Unreadable is not "declares no calls": the check cannot vouch for it.
+        return [], [f"{name}: cannot be read as UTF-8 Python source: {exc}"]
 
     calls: list[DeclaredCall] = []
     declaration: ast.stmt | None = None
@@ -297,7 +307,7 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
         names, value = _assigned_names(node)
         if LEGACY_CALLS_NAME in names:
             problems.append(
-                f"{tool_path.name}: {LEGACY_CALLS_NAME} was renamed to {CALLS_NAME}; rename it "
+                f"{name}: {LEGACY_CALLS_NAME} was renamed to {CALLS_NAME}; rename it "
                 'and add "api": "<name of an API in api-policy.yaml>" to every entry'
             )
             continue
@@ -307,18 +317,18 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
         literal = _literal(value)
         if not isinstance(literal, list | tuple):
             problems.append(
-                f"{tool_path.name}: {CALLS_NAME} is not a literal list; "
+                f"{name}: {CALLS_NAME} is not a literal list; "
                 "declare calls as plain dict literals so the check can read them"
             )
             continue
         for index, entry in enumerate(literal):
             problem = _entry_problem(entry)
             if problem:
-                problems.append(f"{tool_path.name}: {CALLS_NAME}[{index}] {problem}")
+                problems.append(f"{name}: {CALLS_NAME}[{index}] {problem}")
                 continue
             calls.append(
                 DeclaredCall(
-                    tool=tool_path.name,
+                    tool=name,
                     api=str(entry["api"]),
                     method=str(entry["method"]).upper(),
                     operation_id=entry.get("operation_id") or None,
@@ -327,7 +337,7 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
             )
     for line in _unread_changes(tree, declaration):
         problems.append(
-            f"{tool_path.name}: line {line} binds or changes {CALLS_NAME} outside its "
+            f"{name}: line {line} binds or changes {CALLS_NAME} outside its "
             "module-level literal (for example +=, .append() or an assignment inside a "
             "block), so the check cannot read those calls; declare every call in the "
             "one literal list"
@@ -336,22 +346,48 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
 
 
 def collect_declared_calls(tools_dir: Path) -> tuple[list[DeclaredCall], list[str]]:
-    """Read every ``*.py`` under ``tools_dir`` except ``__init__.py`` (non-recursive).
+    """Read every ``*.py`` under ``tools_dir``, subpackages included, except its ``__init__.py``.
 
-    ``_``-prefixed modules are read too: ``tools.get_tools()`` imports every
-    module of the package, so any of them can make calls.
+    The walk covers at least what ``tools.get_tools()`` imports (every module and
+    subpackage of the package, ``_``-prefixed ones too) plus the modules those
+    subpackages hold, so no module that can make calls escapes the check. A
+    subpackage's own ``__init__.py`` is read; the top-level one is the registry.
+    Cache and hidden directories are skipped.
     """
     calls: list[DeclaredCall] = []
     problems: list[str] = []
     if not tools_dir.is_dir():
         return calls, problems
-    for tool_path in sorted(tools_dir.glob("*.py")):
-        if tool_path.name == "__init__.py":
-            continue
-        found, found_problems = read_api_calls(tool_path)
+    for relative in _tool_module_paths(tools_dir):
+        found, found_problems = read_api_calls(tools_dir / relative, relative)
         calls.extend(found)
         problems.extend(found_problems)
     return calls, problems
+
+
+def _tool_module_paths(tools_dir: Path) -> list[str]:
+    """``*.py`` paths under ``tools_dir`` relative to it, sorted, top ``__init__.py`` excluded.
+
+    Symlinked directories are followed (the import system follows them too),
+    each real directory once, so a link loop cannot hang the walk.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for root, dirs, files in os.walk(tools_dir, followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
+        base = Path(root).relative_to(tools_dir)
+        for filename in files:
+            if not filename.endswith(".py"):
+                continue
+            relative = (base / filename).as_posix()
+            if relative != "__init__.py" and (Path(root) / filename).is_file():
+                found.append(relative)
+    return sorted(found)
 
 
 # ---------------------------------------------------------------------------

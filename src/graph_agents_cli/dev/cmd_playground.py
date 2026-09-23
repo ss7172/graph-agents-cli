@@ -21,26 +21,38 @@ The playground exercises the selected application, not a substitute.
 ``langgraph dev --no-browser`` (the server *is* the application and mounts
 ``/chat`` and ``/playground``). ``--graph`` runs ``langgraph dev`` for
 LangGraph Studio under either runtime and bypasses the policy adapter.
+
+The port is checked before anything starts: a port already answering on
+127.0.0.1, or bound on all interfaces by another process (which a loopback
+server would silently shadow on macOS), is refused with exit 3 and a hint. The
+server runs as a child process: Ctrl-C, SIGTERM or SIGHUP stops it and every
+process it started (``uv`` -> reloader -> worker), never leaving one listening.
 """
 
 from __future__ import annotations
 
+import os
 import shlex
+import signal
+import subprocess
 import threading
 import time
 import webbrowser
 from typing import NamedTuple
 
 import click
+import psutil
 from rich.panel import Panel
 
+from graph_agents_cli import _runner
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import (
     chdir_project_root,
     read_project_config,
     require_agent_directory,
 )
-from graph_agents_cli._runner import run
+from graph_agents_cli.run._local_server import PortUnavailableError, port_problem
+from graph_agents_cli.run._signals import terminate_like_interrupt
 
 _console = Console()
 
@@ -49,6 +61,8 @@ HOST = "127.0.0.1"
 RUNTIME_FASTAPI = "fastapi"
 RUNTIME_LANGGRAPH_SERVER = "langgraph-server"
 _OPEN_TIMEOUT = 60.0
+# Seconds the server gets to stop on SIGTERM before it (and its children) are killed.
+_STOP_GRACE = 5.0
 
 
 class PlaygroundPlan(NamedTuple):
@@ -145,8 +159,8 @@ def _open_when_ready(plan: PlaygroundPlan) -> threading.Thread | None:
     "--port",
     default=DEFAULT_PORT,
     show_default=True,
-    type=int,
-    help="Port the application listens on.",
+    type=click.IntRange(1, 65535),
+    help="Port the application listens on (refused when already in use).",
 )
 @click.option(
     "--graph",
@@ -184,10 +198,80 @@ def cmd_playground(port: int, graph: bool, no_open: bool) -> None:
         graph=graph,
         open_browser=not no_open,
     )
+    problem = port_problem(port, HOST)
+    if problem:
+        raise PortUnavailableError(
+            f"Cannot start the playground on port {port}: {problem}.\n"
+            "  Pick a free one with --port (for example --port "
+            f"{_suggest_port(port)})."
+        )
     _print_banner(plan)
     if not no_open:
         _open_when_ready(plan)
-    run(plan.args, env=plan.env, print_cmd=False, check_err_msg="Failed to start playground")
+    code = _run_foreground(plan.args, plan.env)
+    if code != 0:
+        raise click.ClickException(f"Failed to start playground (exit code {code})")
+
+
+def _suggest_port(port: int, attempts: int = 20) -> int:
+    """A nearby free port for the hint (the next ones up), or ``port + 1``."""
+    for candidate in range(port + 1, min(port + 1 + attempts, 65536)):
+        if port_problem(candidate, HOST) is None:
+            return candidate
+    return port + 1
+
+
+def _run_foreground(args: list[str], env: dict[str, str]) -> int:
+    """Run the server in the foreground and return its exit code.
+
+    On Ctrl-C, SIGTERM or SIGHUP the whole process tree is stopped: ``uv``
+    gets SIGTERM (it forwards it), then anything still running after
+    ``_STOP_GRACE`` seconds (a reloader's worker, say) is killed.
+    """
+    proc = _runner.popen_resolved(args, env={**os.environ, **env})
+    try:
+        with terminate_like_interrupt():
+            return proc.wait()
+    except BaseException:
+        _stop_tree(proc)
+        raise
+
+
+def _stop_tree(proc: subprocess.Popen) -> None:
+    try:
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.NoSuchProcess:
+        children = []
+    if proc.poll() is None:
+        try:
+            proc.send_signal(signal.SIGTERM)
+        except OSError:
+            pass
+    # Every descendant too: a child whose parent died first is not told by anyone.
+    for child in children:
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _gone, alive = psutil.wait_procs(
+        [p for p in (_as_psutil(proc.pid), *children) if p is not None], timeout=_STOP_GRACE
+    )
+    for leftover in alive:
+        try:
+            leftover.kill()
+        except psutil.NoSuchProcess:
+            pass
+    try:
+        proc.wait(timeout=1)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _as_psutil(pid: int) -> psutil.Process | None:
+    try:
+        return psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return None
 
 
 def _print_banner(plan: PlaygroundPlan) -> None:

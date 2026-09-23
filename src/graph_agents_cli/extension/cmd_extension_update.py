@@ -34,8 +34,14 @@ from graph_agents_cli.extension._paths import (
     installed_scope_roots,
     vendored_extensions_dir,
 )
-from graph_agents_cli.extension._refs import RefParseError, parse_ref
-from graph_agents_cli.extension._resolver import ResolverError, materialize, resolve_sha
+from graph_agents_cli.extension._refs import RefParseError, anchor_local, parse_ref
+from graph_agents_cli.extension._resolver import (
+    ResolverError,
+    expected_stamp,
+    materialize,
+    read_stamp,
+    resolve_sha,
+)
 from graph_agents_cli.extension._spec import ExtensionSpecError
 from graph_agents_cli.extension._trust import confirm_trust
 
@@ -44,7 +50,7 @@ def _restore_pin(entry: ExtensionEntry, root: Path) -> None:
     """Put the previously pinned copy back after refusing to advance to a new one."""
     try:
         materialize(
-            parse_ref(entry.source, ref_override=entry.sha),
+            anchor_local(parse_ref(entry.source, ref_override=entry.sha), root),
             entry.sha,
             vendored_extensions_dir(root),
             name=entry.name,
@@ -65,6 +71,7 @@ def cmd_update(
     Updates every installed extension when NAME is omitted.
     """
     updated: list[str] = []
+    current: list[str] = []
     skipped: list[str] = []
     for scope, root in installed_scope_roots():
         manifest = root / EXTENSIONS_FILE
@@ -72,10 +79,13 @@ def cmd_update(
             if name is not None and entry.name != name:
                 continue
             try:
-                ref = parse_ref(
-                    entry.source,
-                    # "HEAD" means "follow latest"; pass None so resolve_sha re-resolves.
-                    ref_override=(None if entry.ref == "HEAD" else entry.ref),
+                ref = anchor_local(
+                    parse_ref(
+                        entry.source,
+                        # "HEAD" means "follow latest"; pass None so resolve_sha re-resolves.
+                        ref_override=(None if entry.ref == "HEAD" else entry.ref),
+                    ),
+                    root,
                 )
             except RefParseError as e:
                 logging.warning("Skipping extension %r: %s", entry.name, e)
@@ -87,6 +97,16 @@ def cmd_update(
                 continue
             try:
                 new_sha = resolve_sha(ref)
+                extension_dir = vendored_extensions_dir(root) / entry.name
+                if (
+                    new_sha == entry.sha
+                    and extension_dir.exists()
+                    and read_stamp(extension_dir) == expected_stamp(ref, new_sha)
+                ):
+                    # Same commit (or, for a local source, the same tree) as the
+                    # copy on disk: nothing to do, and nothing to claim.
+                    current.append(entry.name)
+                    continue
                 # name=entry.name pins the vendored dir to the stable id (see
                 # materialize) so an update survives an upstream rename.
                 materialize(
@@ -142,9 +162,11 @@ def cmd_update(
                 ),
             )
             updated.append(entry.name)
-    if not updated and not skipped:
+    if not updated and not skipped and not current:
         raise click.ClickException(
             f"No extension named {name!r} found." if name else "No extensions to update."
         )
     if updated:
         click.secho(f"Updated: {', '.join(updated)}.", fg="green")
+    if current:
+        click.secho(f"Already up to date: {', '.join(current)}.", dim=True)

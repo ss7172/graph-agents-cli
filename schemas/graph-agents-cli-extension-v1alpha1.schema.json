@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/google/graph-agents-cli/main/schemas/graph-agents-cli-extension-v1alpha1.schema.json",
+  "$id": "https://raw.githubusercontent.com/ss7172/graph-agents-cli/main/schemas/graph-agents-cli-extension-v1alpha1.schema.json",
   "$defs": {
     "CommandEntry": {
       "additionalProperties": false,

@@ -21,6 +21,7 @@ import pathlib
 import click
 import pytest
 import yaml
+from click.testing import CliRunner
 
 from graph_agents_cli._defaults import default_secret_keys
 from graph_agents_cli._project import (
@@ -231,12 +232,44 @@ def test_environment_namespace_defaults_when_missing() -> None:
 
 
 def test_malformed_manifest_raises() -> None:
-    with pytest.raises(click.ClickException):
-        ProjectConfig.from_dict(["not", "a", "mapping"])
-    with pytest.raises(click.ClickException):
-        ProjectConfig.from_dict({"name": "x", "create_params": "nope"})
-    with pytest.raises(click.ClickException):
-        ProjectConfig.from_dict({"name": "x", "environments": ["dev"]})
+    for data in (
+        ["not", "a", "mapping"],
+        {"name": "x", "create_params": "nope"},
+        {"name": "x", "environments": ["dev"]},
+    ):
+        with pytest.raises(click.ClickException) as excinfo:
+            ProjectConfig.from_dict(data)
+        assert excinfo.value.exit_code == 3  # a configuration error
+
+
+def test_invalid_manifest_yaml_is_a_one_line_config_error(tmp_path, monkeypatch) -> None:
+    """Every command reading the manifest used to dump a PyYAML traceback (exit 1)."""
+    from graph_agents_cli.info import cmd_info
+    from graph_agents_cli.main import main
+
+    (tmp_path / "graph-agents-cli-manifest.yaml").write_text("name: x\ncreate_params: [unclosed\n")
+    with pytest.raises(click.ClickException) as excinfo:
+        read_project_config(str(tmp_path))
+    assert excinfo.value.exit_code == 3
+    assert "is not valid YAML (line 3, column 1)" in excinfo.value.message
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GRAPH_AGENTS_CLI_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("GRAPH_AGENTS_CLI_DISABLE_OVERRIDES", "1")
+    monkeypatch.setattr(cmd_info, "get_installed_skills", lambda: [])
+    result = CliRunner().invoke(main, ["info"])
+    assert result.exit_code == 3, result.output
+    assert "Traceback" not in result.output
+    assert "not valid YAML" in result.output
+
+
+def test_commands_outside_a_project_exit_3(tmp_path, monkeypatch) -> None:
+    from graph_agents_cli._project import chdir_project_root
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(click.ClickException) as excinfo:
+        chdir_project_root()
+    assert excinfo.value.exit_code == 3
 
 
 def test_require_deployment_target_is_usage_error() -> None:

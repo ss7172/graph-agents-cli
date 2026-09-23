@@ -28,7 +28,7 @@ from graph_agents_cli.extension._manifest import (
     read_extension_entries,
 )
 from graph_agents_cli.extension._paths import user_config_root, vendored_extensions_dir
-from graph_agents_cli.extension._refs import RefParseError, parse_ref
+from graph_agents_cli.extension._refs import RefParseError, anchor_local, parse_ref
 from graph_agents_cli.extension._resolver import (
     ResolverError,
     expected_stamp,
@@ -57,7 +57,7 @@ def sync_extensions(project_root: Path | None) -> list[str]:
         for entry in read_extension_entries(manifest):
             extension_dir = vendored_extensions_dir(scope_root) / entry.name
             try:
-                ref = parse_ref(entry.source, ref_override=entry.sha)
+                ref = anchor_local(parse_ref(entry.source, ref_override=entry.sha), scope_root)
                 # Re-materialize when the copy is missing OR no longer matches
                 # its source: a bumped pin, a partial copy, or — for a local
                 # path, whose source is a working tree rather than a commit —

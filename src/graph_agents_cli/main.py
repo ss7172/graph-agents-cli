@@ -31,7 +31,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import click
 
@@ -53,6 +53,12 @@ if isinstance(sys.stderr, io.TextIOWrapper):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 NO_UPDATE_CHECK_ENV = "GRAPH_AGENTS_CLI_NO_UPDATE_CHECK"
+# Set to 1 to see the traceback behind a one-line network/file/parse error.
+DEBUG_ENV = "GRAPH_AGENTS_CLI_DEBUG"
+
+# Exit codes: 0 ok, 1 refused or failed gate, 2 tool failure, 3 configuration error.
+EXIT_TOOL_FAILURE = 2
+EXIT_CONFIG_ERROR = 3
 
 
 def _print_is_project_moved_tip() -> None:
@@ -309,18 +315,103 @@ class _MainGroup(LazyGroup):
             # a RuntimeError, not a ClickException: let Click's standalone
             # handler print "Aborted!" and exit 1 instead of a traceback.
             raise
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as exc:
             from graph_agents_cli._output import Console
 
             console = Console(stderr=True)
             console.print(f"\ngraph-agents-cli v{__version__}", style="dim")
-            console.print("Operation cancelled by user", style="yellow")
-            ctx.exit(130)
-        except Exception:
+            # A SIGTERM/SIGHUP turned into an interrupt (run/_signals.py) exits
+            # with 128 + its signal number, like a process the signal ended.
+            exit_code = getattr(exc, "exit_code", 130)
+            reason = "terminated by a signal" if exit_code != 130 else "cancelled by user"
+            console.print(f"Operation {reason}", style="yellow")
+            ctx.exit(exit_code)
+        except Exception as exc:
             click.echo(f"graph-agents-cli v{__version__}", err=True)
             _print_is_project_moved_tip()
+            known = _environment_error(exc)
+            if known is not None and os.environ.get(DEBUG_ENV) != "1":
+                # A network, file-system or parse problem is the user's to fix:
+                # one line, not a traceback (which DEBUG_ENV=1 still shows).
+                message, code = known
+                click.echo(f"Error: {message}", err=True)
+                click.echo(f"  (set {DEBUG_ENV}=1 to see the traceback)", err=True)
+                ctx.exit(code)
+            # Anything else is a bug in the CLI: keep the traceback for the report.
             traceback.print_exc()
-            ctx.exit(1)
+            ctx.exit(EXIT_TOOL_FAILURE)
+
+    def main(self, *args, **kwargs):  # type: ignore[override]
+        _configure_logging()
+        return super().main(*args, **kwargs)
+
+
+def _environment_error(exc: BaseException) -> tuple[str, int] | None:
+    """``(one-line message, exit code)`` for an error the user's environment caused, else None.
+
+    Network failures and OS errors are tool failures (exit 2); unparseable YAML
+    or JSON is a configuration error (exit 3). Library-specific classes are
+    matched without importing the library, which keeps startup light.
+    """
+    import json
+
+    import yaml
+
+    name = type(exc).__name__
+    first_line = (str(exc).strip().splitlines() or [""])[0][:300]
+    detail = f"{name}: {first_line}" if first_line else name
+    if isinstance(exc, yaml.YAMLError):
+        mark = getattr(exc, "problem_mark", None)
+        where = f" in {mark.name} (line {mark.line + 1})" if mark is not None else ""
+        problem = getattr(exc, "problem", None) or first_line
+        return f"invalid YAML{where}: {problem}", EXIT_CONFIG_ERROR
+    if isinstance(exc, json.JSONDecodeError):
+        return f"invalid JSON: {first_line}", EXIT_CONFIG_ERROR
+    modules = {cls.__module__.split(".")[0] for cls in type(exc).__mro__}
+    lowered = name.lower()
+    if (
+        isinstance(exc, ConnectionError)
+        or modules & {"httpx", "httpcore", "requests", "urllib3"}
+        or "connection" in lowered
+    ):
+        return f"network error: {detail}", EXIT_TOOL_FAILURE
+    if isinstance(exc, TimeoutError) or "timeout" in lowered:
+        return f"timed out: {detail}", EXIT_TOOL_FAILURE
+    if isinstance(exc, OSError):
+        return detail, EXIT_TOOL_FAILURE
+    return None
+
+
+class _CliLogHandler(logging.Handler):
+    """Log records as ``Warning: ...`` / ``Error: ...`` on stderr (not ``WARNING:root:``)."""
+
+    _PREFIX: ClassVar[dict[int, str]] = {
+        logging.WARNING: "Warning: ",
+        logging.ERROR: "Error: ",
+        logging.CRITICAL: "Error: ",
+    }
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            click.echo(self._PREFIX.get(record.levelno, "") + self.format(record), err=True)
+        except Exception:
+            self.handleError(record)
+
+
+def _configure_logging() -> None:
+    """Give the root logger a clean stderr handler unless something configured it already.
+
+    Without one, the first ``logging.warning`` falls back to ``basicConfig`` and
+    prints ``WARNING:root:...``. A ``--debug`` flag (``basicConfig(force=True)``)
+    or a test harness that installed its own handler wins.
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    handler = _CliLogHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
 
 
 @click.group(cls=_MainGroup)

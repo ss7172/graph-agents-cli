@@ -110,8 +110,13 @@ def build_scaffold_root(root: pathlib.Path) -> pathlib.Path:
     (k8s_layer / "values-prod.yaml").write_text(
         "env:\n  APP_ENV: prod\npostgresql:\n  enabled: false\n"
     )
+    # Runtime-dependent like the real chart values (enhance --runtime must reconcile it).
     (k8s_layer / "values-staging.yaml").write_text(
         "env:\n  APP_ENV: staging\npostgresql:\n  enabled: false\n"
+        "{% if cookiecutter.runtime == 'langgraph-server' %}"
+        "redis:\n  enabled: false\n"
+        "{% endif %}"
+        "image:\n  tag: latest\n"
     )
     (root / "deployment_targets" / "none" / "python").mkdir(parents=True)
     return root

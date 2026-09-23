@@ -48,6 +48,22 @@ from graph_agents_cli._defaults import (
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
 API_POLICY_FILENAME = "api-policy.yaml"
 
+# Exit code of a configuration error (0 ok, 1 refused or failed gate, 2 tool
+# failure, 3 configuration error).
+EXIT_CONFIG_ERROR = 3
+
+
+class ManifestError(click.ClickException):
+    """The project manifest cannot be read or has the wrong shape (exit 3)."""
+
+    exit_code = EXIT_CONFIG_ERROR
+
+
+class NotInProjectError(click.ClickException):
+    """The command needs a project and none encloses the working directory (exit 3)."""
+
+    exit_code = EXIT_CONFIG_ERROR
+
 
 @dataclass
 class SecretsConfig:
@@ -193,7 +209,7 @@ class ProjectConfig:
     ) -> ProjectConfig:
         """Create a ProjectConfig from a raw manifest mapping."""
         if not isinstance(data, Mapping):
-            raise click.ClickException(f"malformed {filename}")
+            raise ManifestError(f"malformed {filename}")
 
         cfg = cls()
         cfg.project_name = str(data.get("name") or cfg.project_name)
@@ -207,18 +223,18 @@ class ProjectConfig:
         if create_params is None:
             create_params = {}
         elif not isinstance(create_params, Mapping):
-            raise click.ClickException(f"malformed create_params in {filename}")
+            raise ManifestError(f"malformed create_params in {filename}")
         cfg.create_params = dict(create_params)
 
         environments = data.get("environments") or {}
         if not isinstance(environments, Mapping):
-            raise click.ClickException(f"malformed environments in {filename}")
+            raise ManifestError(f"malformed environments in {filename}")
         parsed_envs: dict[str, dict[str, str]] = {}
         for env_name, env_data in environments.items():
             if env_data is None:
                 env_data = {}
             if not isinstance(env_data, Mapping):
-                raise click.ClickException(f"malformed environments.{env_name} in {filename}")
+                raise ManifestError(f"malformed environments.{env_name} in {filename}")
             parsed_envs[str(env_name)] = {
                 "context": str(env_data.get("context") or ""),
                 "namespace": str(env_data.get("namespace") or f"{cfg.project_name}-{env_name}"),
@@ -227,7 +243,7 @@ class ProjectConfig:
 
         secrets = data.get("secrets") or {}
         if not isinstance(secrets, Mapping):
-            raise click.ClickException(f"malformed secrets in {filename}")
+            raise ManifestError(f"malformed secrets in {filename}")
         raw_keys = secrets.get("keys")
         if isinstance(raw_keys, str):
             raw_keys = [raw_keys]
@@ -239,7 +255,7 @@ class ProjectConfig:
 
         api_policy = data.get("api_policy") or {}
         if not isinstance(api_policy, Mapping):
-            raise click.ClickException(f"malformed api_policy in {filename}")
+            raise ManifestError(f"malformed api_policy in {filename}")
         policy_file = api_policy.get("policy_file")
         problem = manifest_policy_file_problem(policy_file, filename)
         if problem:
@@ -254,9 +270,22 @@ class ProjectConfig:
 
 
 def _read_project_config_from_manifest(manifest_path: Path) -> ProjectConfig:
-    """Read project configuration from a manifest file."""
-    with open(manifest_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    """Read project configuration from a manifest file (unreadable or invalid YAML: exit 3)."""
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as exc:
+        where = ""
+        mark = getattr(exc, "problem_mark", None)
+        if mark is not None:
+            where = f" (line {mark.line + 1}, column {mark.column + 1})"
+        problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+        raise ManifestError(
+            f"{manifest_path} is not valid YAML{where}: {problem}.\n"
+            "  Fix the file, or restore it from version control."
+        ) from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ManifestError(f"Cannot read {manifest_path}: {exc}") from None
     if data is None:
         data = {}
     return ProjectConfig.from_dict(data, filename=manifest_path.name)
@@ -385,7 +414,7 @@ def chdir_project_root(dir: Path | None = None) -> None:
         dir = Path.cwd()
     root = find_project_root(dir)
     if not root:
-        raise click.ClickException(
+        raise NotInProjectError(
             f"No {MANIFEST_FILENAME} found in the current directory or its parents.\n"
             "  Run this command from your project root, or create a project first:\n"
             "    graph-agents-cli create my-agent"

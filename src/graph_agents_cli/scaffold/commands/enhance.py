@@ -31,13 +31,17 @@ from rich.prompt import IntPrompt, Prompt
 from graph_agents_cli import _api_policy
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
+    DEFAULT_MODELS,
     DEFAULT_REGISTRY_HOST,
     DEFAULT_REGISTRY_PLACEHOLDER,
+    PROVIDER_KEY_VARS,
+    default_secret_keys,
     normalize_auth_policy,
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import (
     API_POLICY_FILENAME,
+    NotInProjectError,
     ProjectConfig,
     find_project_config,
     find_project_root,
@@ -56,8 +60,15 @@ from ..utils.language import (
     validate_agent_file,
 )
 from ..utils.logging import display_welcome_banner
-from ..utils.manifest import CreateParams, finalize_manifest
-from ..utils.merge import run_three_way_merge
+from ..utils.manifest import (
+    CreateParams,
+    finalize_manifest,
+    recompute_secret_keys,
+    reconcile_secret_keys,
+)
+from ..utils.merge import (
+    run_three_way_merge,
+)
 from ..utils.template import (
     default_checkpointer,
     get_available_agents,
@@ -71,7 +82,9 @@ from ..utils.template import (
     validate_base_template,
     validate_combination,
 )
-from ..utils.upgrade import update_cli_metadata
+from ..utils.upgrade import (
+    update_cli_metadata,
+)
 from ..utils.version import (
     get_current_version,
     pinned_install_spec,
@@ -112,6 +125,34 @@ _CREATE_PARAM_KEYS = (
 )
 
 
+def model_after_provider_change(
+    project_config: ProjectConfig, new_provider: str, explicit_model: str | None = None
+) -> str:
+    """The model to record when ``--model-provider`` may change the provider.
+
+    An explicit ``--model`` wins. With the provider unchanged the recorded model
+    stays. When the provider changes and the recorded model is the old
+    provider's default (or unset), the new provider's default replaces it, as
+    ``create`` would pick. A model the developer chose for the old provider
+    cannot be mapped: that is a usage error (exit 2) asking for ``--model``,
+    because keeping it would deploy one provider with another provider's model.
+    """
+    if explicit_model:
+        return str(explicit_model)
+    old_provider = project_config.model_provider
+    recorded = project_config.model
+    if new_provider == old_provider:
+        return recorded
+    new_default = DEFAULT_MODELS.get(new_provider, "")
+    if recorded in ("", DEFAULT_MODELS.get(old_provider, "")):
+        return new_default
+    raise click.UsageError(
+        f"--model-provider {new_provider} changes the provider, but the recorded model "
+        f"{recorded!r} was chosen for {old_provider} and cannot be carried over.\n"
+        f"  Pass --model <name> as well (the {new_provider} default is {new_default!r})."
+    )
+
+
 def build_args_from_config(
     project_config: ProjectConfig,
     auto_approve: bool = False,
@@ -138,6 +179,14 @@ def build_args_from_config(
                 args.append(cli_arg)
             elif value is not False and value is not None:
                 args.extend([cli_arg, str(value)])
+
+        new_provider = cli_overrides.get("model_provider")
+        if new_provider and not cli_overrides.get("model"):
+            # The replayed --model belongs to the recorded provider.
+            _drop_flag(args, "--model")
+            model = model_after_provider_change(project_config, str(new_provider))
+            if model:
+                args.extend(["--model", model])
 
         new_target = cli_overrides.get("deployment_target")
         if new_target and new_target != project_config.deployment_target:
@@ -586,11 +635,12 @@ def _effective_params(
     if has_policy and project_dir is not None:
         apis = _api_policy.read_summaries(project_dir / str(project_config.api_policy_file))
     process = overrides.get("process", project_config.process)
+    model_provider = str(overrides.get("model_provider", project_config.model_provider))
     return CreateParams(
         deployment_target=target,
         runtime=runtime,
-        model_provider=str(overrides.get("model_provider", project_config.model_provider)),
-        model=str(overrides.get("model", project_config.model)),
+        model_provider=model_provider,
+        model=model_after_provider_change(project_config, model_provider, overrides.get("model")),
         checkpointer=str(checkpointer),
         registry=registry,
         cd=cd,
@@ -664,6 +714,9 @@ def _backfill_create_params_from_config(
     if result.get("auth_policy"):
         # A manifest may still record a retired policy name.
         result["auth_policy"] = normalize_auth_policy(str(result["auth_policy"]))
+    if cli_params.get("model_provider") and not cli_params.get("model"):
+        # The saved model belongs to the saved provider.
+        result["model"] = model_after_provider_change(config, str(cli_params["model_provider"]))
     return result
 
 
@@ -687,6 +740,8 @@ def _run_smart_merge(
 
     params = _effective_params(project_config, cli_overrides, project_dir)
     _validate_effective_params(params, project_dir)
+    previous = _recorded_params(project_config, project_dir)
+    _print_recomputed_settings(project_config, previous, params)
 
     old_args = metadata_to_cli_args(project_config)
     new_args = _build_enhance_create_args(project_config, cli_overrides, project_dir)
@@ -697,24 +752,27 @@ def _run_smart_merge(
         interactive=interactive,
     )
 
-    def _update_metadata(proj_dir: pathlib.Path, lang: str) -> None:
+    def _update_metadata(proj_dir: pathlib.Path, lang: str) -> list[str] | None:
         if not cli_overrides:
-            return
+            return None
         has_policy = params.has_api_policy or (proj_dir / API_POLICY_FILENAME).is_file()
         apis = _api_policy.read_summaries(proj_dir / API_POLICY_FILENAME) if has_policy else ()
+        current = dataclasses.replace(params, has_api_policy=has_policy, apis=apis)
         finalize_manifest(
             proj_dir,
             project_name=project_name,
             # dataclasses.replace keeps auth_policy_implemented and every other
             # field of the validated params; only the policy facts are refreshed.
-            params=dataclasses.replace(params, has_api_policy=has_policy, apis=apis),
+            params=current,
             cli_version=get_current_version(),
         )
+        added, removed = reconcile_secret_keys(proj_dir, previous=previous, current=current)
         extra: dict[str, Any] = {}
         if cli_overrides.get("agent_guidance_filename"):
             extra["agent_guidance_filename"] = cli_overrides["agent_guidance_filename"]
         if extra:
             update_cli_metadata(proj_dir, extra)
+        return _settings_followups(proj_dir, previous, current, added, removed)
 
     return run_three_way_merge(
         project_dir=project_dir,
@@ -730,7 +788,121 @@ def _run_smart_merge(
         operation_label="enhancement",
         pre_apply_hook=backup_hook,
         post_apply_hook=_update_metadata,
+        merge_config=True,
     )
+
+
+def _recorded_params(project_config: ProjectConfig, project_dir: pathlib.Path) -> CreateParams:
+    """The create parameters the manifest records (before an enhance changes them)."""
+    apis: tuple[_api_policy.ApiSummary, ...] = ()
+    if project_config.api_policy_file:
+        apis = _api_policy.read_summaries(project_dir / str(project_config.api_policy_file))
+    return CreateParams(
+        deployment_target=project_config.deployment_target,
+        runtime=project_config.runtime,
+        model_provider=project_config.model_provider,
+        model=project_config.model,
+        checkpointer=project_config.checkpointer,
+        registry=project_config.registry,
+        cd=project_config.cd,
+        auth_policy=project_config.auth_policy,
+        has_api_policy=bool(project_config.api_policy_file),
+        apis=apis,
+    )
+
+
+def _print_recomputed_settings(
+    project_config: ProjectConfig, previous: CreateParams, params: CreateParams
+) -> None:
+    """Say which recorded settings the change recomputes (before anything is written)."""
+    lines: list[str] = []
+    for label, old, new in (
+        ("runtime", previous.runtime, params.runtime),
+        ("model_provider", previous.model_provider, params.model_provider),
+        ("model", previous.model, params.model),
+    ):
+        if old != new:
+            lines.append(f"{label}: {old} -> {new}")
+    old_defaults = default_secret_keys(
+        previous.model_provider, previous.runtime, previous.api_token_envs
+    )
+    new_defaults = default_secret_keys(params.model_provider, params.runtime, params.api_token_envs)
+    recorded = project_config.secret_keys
+    keys = recompute_secret_keys(recorded, old_defaults, new_defaults)
+    added = [k for k in keys if k not in recorded]
+    removed = [k for k in recorded if k not in keys]
+    if added or removed:
+        change = ", ".join([*(f"+{k}" for k in added), *(f"-{k}" for k in removed)])
+        lines.append(f"secrets.keys: {change} (keys you added are kept)")
+    if not lines:
+        return
+    console.print()
+    console.print("[bold]Recomputed for the new settings (graph-agents-cli-manifest.yaml):[/bold]")
+    for line in lines:
+        console.print(f"  • {line}")
+
+
+def _settings_followups(
+    project_dir: pathlib.Path,
+    previous: CreateParams,
+    current: CreateParams,
+    keys_added: list[str],
+    keys_removed: list[str],
+) -> list[str]:
+    """What the developer still has to do by hand after a provider or runtime change.
+
+    ``.env`` holds the developer's own values and is never edited by enhance,
+    and the environments' Secrets live in the cluster: both are listed here.
+    """
+    items: list[str] = []
+    env_values: dict[str, str | None] = {}
+    env_file = project_dir / ".env"
+    if env_file.is_file():
+        from dotenv import dotenv_values
+
+        try:
+            env_values = dict(dotenv_values(env_file))
+        except Exception:  # an unreadable .env is reported by run/eval themselves
+            env_values = {}
+    if previous.model_provider != current.model_provider or previous.model != current.model:
+        stale = [
+            f"{name}={env_values.get(name)}"
+            for name, want in (
+                ("MODEL_PROVIDER", current.model_provider),
+                ("MODEL_NAME", current.model),
+            )
+            if env_values.get(name) not in (None, "", want)
+        ]
+        if stale:
+            items.append(
+                f".env still sets {' '.join(stale)}: change it to "
+                f"MODEL_PROVIDER={current.model_provider} MODEL_NAME={current.model} "
+                "(run, playground and eval read .env)"
+            )
+        key_var = PROVIDER_KEY_VARS.get(current.model_provider, "MODEL_API_KEY")
+        if previous.model_provider != current.model_provider and not env_values.get(key_var):
+            items.append(
+                f"Set {key_var} in .env (and in each environment's env file, e.g. "
+                f".env.staging, before `secrets apply`)"
+            )
+    if previous.runtime != current.runtime and current.deployment_target == "kubernetes":
+        needs = (
+            "DATABASE_URI and REDIS_URI"
+            if current.runtime == "langgraph-server"
+            else "POSTGRES_DSN"
+        )
+        items.append(
+            f"The {current.runtime} runtime reads {needs} in staging and prod: add them to "
+            "each environment's env file (the dev chart runs its bundled Postgres"
+            + (" and Redis)" if current.runtime == "langgraph-server" else ")")
+        )
+    if (keys_added or keys_removed) and current.deployment_target == "kubernetes":
+        change = ", ".join([*(f"+{k}" for k in keys_added), *(f"-{k}" for k in keys_removed)])
+        items.append(
+            f"secrets.keys changed ({change}): run `graph-agents-cli secrets apply --env <env>` "
+            "for every environment you deploy to, so each Secret carries the new keys"
+        )
+    return items
 
 
 @click.command()
@@ -866,8 +1038,7 @@ def enhance(
     has_cli_overrides = bool(cli_override_args)
 
     if dry_run and force:
-        console.print("[bold red]Error:[/bold red] --dry-run is not compatible with --force mode.")
-        return
+        raise click.UsageError("--dry-run is not compatible with --force.")
 
     if base_template and not validate_base_template(base_template):
         hint = (
@@ -899,11 +1070,10 @@ def enhance(
                     overrides = saved_config_result
             else:
                 if dry_run:
-                    console.print(
-                        "[bold red]Error:[/bold red] --dry-run requires specifying what to change "
-                        "(e.g. --deployment-target kubernetes or --cd argocd) or interactive customization."
+                    raise click.UsageError(
+                        "--dry-run requires specifying what to change (e.g. "
+                        "--deployment-target kubernetes or --cd argocd) or --interactive."
                     )
-                    return
                 if check_and_execute_with_saved_config(
                     project_dir=current_dir,
                     auto_approve=auto_approve,
@@ -925,11 +1095,11 @@ def enhance(
                 return
             console.print("[yellow]⚠️  Smart-merge failed, falling back to standard mode.[/yellow]")
         elif dry_run:
-            console.print(
-                "[bold red]Error:[/bold red] --dry-run requires saved project metadata "
-                "(graph-agents-cli-manifest.yaml file)."
+            raise NotInProjectError(
+                "--dry-run compares against the project's saved settings, and there is no "
+                "graph-agents-cli-manifest.yaml here or in a parent directory.\n"
+                "  Run it from a project created by graph-agents-cli."
             )
-            return
         elif has_cli_overrides:
             console.print("[dim]No saved metadata found - using standard overwrite mode.[/dim]")
     else:
@@ -1138,6 +1308,7 @@ def enhance(
 
     # Read before the render: create rewrites the manifest in place.
     existing_config = find_project_config(current_dir)
+    previous_params = _recorded_params(existing_config, current_dir) if existing_config else None
     recorded_base = existing_config.base_template if existing_config else None
     effective_process = process or (existing_config.process if existing_config else None)
     # Keep the recorded guidance file unless one was asked for explicitly.
@@ -1181,3 +1352,58 @@ def enhance(
     # from the recorded spec and still has to re-fetch it next time.
     if recorded_base and remote_template.is_template_spec(recorded_base):
         update_cli_metadata(current_dir, {}, base_template=recorded_base)
+
+    if existing_config is not None and previous_params is not None:
+        new_config = find_project_config(current_dir)
+        if new_config is not None:
+            _reconcile_after_in_folder_render(
+                project_dir=current_dir,
+                project_name=project_name,
+                existing_config=existing_config,
+                previous=previous_params,
+                new_config=new_config,
+            )
+
+
+def _reconcile_after_in_folder_render(
+    *,
+    project_dir: pathlib.Path,
+    project_name: str,
+    existing_config: ProjectConfig,
+    previous: CreateParams,
+    new_config: ProjectConfig,
+) -> None:
+    """Finish a ``--force`` (in-folder) render whose settings changed.
+
+    The in-folder render overlays the project on the new render, so it only
+    adds the files the project lacks: everything it already has (the chart
+    values, ``.env.example``, ``pyproject.toml``'s dependencies, ...) would keep
+    the old settings. The same three-way pass as the smart merge brings every
+    file the developer did not edit to what a fresh ``create`` renders, merges
+    the template's change into edited config files, recomputes ``secrets.keys``
+    and prints what is left, keeping the developer's version of anything else
+    they changed.
+    """
+    current = _recorded_params(new_config, project_dir)
+    if current == previous:
+        return
+
+    def _after_merge(proj_dir: pathlib.Path, _language: str) -> list[str]:
+        added, removed = reconcile_secret_keys(proj_dir, previous=previous, current=current)
+        return _settings_followups(proj_dir, previous, current, added, removed)
+
+    console.print()
+    console.print("Reconciling the files the new settings shape...", style="dim")
+    run_three_way_merge(
+        project_dir=project_dir,
+        project_name=project_name,
+        agent_directory=new_config.agent_directory,
+        language=new_config.language,
+        old_args=metadata_to_cli_args(existing_config),
+        new_args=metadata_to_cli_args(new_config),
+        auto_approve=True,
+        dry_run=False,
+        operation_label="enhancement",
+        post_apply_hook=_after_merge,
+        merge_config=True,
+    )

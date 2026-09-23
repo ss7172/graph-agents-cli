@@ -44,7 +44,7 @@ from graph_agents_cli._output import Console
 from graph_agents_cli._project import MANIFEST_FILENAME, read_project_config
 from graph_agents_cli.dev import policy_check
 
-from ..utils import cli_options, remote_template, template
+from ..utils import cli_options, openapi_seed, remote_template, template
 from ..utils.fs import standard_ignore_patterns
 from ..utils.logging import display_welcome_banner
 from ..utils.manifest import (
@@ -192,7 +192,7 @@ def create(
     )
 
     if debug:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, force=True)
         console.print("> Debug mode enabled")
         logging.debug("Starting CLI in debug mode")
 
@@ -203,8 +203,14 @@ def create(
         # would drop the policy silently: stop with the migration steps.
         _api_policy.ensure_no_legacy_api_policy(destination_dir)
 
-    # Validate the seed policy before anything is rendered.
+    # Validate the seed policy before anything is rendered, including that every
+    # OpenAPI spec it references can be copied into the project (lint reads them).
     api_document = _api_policy.load_policy_document(api_policy) if api_policy else None
+    spec_copies = (
+        openapi_seed.plan_spec_copies(api_document, api_policy)
+        if api_document is not None and api_policy
+        else []
+    )
 
     project_path = _prepare_project_path(
         destination_dir,
@@ -341,9 +347,11 @@ def create(
             auth_policy_implemented=params.auth_policy_implemented,
         )
 
+        spec_lines: list[str] = []
         if api_policy:
             shutil.copy2(api_policy, rendered_path / API_POLICY_FILENAME)
             logging.debug("Seeded %s from %s", API_POLICY_FILENAME, api_policy)
+            spec_lines = openapi_seed.install_spec_copies(rendered_path, spec_copies)
         elif existing_policy is not None:
             # api-policy.yaml belongs to the project (it is the security
             # boundary the team reviews): an in-folder re-render must never
@@ -394,6 +402,11 @@ def create(
     # later, so the next-steps banner would be wrong as well as noisy.
     if quiet:
         return
+
+    if spec_lines:
+        console.print(f"Copied the OpenAPI specs {API_POLICY_FILENAME} references:", style="cyan")
+        for line in spec_lines:
+            console.print(f"  {line}", style="cyan")
 
     if params.has_api_policy and params.example_call is None and not in_folder:
         tools_dir = (agent_directory or _rendered_agent_directory(rendered_path)) + "/tools"

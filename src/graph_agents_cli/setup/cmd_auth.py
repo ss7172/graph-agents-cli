@@ -31,18 +31,21 @@ process environment and the project's ``.env``, and reports whether:
 * under ``--profile disconnected``, nothing hosted is configured: no
   hosted model provider, no LangSmith, no GitHub-hosted CI, ``fastapi`` runtime.
 
-``--write-env`` prompts for the missing keys and appends them to ``.env``
-without echoing the values; inside a ``shared-bearer`` project it also
-generates a missing ``API_KEY`` (as ``secrets apply`` does). The CLI itself
-stores nothing.
+``--write-env`` prompts for the missing keys and writes them to ``.env``
+without echoing the values (a blank ``KEY=`` line copied from ``.env.example``
+is filled in place, anything else is appended; the file is kept at mode 0600);
+inside a ``shared-bearer`` project it also generates a missing ``API_KEY`` (as
+``secrets apply`` does). The CLI itself stores nothing.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,7 +63,7 @@ from graph_agents_cli._defaults import (
     normalize_auth_policy,
 )
 from graph_agents_cli._output import Console
-from graph_agents_cli._project import find_project_root
+from graph_agents_cli._project import ManifestError, find_project_root
 from graph_agents_cli._runner import run_resolved
 from graph_agents_cli._skills_check import NO_UPDATE_CHECK_ENV
 from graph_agents_cli._tools import ToolNotFoundError, install_hint
@@ -143,9 +146,9 @@ def _read_manifest(root: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
-        raise click.ClickException(f"Could not read {path}: {e}") from e
+        raise ManifestError(f"Could not read {path}: {e}") from e
     if not isinstance(data, dict):
-        raise click.ClickException(f"malformed {MANIFEST_FILENAME}")
+        raise ManifestError(f"malformed {MANIFEST_FILENAME}")
     return data
 
 
@@ -611,25 +614,77 @@ def missing_env_keys(info: ProjectInfo, env: EnvView, *, profile: str) -> list[t
     return [(name, secret) for name, secret in wanted if not env.has(name)]
 
 
-def append_env(env_file: Path, entries: dict[str, str]) -> None:
-    """Append ``KEY=value`` lines to ``env_file`` (created when missing)."""
+_ENV_ASSIGNMENT = re.compile(r"^(?P<lead>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=")
+_BLANK_VALUES = frozenset({"", '""', "''"})
+ENV_FILE_MODE = 0o600
+
+
+def write_env(env_file: Path, entries: dict[str, str]) -> None:
+    """Set ``KEY=value`` in ``env_file``: fill blank ``KEY=`` lines in place, append the rest.
+
+    ``cp .env.example .env`` leaves ``API_KEY=`` (and a blank provider key)
+    in the file; appending a second line would leave two assignments. Every
+    blank assignment of a key gets the value (a later blank one would
+    otherwise win), and a key the file does not assign is appended. The file
+    holds credentials: it is written atomically with mode 0600 (a symlinked
+    ``.env`` is written through to its target).
+    """
     if not entries:
         return
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    existing = env_file.read_text(encoding="utf-8") if env_file.is_file() else ""
-    lines = [] if not existing or existing.endswith("\n") else [""]
-    for key, value in entries.items():
-        lines.append(f"{key}={value}")
-    with env_file.open("a", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
+    target = env_file.resolve() if env_file.is_symlink() else env_file
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = ""
+    if target.is_file():
+        # newline="": keep CRLF files CRLF (no universal-newline translation).
+        with target.open(encoding="utf-8", newline="") as handle:
+            existing = handle.read()
+    lines = existing.splitlines(keepends=True)
+    pending = dict(entries)
+    filled: set[str] = set()
+    for index, line in enumerate(lines):
+        match = _ENV_ASSIGNMENT.match(line)
+        if not match or match.group("key") not in pending:
+            continue
+        value = line[match.end() :].strip()
+        # Blank as python-dotenv (every reader) sees it: `KEY=`, `KEY=""  # note`.
+        # An unquoted `KEY=  # note` is the value "# note" to dotenv, so it is set.
+        if value.split(" #", 1)[0].strip() not in _BLANK_VALUES:
+            continue
+        key = match.group("key")
+        ending = line[len(line.rstrip("\r\n")) :]  # keep the file's own line ending
+        lines[index] = f"{match.group('lead')}{key}={pending[key]}{ending}"
+        filled.add(key)
+    text = "".join(lines)
+    appended = [f"{k}={v}" for k, v in pending.items() if k not in filled]
+    if appended:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join(appended) + "\n"
+    _write_private(target, text)
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text``, readable by the owner only (0600)."""
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.chmod(tmp_name, ENV_FILE_MODE)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def prompt_and_write_env(info: ProjectInfo, env: EnvView, *, profile: str, console: Console) -> int:
-    """Prompt for each missing key and append the answers to ``env.env_file``.
+    """Prompt for each missing key and write the answers to ``env.env_file`` (see ``write_env``).
 
     Secret values are read with ``hide_input`` and never printed. An empty
     answer skips that key. A missing ``API_KEY`` under the shared-bearer policy
-    is generated rather than prompted for. Returns the number of keys written.
+    is generated rather than prompted for. When stdin runs out (a CI job, a
+    pipe), prompting stops and whatever was collected, the generated key
+    included, is still written. Returns the number of keys written.
     """
     from graph_agents_cli.secrets._apply import GENERATED_KEY, generate_api_key
 
@@ -647,16 +702,29 @@ def prompt_and_write_env(info: ProjectInfo, env: EnvView, *, profile: str, conso
             f"  Generated {GENERATED_KEY} for AUTH_POLICY=shared-bearer (value not shown).",
             style="green",
         )
-    for name, secret in missing:
-        value = click.prompt(
-            f"  {name}",
-            default="",
-            show_default=False,
-            hide_input=secret,
-        ).strip()
+    skipped: list[str] = []
+    for position, (name, secret) in enumerate(missing):
+        try:
+            value = click.prompt(
+                f"  {name}",
+                default="",
+                show_default=False,
+                hide_input=secret,
+            ).strip()
+        except click.Abort:
+            # EOF on stdin: nothing more to read. Keep what was collected.
+            skipped = [n for n, _ in missing[position:]]
+            click.echo("", err=True)
+            break
         if value:
             entries[name] = value
-    append_env(env.env_file, entries)
+    write_env(env.env_file, entries)
+    if skipped:
+        console.print(
+            f"  No input for {', '.join(skipped)} (stdin closed); set them in "
+            f"{env.env_file} or rerun `graph-agents-cli login --write-env` in a terminal.",
+            style="yellow",
+        )
     if entries:
         console.print(
             f"  Wrote {len(entries)} key(s) to {env.env_file} (values not shown).", style="green"
@@ -754,7 +822,10 @@ def print_report(report: dict[str, Any], console: Console) -> None:
     "--write-env",
     is_flag=True,
     default=False,
-    help="Prompt for missing keys and append them to .env (values are never echoed).",
+    help=(
+        "Prompt for missing keys and write them to .env (blank KEY= lines are filled in "
+        "place; the file is kept 0600; values are never echoed)."
+    ),
 )
 @click.option(
     "--env-file",

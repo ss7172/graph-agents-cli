@@ -24,6 +24,7 @@ import click
 
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
+from graph_agents_cli._remote import deprecated_session_token, fold_session_token
 from graph_agents_cli.eval import _paths
 from graph_agents_cli.eval._client import DEFAULT_TIMEOUT
 from graph_agents_cli.eval._common import (
@@ -61,6 +62,35 @@ def _run_override_code(resolved: ResolvedCommand, argv: list[str], *, display_pa
             f"executable {resolved.contribution.run[0]!r} not found. "
             "Check the extension's `run:` entry."
         ) from exc
+
+
+def _preflight_grade_config(
+    project_root: Path, *, dataset: str | None, config_path: str | None
+) -> None:
+    """Validate the eval config and the dataset's metrics as `eval grade` will (exit 3).
+
+    Uses the same resolution as the grade stage: ``--config`` relative to the
+    project when it is not found as given, else the project's default config;
+    the dataset is the one generate is about to run.
+    """
+    from graph_agents_cli.eval import gate
+    from graph_agents_cli.eval.config import load_eval_config
+    from graph_agents_cli.eval.dataset import load_dataset
+
+    if config_path:
+        cfg_file = Path(config_path)
+        if not cfg_file.is_absolute() and not cfg_file.exists():
+            cfg_file = project_root / cfg_file
+        config = load_eval_config(cfg_file, required=True)
+    else:
+        config = load_eval_config(_paths.default_eval_config(project_root))
+    files = _paths.resolve_input_datasets(project_root, dataset)
+    if not files:
+        raise EvalConfigError(
+            f"no dataset found: pass --dataset PATH or add {_paths.DEFAULT_INPUT_DATASET}"
+        )
+    for case in load_dataset(files).cases:
+        gate.validate_case_metrics(config, case)
 
 
 def _generate_override_argv(
@@ -150,7 +180,8 @@ def _grade_override_argv(
     "--session-token",
     default=None,
     hidden=True,
-    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+    callback=deprecated_session_token,
+    help="Deprecated alias of --header 'X-Session-Token: ...'.",
 )
 @click.option("--app-name", default=None, help="Agent name recorded in the traces.")
 @click.option(
@@ -212,6 +243,10 @@ def cmd_run(
     3 configuration error).
     """
     console = Console()
+    # The deprecated --session-token is an X-Session-Token header from here on,
+    # so an eval.generate override is handed --header only.
+    header = fold_session_token(header, session_token)
+    session_token = None
     project_root = find_project_root()
     if project_root is None:
         raise EvalConfigError(
@@ -220,6 +255,11 @@ def cmd_run(
     traces_file = _paths.default_traces_path(project_root)
 
     from graph_agents_cli.extension._overrides import installed_override
+
+    if installed_override("eval.grade") is None:
+        # Grade's configuration errors (an unknown metric, a missing threshold, a
+        # broken eval_config.yaml) surface before generate spends model calls.
+        _preflight_grade_config(project_root, dataset=dataset, config_path=config_path)
 
     console.rule("[bold]Step 1/2: eval generate[/bold]")
     generate_override = installed_override("eval.generate")

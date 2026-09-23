@@ -172,9 +172,9 @@ def test_example_follows_a_restrictive_seed_policy(
     tmp_path: Path, policy_text: str, extra: dict | None, expected: dict
 ) -> None:
     _, project = _create(tmp_path, "p-example", policy_text, extra)
-    if extra:  # lint reads the spec from the project, as the policy names it
-        for rel, text in extra.items():
-            (project / rel).write_text(text, encoding="utf-8")
+    # create copies each referenced spec to where the policy names it (lint reads it there).
+    for rel, text in (extra or {}).items():
+        assert (project / rel).read_text(encoding="utf-8") == text
     tool = project / "app" / "tools" / "example_api.py"
     assert tool.is_file()
     assert _declared_calls(tool) == [{"method": "GET", **expected}]
@@ -252,3 +252,106 @@ def test_enhance_force_keeps_the_projects_own_example_tool(
     )
     assert result.exit_code == 0, result.output
     assert own.read_text(encoding="utf-8") == "API_CALLS: list = []\nTOOLS: list = []\n"
+
+
+SPEC_ELSEWHERE = """\
+# Catalog: read-only.
+apis:
+  catalog:
+    base_url_env: CATALOG_API_BASE_URL
+    auth: none
+    allowed_methods: [GET]
+    openapi: {inside}   # stays where it is
+  archive:
+    base_url_env: ARCHIVE_API_BASE_URL
+    auth: none
+    allowed_methods: [GET]
+    openapi: '{outside}'   # outside the seed directory
+"""
+
+
+def test_create_copies_every_referenced_openapi_spec(tmp_path: Path) -> None:
+    """A relative spec inside the seed's directory keeps its path; a spec outside it
+    goes to openapi/<api>/ and the value is rewritten in place (comments kept), so
+    the new project passes lint with no manual step."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "archive.yaml").write_text(CATALOG_SPEC, encoding="utf-8")
+    (tmp_path / "seed" / "specs").mkdir(parents=True)
+    (tmp_path / "seed" / "specs" / "catalog.yaml").write_text(CATALOG_SPEC, encoding="utf-8")
+    policy_text = SPEC_ELSEWHERE.format(
+        inside="specs/catalog.yaml", outside="../shared/archive.yaml"
+    )
+    result, project = _create(tmp_path, "p-specs", policy_text)
+
+    assert (project / "specs" / "catalog.yaml").read_text(encoding="utf-8") == CATALOG_SPEC
+    copied = project / "openapi" / "archive" / "archive.yaml"
+    assert copied.read_text(encoding="utf-8") == CATALOG_SPEC
+    policy = (project / "api-policy.yaml").read_text(encoding="utf-8")
+    assert "openapi: specs/catalog.yaml   # stays where it is" in policy
+    assert 'openapi: "openapi/archive/archive.yaml"   # outside the seed directory' in policy
+    assert policy.startswith("# Catalog: read-only.\n")
+    assert "archive: ../shared/archive.yaml -> openapi/archive/archive.yaml" in result.output
+    _assert_lint_clean(project)
+
+
+def test_create_moves_an_absolute_spec_path_into_the_project(tmp_path: Path) -> None:
+    spec = tmp_path / "abs-catalog.yaml"
+    spec.write_text(CATALOG_SPEC, encoding="utf-8")
+    (tmp_path / "seed").mkdir()
+    (tmp_path / "seed" / "c.yaml").write_text(CATALOG_SPEC, encoding="utf-8")
+    policy_text = SPEC_ELSEWHERE.format(inside="c.yaml", outside=str(spec))
+    _, project = _create(tmp_path, "p-abs", policy_text)
+    document = load_policy_document(project / "api-policy.yaml")
+    assert document["apis"]["archive"]["openapi"] == "openapi/archive/abs-catalog.yaml"
+    assert document["apis"]["catalog"]["openapi"] == "c.yaml"
+    _assert_lint_clean(project)
+
+
+def test_a_kept_spec_path_never_overwrites_a_template_file(tmp_path: Path) -> None:
+    (tmp_path / "seed").mkdir()
+    (tmp_path / "seed" / "README.md").write_text(CATALOG_SPEC, encoding="utf-8")
+    policy_text = SPEC_ONLY.replace("catalog-openapi.yaml", "README.md")
+    _, project = _create(tmp_path, "p-clash", policy_text)
+    assert "openapi:" not in (project / "README.md").read_text(encoding="utf-8")
+    moved = project / "openapi" / "catalog" / "README.md"
+    assert moved.read_text(encoding="utf-8") == CATALOG_SPEC
+    document = load_policy_document(project / "api-policy.yaml")
+    assert document["apis"]["catalog"]["openapi"] == "openapi/catalog/README.md"
+    _assert_lint_clean(project)
+
+
+@pytest.mark.parametrize("reference", ["missing.yaml", "https://example.com/openapi.yaml", "specs"])
+def test_create_refuses_a_spec_it_cannot_copy_before_rendering(
+    tmp_path: Path, reference: str
+) -> None:
+    (tmp_path / "seed" / "specs").mkdir(parents=True)
+    policy = tmp_path / "seed" / "p.yaml"
+    policy.write_text(SPEC_ONLY.replace("catalog-openapi.yaml", reference), encoding="utf-8")
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        main,
+        [
+            *("create", "p-missing", "-y", "--skip-checks", "--skip-deps", "-d", "none"),
+            *("-o", str(out), "--api-policy", str(policy)),
+        ],
+        env={"GRAPH_AGENTS_CLI_NO_UPDATE_CHECK": "1"},
+    )
+    assert result.exit_code == 3, result.output
+    assert f"apis.catalog.openapi: {reference} is not a readable file" in result.output
+    assert not (out / "p-missing").exists()
+
+
+def test_rewrite_leaves_a_policy_it_cannot_edit_safely_untouched(tmp_path: Path) -> None:
+    """An anchor shared by two APIs cannot be rewritten for one of them only."""
+    from graph_agents_cli.scaffold.utils import openapi_seed
+
+    policy = tmp_path / "api-policy.yaml"
+    text = (
+        "apis:\n"
+        "  a: {base_url_env: A_URL, auth: none, allowed_methods: [GET], openapi: &s ../x.yaml}\n"
+        "  b: {base_url_env: B_URL, auth: none, allowed_methods: [GET], openapi: *s}\n"
+    )
+    policy.write_text(text, encoding="utf-8")
+    assert openapi_seed._rewrite_openapi_values(policy, {"a": "openapi/a/x.yaml"}) is False
+    assert policy.read_text(encoding="utf-8") == text

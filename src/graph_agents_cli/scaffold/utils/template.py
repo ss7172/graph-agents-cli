@@ -177,7 +177,11 @@ COMBINATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {
         True,
         "`langgraph dev` in-memory server only; not deployable",
     ),
-    ("langgraph-server", "memory", "kubernetes"): (False, "refused"),
+    ("langgraph-server", "memory", "kubernetes"): (
+        False,
+        "refused; the deployed LangGraph Server keeps runs and threads in Postgres "
+        "(with Redis), an in-memory server loses them on restart and cannot run replicas",
+    ),
     ("langgraph-server", "postgres", "kubernetes"): (
         True,
         "chart adds Redis; server owns persistence",

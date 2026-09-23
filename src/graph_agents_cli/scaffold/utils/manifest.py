@@ -101,6 +101,66 @@ class CreateParams:
         }
 
 
+def recompute_secret_keys(
+    recorded: list[str], old_defaults: list[str], new_defaults: list[str]
+) -> list[str]:
+    """The ``secrets.keys`` allow-list after a provider or runtime change.
+
+    Template-managed keys follow the new defaults, in their order (so an
+    untouched list ends up exactly as a fresh ``create`` writes it): a default
+    of the old settings the new ones drop goes, a new default comes in. Keys
+    the developer added are kept, after the defaults, and a default the
+    developer deliberately removed stays removed while it remains a default.
+    """
+    managed = [k for k in new_defaults if k not in old_defaults or k in recorded]
+    added_by_user = [k for k in recorded if k not in old_defaults and k not in new_defaults]
+    result: list[str] = []
+    for key in [*managed, *added_by_user]:
+        if key not in result:
+            result.append(key)
+    return result
+
+
+def reconcile_secret_keys(
+    project_dir: pathlib.Path, *, previous: CreateParams, current: CreateParams
+) -> tuple[list[str], list[str]]:
+    """Rewrite the manifest's ``secrets.keys`` for ``current``; return ``(added, removed)``.
+
+    ``previous`` holds the settings the recorded list was derived from. Nothing
+    is written when the list does not change or the manifest cannot be read.
+    """
+    manifest_path = project_dir / MANIFEST_FILENAME
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        logging.warning("Could not read %s: %s", manifest_path, e)
+        return [], []
+    if not isinstance(data, dict):
+        return [], []
+    secrets = data.get("secrets")
+    if not isinstance(secrets, dict):
+        secrets = {}
+        data["secrets"] = secrets
+    raw_keys = secrets.get("keys")
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys]
+    recorded = [str(k) for k in raw_keys] if raw_keys else []
+    old_defaults = default_secret_keys(
+        previous.model_provider, previous.runtime, previous.api_token_envs
+    )
+    new_defaults = default_secret_keys(
+        current.model_provider, current.runtime, current.api_token_envs
+    )
+    keys = recompute_secret_keys(recorded or old_defaults, old_defaults, new_defaults)
+    if keys == recorded:
+        return [], []
+    secrets["keys"] = keys
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    return [k for k in keys if k not in recorded], [k for k in recorded if k not in keys]
+
+
 def default_environments(project_name: str) -> dict[str, dict[str, str]]:
     """dev/staging/prod with namespace ``<name>-<env>`` and an empty context."""
     return {env: {"context": "", "namespace": f"{project_name}-{env}"} for env in ENVIRONMENTS}

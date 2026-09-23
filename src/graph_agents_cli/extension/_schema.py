@@ -14,7 +14,8 @@
 
 """JSON Schema for graph-agents-cli-extension.yaml, generated from the wire models.
 
-`make schema` rewrites the checked-in copy; a unit test fails if the two disagree.
+``uv run python -m graph_agents_cli.extension._schema`` rewrites the checked-in
+copy (``schemas/`` at the repository root); a unit test fails if the two disagree.
 """
 
 from __future__ import annotations
@@ -46,7 +47,8 @@ def _models(model: type[BaseModel], seen: set[type[BaseModel]] | None = None) ->
 
 SCHEMA_FILE = "graph-agents-cli-extension-v1alpha1.schema.json"
 # Repo-only: generated for editors and the published contract, not read at runtime.
-SCHEMA_PATH = Path(__file__).resolve().parents[5] / "schemas" / SCHEMA_FILE
+# <repo>/src/graph_agents_cli/extension/_schema.py -> <repo>/schemas/<file>
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / SCHEMA_FILE
 SCHEMA_ID = f"https://raw.githubusercontent.com/ss7172/graph-agents-cli/main/schemas/{SCHEMA_FILE}"
 
 
@@ -97,3 +99,8 @@ def build_json_schema() -> dict[str, Any]:
 def render() -> str:
     """The document as it is written to disk (trailing newline included)."""
     return json.dumps(build_json_schema(), indent=2, sort_keys=False) + "\n"
+
+
+if __name__ == "__main__":
+    SCHEMA_PATH.write_text(render(), encoding="utf-8")
+    print(f"wrote {SCHEMA_PATH}")

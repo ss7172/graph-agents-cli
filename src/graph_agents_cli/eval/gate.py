@@ -175,6 +175,7 @@ def plan_judge_items(
     for name, spec in case_metrics(config, case).items():
         threshold = resolve_threshold(config, name, spec)
         quality = config.is_quality(name)
+        custom = config.custom_metrics.get(name)
         grade.judge_scores[name] = {
             "score": None,
             "threshold": threshold,
@@ -182,8 +183,9 @@ def plan_judge_items(
             "quality": quality,
             "reasoning": "",
             "error": None,
+            # "judge" (an LLM judge) or "custom" (a project callable): errors say which.
+            "kind": "custom" if custom is not None else "judge",
         }
-        custom = config.custom_metrics.get(name)
         if custom is not None:
             items.append(
                 {
@@ -221,19 +223,20 @@ def plan_judge_items(
 def apply_judge_results(grade: CaseGrade, results: dict[str, dict[str, Any]]) -> None:
     """Fold runner results into the grade: error, mandatory fail, or quality miss."""
     for name, entry in grade.judge_scores.items():
+        label = "custom metric" if entry.get("kind") == "custom" else "judge"
         result = results.get(item_id(grade.id, name))
         if result is None:
             entry["error"] = "no result from judge runner"
-            grade.errors.append(f"error: judge {name}: no result from judge runner")
+            grade.errors.append(f"error: {label} {name}: no result from judge runner")
             continue
         if result.get("error"):
             entry["error"] = str(result["error"])
-            grade.errors.append(f"error: judge {name}: {result['error']}")
+            grade.errors.append(f"error: {label} {name}: {result['error']}")
             continue
         score = result.get("score")
         if not isinstance(score, int | float) or isinstance(score, bool):
-            entry["error"] = f"judge returned no numeric score ({score!r})"
-            grade.errors.append(f"error: judge {name}: no numeric score")
+            entry["error"] = f"{label} returned no numeric score ({score!r})"
+            grade.errors.append(f"error: {label} {name}: no numeric score")
             continue
         entry["score"] = float(score)
         entry["reasoning"] = str(result.get("reasoning") or "")

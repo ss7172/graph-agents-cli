@@ -58,11 +58,14 @@ from graph_agents_cli._remote import (
     RUN_MODES,
     build_headers,
     classify_url,
+    deprecated_session_token,
+    fold_session_token,
 )
 from graph_agents_cli.run._local_server import (
     ensure_server,
     stop_server,
 )
+from graph_agents_cli.run._signals import terminate_like_interrupt
 
 _RESULT_PREVIEW_CHARS = 400
 # Credential-bearing flags are never echoed verbatim in the resume line: the
@@ -129,6 +132,15 @@ class RunOutcome(NamedTuple):
     usage: dict[str, Any] | None = None
     latency_ms: int | None = None
     status: str | None = None
+
+
+class _TransportFailure(click.ClickException):
+    """The agent could not be reached or went silent: a tool failure (exit 2).
+
+    An answer the agent gave (an HTTP error, an ``error`` event) stays exit 1.
+    """
+
+    exit_code = 2
 
 
 class AgentError(Exception):
@@ -308,6 +320,7 @@ def _resolve_target(
     cookie: tuple[str, ...],
     session_token: str | None,
     start_server: bool,
+    port: int | None = None,
 ) -> RunTarget:
     headers = build_headers(header, cookie, session_token)
 
@@ -331,6 +344,7 @@ def _resolve_target(
         runtime=runtime,
         checkpointer=checkpointer,
         keep_running=start_server,
+        port=port,
     )
     if not any(k.lower() == "authorization" for k in headers):
         api_key = _local_api_key(project_root)
@@ -617,7 +631,8 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     "--session-token",
     default=None,
     hidden=True,
-    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+    callback=deprecated_session_token,
+    help="Deprecated alias of --header 'X-Session-Token: ...'.",
 )
 @click.option(
     "--file",
@@ -648,6 +663,15 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     help="Stop the local background server and exit.",
 )
 @click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=None,
+    help=(
+        "Port for the local server this run starts (default: the first free one of "
+        "18080-18089, or GRAPH_AGENTS_CLI_RUN_PORT). Refused when the port is in use."
+    ),
+)
+@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -665,6 +689,7 @@ def cmd_run(
     session_token: str | None,
     files: tuple[str, ...],
     start_server: bool,
+    port: int | None,
     verbose: bool,
 ) -> None:
     """Run the agent with a single prompt (non-interactive).
@@ -677,7 +702,8 @@ def cmd_run(
     under langgraph-server) and shuts it down when it finishes; pass
     --start-server to keep it running. Later plain runs reuse a running
     server. Stop it with --stop-server. After 30 minutes idle, the next
-    request restarts it.
+    request restarts it. The server listens on the first free port of
+    18080-18089, or on --port / GRAPH_AGENTS_CLI_RUN_PORT when given.
 
     \b
     Use --url to query a deployed agent instead. --mode selects the protocol
@@ -690,79 +716,95 @@ def cmd_run(
     --thread-id continues a conversation; the footer of every run prints the
     thread id and the command to resume it. --file attaches UTF-8 text files
     as extra context.
+
+    \b
+    Exit codes:
+      0  the agent answered
+      1  the agent refused or reported an error (HTTP error, error event)
+      2  the agent could not be reached or went silent
+      3  configuration error (no project, port unavailable)
     """
     mode = mode.lower()
+    # The deprecated --session-token is an X-Session-Token header from here on.
+    header = fold_session_token(header, session_token)
+    session_token = None
     if url and start_server:
         click.secho(
             "Warning: --start-server has no effect when using --url.", fg="yellow", err=True
         )
+    if url and port is not None:
+        click.secho("Warning: --port has no effect when using --url.", fg="yellow", err=True)
 
-    prompt = compose_message(message, files)
-    if mode == "a2a":
-        _require_a2a_sdk()
-    target = _resolve_target(
-        url=url,
-        mode=mode,
-        header=header,
-        cookie=cookie,
-        session_token=session_token,
-        start_server=start_server,
-    )
-    if url:
-        click.echo(f"Querying remote agent: {url} (mode: {target.mode})")
+    # SIGTERM/SIGHUP unwind like Ctrl-C, so the server this run starts is always
+    # stopped and its pid file removed (an IDE stop button, a CI timeout, kill).
+    with terminate_like_interrupt():
+        prompt = compose_message(message, files)
+        if mode == "a2a":
+            _require_a2a_sdk()
+        target = _resolve_target(
+            url=url,
+            mode=mode,
+            header=header,
+            cookie=cookie,
+            session_token=session_token,
+            start_server=start_server,
+            port=port,
+        )
+        if url:
+            click.echo(f"Querying remote agent: {url} (mode: {target.mode})")
 
-    resume_flags = _build_resume_flags(url, target.mode, header, cookie, session_token)
-    # Only tear down a server this invocation started; a reused persistent
-    # server (e.g. from --start-server) is left running.
-    should_stop_server = not url and not start_server and target.started_server
-    keep_server = bool(url) or not should_stop_server
+        resume_flags = _build_resume_flags(url, target.mode, header, cookie, session_token)
+        # Only tear down a server this invocation started; a reused persistent
+        # server (e.g. from --start-server) is left running.
+        should_stop_server = not url and not start_server and target.started_server
+        keep_server = bool(url) or not should_stop_server
 
-    handler = _query_a2a if target.mode == "a2a" else _query_chat
-    try:
+        handler = _query_a2a if target.mode == "a2a" else _query_chat
         try:
-            outcome = handler(
-                target,
-                prompt,
-                thread_id=thread_id,
-                verbose=verbose,
-                display_message=message,
-            )
-        except AgentError as exc:
-            click.secho(f"[error: {exc.code}]: {exc.message}", fg="red")
-            raise click.exceptions.Exit(1) from exc
-        except ChatHTTPError as exc:
-            hint = _http_error_hint(exc, remote=bool(url), thread_id=thread_id)
-            raise click.ClickException(
-                f"Agent request failed (HTTP {exc.status_code}):\n  {exc.body}{hint}"
-            ) from exc
-        except httpx.ReadTimeout as exc:
-            # The server answered and then went quiet (a long tool call or a
-            # non-streaming model phase): it is neither unreachable nor wedged,
-            # so a reused/persistent server is left alone and the message
-            # says what happened. ReadTimeout is a TransportError: keep this first.
-            raise click.ClickException(_read_timeout_message(thread_id, resume_flags)) from exc
-        except httpx.TransportError as exc:
-            if not url:
-                # The local server is unreachable or wedged: stop it (even one we
-                # reused) so a later retry starts a fresh one.
-                should_stop_server = True
+            try:
+                outcome = handler(
+                    target,
+                    prompt,
+                    thread_id=thread_id,
+                    verbose=verbose,
+                    display_message=message,
+                )
+            except AgentError as exc:
+                click.secho(f"[error: {exc.code}]: {exc.message}", fg="red")
+                raise click.exceptions.Exit(1) from exc
+            except ChatHTTPError as exc:
+                hint = _http_error_hint(exc, remote=bool(url), thread_id=thread_id)
                 raise click.ClickException(
-                    f"Could not reach the local server: {exc}\n"
-                    "  It has been stopped; retry to start a fresh one."
+                    f"Agent request failed (HTTP {exc.status_code}):\n  {exc.body}{hint}"
                 ) from exc
-            raise click.ClickException(
-                f"Could not reach remote agent at: {url}\n"
-                f"  {exc}\n"
-                "  Check that the URL is correct and the service is running."
-            ) from exc
-    finally:
-        if should_stop_server:
-            # cwd is the project root here (set by _resolve_target).
-            stop_server(Path.cwd(), pid=target.server_pid)
+            except httpx.ReadTimeout as exc:
+                # The server answered and then went quiet (a long tool call or a
+                # non-streaming model phase): it is neither unreachable nor wedged,
+                # so a reused/persistent server is left alone and the message
+                # says what happened. ReadTimeout is a TransportError: keep this first.
+                raise _TransportFailure(_read_timeout_message(thread_id, resume_flags)) from exc
+            except httpx.TransportError as exc:
+                if not url:
+                    # The local server is unreachable or wedged: stop it (even one we
+                    # reused) so a later retry starts a fresh one.
+                    should_stop_server = True
+                    raise _TransportFailure(
+                        f"Could not reach the local server: {exc}\n"
+                        "  It has been stopped; retry to start a fresh one."
+                    ) from exc
+                raise _TransportFailure(
+                    f"Could not reach remote agent at: {url}\n"
+                    f"  {exc}\n"
+                    "  Check that the URL is correct and the service is running."
+                ) from exc
+        finally:
+            if should_stop_server:
+                # cwd is the project root here (set by _resolve_target).
+                stop_server(Path.cwd(), pid=target.server_pid)
 
-    _print_footer(
-        outcome,
-        resume_flags=resume_flags,
-        keep_server=keep_server,
-        checkpointer=target.checkpointer,
-    )
+        _print_footer(
+            outcome,
+            resume_flags=resume_flags,
+            keep_server=keep_server,
+            checkpointer=target.checkpointer,
+        )

@@ -54,10 +54,14 @@ def normalize_reason(reason: str) -> tuple[str, str]:
         kind, rest = "other", reason
     kind = kind.strip().lower() or "other"
     if kind == "error":
-        # "error: judge <metric>: ..." -> keep the judge name out of the pattern.
+        # "error: judge <metric>: ..." / "error: custom metric <metric>: ..." -> keep
+        # the metric name out of the pattern.
         sub_kind, sub_sep, sub_rest = rest.strip().partition(":")
         if sub_sep and sub_kind.lower().startswith("judge "):
             kind = "error/judge"
+            rest = sub_rest
+        elif sub_sep and sub_kind.lower().startswith("custom metric "):
+            kind = "error/custom"
             rest = sub_rest
     pattern = rest.strip().lower()
     pattern = _QUOTED.sub("<x>", pattern)
