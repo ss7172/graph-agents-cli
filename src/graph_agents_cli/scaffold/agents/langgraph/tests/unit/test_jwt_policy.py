@@ -429,6 +429,65 @@ async def test_an_unknown_kid_refetches_once_and_picks_up_a_rotated_key(jwks: Jw
     assert jwks.hits == 3
 
 
+async def test_concurrent_tokens_with_a_rotated_key_share_one_refetch(jwks: JwksServer) -> None:
+    """Every request carrying the new key id waits for the one refetch and uses its result."""
+    clock = FakeClock()
+    policy = _jwks_policy(jwks)
+    policy.jwks = JwksCache(jwks.url, 300, clock=clock)
+    await policy.authenticate(_request(_token(RSA_A)))
+    jwks.keys = [_jwk(RSA_A, "a"), _jwk(RSA_B, "b")]
+    clock.now += 31
+    token = _token(RSA_B, kid="b")
+    results = await asyncio.gather(
+        *(policy.authenticate(_request(token)) for _ in range(8)), return_exceptions=True
+    )
+    assert [getattr(r, "id", r) for r in results] == ["user-1"] * 8
+    assert jwks.hits == 2
+    # Random unknown key ids at once still cost the issuer at most one fetch.
+    clock.now += 31
+    results = await asyncio.gather(
+        *(policy.authenticate(_request(_token(RSA_B, kid=f"x{i}"))) for i in range(8)),
+        return_exceptions=True,
+    )
+    assert all(isinstance(r, HTTPException) and r.status_code == 401 for r in results)
+    assert jwks.hits == 3
+
+
+async def test_a_hanging_issuer_never_stalls_requests_the_cached_keys_can_verify() -> None:
+    """Stale while revalidate: expired keys keep serving while one bounded refresh runs."""
+    clock = FakeClock()
+    cache = JwksCache(
+        "https://issuer.test/jwks", 300, timeout_s=0.1, stale_grace_s=600, clock=clock
+    )
+    fetches = 0
+
+    async def fetch() -> list[dict[str, Any]]:
+        nonlocal fetches
+        fetches += 1
+        if fetches == 1:
+            return [_jwk(RSA_A, "a")]
+        await asyncio.sleep(3600)  # the issuer stops answering
+        return []
+
+    cache._fetch = fetch  # type: ignore[method-assign]
+    assert [k["kid"] for k in await cache.keys()] == ["a"]
+    clock.now += 301  # expired, within the grace period
+    started = time.monotonic()
+    for _ in range(20):
+        assert [k["kid"] for k in await cache.keys()] == ["a"]
+    assert time.monotonic() - started < 0.05  # none of them waited for the issuer
+    await asyncio.sleep(0)
+    assert fetches == 2  # one background refresh, not one per request
+    await cache.idle()  # it gives up at its deadline (2 x timeout_s)
+    assert [k["kid"] for k in await cache.keys()] == ["a"]
+    assert fetches == 2  # rate-limited: no new fetch yet, the cached keys still serve
+    clock.now += 600  # past the grace period: requests now wait for a (bounded) fetch
+    started = time.monotonic()
+    with pytest.raises(JwksUnavailable):
+        await cache.keys()
+    assert 0.15 < time.monotonic() - started < 2 and fetches == 3
+
+
 async def test_a_token_without_kid_needs_an_unambiguous_key(jwks: JwksServer) -> None:
     policy = _jwks_policy(jwks)
     assert (await policy.authenticate(_request(_token(RSA_A, kid=None)))).id == "user-1"
@@ -445,7 +504,9 @@ async def test_an_unreachable_jwks_serves_stale_keys_then_fails_closed(jwks: Jwk
     jwks.status = 500
     clock.now += 400  # cache expired, refresh fails: the last good keys still verify
     assert (await policy.authenticate(_request(_token(RSA_A)))).id == "user-1"
+    await policy.jwks.idle()  # the refresh ran in the background
     assert jwks.hits == 2
+    assert (await policy.authenticate(_request(_token(RSA_A)))).id == "user-1"
     clock.now += 600  # beyond the grace period: 503, never "no auth"
     with pytest.raises(HTTPException) as exc:
         await policy.authenticate(_request(_token(RSA_A)))
@@ -455,7 +516,7 @@ async def test_an_unreachable_jwks_serves_stale_keys_then_fails_closed(jwks: Jwk
     assert (await policy.authenticate(_request(_token(RSA_A)))).id == "user-1"
 
 
-async def test_a_stalled_fetch_has_a_deadline_and_a_cancelled_one_can_be_retried() -> None:
+async def test_a_stalled_fetch_has_a_deadline_and_a_waiter_leaving_does_not_cancel_it() -> None:
     async def stall() -> list[dict[str, Any]]:
         await asyncio.sleep(3600)
         return []
@@ -464,14 +525,23 @@ async def test_a_stalled_fetch_has_a_deadline_and_a_cancelled_one_can_be_retried
     cache._fetch = stall  # type: ignore[method-assign]
     with pytest.raises(JwksUnavailable):
         await cache.keys()  # gives up after 2 x timeout_s
-    retry = JwksCache("https://issuer.test/jwks", 300)
-    retry._fetch = stall  # type: ignore[method-assign]
-    pending = asyncio.ensure_future(retry.keys())
-    await asyncio.sleep(0.05)
-    pending.cancel()
+    shared = JwksCache("https://issuer.test/jwks", 300)
+    fetches = 0
+
+    async def slow() -> list[dict[str, Any]]:
+        nonlocal fetches
+        fetches += 1
+        await asyncio.sleep(0.1)
+        return [_jwk(RSA_A, "a")]
+
+    shared._fetch = slow  # type: ignore[method-assign]
+    leaving = asyncio.ensure_future(shared.keys())
+    await asyncio.sleep(0.02)
+    leaving.cancel()  # the client went away
     with pytest.raises(asyncio.CancelledError):
-        await pending
-    assert retry._may_attempt(time.monotonic())  # the client left; not rate-limited
+        await leaving
+    # The fetch carries on for the requests still waiting, which share it.
+    assert [k["kid"] for k in await shared.keys()] == ["a"] and fetches == 1
 
 
 @pytest.mark.parametrize(

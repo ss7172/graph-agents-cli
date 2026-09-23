@@ -212,6 +212,25 @@ def test_public_attributes_never_carry_credentials() -> None:
     assert "credentials" in principal.attributes  # the original is untouched
 
 
+def test_hashed_id_is_salted_with_principal_hash_salt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+    import hmac
+
+    principal = Principal(id="alice@example.com")
+    monkeypatch.delenv("PRINCIPAL_HASH_SALT", raising=False)
+    unsalted = principal.hashed_id()
+    assert unsalted == hashlib.sha256(b"alice@example.com").hexdigest()[:16]
+    monkeypatch.setenv("PRINCIPAL_HASH_SALT", "  ")  # blank = not set
+    assert principal.hashed_id() == unsalted
+    monkeypatch.setenv("PRINCIPAL_HASH_SALT", "pepper-1")
+    salted = principal.hashed_id()
+    expected = hmac.new(b"pepper-1", b"alice@example.com", hashlib.sha256).hexdigest()[:16]
+    assert salted == expected and salted != unsalted and len(salted) == 16
+    assert Principal(id="bob").hashed_id() != salted
+    monkeypatch.setenv("PRINCIPAL_HASH_SALT", "pepper-2")
+    assert principal.hashed_id() not in (salted, unsalted)
+
+
 def test_unknown_policy_name_is_an_error() -> None:
     with pytest.raises(RuntimeError, match="Unknown AUTH_POLICY"):
         build_policy("bogus")

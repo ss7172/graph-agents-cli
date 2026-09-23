@@ -42,6 +42,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -187,16 +188,38 @@ class ThreadStore:
         record, _created = await self.claim(thread_id, principal)
         return record
 
-    async def ensure(self, thread_id: str, principal: Principal) -> ThreadRecord:
+    async def ensure(
+        self,
+        thread_id: str,
+        principal: Principal,
+        *,
+        has_state: Callable[[str], Awaitable[bool]] | None = None,
+    ) -> ThreadRecord:
         """Return the thread, creating it for `principal` when it does not exist.
 
         This is the write path (`chat.send`): raises 403 when the thread exists
         and belongs to another principal, even for a read-across role. A
         continued thread's `updated_at` moves forward (retention counts idle time).
+
+        `has_state(thread_id)` tells whether the checkpointer holds state for
+        the id. An id with state but no owner row is never claimed (403): its
+        state belongs to whoever had it, not to the next caller. Rows are
+        removed only after their state, under the run lock, so such an id
+        should never exist; this is the guard if one does.
         """
-        record, created = await self.claim(thread_id, principal)
-        if created:
-            return record
+        record = await self.get(thread_id)
+        if record is None:
+            if has_state is not None and await has_state(thread_id):
+                logger.warning(
+                    "thread has state but no owner; refusing to give it a new owner",
+                    extra={"thread_id": thread_id},
+                )
+                raise HTTPException(
+                    status_code=403, detail="This thread belongs to another principal."
+                )
+            record, created = await self.claim(thread_id, principal)
+            if created:
+                return record
         assert_owner(principal, record)
         await self.touch(thread_id)
         return record

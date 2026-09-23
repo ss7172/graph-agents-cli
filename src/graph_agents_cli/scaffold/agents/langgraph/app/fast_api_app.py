@@ -23,11 +23,13 @@ Routes:
   * `GET /threads/{thread_id}/messages`: ordered messages, ownership enforced.
   * `DELETE /threads/{thread_id}`: the thread, its checkpoints and run records (owner
     only). Under langgraph-server this is the server's native route (owner-only
-    through the auth handler); retention removes the run records of deleted threads.
+    through the auth handler); once it succeeds, the app drops the thread's run
+    records (`ThreadDeleteHookMiddleware`).
   * `GET /health`: liveness, process only: `{"status", "runtime", "checkpointer"}`.
   * `GET /ready`: readiness: 200 when the database answers within 2 s, else
     503 `{"status": "not_ready"}`.
-  * `GET /metrics`: Prometheus text (`METRICS_ENABLED`, default true).
+  * `GET /metrics`: Prometheus text (`METRICS_ENABLED`, default true); with
+    `METRICS_TOKEN` set, only for `Authorization: Bearer <METRICS_TOKEN>`.
   * `GET /playground`: dev-only chat page (`APP_ENV=dev`).
   * `GET /openapi.json`, `GET /docs`: dev-only as well (`APP_ENV=dev`); off otherwise.
   * A2A: card at `/a2a/<agent_directory>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<agent_directory>`.
@@ -41,14 +43,19 @@ dev-only docs passes through the policy of `app_utils/auth.py`: the routes
 through the `require(action)` dependency, the A2A endpoints through the ASGI
 middleware below. Under langgraph-server the server's own meta routes
 (`/docs`, `/openapi.json`, `/info`, `/metrics`) come ahead of this app's
-routes unless they are disabled (the server image sets `disable_meta`).
+routes unless they are disabled (the server image sets `disable_meta`), and
+the server's native API gets its auth errors from `AuthErrorMiddleware`.
 
 Request limits: bodies over `MAX_REQUEST_BYTES` get 413 and `/chat` metadata
 outside `MAX_METADATA_KEYS` / `MAX_METADATA_VALUE_CHARS` gets 422 (see
 `app_utils/limits.py`). `CORS_ALLOW_ORIGINS` (comma list; empty = no CORS)
 enables CORS for those origins under fastapi; LangGraph Server reads the same
 variable itself. Unhandled errors answer 500 with an `error_id` that names the
-logged detail.
+logged detail (and the request's `X-Request-ID`); a 422 never fails on the
+NaN or Infinity Python's JSON parser lets through.
+
+Under the fastapi runtime logging is configured when this module is imported,
+so import-time warnings and uvicorn's startup lines follow `LOG_FORMAT` too.
 
 No ``from __future__ import annotations`` here: LangGraph Server loads this
 file as ``user_router_module`` without registering it in ``sys.modules``, and
@@ -57,13 +64,17 @@ pydantic cannot resolve string annotations for a module it cannot find (the
 generation fails at startup). Real annotations need no lookup.
 """
 
+import contextlib
 import logging
+import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -88,14 +99,22 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import pool_sizes
 from {{cookiecutter.agent_directory}}.app_utils.limits import (
     THREAD_ID_PATTERN,
+    SettingsError,
     check_metadata,
     check_settings,
 )
-from {{cookiecutter.agent_directory}}.app_utils.metrics import metrics_enabled, render
+from {{cookiecutter.agent_directory}}.app_utils.metrics import (
+    metrics_authorized,
+    metrics_enabled,
+    render,
+)
 from {{cookiecutter.agent_directory}}.app_utils.middleware import (
+    REQUEST_ID_HEADER,
+    AuthErrorMiddleware,
     BodySizeLimitMiddleware,
     RequestContextMiddleware,
     RunStreamingResponse,
+    ThreadDeleteHookMiddleware,
 )
 from {{cookiecutter.agent_directory}}.app_utils.model import model_limits
 from {{cookiecutter.agent_directory}}.app_utils.playground import PLAYGROUND_HTML
@@ -109,6 +128,15 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
 from {{cookiecutter.agent_directory}}.app_utils.threads import THREAD_BUSY, ThreadBusy
 
 logger = logging.getLogger(__name__)
+
+if detect_runtime() == FASTAPI:
+    # Now rather than in the lifespan: what is logged before it (the A2A
+    # card's APP_URL warning below, uvicorn's startup lines) follows
+    # LOG_FORMAT too. LangGraph Server configures logging itself. A bad
+    # LOG_LEVEL or LOG_FORMAT is left to the lifespan's settings check, which
+    # reports every bad setting at once.
+    with contextlib.suppress(SettingsError):
+        setup_logging()
 
 
 @asynccontextmanager
@@ -176,7 +204,8 @@ app = FastAPI(
     redoc_url=None,
 )
 # Starlette runs the last-added middleware first: request context, then the
-# body cap, then CORS (answers preflights before auth), then the A2A policy.
+# body cap, then (langgraph-server) the native API's auth errors and thread
+# deletes, then CORS (answers preflights before auth), then the A2A policy.
 app.add_middleware(A2APolicyMiddleware, prefix=A2A_RPC_PATH)
 if detect_runtime() == FASTAPI and cors_origins():
     _origins = cors_origins()
@@ -189,6 +218,9 @@ if detect_runtime() == FASTAPI and cors_origins():
         allow_headers=["authorization", "content-type", "x-request-id", *forward_header_names()],
         expose_headers=["x-request-id"],
     )
+if detect_runtime() != FASTAPI:
+    app.add_middleware(ThreadDeleteHookMiddleware, on_deleted=RUNTIME.forget_thread_runs)
+    app.add_middleware(AuthErrorMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 add_a2a_routes(app)
@@ -215,7 +247,36 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
         status, detail = 503, f"Database unavailable. Reference: {error_id}."
     else:
         status, detail = 500, f"Internal server error. Reference: {error_id}."
-    return JSONResponse(status_code=status, content={"detail": detail, "error_id": error_id})
+    # This handler answers from outside RequestContextMiddleware, which adds
+    # the header to every other response; it left the request id in the state.
+    request_id = getattr(request.state, "request_id", None)
+    headers = {REQUEST_ID_HEADER: request_id} if isinstance(request_id, str) else None
+    return JSONResponse(
+        status_code=status, content={"detail": detail, "error_id": error_id}, headers=headers
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    """`value` with every NaN or infinite float spelled as a string (JSON has neither)."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's 422, made safe to encode.
+
+    Python's JSON parser accepts NaN and Infinity; the default handler echoes
+    them back in `input` and then fails to encode them (a 500).
+    """
+    return JSONResponse(
+        status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))}
+    )
 
 
 class ChatBody(BaseModel):
@@ -259,7 +320,8 @@ async def chat(
         forward_headers=_forward_headers(request),
     )
     thread_id = await RUNTIME.resolve_thread(principal, req)
-    lease = await RUNTIME.acquire_thread(thread_id)  # ThreadBusy -> 409 before streaming
+    # ThreadBusy -> 409 before streaming; the owner is checked again under the lock.
+    lease = await RUNTIME.acquire_thread(thread_id, principal)
 
     async def events() -> AsyncIterator[str]:
         async with aclosing(RUNTIME.stream(principal, req, thread_id, lease=lease)) as stream:
@@ -287,9 +349,15 @@ async def ready() -> JSONResponse:
 
 
 @app.get("/metrics", include_in_schema=False)
-async def prometheus_metrics() -> Response:
+async def prometheus_metrics(request: Request) -> Response:
     if not metrics_enabled():
         raise HTTPException(status_code=404, detail="Not found")
+    if not metrics_authorized(request.headers.get("authorization")):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid metrics token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     payload, content_type = render()
     return Response(content=payload, media_type=content_type)
 
@@ -345,4 +413,5 @@ if __name__ == "__main__":
         app,
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "8000")),
+        log_config=None,  # keep the logging configured above (LOG_FORMAT)
     )

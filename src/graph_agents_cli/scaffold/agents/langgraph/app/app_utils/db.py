@@ -276,15 +276,33 @@ class RunStore:
         )
         return [_run_from_row(r) for r in rows]
 
-    async def thread_ids_before(self, cutoff_iso: str, *, limit: int = 500) -> list[str]:
-        """Threads that have a run record older than `cutoff_iso`."""
+    async def thread_ids_before(
+        self, cutoff_iso: str, *, after: str | None = None, limit: int = 500
+    ) -> list[str]:
+        """Threads that have a run record older than `cutoff_iso`, in id order.
+
+        One page: ids greater than `after` (pass the last id of the previous
+        page to get the next one).
+        """
         if not self.db.is_postgres:
-            ids = {r.thread_id for r in self._memory.values() if r.created_at < cutoff_iso}
+            ids = {
+                r.thread_id
+                for r in self._memory.values()
+                if r.created_at < cutoff_iso and (after is None or r.thread_id > after)
+            }
             return sorted(ids)[:limit]
-        rows = await self.db.fetchall(
-            f"SELECT DISTINCT thread_id FROM {self.table} WHERE created_at < %s LIMIT %s",
-            (cutoff_iso, limit),
-        )
+        if after is None:
+            rows = await self.db.fetchall(
+                f"SELECT DISTINCT thread_id FROM {self.table} WHERE created_at < %s "
+                "ORDER BY thread_id LIMIT %s",
+                (cutoff_iso, limit),
+            )
+        else:
+            rows = await self.db.fetchall(
+                f"SELECT DISTINCT thread_id FROM {self.table} WHERE created_at < %s "
+                "AND thread_id > %s ORDER BY thread_id LIMIT %s",
+                (cutoff_iso, after, limit),
+            )
         return [r["thread_id"] for r in rows]
 
     async def delete_for_thread(self, thread_id: str) -> None:

@@ -71,6 +71,8 @@ LIMIT_VARS = (
     "METRICS_ENABLED",
     "CORS_ALLOW_ORIGINS",
     "AUTH_READ_ACROSS_ROLES",
+    "METRICS_TOKEN",
+    "PRINCIPAL_HASH_SALT",
 )
 
 
@@ -175,6 +177,8 @@ async def test_run_timeout_cancels_the_run_and_frees_the_thread(
     events = parse_sse((await chat(client, "hello", thread_id)).text)
     assert [e for e, _ in events] == ["message.start", "message.delta", "error"]
     assert events[-1][1]["code"] == "timeout" and "0.3 s" in events[-1][1]["message"]
+    timeout = events[-1][1]
+    assert timeout["error_id"] in timeout["message"] and timeout["run_id"] == events[0][1]["run_id"]
     assert RUNTIME.runs is not None
     record = await RUNTIME.runs.get(events[0][1]["run_id"])
     assert record is not None and record.status == "timeout"
@@ -339,6 +343,28 @@ async def test_a_database_failure_is_a_generic_503(
     assert r.json()["detail"].startswith("Database unavailable. Reference: ")
 
 
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+async def test_non_finite_numbers_get_422_not_500(client: httpx.AsyncClient, value: str) -> None:
+    """Python's JSON parser accepts NaN/Infinity; the 422 that echoes them must stay valid JSON."""
+    for body in (
+        '{"message": "hi", "metadata": {"k": VALUE}}',
+        '{"message": VALUE}',
+        '{"message": "hi", "metadata": {"k": [VALUE]}}',
+    ):
+        r = await client.post(
+            "/chat",
+            content=body.replace("VALUE", value).encode(),
+            headers={**AUTH, "content-type": "application/json"},
+        )
+        assert r.status_code == 422, r.text
+
+        def refuse(constant: str) -> None:
+            raise AssertionError(f"non-standard JSON constant {constant} in the response")
+
+        detail = json.loads(r.text, parse_constant=refuse)["detail"]
+        assert detail and all({"type", "loc", "msg"} <= set(error) for error in detail)
+
+
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -467,6 +493,117 @@ async def test_only_the_owner_deletes_and_never_during_a_run(
     assert (await client.delete(f"/threads/{thread_id}", headers=AUTH)).status_code == 204
 
 
+async def test_a_delete_racing_a_chat_leaves_no_ownerless_state(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A DELETE that lands after /chat checked ownership, before it took the run lock.
+
+    The turn must not be written to a thread without an owner row, where another
+    principal could claim the id and read it.
+    """
+    thread_id = str(uuid.uuid4())
+    await chat(client, "first", thread_id)
+    resolve = RUNTIME.resolve_thread
+
+    async def resolve_then_delete(principal: Principal, req: ChatRequest) -> str:
+        resolved = await resolve(principal, req)
+        if req.message == "secret second turn":
+            await RUNTIME.delete_thread(principal, resolved)  # the racing DELETE
+        return resolved
+
+    monkeypatch.setattr(RUNTIME, "resolve_thread", resolve_then_delete)
+    events = parse_sse((await chat(client, "secret second turn", thread_id)).text)
+    assert events[-1][0] == "message.end"
+    assert RUNTIME.threads is not None
+    record = await RUNTIME.threads.get(thread_id)
+    # The turn started the thread afresh under its sender, never ownerless.
+    assert record is not None and record.principal_id == "shared"
+    bob = Principal(id="bob")
+    with pytest.raises(Exception) as exc:
+        await RUNTIME.resolve_thread(bob, ChatRequest(message="mine now", thread_id=thread_id))
+    assert getattr(exc.value, "status_code", None) == 403
+
+
+async def test_a_delete_rechecks_the_owner_under_the_lock(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread_id = str(uuid.uuid4())
+    await chat(client, "hello", thread_id)
+    acquire = RUNTIME.acquire_thread
+    assert RUNTIME.threads is not None
+
+    async def acquire_after_a_reclaim(tid: str, principal: Principal | None = None) -> Any:
+        # Between the owner check and the lock, the thread goes and bob claims the id.
+        await RUNTIME._delete_thread_data(tid)
+        await RUNTIME.threads.claim(tid, Principal(id="bob"))
+        return await acquire(tid, principal)
+
+    monkeypatch.setattr(RUNTIME, "acquire_thread", acquire_after_a_reclaim)
+    assert (await client.delete(f"/threads/{thread_id}", headers=AUTH)).status_code == 403
+    record = await RUNTIME.threads.get(thread_id)
+    assert record is not None and record.principal_id == "bob"
+    assert thread_id not in RUNTIME.locks.held
+
+
+async def test_a2a_style_runs_recheck_ownership_under_the_lock(client: httpx.AsyncClient) -> None:
+    """`stream()` taking the lock itself re-checks the owner too (the A2A path)."""
+    thread_id = str(uuid.uuid4())
+    await chat(client, "first", thread_id)
+    req = ChatRequest(message="second", thread_id=thread_id)
+    resolved = await RUNTIME.resolve_thread(SHARED, req)
+    assert RUNTIME.threads is not None
+    await RUNTIME.delete_thread(SHARED, resolved)
+    # Someone else claims the id in between: the run is refused, nothing is written.
+    await RUNTIME.threads.claim(thread_id, Principal(id="bob"))
+    events = [e async for e in RUNTIME.stream(SHARED, req, resolved)]
+    assert events == [
+        ("error", {"code": "forbidden", "message": "This thread belongs to another principal."})
+    ]
+    state = await agent_module.graph.aget_state({"configurable": {"thread_id": thread_id}})
+    assert not state.values
+    assert thread_id not in RUNTIME.locks.held
+
+
+async def test_a_thread_id_with_state_but_no_owner_cannot_be_claimed(
+    client: httpx.AsyncClient,
+) -> None:
+    """Checkpoints without an owner row (e.g. left by an older version) never pass to a new owner."""
+    thread_id = str(uuid.uuid4())
+    await agent_module.graph.ainvoke(
+        {"messages": [{"role": "user", "content": "orphaned secret"}]},
+        {"configurable": {"thread_id": thread_id}},
+    )
+    r = await chat(client, "let me read that", thread_id)
+    assert r.status_code == 403
+    assert RUNTIME.threads is not None and await RUNTIME.threads.get(thread_id) is None
+    assert (await client.get(f"/threads/{thread_id}/messages", headers=AUTH)).status_code == 404
+
+
+async def test_retention_rechecks_idleness_under_the_lock(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thread resumed after the purge listed it (and before it was locked) is kept."""
+    thread_id = str(uuid.uuid4())
+    await chat(client, "hello", thread_id)
+    assert RUNTIME.threads is not None
+    RUNTIME.threads._memory[thread_id].updated_at = (
+        datetime.now(tz=UTC) - timedelta(days=40)
+    ).isoformat()
+    idle_before = RUNTIME.threads.idle_before
+
+    async def list_then_resume(cutoff_iso: str, *, limit: int = 500) -> list[str]:
+        candidates = await idle_before(cutoff_iso, limit=limit)
+        assert thread_id in candidates
+        await chat(client, "resumed", thread_id)  # the owner comes back mid-round
+        return candidates
+
+    monkeypatch.setattr(RUNTIME.threads, "idle_before", list_then_resume)
+    assert await RUNTIME.purge_expired(30) == 0
+    assert await RUNTIME.threads.get(thread_id) is not None
+    messages = (await client.get(f"/threads/{thread_id}/messages", headers=AUTH)).json()
+    assert [m["content"] for m in messages if m["role"] == "user"] == ["hello", "resumed"]
+
+
 async def test_retention_purges_idle_threads_only(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -501,10 +638,14 @@ async def test_unhandled_errors_answer_a_generic_500_with_an_error_id(
         raise RuntimeError("connection to 10.0.0.7:5432 refused")
 
     monkeypatch.setattr(RUNTIME, "list_threads", boom)
-    r = await client.get("/threads", headers=AUTH)
+    r = await client.get("/threads", headers={**AUTH, "X-Request-ID": "req-500"})
     assert r.status_code == 500
     body = r.json()
     assert "10.0.0.7" not in r.text and body["error_id"] in body["detail"]
+    # The 500 comes from outside the request-id middleware; it still names the request.
+    assert r.headers["x-request-id"] == "req-500"
+    r = await client.get("/threads", headers=AUTH)
+    assert r.status_code == 500 and len(r.headers["x-request-id"]) == 32
 
 
 async def test_ready_reflects_the_database(
@@ -538,6 +679,28 @@ async def test_metrics_count_requests_and_runs(
     assert "agent_active_runs" in text and "agent_tokens_total" in text
     monkeypatch.setenv("METRICS_ENABLED", "false")
     assert (await client.get("/metrics")).status_code == 404
+
+
+async def test_metrics_token_protects_metrics_only(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("METRICS_TOKEN", "scrape-secret-0123456789")
+    for headers in (
+        {},
+        {"Authorization": "Bearer wrong"},
+        {"Authorization": "Basic scrape-secret-0123456789"},
+        AUTH,  # the API key is not the metrics token
+    ):
+        r = await client.get("/metrics", headers=headers)
+        assert r.status_code == 401 and r.headers["www-authenticate"] == "Bearer"
+        assert "agent_runs_total" not in r.text
+    r = await client.get("/metrics", headers={"Authorization": "Bearer scrape-secret-0123456789"})
+    assert r.status_code == 200 and "http_requests_total" in r.text
+    # Probes stay open.
+    assert (await client.get("/health")).status_code == 200
+    assert (await client.get("/ready")).status_code == 200
+    monkeypatch.setenv("METRICS_TOKEN", "  ")  # blank = not set
+    assert (await client.get("/metrics")).status_code == 200
 
 
 async def test_request_ids_are_echoed_or_generated(client: httpx.AsyncClient) -> None:

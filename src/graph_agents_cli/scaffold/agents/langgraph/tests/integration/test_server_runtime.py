@@ -292,10 +292,13 @@ async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_event
         "attributes": {"tenant": "t1"},
     }
     assert "secret-token-A" not in repr(stream)
+    # `principal_id` overrides the raw owner id the server merges in from the
+    # thread metadata (and copies into traces and checkpoint metadata).
     assert stream["metadata"] == {
         "thread_id": THREAD,
         "run_id": end["run_id"],
         "principal_hash": OWNER.hashed_id(),
+        "principal_id": OWNER.hashed_id(),
     }
     # Only the configured credential headers reach the SDK client.
     assert sdk.headers[0] == {"authorization": "Bearer k", "cookie": "sid=1"}
@@ -589,6 +592,95 @@ async def test_retention_purges_idle_server_threads(server) -> None:
     assert await rt.runs.get("r-gone") is None and await rt.runs.get("r-fresh") is not None
 
 
+async def test_run_metadata_hides_the_raw_owner_id_the_server_merges_in(
+    server, monkeypatch
+) -> None:
+    """What the server would store: thread metadata merged under the run's own metadata."""
+    rt, sdk = server
+    monkeypatch.setenv("PRINCIPAL_HASH_SALT", "pepper")
+    email = Principal(id="alice@example.com")
+    thread = "99999999-9999-9999-9999-999999999999"
+    await rt.resolve_thread(email, ChatRequest(message="x", thread_id=thread))
+    await _events(rt, email, ChatRequest(message="x", thread_id=thread), thread)
+    thread_metadata = sdk.threads_by_id[thread]["metadata"]
+    assert thread_metadata["principal_id"] == "alice@example.com"  # the ownership stamp
+    merged = {**thread_metadata, **sdk.streams[-1]["metadata"]}
+    assert "alice@example.com" not in repr(merged)
+    assert merged["principal_id"] == email.hashed_id() == merged["principal_hash"]
+
+
+async def test_retention_rechecks_idleness_under_the_lock_on_the_server(server) -> None:
+    """A server thread continued after the purge listed it is kept."""
+    rt, sdk = server
+    idle_threads = rt._server_idle_threads
+
+    async def list_then_resume(cutoff: Any, batch: int) -> list[str]:
+        candidates = await idle_threads(cutoff, batch)
+        assert THREAD in candidates
+        sdk.threads_by_id[THREAD]["updated_at"] = "2999-01-01T00:00:00+00:00"
+        return candidates
+
+    rt._server_idle_threads = list_then_resume  # type: ignore[method-assign]
+    assert await rt.purge_expired(30) == 0
+    assert sdk.deleted == [] and THREAD in sdk.threads_by_id
+
+
+async def test_orphaned_run_records_are_swept_page_by_page(server) -> None:
+    """Old run records of live threads never hide those of deleted ones on later pages."""
+    rt, sdk = server
+    old = "2000-01-01T00:00:00+00:00"
+    live = [f"00000000-0000-0000-0000-00000000000{i}" for i in range(5)]
+    for thread_id in live:
+        sdk.threads_by_id[thread_id] = {"thread_id": thread_id, "metadata": {"principal_id": "A"}}
+    gone = "ffffffff-ffff-ffff-ffff-ffffffffffff"  # sorts after every live id
+    for n, thread_id in enumerate([*live, gone]):
+        await rt.runs.record(
+            RunRecord(
+                run_id=f"r{n}",
+                thread_id=thread_id,
+                principal_hash="h",
+                model="m",
+                status="ok",
+                created_at=old,
+            )
+        )
+    assert await rt.sweep_orphaned_runs(30, batch=2) == 1
+    assert await rt.runs.list_for_thread(gone) == []
+    assert all([await rt.runs.list_for_thread(t) for t in live])
+    assert await rt.sweep_orphaned_runs(0) == 0  # RETENTION_DAYS=0 keeps everything
+
+
+async def test_the_native_thread_delete_drops_the_run_records(server) -> None:
+    """The server's own DELETE /threads/{id} (not the app's) removes the app's run records."""
+    rt, _sdk = server
+    from {{cookiecutter.agent_directory}}.app_utils.middleware import ThreadDeleteHookMiddleware
+
+    for run_id, thread_id in (("r1", THREAD), ("r2", OTHER)):
+        await rt.runs.record(
+            RunRecord(
+                run_id=run_id, thread_id=thread_id, principal_hash="h", model="m", status="ok"
+            )
+        )
+    answers = {THREAD: 204, OTHER: 404}
+
+    async def native_api(scope: Any, receive: Any, send: Any) -> None:
+        status = answers.get(scope["path"].rsplit("/", 1)[-1].lower(), 404)
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    app = ThreadDeleteHookMiddleware(native_api, on_deleted=rt.forget_thread_runs)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://server"
+    ) as client:
+        assert (await client.get(f"/threads/{THREAD}")).status_code == 204  # not a delete
+        assert await rt.runs.get("r1") is not None
+        assert (await client.delete(f"/threads/{OTHER}")).status_code == 404  # refused
+        assert await rt.runs.get("r2") is not None
+        # Any spelling of the id the server accepts names the canonical records.
+        assert (await client.delete(f"/threads/{THREAD.upper()}")).status_code == 204
+    assert await rt.runs.get("r1") is None and await rt.runs.get("r2") is not None
+
+
 def test_the_server_runtime_leaves_thread_deletion_to_the_native_api(monkeypatch) -> None:
     """A DELETE /threads/{id} route of the app would shadow the server's own (and its loopback)."""
     import importlib
@@ -599,11 +691,19 @@ def test_the_server_runtime_leaves_thread_deletion_to_the_native_api(monkeypatch
         return {(r.path, m) for r in app.routes for m in (getattr(r, "methods", None) or ())}
 
     assert ("/threads/{thread_id}", "DELETE") in routes(module.app)
+    assert not {"AuthErrorMiddleware", "ThreadDeleteHookMiddleware"} & {
+        m.cls.__name__ for m in module.app.user_middleware
+    }
     monkeypatch.setenv("RUNTIME", "langgraph-server")
     try:
-        server_routes = routes(importlib.reload(module).app)
+        server_app = importlib.reload(module).app
+        server_routes = routes(server_app)
         assert ("/threads/{thread_id}", "DELETE") not in server_routes
         assert {("/threads", "GET"), ("/ready", "GET"), ("/chat", "POST")} <= server_routes
+        # The native API's auth errors and thread deletes pass through the app.
+        assert {"AuthErrorMiddleware", "ThreadDeleteHookMiddleware"} <= {
+            m.cls.__name__ for m in server_app.user_middleware
+        }
     finally:
         monkeypatch.setenv("RUNTIME", "fastapi")
         importlib.reload(module)

@@ -30,7 +30,10 @@ Both runtimes apply the same rules:
   root path, so the server's own `@auth.on` filters never see these calls; the
   check has to live here.
 * One run per thread: a second run while one is in progress gets
-  `ThreadBusy` (HTTP 409 `{"code": "thread_busy"}` on `/chat`).
+  `ThreadBusy` (HTTP 409 `{"code": "thread_busy"}` on `/chat`). Deleting a
+  thread (and the retention purge) takes the same lock, and a run checks the
+  thread's owner again once it holds it, so a turn is never written to a
+  thread that has no owner (fastapi).
 * Guardrails: `RUN_TIMEOUT_S` cancels a run (status `timeout`),
   `RECURSION_LIMIT` caps graph steps, a client that disconnects cancels its
   run (status `cancelled`), and `SSE_HEARTBEAT_S` keeps idle streams alive.
@@ -40,7 +43,10 @@ Both runtimes apply the same rules:
   only, in traces under `client_metadata` (never over the server-set
   `thread_id`, `run_id`, `principal_hash`); it is not written into checkpoints.
 * Run records are durable in Postgres when the runtime has one (see `db.py`),
-  and `RETENTION_DAYS` purges threads idle longer than that.
+  and `RETENTION_DAYS` purges threads idle longer than that. Under
+  langgraph-server the server's own `DELETE /threads/{id}` removes the
+  thread's run records too (`forget_thread_runs`, called by
+  `middleware.ThreadDeleteHookMiddleware`).
 """
 
 from __future__ import annotations
@@ -119,6 +125,7 @@ CODE_RUN_FAILED = "run_failed"
 CODE_TIMEOUT = "timeout"
 CODE_RECURSION = "recursion_limit"
 CODE_UNAVAILABLE = "unavailable"
+CODE_FORBIDDEN = "forbidden"
 
 # Request headers passed on to the LangGraph Server under langgraph-server.
 # They matter when LANGGRAPH_SERVER_URL points at a real HTTP endpoint (its
@@ -548,24 +555,61 @@ class ChatRuntime:
             req.thread_id = validate_thread_id(req.thread_id, self.runtime)
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_resolve_thread(principal, req)
-        assert self.threads is not None
         thread_id = req.thread_id or str(uuid.uuid4())
+        await self._ensure_owner(principal, thread_id)
+        return thread_id
+
+    async def _ensure_owner(self, principal: Principal, thread_id: str) -> None:
+        """fastapi: claim the thread for `principal` when it has no owner, else check the owner.
+
+        403 for someone else's thread, and for a thread id whose checkpoints
+        have no owner row (none should exist; this keeps any that do from
+        passing to whoever claims the id next).
+        """
+        assert self.threads is not None
         try:
-            await self.threads.ensure(thread_id, principal)
+            await self.threads.ensure(thread_id, principal, has_state=self._has_checkpoints)
         except HTTPException:
             raise
         except Exception as exc:  # the database: a 503 naming an error id, not its text
             raise unavailable("Database", exc) from exc
-        return thread_id
 
-    async def acquire_thread(self, thread_id: str) -> ThreadLease:
-        """The thread's run lock; `ThreadBusy` when a run is in progress on it."""
+    async def _has_checkpoints(self, thread_id: str) -> bool:
+        from {{cookiecutter.agent_directory}}.agent import graph
+
+        saver = graph.checkpointer
+        if saver is None or not hasattr(saver, "aget_tuple"):
+            return False
+        return await saver.aget_tuple({"configurable": {"thread_id": thread_id}}) is not None
+
+    async def acquire_thread(
+        self, thread_id: str, principal: Principal | None = None
+    ) -> ThreadLease:
+        """The thread's run lock; `ThreadBusy` when a run is in progress on it.
+
+        With `principal` (the sender of the run about to start), the owner is
+        checked again once the lock is held (fastapi): a DELETE can take the
+        lock, and remove the thread, between `resolve_thread` and this call.
+        The run then starts the thread afresh for its sender, or gets 403 when
+        another principal claimed the id meanwhile, instead of writing a turn
+        that no owner row covers. Deletion and retention hold the same lock,
+        so the owner cannot change while the run holds it. (Under
+        langgraph-server the server keeps thread and state together: a run on
+        a deleted thread fails there with 404.)
+        """
         try:
-            return await self.locks.acquire(thread_id)
+            lease = await self.locks.acquire(thread_id)
         except ThreadBusy:
             raise
         except Exception as exc:
             raise unavailable("Database", exc) from exc
+        if principal is not None and self.runtime == FASTAPI:
+            try:
+                await self._ensure_owner(principal, thread_id)
+            except BaseException:
+                await lease.release()
+                raise
+        return lease
 
     async def list_threads(
         self,
@@ -591,24 +635,34 @@ class ChatRuntime:
         """Delete a thread with its checkpoints and run records: the owner only.
 
         404 for an unknown thread, 403 for someone else's, `ThreadBusy` while
-        a run is in progress on it.
+        a run is in progress on it. The owner is checked before the run lock
+        (a stranger never takes it) and again once it is held: the thread may
+        have been deleted, and its id claimed by someone else, in between.
         """
         thread_id = validate_thread_id(thread_id, self.runtime)
-        if self.runtime == LANGGRAPH_SERVER:
-            client = self._sdk_client(forward_headers or {})
-            record = await self._server_thread_record(client, thread_id)
-        else:
-            assert self.threads is not None
-            record = await self.threads.get(thread_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Unknown thread.")
-        assert_owner(principal, record)
+        headers = forward_headers or {}
+        self._assert_deletable(principal, await self._thread_record(thread_id, headers))
         lease = await self.acquire_thread(thread_id)
         try:
-            await self._delete_thread_data(thread_id, forward_headers or {})
+            self._assert_deletable(principal, await self._thread_record(thread_id, headers))
+            await self._delete_thread_data(thread_id, headers)
         finally:
             await lease.release()
         logger.info("thread deleted", extra={"thread_id": thread_id})
+
+    async def _thread_record(
+        self, thread_id: str, forward_headers: Mapping[str, str]
+    ) -> ThreadRecord | None:
+        if self.runtime == LANGGRAPH_SERVER:
+            return await self._server_thread_record(self._sdk_client(forward_headers), thread_id)
+        assert self.threads is not None
+        return await self.threads.get(thread_id)
+
+    @staticmethod
+    def _assert_deletable(principal: Principal, record: ThreadRecord | None) -> None:
+        if record is None:
+            raise HTTPException(status_code=404, detail="Unknown thread.")
+        assert_owner(principal, record)
 
     async def _delete_thread_data(
         self, thread_id: str, forward_headers: Mapping[str, str] | None = None
@@ -630,6 +684,17 @@ class ChatRuntime:
         if self.threads is not None and self.runtime == FASTAPI:
             await self.threads.delete(thread_id)
 
+    async def forget_thread_runs(self, thread_id: str) -> None:
+        """Drop a deleted thread's run records (after the server's own DELETE succeeded)."""
+        if self.runs is None:
+            return
+        try:
+            thread_id = str(uuid.UUID(thread_id))  # run records use the canonical form
+        except ValueError:
+            return
+        await self.runs.delete_for_thread(thread_id)
+        logger.info("run records of a deleted thread removed", extra={"thread_id": thread_id})
+
     # -- retention -----------------------------------------------------------
 
     async def _retention_loop(self, days: int) -> None:
@@ -638,23 +703,33 @@ class ChatRuntime:
             try:
                 purged = 0
                 for _ in range(RETENTION_MAX_BATCHES):  # a backlog drains over a few rounds
-                    removed = await self.purge_expired(days, batch=RETENTION_BATCH)
+                    removed = await self.purge_expired(
+                        days, batch=RETENTION_BATCH, sweep_run_records=False
+                    )
                     purged += removed
                     if removed < RETENTION_BATCH:
                         break
                 if purged:
                     logger.info("retention purge removed %d idle threads", purged)
+                swept = await self.sweep_orphaned_runs(days, batch=RETENTION_BATCH)
+                if swept:
+                    logger.info("retention removed the run records of %d deleted threads", swept)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("retention purge failed; retrying in an hour")
             await asyncio.sleep(RETENTION_INTERVAL_S)
 
-    async def purge_expired(self, days: int | None = None, *, batch: int = 500) -> int:
+    async def purge_expired(
+        self, days: int | None = None, *, batch: int = 500, sweep_run_records: bool = True
+    ) -> int:
         """Delete threads (checkpoints, run records) idle for more than `days`; best effort.
 
-        A thread with a run in progress is skipped this round. Returns how
-        many threads were removed.
+        A thread with a run in progress is skipped this round, and so is one
+        continued since it was listed: idleness is checked again under the
+        thread's run lock, which a new turn needs too. Returns how many
+        threads were removed. `sweep_run_records` also runs
+        `sweep_orphaned_runs` (the hourly loop runs it once per round instead).
         """
         days = retention_days() if days is None else days
         if days <= 0:
@@ -672,18 +747,62 @@ class ChatRuntime:
             except ThreadBusy:
                 continue
             try:
+                if not await self._still_idle(thread_id, cutoff):
+                    continue
                 await self._delete_thread_data(thread_id)
                 purged += 1
             finally:
                 await lease.release()
-        if self.runtime == LANGGRAPH_SERVER and self.runs is not None:
-            # Threads deleted through the server's native API leave their run
-            # records behind: drop those once they are past the cutoff too.
-            client = self._sdk_client({})
-            for thread_id in await self.runs.thread_ids_before(cutoff.isoformat(), limit=batch):
+        if sweep_run_records:
+            await self.sweep_orphaned_runs(days, batch=batch)
+        return purged
+
+    async def _still_idle(self, thread_id: str, cutoff: datetime) -> bool:
+        """True when the thread still exists and has not been continued since `cutoff`."""
+        if self.runtime == LANGGRAPH_SERVER:
+            try:
+                thread = await self._sdk_client({}).threads.get(thread_id)
+            except Exception as exc:
+                if http_status(exc) == 404:
+                    return False
+                raise
+            if not isinstance(thread, Mapping) or thread.get("status") == "busy":
+                return False
+            updated = _parse_time(thread.get("updated_at"))
+        else:
+            assert self.threads is not None
+            record = await self.threads.get(thread_id)
+            if record is None:
+                return False
+            updated = _parse_time(record.updated_at or record.created_at)
+        return updated is not None and updated < cutoff
+
+    async def sweep_orphaned_runs(self, days: int | None = None, *, batch: int = 500) -> int:
+        """langgraph-server: drop run records, older than `days`, of threads the server no longer has.
+
+        The server's own `DELETE /threads/{id}` removes a thread's run records
+        (`forget_thread_runs`); this catches the rest (for example threads
+        deleted while this app could not reach its database). Paged by
+        thread id, so later pages are reached however many live threads have
+        old run records. Returns how many threads' records were removed.
+        """
+        days = retention_days() if days is None else days
+        if days <= 0 or self.runtime != LANGGRAPH_SERVER or self.runs is None:
+            return 0
+        cutoff_iso = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+        client = self._sdk_client({})
+        removed = 0
+        after: str | None = None
+        for _ in range(RETENTION_MAX_BATCHES):
+            thread_ids = await self.runs.thread_ids_before(cutoff_iso, after=after, limit=batch)
+            for thread_id in thread_ids:
                 if await self._server_thread_record(client, thread_id) is None:
                     await self.runs.delete_for_thread(thread_id)
-        return purged
+                    removed += 1
+            if len(thread_ids) < batch:
+                break
+            after = thread_ids[-1]
+        return removed
 
     # -- streaming ---------------------------------------------------------
 
@@ -703,12 +822,13 @@ class ChatRuntime:
         """
         if lease is None:
             try:
-                lease = await self.acquire_thread(thread_id)
+                lease = await self.acquire_thread(thread_id, principal)
             except ThreadBusy:
                 yield EVENT_ERROR, thread_busy_error()
                 return
-            except HTTPException as exc:  # the database behind the lock is down
-                yield EVENT_ERROR, {"code": CODE_UNAVAILABLE, "message": str(exc.detail)}
+            except HTTPException as exc:  # not the owner any more, or the database is down
+                code = CODE_FORBIDDEN if exc.status_code == 403 else CODE_UNAVAILABLE
+                yield EVENT_ERROR, {"code": code, "message": str(exc.detail)}
                 return
         run_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
@@ -748,12 +868,15 @@ class ChatRuntime:
                     yield event
         except RunTimeout:
             status = STATUS_TIMEOUT
+            error_id = new_error_id()
             error_event = {
                 "code": CODE_TIMEOUT,
-                "message": f"The run took longer than {run_timeout_s():g} s and was cancelled.",
+                "message": f"The run took longer than {run_timeout_s():g} s and was cancelled. "
+                f"Reference: {error_id}.",
+                "error_id": error_id,
                 "run_id": run_id,
             }
-            logger.warning("run timed out")
+            logger.warning("run timed out (error_id=%s)", error_id)
         except (asyncio.CancelledError, GeneratorExit):
             status = STATUS_CANCELLED
             logger.info("run cancelled: the client went away")
@@ -1068,14 +1191,26 @@ class ChatRuntime:
         state: _RunState,
     ) -> AsyncIterator[tuple[str, Any]]:
         client = self._sdk_client(req.forward_headers)
+        metadata = {
+            **trace_metadata(thread_id, run_id, principal, req.metadata),
+            # The server merges the thread's metadata, whose `principal_id` is
+            # the raw owner id (the ownership check needs it there), into the
+            # run's metadata, and from there into the traced config metadata
+            # and each checkpoint's metadata. This key overrides it there with
+            # the hashed id; the thread itself keeps the raw one.
+            "principal_id": principal.hashed_id(),
+        }
         async for part in client.runs.stream(
             thread_id,
             GRAPH_ID,
             input={"messages": [{"role": "user", "content": req.message}]},
             stream_mode=["messages-tuple", "updates"],
-            metadata=trace_metadata(thread_id, run_id, principal, req.metadata),
+            metadata=metadata,
             config={"recursion_limit": recursion_limit()},
             # The server persists run context: never the principal's credentials.
+            # The raw id stays here (tools act on the caller's behalf); run
+            # context is not traced, and the metadata key above keeps it out of
+            # checkpoint metadata too.
             context={
                 "principal_id": principal.id,
                 "roles": list(principal.roles),

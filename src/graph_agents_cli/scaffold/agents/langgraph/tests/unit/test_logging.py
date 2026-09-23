@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -79,6 +83,51 @@ def test_dev_defaults_to_text_and_other_envs_to_json(monkeypatch) -> None:
     assert telemetry.log_format() == "text"
     monkeypatch.setenv("APP_ENV", "prod")
     assert telemetry.log_format() == "json"
+
+
+def test_lines_logged_before_the_lifespan_follow_log_format_too() -> None:
+    """Import-time warnings and uvicorn's startup lines are JSON in JSON mode.
+
+    Run as uvicorn does: its logging config first, then the app import, then
+    its startup lines (before the app's lifespan runs).
+    """
+    code = (
+        "import logging, logging.config\n"
+        "import uvicorn.config\n"
+        "logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)\n"
+        "import {{cookiecutter.agent_directory}}.fast_api_app\n"
+        "logging.getLogger('uvicorn.error').info('Started server process [1]')\n"
+    )
+    env = dict(os.environ)
+    env.update(
+        {
+            # Set (not removed) so a project .env cannot fill them in.
+            "APP_URL": "",
+            "LOG_FORMAT": "json",
+            "LOG_LEVEL": "INFO",
+            "APP_ENV": "prod",
+            "RUNTIME": "fastapi",
+            "AUTH_POLICY": "shared-bearer",
+            "MODEL_PROVIDER": "fake",
+            "MODEL_NAME": "fake",
+            "CHECKPOINTER": "memory",
+            "TRACING_ENABLED": "false",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    for needle in ("APP_URL is not set", "Started server process [1]"):
+        matching = [line for line in lines if needle in line]
+        assert matching, result.stderr
+        assert all(json.loads(line)["message"] for line in matching), matching
 
 
 @pytest.mark.parametrize(("name", "value"), [("LOG_LEVEL", "LOUD"), ("LOG_FORMAT", "xml")])

@@ -202,3 +202,65 @@ async def test_server_runtime_run_records_use_their_own_table(
         assert await runs.get("r1") is None
     finally:
         await db.close()
+
+
+async def test_run_record_pages_reach_every_thread(dsn: str) -> None:
+    """`thread_ids_before` pages in id order, so a sweep reaches ids past the first page."""
+    db = Database(POSTGRES, dsn)
+    await db.open()
+    try:
+        runs = RunStore(db)
+        old = "2000-01-01T00:00:00+00:00"
+        ids = [f"t-{i:02d}" for i in range(7)]
+        for n, thread_id in enumerate(ids + ids):  # two records per thread
+            await runs.record(
+                RunRecord(
+                    run_id=f"r{n}",
+                    thread_id=thread_id,
+                    principal_hash="h",
+                    model="m",
+                    status="ok",
+                    created_at=old,
+                )
+            )
+        await runs.record(
+            RunRecord(run_id="new", thread_id="t-new", principal_hash="h", model="m", status="ok")
+        )
+        pages: list[list[str]] = []
+        after = None
+        while True:
+            page = await runs.thread_ids_before("2020-01-01T00:00:00+00:00", after=after, limit=3)
+            pages.append(page)
+            if len(page) < 3:
+                break
+            after = page[-1]
+        assert [t for page in pages for t in page] == ids  # each once, in order, no new one
+    finally:
+        await db.close()
+
+
+async def test_an_id_with_state_but_no_owner_row_is_never_claimed(dsn: str) -> None:
+    db = Database(POSTGRES, dsn)
+    await db.open()
+    try:
+        store = ThreadStore(db)
+        alice, bob = Principal(id="alice"), Principal(id="bob")
+
+        async def orphan_only(thread_id: str) -> bool:
+            return thread_id == "orphan"
+
+        async def always(thread_id: str) -> bool:
+            return True
+
+        with pytest.raises(Exception) as exc:
+            await store.ensure("orphan", bob, has_state=orphan_only)
+        assert getattr(exc.value, "status_code", None) == 403
+        assert await store.get("orphan") is None
+        assert (await store.ensure("fresh", alice, has_state=orphan_only)).principal_id == "alice"
+        # A thread with an owner row is its owner's to continue, state or not.
+        assert (await store.ensure("fresh", alice, has_state=always)).principal_id == "alice"
+        with pytest.raises(Exception) as exc:
+            await store.ensure("fresh", bob, has_state=always)
+        assert getattr(exc.value, "status_code", None) == 403
+    finally:
+        await db.close()
