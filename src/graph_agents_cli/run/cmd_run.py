@@ -134,6 +134,15 @@ class RunOutcome(NamedTuple):
     status: str | None = None
 
 
+class _TransportFailure(click.ClickException):
+    """The agent could not be reached or went silent: a tool failure (exit 2).
+
+    An answer the agent gave (an HTTP error, an ``error`` event) stays exit 1.
+    """
+
+    exit_code = 2
+
+
 class AgentError(Exception):
     """The server sent an ``error`` event."""
 
@@ -707,6 +716,13 @@ def cmd_run(
     --thread-id continues a conversation; the footer of every run prints the
     thread id and the command to resume it. --file attaches UTF-8 text files
     as extra context.
+
+    \b
+    Exit codes:
+      0  the agent answered
+      1  the agent refused or reported an error (HTTP error, error event)
+      2  the agent could not be reached or went silent
+      3  configuration error (no project, port unavailable)
     """
     mode = mode.lower()
     # The deprecated --session-token is an X-Session-Token header from here on.
@@ -766,17 +782,17 @@ def cmd_run(
                 # non-streaming model phase): it is neither unreachable nor wedged,
                 # so a reused/persistent server is left alone and the message
                 # says what happened. ReadTimeout is a TransportError: keep this first.
-                raise click.ClickException(_read_timeout_message(thread_id, resume_flags)) from exc
+                raise _TransportFailure(_read_timeout_message(thread_id, resume_flags)) from exc
             except httpx.TransportError as exc:
                 if not url:
                     # The local server is unreachable or wedged: stop it (even one we
                     # reused) so a later retry starts a fresh one.
                     should_stop_server = True
-                    raise click.ClickException(
+                    raise _TransportFailure(
                         f"Could not reach the local server: {exc}\n"
                         "  It has been stopped; retry to start a fresh one."
                     ) from exc
-                raise click.ClickException(
+                raise _TransportFailure(
                     f"Could not reach remote agent at: {url}\n"
                     f"  {exc}\n"
                     "  Check that the URL is correct and the service is running."

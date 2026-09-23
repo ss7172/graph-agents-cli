@@ -356,7 +356,8 @@ def test_stalled_stream_is_reported_and_leaves_a_reused_server_running(
     chat_server.stall_seconds = 2.0
     local_project.started = False  # a persistent --start-server instance is reused
     result = invoke("hi", "--thread-id", "t-9")
-    assert result.exit_code == 1, result.output
+    # The agent went silent: a tool failure (2), not a refusal (1).
+    assert result.exit_code == 2, result.output
     assert (
         "No event from the agent for 0 s" in result.output
         or "No event from the agent" in result.output
@@ -377,7 +378,7 @@ def test_stalled_stream_still_stops_a_one_off_server(local_project, chat_server,
     )
     chat_server.stall_seconds = 2.0
     result = invoke("hi")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "No event from the agent" in result.output
     assert local_project.stop_calls == [{"root": Path.cwd(), "pid": 4242}]
 
@@ -395,7 +396,7 @@ def test_remote_unreachable_is_a_clean_error(monkeypatch, tmp_path):
     monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
     # Port 9 (discard) on loopback is closed on every developer machine.
     result = invoke("hi", "--url", "http://127.0.0.1:9")
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # unreachable: a tool failure, not a refusal
     assert "Could not reach remote agent" in result.output
 
 
