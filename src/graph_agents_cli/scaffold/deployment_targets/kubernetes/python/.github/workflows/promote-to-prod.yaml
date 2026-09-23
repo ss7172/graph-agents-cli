@@ -129,6 +129,10 @@ jobs:
             echo "::error file=.github/agent.env::CD must be argocd or helm-push for this workflow, got '$CD'." >&2
             exit 1
           fi
+          if [[ "$IMAGE_REPOSITORY" == *CHANGE-ME* ]] || ! [[ "$IMAGE_REPOSITORY" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$ ]]; then
+            echo "::error file=.github/agent.env::IMAGE_REPOSITORY must be <registry>/<path> in lowercase with no placeholder, got '$IMAGE_REPOSITORY'." >&2
+            exit 1
+          fi
           TAG="$IMAGE_TAG"
           if [ -n "$TAG" ] && ! [[ "$TAG" =~ ^[0-9a-f]{7,40}$ ]]; then
             echo "image_tag must be a short commit SHA (7-40 hex characters), got '$TAG'." >&2
@@ -254,6 +258,7 @@ jobs:
 
       - name: Verify the rollout
         run: |
+          : "${NAMESPACE:?the settings job resolved no namespace}" "${RELEASE:?the settings job resolved no release}"
           if ! command -v kubectl >/dev/null 2>&1; then
             echo "::error::kubectl is not on the runner's PATH; it is needed to verify the rollout." >&2
             exit 1

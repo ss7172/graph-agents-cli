@@ -132,6 +132,10 @@ jobs:
             echo "::error file=.github/agent.env::CD must be argocd or helm-push for this workflow, got '$CD'." >&2
             exit 1
           fi
+          if [[ "$IMAGE_REPOSITORY" == *CHANGE-ME* ]] || ! [[ "$IMAGE_REPOSITORY" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$ ]]; then
+            echo "::error file=.github/agent.env::IMAGE_REPOSITORY must be <registry>/<path> in lowercase with no placeholder, got '$IMAGE_REPOSITORY'." >&2
+            exit 1
+          fi
           TAG="${GITHUB_SHA::7}"
           manifest=graph-agents-cli-manifest.yaml
           NAMESPACE="$(yq -r '.environments.staging.namespace // ""' "$manifest")"
@@ -287,6 +291,7 @@ jobs:
 
       - name: Verify the rollout
         run: |
+          : "${NAMESPACE:?the build job resolved no namespace}" "${RELEASE:?the build job resolved no release}"
           if ! command -v kubectl >/dev/null 2>&1; then
             echo "::error::kubectl is not on the runner's PATH; it is needed to verify the rollout." >&2
             exit 1

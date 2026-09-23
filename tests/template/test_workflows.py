@@ -315,6 +315,34 @@ def test_helm_push_credentials_are_environment_scoped_and_removed(
     assert "$HOME/.kube" not in text and "secrets.KUBECONFIG" not in text
 
 
+@needs_bash
+@pytest.mark.parametrize(("path", "environment"), [(STAGING, "staging"), (PROMOTE, "production")])
+def test_kubeconfig_is_private_to_the_job_and_removed(
+    tmp_path: Path, path: Path, environment: str
+) -> None:
+    steps = _workflow(path)["jobs"]["deploy_helm_push"]["steps"]
+    configure = next(s for s in steps if s.get("name") == "Configure kubeconfig")["run"]
+    remove = steps[-1]["run"]
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    github_env = tmp_path / "github_env"
+    github_env.write_text("")
+    env = {"RUNNER_TEMP": str(runner_temp), "GITHUB_ENV": str(github_env)}
+    missing = run_step(configure, tmp_path, {**env, "DEPLOY_KUBECONFIG": ""})
+    assert missing.returncode != 0
+    assert f"DEPLOY_KUBECONFIG secret of the {environment} environment" in missing.stderr
+    written = run_step(
+        configure, tmp_path, {**env, "DEPLOY_KUBECONFIG": "apiVersion: v1\nkind: Config\n"}
+    )
+    assert written.returncode == 0, written.stderr
+    kubeconfig = runner_temp / "kubeconfig"
+    assert kubeconfig.read_text() == "apiVersion: v1\nkind: Config\n\n"
+    assert kubeconfig.stat().st_mode & 0o077 == 0
+    assert parse_github_env_file(github_env.read_text()) == {"KUBECONFIG": str(kubeconfig)}
+    assert run_step(remove, tmp_path, env).returncode == 0
+    assert not kubeconfig.exists()
+
+
 def test_no_secret_or_untrusted_value_is_expanded_inside_a_script() -> None:
     for path in ALL_WORKFLOWS:
         for script in _run_scripts(path):
@@ -340,6 +368,88 @@ def test_helm_push_verifies_the_rollout(path: Path, env: str, deploy_step: str) 
 def test_the_argocd_prod_promotion_runs_without_a_prompt() -> None:
     step = _step(PROMOTE, "open_prod_pr", "Open the production PR (merge is the gate)")
     assert 'deploy --env prod --image "$IMAGE" --yes' in step["run"]
+
+
+@needs_bash
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl is not on PATH")
+@pytest.mark.parametrize("path", [STAGING, PROMOTE])
+@pytest.mark.parametrize("ready_status", [200, 503])
+def test_verify_step_checks_health_and_ready_through_a_port_forward(
+    tmp_path: Path, path: Path, ready_status: int
+) -> None:
+    """The real step against a kubectl stand-in whose port-forward points at a local server."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen: list[str] = []
+
+    class Agent(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.path)
+            self.send_response(200 if self.path == "/health" else ready_status)
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok"}')
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Agent)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    calls = tmp_path / "kubectl.calls"
+    kubectl = shims / "kubectl"
+    kubectl.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, time\n"
+        f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "if 'port-forward' in sys.argv:\n"
+        f"    print('Forwarding from 127.0.0.1:{server.server_address[1]} -> 8000', flush=True)\n"
+        "    print('Forwarding from [::1]:1 -> 8000', flush=True)\n"
+        "    time.sleep(60)\n"
+    )
+    sleep = shims / "sleep"
+    sleep.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(0.05)\n")
+    for shim in (kubectl, sleep):
+        shim.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+    script = _step(path, "deploy_helm_push", "Verify the rollout")["run"]
+    try:
+        result = run_step(
+            script,
+            work,
+            {
+                "NAMESPACE": "weather-agent-staging",
+                "RELEASE": "weather-agent",
+                "IMAGE": "ghcr.io/acme/weather-agent:0123abc",
+                "RUNNER_TEMP": str(tmp_path),
+            },
+            shims=shims,
+        )
+    finally:
+        server.shutdown()
+    recorded = calls.read_text().splitlines()
+    assert (
+        recorded[0]
+        == "-n weather-agent-staging rollout status deployment/weather-agent --timeout=300s"
+    )
+    assert recorded[1] == "-n weather-agent-staging port-forward service/weather-agent :http"
+    if ready_status == 200:
+        assert result.returncode == 0, result.stderr
+        assert seen == ["/health", "/ready"]
+        assert "answers /health and /ready" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert "/ready did not answer 2xx" in result.stderr
+        assert seen.count("/ready") == 10
+
+
+@needs_bash
+def test_verify_step_refuses_missing_targets(tmp_path: Path) -> None:
+    script = _step(STAGING, "deploy_helm_push", "Verify the rollout")["run"]
+    result = run_step(script, tmp_path, {"NAMESPACE": "", "RELEASE": "weather-agent"})
+    assert result.returncode != 0 and "resolved no namespace" in result.stderr
 
 
 SHA = "0123abc4567def89012345678901234567890abc"
@@ -423,6 +533,15 @@ def test_staging_resolves_what_the_deploy_jobs_need(
         (
             {"agent_env_replace": ("RELEASE_NAME=weather-agent", "RELEASE_NAME=a b")},
             "Invalid RELEASE_NAME",
+        ),
+        # The scaffold's registry placeholder, and a reference docker would refuse.
+        (
+            {"agent_env_replace": ("ghcr.io/acme/", "ghcr.io/CHANGE-ME/")},
+            "IMAGE_REPOSITORY must be",
+        ),
+        (
+            {"agent_env_replace": ("ghcr.io/acme/weather-agent", "ghcr.io/Acme/Weather")},
+            "IMAGE_REPOSITORY must be",
         ),
     ],
 )
