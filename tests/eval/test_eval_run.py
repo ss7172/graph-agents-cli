@@ -25,6 +25,7 @@ from click.testing import CliRunner
 from conftest import DATASET, FakeJudge, good_traces, ok_stream, read_results, sse
 
 from graph_agents_cli.eval import _paths
+from graph_agents_cli.eval.cmd_generate import cmd_generate
 from graph_agents_cli.eval.cmd_run import cmd_run
 from graph_agents_cli.eval.dataset import dataset_hash
 
@@ -164,11 +165,13 @@ def test_run_honours_generate_override(
         "9",
         "--header",
         "X-A: 1",
+        "--header",
+        "X-Session-Token: tok",
         "--cookie",
         "s=1",
-        "--session-token",
-        "tok",
     ]
+    # The deprecated alias warns once and reaches the override as a plain --header.
+    assert result.output.count("--session-token is deprecated") == 1
     # The built-in grade ran on the override's traces.
     assert read_results(project)["summary"]["passed"] == 3
     assert len(fake_judge.calls) == 1
@@ -273,8 +276,10 @@ def test_run_outside_project_exit_3(
 
 
 def test_session_token_is_accepted_but_hidden_from_help(runner: CliRunner) -> None:
-    """Like `run` and `eval generate`: a consumer-specific shortcut for --header."""
-    result = runner.invoke(cmd_run, ["--help"])
-    assert result.exit_code == 0, result.output
-    assert "--session-token" not in result.output
-    assert "--header" in result.output
+    """Like `run` and `eval generate`: a deprecated alias of --header, never advertised."""
+    for command in (cmd_run, cmd_generate):
+        result = runner.invoke(command, ["--help"])
+        assert result.exit_code == 0, result.output
+        assert "--session-token" not in result.output
+        assert "session" not in result.output.lower()
+        assert "--header" in result.output

@@ -24,6 +24,7 @@ import click
 
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
+from graph_agents_cli._remote import deprecated_session_token, fold_session_token
 from graph_agents_cli.eval import _paths
 from graph_agents_cli.eval._client import DEFAULT_TIMEOUT
 from graph_agents_cli.eval._common import (
@@ -150,7 +151,8 @@ def _grade_override_argv(
     "--session-token",
     default=None,
     hidden=True,
-    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+    callback=deprecated_session_token,
+    help="Deprecated alias of --header 'X-Session-Token: ...'.",
 )
 @click.option("--app-name", default=None, help="Agent name recorded in the traces.")
 @click.option(
@@ -212,6 +214,10 @@ def cmd_run(
     3 configuration error).
     """
     console = Console()
+    # The deprecated --session-token is an X-Session-Token header from here on,
+    # so an eval.generate override is handed --header only.
+    header = fold_session_token(header, session_token)
+    session_token = None
     project_root = find_project_root()
     if project_root is None:
         raise EvalConfigError(

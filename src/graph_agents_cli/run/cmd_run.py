@@ -58,6 +58,8 @@ from graph_agents_cli._remote import (
     RUN_MODES,
     build_headers,
     classify_url,
+    deprecated_session_token,
+    fold_session_token,
 )
 from graph_agents_cli.run._local_server import (
     ensure_server,
@@ -617,7 +619,8 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     "--session-token",
     default=None,
     hidden=True,
-    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+    callback=deprecated_session_token,
+    help="Deprecated alias of --header 'X-Session-Token: ...'.",
 )
 @click.option(
     "--file",
@@ -692,6 +695,9 @@ def cmd_run(
     as extra context.
     """
     mode = mode.lower()
+    # The deprecated --session-token is an X-Session-Token header from here on.
+    header = fold_session_token(header, session_token)
+    session_token = None
     if url and start_server:
         click.secho(
             "Warning: --start-server has no effect when using --url.", fg="yellow", err=True

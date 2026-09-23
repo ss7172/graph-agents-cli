@@ -22,7 +22,9 @@ Credentials follow the project's auth policy:
 * ``--header 'Authorization: Bearer ...'`` or ``GRAPH_AGENTS_CLI_API_KEY``
   for ``shared-bearer`` (and a JWT in the same header for ``jwt``);
 * ``--header 'Name: value'`` or ``--cookie name=value`` for a ``custom``
-  policy (``--session-token`` is kept as a shortcut for ``X-Session-Token``).
+  policy. The hidden ``--session-token`` option of ``run`` and ``eval`` is a
+  deprecated alias of ``--header 'X-Session-Token: ...'``: it still works, prints
+  a one-line deprecation warning, and is folded into the headers on entry.
 
 No cloud SDK is consulted; the CLI stores no credentials.
 """
@@ -42,6 +44,32 @@ AGENT_CARD_PATH = "/.well-known/agent-card.json"
 
 RUN_MODES: tuple[str, ...] = ("chat", "a2a")
 DEFAULT_RUN_MODE = "chat"
+
+
+SESSION_TOKEN_DEPRECATION = (
+    "Warning: --session-token is deprecated and will be removed; "
+    "pass --header 'X-Session-Token: <token>' instead."
+)
+
+
+def deprecated_session_token(
+    _ctx: click.Context, _param: click.Parameter, value: str | None
+) -> str | None:
+    """Click callback of the hidden ``--session-token`` alias: warn once when it is used."""
+    if value:
+        click.echo(SESSION_TOKEN_DEPRECATION, err=True)
+    return value
+
+
+def fold_session_token(header: Sequence[str], session_token: str | None) -> tuple[str, ...]:
+    """``header`` plus the deprecated ``--session-token`` value as its ``X-Session-Token`` header.
+
+    Folding it into the ``--header`` values once, on entry, means everything
+    downstream (resume hints, extension overrides) only ever sees ``--header``.
+    """
+    if not session_token:
+        return tuple(header)
+    return (*header, f"{SESSION_TOKEN_HEADER}: {session_token}")
 
 
 def parse_header(value: str) -> tuple[str, str]:

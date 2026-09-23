@@ -140,6 +140,61 @@ def test_private_modules_are_read_too(project):
     assert "__init__.py" not in {c.tool for c in calls}
 
 
+def test_subpackages_are_read_like_get_tools_imports_them(project):
+    """get_tools() walks pkgutil.iter_modules, which yields subpackages too: lint
+    reads their __init__.py and every module inside them (the top-level
+    __init__.py stays the registry), and labels each by its path under tools/."""
+    tools = project / "app" / "tools"
+    sub = tools / "billing"
+    (sub / "deep").mkdir(parents=True)
+    (sub / "__init__.py").write_text(
+        'API_CALLS = [{"api": "incidents", "method": "GET", "path": "/admin/1"}]\nTOOLS = []\n'
+    )
+    (sub / "deep" / "calls.py").write_text(
+        'API_CALLS = [{"api": "incidents", "method": "DELETE", "path": "/x"}]\n'
+    )
+    (sub / "deep" / "bad.py").write_text("API_CALLS = make()\n")
+    # Caches and hidden directories are not importable tool modules.
+    (sub / "__pycache__").mkdir()
+    (sub / "__pycache__" / "junk.py").write_text("API_CALLS = nope()\n")
+    (tools / ".hidden").mkdir()
+    (tools / ".hidden" / "x.py").write_text("API_CALLS = nope()\n")
+
+    calls, problems = pc.collect_declared_calls(tools)
+    found = {(c.tool, c.method, c.operation) for c in calls}
+    assert ("billing/__init__.py", "GET", "/admin/1") in found
+    assert ("billing/deep/calls.py", "DELETE", "/x") in found
+    assert "__init__.py" not in {c.tool for c in calls}
+    assert len(problems) == 1 and problems[0].startswith("billing/deep/bad.py:"), problems
+
+
+def test_subpackage_calls_are_judged_against_the_policy(project):
+    write_policy(project, incidents=api(allowed_methods=["GET"]))
+    sub = project / "app" / "tools" / "sub"
+    sub.mkdir()
+    (sub / "__init__.py").write_text(
+        'API_CALLS = [{"api": "incidents", "method": "DELETE", "path": "/admin/1"}]\n'
+    )
+    report = pc.build_report(project, "app")
+    denied = [r for r in report.results if r.call.tool == "sub/__init__.py"]
+    assert [r.status for r in denied] == [pc.STATUS_DENIED]
+    assert report.violations >= 1
+
+
+def test_symlinked_tool_directories_are_followed_once(project, tmp_path):
+    outside = tmp_path / "shared_tools"
+    outside.mkdir()
+    (outside / "__init__.py").write_text(
+        'API_CALLS = [{"api": "incidents", "method": "GET", "path": "/linked"}]\n'
+    )
+    tools = project / "app" / "tools"
+    (tools / "linked").symlink_to(outside, target_is_directory=True)
+    # A link back to the package itself must not loop.
+    (outside / "loop").symlink_to(tools, target_is_directory=True)
+    calls, _problems = pc.collect_declared_calls(tools)
+    assert ("linked/__init__.py", "/linked") in {(c.tool, c.operation) for c in calls}
+
+
 @pytest.mark.parametrize(
     ("source", "line"),
     [

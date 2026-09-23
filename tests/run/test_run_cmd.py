@@ -241,6 +241,15 @@ def test_explicit_header_overrides_env_api_key(local_project, chat_server, monke
     assert headers["authorization"] == "Bearer explicit"
     assert headers["cookie"] == "s=1"
     assert headers["x-session-token"] == "tok"
+    # The hidden alias still works but says it is deprecated, once, pointing at --header.
+    assert result.output.count("--session-token is deprecated") == 1
+    assert "--header 'X-Session-Token: <token>'" in result.output
+
+
+def test_session_token_is_not_advertised_in_help():
+    result = invoke("--help")
+    assert result.exit_code == 0, result.output
+    assert "session" not in result.output.lower()
 
 
 def test_verbose_prints_event_payloads(local_project):
@@ -302,7 +311,9 @@ def test_resume_line_redacts_credentials(chat_server, monkeypatch, tmp_path):
     assert "--header 'X-Api-Key: <redacted>'" in out
     assert "--header 'X-Tenant: acme'" in out  # routing headers stay readable
     assert "--cookie 'session=<redacted>'" in out
-    assert "--session-token <redacted>" in out
+    # The deprecated alias is resumed with the flag that replaces it.
+    assert "--header 'X-Session-Token: <redacted>'" in out
+    assert "--session-token <redacted>" not in out
     assert "--thread-id thread-1" in out and "re-supply the redacted credential values" in out
     # The request itself carried the real values.
     headers = chat_server.chat_requests[0]["headers"]

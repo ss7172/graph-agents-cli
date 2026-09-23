@@ -28,6 +28,7 @@ import click
 
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
+from graph_agents_cli._remote import deprecated_session_token, fold_session_token
 from graph_agents_cli.eval import _paths
 from graph_agents_cli.eval._client import (
     DEFAULT_TIMEOUT,
@@ -304,7 +305,8 @@ def generate_traces(
     "--session-token",
     default=None,
     hidden=True,
-    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+    callback=deprecated_session_token,
+    help="Deprecated alias of --header 'X-Session-Token: ...'.",
 )
 @click.option(
     "--app-name",
@@ -353,9 +355,9 @@ def cmd_generate(
         output=output,
         url=url,
         concurrency=concurrency,
-        header=header,
+        header=fold_session_token(header, session_token),
         cookie=cookie,
-        session_token=session_token,
+        session_token=None,
         app_name=app_name,
         timeout=timeout,
     )
