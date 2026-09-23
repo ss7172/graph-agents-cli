@@ -83,6 +83,7 @@ from ..utils.template import (
     validate_combination,
 )
 from ..utils.upgrade import (
+    Followup,
     update_cli_metadata,
 )
 from ..utils.version import (
@@ -305,17 +306,20 @@ def _execute_with_saved_config(
         run_resolved(cmd, check=True, env=env)
         return True
     except subprocess.CalledProcessError as e:
-        if use_different_version:
-            console.print(
-                f"❌ Failed to execute with locked version {project_version}: {e}",
-                style="bold red",
-            )
-            console.print(
-                "⚠️  Continuing with current version, but compatibility is not guaranteed",
-                style="yellow",
-            )
-        else:
-            console.print(f"❌ Failed to execute with saved config: {e}", style="bold red")
+        if not use_different_version:
+            # This CLI already ran the saved configuration and said why it
+            # stopped. Falling back would only repeat the same enhance in process
+            # (after the manifest was rewritten, so it could even report
+            # success): keep its exit code, e.g. 1 when required items are left.
+            raise click.exceptions.Exit(e.returncode or 1) from e
+        console.print(
+            f"❌ Failed to execute with locked version {project_version}: {e}",
+            style="bold red",
+        )
+        console.print(
+            "⚠️  Continuing with current version, but compatibility is not guaranteed",
+            style="yellow",
+        )
         return False
 
 
@@ -752,7 +756,7 @@ def _run_smart_merge(
         interactive=interactive,
     )
 
-    def _update_metadata(proj_dir: pathlib.Path, lang: str) -> list[str] | None:
+    def _update_metadata(proj_dir: pathlib.Path, lang: str) -> list[str | Followup] | None:
         if not cli_overrides:
             return None
         has_policy = params.has_api_policy or (proj_dir / API_POLICY_FILENAME).is_file()
@@ -772,7 +776,10 @@ def _run_smart_merge(
             extra["agent_guidance_filename"] = cli_overrides["agent_guidance_filename"]
         if extra:
             update_cli_metadata(proj_dir, extra)
-        return _settings_followups(proj_dir, previous, current, added, removed)
+        return [
+            *_settings_followups(proj_dir, previous, current, added, removed),
+            *_chart_followups(proj_dir, previous, current),
+        ]
 
     return run_three_way_merge(
         project_dir=project_dir,
@@ -903,6 +910,153 @@ def _settings_followups(
             "for every environment you deploy to, so each Secret carries the new keys"
         )
     return items
+
+
+_ABSENT = object()
+
+
+def _values_lookup(data: Any, path: tuple[str, ...]) -> Any:
+    for key in path:
+        if not isinstance(data, dict) or key not in data:
+            return _ABSENT
+        data = data[key]
+    return data
+
+
+def _chart_followups(
+    project_dir: pathlib.Path, previous: CreateParams, current: CreateParams
+) -> list[Followup]:
+    """Chart values that still disagree with a new runtime or provider (required items).
+
+    Whatever the merge could or could not apply, this reads the chart values as
+    Helm will (values.yaml, overlaid by each values-<env>.yaml; a null removes
+    a key) and names every file that still sets a key the new settings decide:
+    ``runtime`` (the chart wires DATABASE_URI/REDIS_URI or POSTGRES_DSN and
+    LANGGRAPH_SERVER from it), ``env.CHECKPOINTER`` under fastapi, and
+    ``env.MODEL_PROVIDER`` / ``env.MODEL_NAME`` / ``env.OPENAI_BASE_URL`` after a
+    provider change. A deploy with any of them left would run the old settings.
+    """
+    import yaml
+
+    if current.deployment_target != "kubernetes":
+        return []
+    checks: list[_ChartCheck] = []
+    if previous.runtime != current.runtime:
+        checks.append(
+            _ChartCheck(
+                ("runtime",),
+                current.runtime,
+                f"set it to {current.runtime!r}",
+                "the chart wires the database variables and LANGGRAPH_SERVER from it",
+                # The chart reads an absent runtime as fastapi.
+                absent_ok=current.runtime == "fastapi",
+            )
+        )
+        if current.runtime == "fastapi" and current.checkpointer == "postgres":
+            checks.append(
+                _ChartCheck(
+                    ("env", "CHECKPOINTER"),
+                    "postgres",
+                    "set it to 'postgres'",
+                    "without it the fastapi runtime keeps threads in memory",
+                )
+            )
+    if previous.model_provider != current.model_provider:
+        # Absent from the chart: set elsewhere (the Secret, extra env), not ours to judge.
+        checks.append(
+            _ChartCheck(
+                ("env", "MODEL_PROVIDER"),
+                current.model_provider,
+                f"set it to {current.model_provider!r}",
+                "the provider the pod calls",
+                absent_ok=True,
+            )
+        )
+        checks.append(
+            _ChartCheck(
+                ("env", "MODEL_NAME"),
+                current.model,
+                f"set it to {current.model!r} or another {current.model_provider} model",
+                f"a model chosen for {previous.model_provider} does not run on "
+                f"{current.model_provider}",
+                absent_ok=True,
+            )
+        )
+        if current.model_provider == "openai-compatible":
+            checks.append(
+                _ChartCheck(
+                    ("env", "OPENAI_BASE_URL"),
+                    None,
+                    "set it to the endpoint's base URL",
+                    "openai-compatible has no default endpoint",
+                )
+            )
+    config = find_project_config(project_dir)
+    secret_keys = set(config.secret_keys) if config else set()
+    # A variable the Secret carries does not have to be in the chart values.
+    checks = [
+        check
+        for check in checks
+        if not (check.path[0] == "env" and check.path[-1] in secret_keys and check.wanted is None)
+    ]
+    if not checks:
+        return []
+
+    items: list[Followup] = []
+    for values in sorted((project_dir / "deployment" / "helm").glob("*/values.yaml")):
+        layers: list[tuple[pathlib.Path, Any]] = []
+        for path in [values, *sorted(values.parent.glob("values-*.yaml"))]:
+            try:
+                layers.append((path, yaml.safe_load(path.read_text(encoding="utf-8")) or {}))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                items.append(
+                    Followup(
+                        f"{path.relative_to(project_dir).as_posix()}: cannot be read ({exc}); "
+                        "check it by hand against the new settings",
+                        required=True,
+                    )
+                )
+        if not layers or layers[0][0] != values:
+            continue
+        # values.yaml alone, then values.yaml under each environment's file.
+        stacks = [layers[:1], *([layers[0], layer] for layer in layers[1:])]
+        reported: set[tuple[pathlib.Path, tuple[str, ...]]] = set()
+        for check in checks:
+            for stack in stacks:
+                actual, source = _ABSENT, values
+                for path, data in stack:
+                    found = _values_lookup(data, check.path)
+                    if found is not _ABSENT:
+                        actual, source = (_ABSENT if found is None else found), path
+                if actual is _ABSENT:
+                    ok = check.absent_ok
+                elif check.wanted is None:
+                    ok = str(actual).strip() != ""
+                else:
+                    ok = str(actual) == str(check.wanted)
+                if ok or (source, check.path) in reported:
+                    continue
+                reported.add((source, check.path))
+                where = source.relative_to(project_dir).as_posix()
+                dotted = ".".join(check.path)
+                state = "is not set" if actual is _ABSENT else f"is {actual!r}"
+                items.append(
+                    Followup(
+                        f"{where}: {dotted} {state}: {check.todo} ({check.why})", required=True
+                    )
+                )
+    return items
+
+
+@dataclasses.dataclass(frozen=True)
+class _ChartCheck:
+    """A chart value the new settings decide (``wanted`` None: any non-empty value)."""
+
+    path: tuple[str, ...]
+    wanted: str | None
+    todo: str
+    why: str
+    absent_ok: bool = False
 
 
 @click.command()
@@ -1388,9 +1542,12 @@ def _reconcile_after_in_folder_render(
     if current == previous:
         return
 
-    def _after_merge(proj_dir: pathlib.Path, _language: str) -> list[str]:
+    def _after_merge(proj_dir: pathlib.Path, _language: str) -> list[str | Followup]:
         added, removed = reconcile_secret_keys(proj_dir, previous=previous, current=current)
-        return _settings_followups(proj_dir, previous, current, added, removed)
+        return [
+            *_settings_followups(proj_dir, previous, current, added, removed),
+            *_chart_followups(proj_dir, previous, current),
+        ]
 
     console.print()
     console.print("Reconciling the files the new settings shape...", style="dim")

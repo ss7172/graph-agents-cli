@@ -131,20 +131,28 @@ def scaffold_root(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pa
 
 
 @pytest.fixture(autouse=True)
-def no_subprocesses(monkeypatch: pytest.MonkeyPatch) -> None:
+def no_subprocesses(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """No test may spawn a real subprocess.
 
     ``git remote get-url origin`` fails (no origin), so the registry default is
-    the placeholder unless a test overrides ``run_resolved`` itself.
+    the placeholder unless a test overrides ``run_resolved`` itself. The merge's
+    ``uv add/remove --frozen`` (pyproject.toml only) is recorded and reported
+    as successful without touching the file; the list of calls is returned.
     """
     import graph_agents_cli._runner as runner
+
+    uv_calls: list[list[str]] = []
 
     def fake_run_resolved(args, *, resolve_executable=True, **kwargs):
         if args[:3] == ["git", "remote", "get-url"]:
             return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: No such remote")
+        if args[:1] == ["uv"] and args[1:2] in (["add"], ["remove"]) and "--frozen" in args:
+            uv_calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected subprocess in test: {args}")
 
     monkeypatch.setattr(runner, "run_resolved", fake_run_resolved)
+    return uv_calls
 
 
 @pytest.fixture(autouse=True)

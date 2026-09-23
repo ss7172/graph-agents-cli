@@ -80,6 +80,7 @@ def cmd_update(workspace, auto_approve):
         INSTALL_SPEC_ENV,
         UNKNOWN_VERSION,
         InstallSpecError,
+        InvalidInstallSpecError,
         get_current_version,
         get_latest_version,
         install_spec,
@@ -104,6 +105,10 @@ def cmd_update(workspace, auto_approve):
         return
     try:
         spec = install_spec(None if latest == UNKNOWN_VERSION else latest)
+    except InvalidInstallSpecError:
+        # A malformed override is a configuration error (exit 3), not a
+        # transient failure of the best-effort upgrade.
+        raise
     except InstallSpecError as exc:  # {version} in the override, no release known
         click.secho(f"  {exc.format_message()} The CLI was left as is.", fg="yellow")
         return

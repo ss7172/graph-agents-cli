@@ -20,10 +20,18 @@ gitignores it, so the backup may hold the user's only copy). Because of that it
 is private: the backups directory and every backup are 0700 and every ``.env*``
 file in them 0600. Only the newest ``KEEP_BACKUPS`` backups of a project are
 kept, so credentials do not pile up in the home directory.
+
+A backup is named ``<directory>_<project id>_<timestamp>[_n]``. The project id
+is a hash of the project's resolved absolute path and its manifest ``name``, so
+two checkouts with the same directory name (``my-agent`` in two places) never
+count as one project: pruning only ever deletes backups carrying the id of the
+project being backed up. Backups named without an id (made by an older CLI)
+are never pruned.
 """
 
 import contextlib
 import datetime
+import hashlib
 import os
 import pathlib
 import re
@@ -31,16 +39,36 @@ import shutil
 from collections.abc import Callable
 
 import click
+import yaml
 
 from graph_agents_cli._output import Console
 
 from .fs import standard_ignore_patterns
 
 BACKUP_BASE_DIR = pathlib.Path.home() / ".graph-agents-cli" / "backups"
-# Backups kept per project (by directory name); older ones are deleted.
+# Backups kept per project (by project id); older ones are deleted.
 KEEP_BACKUPS = 5
 _PRIVATE_DIR = 0o700
 _PRIVATE_FILE = 0o600
+_MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
+_ID_LENGTH = 12
+
+
+def project_backup_id(project_dir: pathlib.Path) -> str:
+    """A stable id for ``project_dir``: its resolved absolute path plus its manifest ``name``."""
+    name = ""
+    try:
+        data = yaml.safe_load((project_dir / _MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("name") is not None:
+            name = str(data["name"])
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        pass  # no (readable) manifest: the path alone identifies the directory
+    key = f"{project_dir.resolve()}\0{name}".encode()
+    return hashlib.sha256(key).hexdigest()[:_ID_LENGTH]
+
+
+def _backup_prefix(project_dir: pathlib.Path) -> str:
+    return f"{project_dir.name}_{project_backup_id(project_dir)}"
 
 
 def create_project_backup(
@@ -51,7 +79,7 @@ def create_project_backup(
 ) -> pathlib.Path | None:
     """Create a backup of the project directory.
 
-    Backs up to ~/.graph-agents-cli/backups/<project-name>_<timestamp>/.
+    Backs up to ~/.graph-agents-cli/backups/<directory>_<project id>_<timestamp>/.
 
     Args:
         project_dir: Path to the project directory to back up.
@@ -70,11 +98,12 @@ def create_project_backup(
         console = Console()
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = BACKUP_BASE_DIR / f"{project_dir.name}_{timestamp}"
+    prefix = _backup_prefix(project_dir)
+    backup_dir = BACKUP_BASE_DIR / f"{prefix}_{timestamp}"
     suffix = 1
     while backup_dir.exists():  # two backups within the same second
         suffix += 1
-        backup_dir = BACKUP_BASE_DIR / f"{project_dir.name}_{timestamp}_{suffix}"
+        backup_dir = BACKUP_BASE_DIR / f"{prefix}_{timestamp}_{suffix}"
 
     console.print("📦 [blue]Creating backup before modification...[/blue]")
 
@@ -84,7 +113,7 @@ def create_project_backup(
         shutil.copytree(project_dir, backup_dir, ignore=standard_ignore_patterns)
         _make_private_tree(backup_dir)
         console.print(f"Backup created: [cyan]{backup_dir}[/cyan]")
-        pruned = prune_backups(project_dir.name, keep=KEEP_BACKUPS, current=backup_dir)
+        pruned = prune_backups(project_dir, keep=KEEP_BACKUPS, current=backup_dir)
         if pruned:
             console.print(
                 f"[dim]Removed {len(pruned)} older backup(s) of {project_dir.name} "
@@ -117,17 +146,20 @@ def _make_private_tree(root: pathlib.Path) -> None:
 
 
 def prune_backups(
-    project_name: str, *, keep: int = KEEP_BACKUPS, current: pathlib.Path | None = None
+    project_dir: pathlib.Path, *, keep: int = KEEP_BACKUPS, current: pathlib.Path | None = None
 ) -> list[pathlib.Path]:
-    """Delete all but the newest ``keep`` backups of ``project_name``; return what was removed.
+    """Delete all but the newest ``keep`` backups of ``project_dir``; return what was removed.
 
-    Only directories named exactly ``<project_name>_<YYYYmmdd>_<HHMMSS>[_n]`` are
-    considered, so another project whose name shares a prefix is never touched,
-    and ``current`` (the backup just made) is never removed.
+    Only directories named exactly ``<directory>_<project id>_<YYYYmmdd>_<HHMMSS>[_n]``
+    with this project's id are considered: another project is never touched,
+    whether its name shares a prefix or is the same (another checkout), backups
+    without an id are left alone, and ``current`` (the backup just made) is
+    never removed.
     """
     if not BACKUP_BASE_DIR.is_dir():
         return []
-    pattern = re.compile(rf"^{re.escape(project_name)}_(\d{{8}}_\d{{6}})(?:_(\d+))?$")
+    prefix = _backup_prefix(project_dir)
+    pattern = re.compile(rf"^{re.escape(prefix)}_(\d{{8}}_\d{{6}})(?:_(\d+))?$")
     found: list[tuple[str, int, pathlib.Path]] = []
     for entry in BACKUP_BASE_DIR.iterdir():
         match = pattern.match(entry.name)

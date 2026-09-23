@@ -312,6 +312,17 @@ def test_baseline_current_is_explicit_opt_in(
     assert "Baseline override" in caplog.text
 
 
+@pytest.mark.parametrize("args", [["--dry-run"], ["-y"]])
+def test_upgrade_outside_a_project_is_a_configuration_error(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, args: list[str]
+) -> None:
+    """Exit 3, like every other command run outside a project (it used to be 1)."""
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(upgrade, args)
+    assert result.exit_code == 3, result.output
+    assert "No graph-agents-cli-manifest.yaml found" in result.output
+
+
 def test_upgrade_command_stops_without_authentic_baseline(
     run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, uvx_calls
 ) -> None:

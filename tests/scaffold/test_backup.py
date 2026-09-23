@@ -53,22 +53,63 @@ def test_only_the_newest_backups_are_kept(
 ) -> None:
     base = backup.BACKUP_BASE_DIR
     base.mkdir(parents=True)
-    old = [base / f"agent_2026010{day}_120000" for day in range(1, 8)]
+    prefix = f"agent_{backup.project_backup_id(project)}"
+    old = [base / f"{prefix}_2026010{day}_120000" for day in range(1, 8)]
     for path in old:
         path.mkdir()
-    # Another project's backups, including one whose name extends this one's.
-    others = [base / "agent-two_20260101_120000", base / "agent_x_20260101_120000"]
+    # Another project's backups, including one whose name extends this one's, and
+    # backups an older CLI named without a project id (never pruned: whose are they?).
+    others = [
+        base / "agent-two_20260101_120000",
+        base / "agent_x_20260101_120000",
+        base / "agent_20260101_120000",
+        base / "agent_0123456789ab_20260101_120000",
+    ]
     for path in others:
         path.mkdir()
 
     made = backup.create_project_backup(project)
-    assert made is not None
-    kept = sorted(p.name for p in base.iterdir() if p.name.startswith("agent_2"))
+    assert made is not None and made.name.startswith(prefix + "_")
+    kept = sorted(p.name for p in base.iterdir() if p.name.startswith(prefix))
     assert len(kept) == backup.KEEP_BACKUPS
     assert made.name in kept
     # The newest four of the older ones survive with the new one.
     assert kept[:-1] == [p.name for p in old[-(backup.KEEP_BACKUPS - 1) :]]
     assert all(p.exists() for p in others)
+
+
+def test_a_checkout_with_the_same_directory_name_keeps_its_backups(
+    tmp_path: pathlib.Path, isolated_home: pathlib.Path
+) -> None:
+    """The verifier's case: six backups of B/same pruned A/same's only backup (and its .env)."""
+    a = tmp_path / "A" / "same"
+    b = tmp_path / "B" / "same"
+    for root, key in ((a, "only-copy-of-A"), (b, "b")):
+        root.mkdir(parents=True)
+        (root / ".env").write_text(f"OPENAI_API_KEY={key}\n")
+    assert backup.project_backup_id(a) != backup.project_backup_id(b)
+
+    a_backup = backup.create_project_backup(a)
+    for _ in range(backup.KEEP_BACKUPS + 1):
+        backup.create_project_backup(b)
+    assert (
+        a_backup is not None
+        and (a_backup / ".env").read_text() == "OPENAI_API_KEY=only-copy-of-A\n"
+    )
+    b_backups = [p for p in backup.BACKUP_BASE_DIR.iterdir() if p != a_backup]
+    assert len(b_backups) == backup.KEEP_BACKUPS
+
+
+def test_the_project_id_follows_the_path_and_the_manifest_name(tmp_path: pathlib.Path) -> None:
+    root = tmp_path / "agent"
+    root.mkdir()
+    bare = backup.project_backup_id(root)
+    assert backup.project_backup_id(tmp_path / "." / "agent") == bare  # resolved
+    (root / "graph-agents-cli-manifest.yaml").write_text("name: agent\n")
+    named = backup.project_backup_id(root)
+    assert named != bare and backup.project_backup_id(root) == named  # stable
+    (root / "graph-agents-cli-manifest.yaml").write_text("name: [unclosed\n")
+    assert backup.project_backup_id(root) == bare  # an unreadable manifest never fails a backup
 
 
 def test_two_backups_in_the_same_second_do_not_collide(

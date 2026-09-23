@@ -48,7 +48,7 @@ from graph_agents_cli.eval._common import (
     write_json_file,
 )
 from graph_agents_cli.eval.dataset import Dataset, EvalCase, load_dataset
-from graph_agents_cli.run._signals import terminate_like_interrupt
+from graph_agents_cli.run._signals import shielded, terminate_like_interrupt
 
 DEFAULT_CONCURRENCY = 4
 API_KEY_ENV = "GRAPH_AGENTS_CLI_API_KEY"
@@ -101,14 +101,17 @@ def _start_local_server(project_root: Path, meta: dict[str, Any]) -> tuple[str, 
     stop_heartbeat = heartbeat(project_root) if callable(heartbeat) else (lambda: None)
 
     def teardown() -> None:
-        stop_heartbeat()
-        if not started:
-            return
-        stop = _local_server.stop_server
-        if pid is not None and "pid" in inspect.signature(stop).parameters:
-            stop(project_root, pid=pid)
-        else:
-            stop(project_root)
+        # A SIGTERM or Ctrl-C now is held until the server is stopped and its
+        # record removed, then handled (a stale record would name a dead PID).
+        with shielded():
+            stop_heartbeat()
+            if not started:
+                return
+            stop = _local_server.stop_server
+            if pid is not None and "pid" in inspect.signature(stop).parameters:
+                stop(project_root, pid=pid)
+            else:
+                stop(project_root)
 
     return str(base_url), teardown
 

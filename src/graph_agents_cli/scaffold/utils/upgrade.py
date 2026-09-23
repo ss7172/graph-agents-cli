@@ -59,15 +59,37 @@ FILE_CATEGORIES: dict[str, list[str]] = {
 
 # Config files a runtime, model provider, target or CD change re-renders. Under
 # ``scaffold enhance`` (``merge_config=True``) they are merged three-way instead
-# of skipped: an untouched copy takes the template's new version, an edited one
-# gets the template's change applied around the developer's edits, and edits
-# that overlap are left alone and reported. ``.env`` (secrets), ``api-policy.yaml``
+# of skipped (config files) or kept whole on the first edit (the chart's
+# values.yaml, .github/agent.env): an untouched copy takes the template's new
+# version, an edited one gets the template's change applied around the
+# developer's edits (line by line, else key by key), and a key the developer
+# changed too is left alone and reported. ``.env`` (secrets), ``api-policy.yaml``
 # and the eval datasets never are: an enhance does not change them.
 STRUCTURAL_CONFIG_FILES: list[str] = [
     ".env.example",
+    ".github/agent.env",
+    "deployment/helm/*/values.yaml",
     "deployment/helm/*/values-*.yaml",
     "deployment/argocd/**",
 ]
+
+# Files that define the container image. Under enhance, a template change to
+# one of them that could not be applied leaves the image on the old settings
+# (the fastapi image under the langgraph-server runtime, say), so the project
+# does not build what the manifest says until the developer merges it by hand.
+IMAGE_DEFINITION_FILES: list[str] = ["Dockerfile"]
+
+
+@dataclass(frozen=True)
+class Followup:
+    """Something the developer still has to do by hand after upgrade/enhance.
+
+    ``required``: until it is done the project does not build or deploy with
+    the settings the manifest records (enhance then exits non-zero).
+    """
+
+    text: str
+    required: bool = False
 
 
 # Preserve type literals for type-safe reason matching
@@ -89,7 +111,7 @@ class FileCompareResult:
     old_template_hash: str | None = None
     new_template_hash: str | None = None
     # Something the developer still has to do for this file (printed after the run).
-    followup: str | None = None
+    followup: str | Followup | None = None
 
 
 class DependencyReadError(Exception):
@@ -147,6 +169,11 @@ def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
 def is_structural_config(path: str) -> bool:
     """True for a config file the enhanced settings re-render (``STRUCTURAL_CONFIG_FILES``)."""
     return _matches_any_pattern(path, STRUCTURAL_CONFIG_FILES)
+
+
+def is_image_definition(path: str) -> bool:
+    """True for a file that defines the container image (``IMAGE_DEFINITION_FILES``)."""
+    return _matches_any_pattern(path, IMAGE_DEFINITION_FILES)
 
 
 def categorize_file(path: str, agent_directory: str = "app") -> str:
@@ -227,7 +254,11 @@ def three_way_compare(
             reason="Agent code (never modified by upgrade)",
         )
 
-    if category == "config_files" and merge_config and is_structural_config(relative_path):
+    if (
+        merge_config
+        and category in ("config_files", "scaffolding")
+        and is_structural_config(relative_path)
+    ):
         return _compare_structural_config(
             relative_path, current_file, old_template_file, new_template_file, category
         )
@@ -376,7 +407,7 @@ def _compare_structural_config(
     category: str,
 ) -> FileCompareResult:
     """Three-way handling of a config file the enhanced settings re-render (see STRUCTURAL_CONFIG_FILES)."""
-    from .merge3 import merge3_checked, template_diff
+    from .merge3 import template_diff
 
     current_hash = _file_hash(current_file)
     old_hash = _file_hash(old_template_file)
@@ -386,6 +417,16 @@ def _compare_structural_config(
         "old_template_hash": old_hash,
         "new_template_hash": new_hash,
     }
+    if current_hash is None and new_hash is not None and category == "scaffolding":
+        # Like any scaffolding file the project lacks (config files are handled
+        # before this: one the developer removed is never re-added).
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="new",
+            reason="New file in the template",
+            **hashes,
+        )
     if old_hash == new_hash:
         return FileCompareResult(
             path=relative_path,
@@ -426,17 +467,37 @@ def _compare_structural_config(
     old_text = _read_text(old_template_file) if old_hash is not None else ""
     current_text = _read_text(current_file)
     new_text = _read_text(new_template_file)
-    merged = (
-        None
+    merged, conflicts = (
+        (None, [])
         if old_text is None or current_text is None or new_text is None
-        else merge3_checked(old_text, current_text, new_text, relative_path)
+        else _merge_config_texts(old_text, current_text, new_text, relative_path)
     )
-    if merged is not None:
+    if merged is not None and merged != current_text:
         return FileCompareResult(
             path=relative_path,
             category=category,
             action="merge",
             reason="Config file you modified: the template's change is merged around your edits",
+            followup=_kept_keys_followup(relative_path, conflicts, partly=True),
+            **hashes,
+        )
+    if merged is not None and conflicts:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="skip",
+            reason="Config file you modified where the template changed the same keys (kept)",
+            followup=_kept_keys_followup(relative_path, conflicts, partly=False),
+            **hashes,
+        )
+    if merged is not None:
+        # Every key already reads as the new settings want; only comments differ.
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="preserve",
+            reason="Already up to date (your edits carry the new settings)",
+            preserve_type="already_current",
             **hashes,
         )
     diff = template_diff(old_text or "", new_text or "", relative_path)
@@ -453,6 +514,43 @@ def _compare_structural_config(
     )
 
 
+def _kept_keys_followup(relative_path: str, conflicts: list[Any], *, partly: bool) -> str | None:
+    """The keys of ``relative_path`` the developer changed that the new settings change too."""
+    if not conflicts:
+        return None
+    head = (
+        "the new settings' change was applied except to keys you changed too"
+        if partly
+        else "left as it is, because you changed the keys the new settings change"
+    )
+    return (
+        f"{relative_path}: {head}. Your values were kept; change them by hand if they no "
+        "longer fit:\n" + "".join(f"     {conflict.describe()}\n" for conflict in conflicts)
+    )
+
+
+def _merge_config_texts(
+    old_text: str, current_text: str, new_text: str, relative_path: str
+) -> tuple[str | None, list[Any]]:
+    """The developer's config with the template's change applied, and the keys left alone.
+
+    The line merge first (it also carries the template's comment changes); when
+    the edits are too close for it, the key-by-key merge, which applies every
+    changed key the developer did not change too and returns the others.
+    ``(None, [])`` when neither can merge the file safely.
+    """
+    from .keymerge import merge_keys
+    from .merge3 import merge3_checked
+
+    merged = merge3_checked(old_text, current_text, new_text, relative_path)
+    if merged is not None:
+        return merged, []
+    result = merge_keys(old_text, current_text, new_text, relative_path)
+    if result is None:
+        return None, []
+    return result.text, list(result.conflicts)
+
+
 def merged_config_text(
     project_dir: pathlib.Path,
     old_template_dir: pathlib.Path,
@@ -460,15 +558,13 @@ def merged_config_text(
     relative_path: str,
 ) -> str | None:
     """The three-way merge of a ``merge`` result, or None when it no longer merges cleanly."""
-    from .merge3 import merge3_checked
-
     old_file = old_template_dir / relative_path
     old_text = _read_text(old_file) if old_file.exists() else ""
     current_text = _read_text(project_dir / relative_path)
     new_text = _read_text(new_template_dir / relative_path)
     if old_text is None or current_text is None or new_text is None:
         return None
-    return merge3_checked(old_text, current_text, new_text, relative_path)
+    return _merge_config_texts(old_text, current_text, new_text, relative_path)[0]
 
 
 def collect_all_files(

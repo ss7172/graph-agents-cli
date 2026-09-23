@@ -63,7 +63,8 @@ def started(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         ls, "_fetch_health", lambda port, timeout=1.0: {"status": "ok", "checkpointer": "memory"}
     )
-    monkeypatch.setattr(ls, "_terminate_process", lambda pid: terminated.append(pid))
+    monkeypatch.setattr(ls, "_terminate_process", lambda pid, **_: terminated.append(pid) or True)
+    monkeypatch.setattr(ls, "_create_time", lambda pid: 1700000000.25)
     return state
 
 
@@ -148,7 +149,9 @@ def test_ensure_server_starts_and_writes_pid_file(started):
         "runtime",
         "checkpointer",
         "state",
+        "create_time",
     }
+    assert data["create_time"] == 1700000000.25
     assert data["state"] == ls.STATE_READY
     assert data["pid"] == 4242 and data["port"] == 18080
     assert data["runtime"] == "fastapi"
@@ -180,7 +183,7 @@ def test_ensure_server_rejects_unknown_runtime(started):
 def test_ensure_server_reuses_live_server_and_stamps_activity(started, monkeypatch):
     old = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     _write_pid(started.root, last_activity=old, checkpointer="postgres")
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
 
     info = ls.ensure_server(started.root, "app", runtime="fastapi")
     assert info == ls.ServerInfo(
@@ -192,7 +195,7 @@ def test_ensure_server_reuses_live_server_and_stamps_activity(started, monkeypat
 
 def test_ensure_server_runtime_mismatch_is_hard_error_and_leaves_server(started, monkeypatch):
     _write_pid(started.root, runtime="langgraph-server")
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
     with pytest.raises(click.ClickException, match=r"langgraph-server.*fastapi"):
         ls.ensure_server(started.root, "app", runtime="fastapi")
     assert not started.terminated
@@ -203,7 +206,7 @@ def test_ensure_server_runtime_mismatch_is_hard_error_and_leaves_server(started,
 def test_ensure_server_replaces_idle_server(started, monkeypatch):
     stale = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
     _write_pid(started.root, last_activity=stale)
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
 
     info = ls.ensure_server(started.root, "app", runtime="fastapi")
     assert started.terminated == [111]
@@ -212,7 +215,7 @@ def test_ensure_server_replaces_idle_server(started, monkeypatch):
 
 def test_ensure_server_cleans_stale_pid_file(started, monkeypatch):
     _write_pid(started.root)
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: False)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: False)
     info = ls.ensure_server(started.root, "app", runtime="fastapi")
     assert started.terminated == [111]
     assert info.started
@@ -255,10 +258,33 @@ def test_real_child_that_exits_immediately_fails_within_seconds(tmp_path: Path, 
     monkeypatch.setattr(ls, "_find_free_port", lambda *a, **k: 18099)
     monkeypatch.setattr(ls, "_fetch_health", lambda port, timeout=1.0: None)
     before = time.monotonic()
-    with pytest.raises(click.ClickException, match=r"exited during startup \(exit code 3\)"):
+    with pytest.raises(
+        ls.ServerStartError, match=r"exited during startup \(exit code 3\)"
+    ) as excinfo:
         ls.ensure_server(tmp_path, "app", runtime="fastapi", startup_timeout=30)
     assert time.monotonic() - before < 10
     assert not ls.pid_file_path(tmp_path).exists()
+    # A tool failure (2), never the 1 that `eval run` reserves for a failed gate.
+    assert excinfo.value.exit_code == 2
+
+
+def test_start_failures_are_tool_failures_and_a_bad_runtime_a_config_error(started, monkeypatch):
+    monkeypatch.setattr(ls, "_fetch_health", lambda port, timeout=1.0: None)
+    ticks = iter(range(0, 1000))
+    monkeypatch.setattr(ls.time, "monotonic", lambda: float(next(ticks)))
+    with pytest.raises(ls.ServerStartError) as never_healthy:
+        ls.ensure_server(started.root, "app", runtime="fastapi", startup_timeout=2)
+    assert never_healthy.value.exit_code == 2
+
+    _write_pid(started.root, runtime="langgraph-server")
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
+    with pytest.raises(ls.ServerStartError) as other_runtime:
+        ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert other_runtime.value.exit_code == 2
+
+    with pytest.raises(click.ClickException) as unsupported:
+        ls.ensure_server(started.root, "app", runtime="adk")
+    assert unsupported.value.exit_code == 3
 
 
 def test_wait_for_ready_times_out_with_log_tail(started, monkeypatch):
@@ -311,6 +337,87 @@ def test_stop_server_ownership_aware(started):
     assert started.terminated == [999, 111, 555]
 
 
+# ---------------------------------------------------------------------------
+# a record that outlived its server: PID identity and an interrupted teardown
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def unrelated_process():
+    """A live process of this user that is not a server (a reused PID, as far as a record knows)."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        yield proc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_a_reused_pid_is_never_the_recorded_server(unrelated_process):
+    import psutil
+
+    pid = unrelated_process.pid
+    created = psutil.Process(pid).create_time()
+    # The record's own creation time identifies it; any other time is another process.
+    assert ls._server_process(pid, create_time=created, port=18080) is not None
+    assert ls._server_process(pid, create_time=created - 50, port=18080) is None
+    # A record without create_time (an older CLI): only a uvicorn/langgraph command line
+    # serving the recorded port qualifies.
+    assert ls._server_process(pid, port=18080) is None
+    assert ls._server_process(0) is None
+    assert ls._is_server_alive(pid, 18080, created - 50) is False
+
+
+def test_a_stale_record_never_signals_the_process_that_reused_its_pid(tmp_path, unrelated_process):
+    """The next `run` (or --stop-server) used to SIGTERM whatever process had the PID."""
+    _write_pid(tmp_path, pid=unrelated_process.pid, port=18865, create_time=1.0, state="ready")
+    assert ls.stop_server(tmp_path) is False  # nothing of ours was running
+    assert not ls.pid_file_path(tmp_path).exists()  # the stale record is gone
+    time.sleep(0.2)
+    assert unrelated_process.poll() is None  # and the other process is untouched
+
+    _write_pid(tmp_path, pid=unrelated_process.pid, port=18865)  # an older CLI's record
+    assert ls.stop_server(tmp_path) is False
+    assert unrelated_process.poll() is None
+
+
+def test_the_recorded_server_is_stopped_when_it_is_still_that_process(tmp_path, unrelated_process):
+    import psutil
+
+    created = psutil.Process(unrelated_process.pid).create_time()
+    _write_pid(tmp_path, pid=unrelated_process.pid, port=18866, create_time=created)
+    assert ls.stop_server(tmp_path) is True
+    assert unrelated_process.wait(timeout=10) is not None
+    assert not ls.pid_file_path(tmp_path).exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_sigterm_during_the_teardown_still_removes_the_record(started, monkeypatch):
+    """The verifier's case: SIGTERM while `run` stops its server after the answer."""
+    import os
+    import signal
+
+    from graph_agents_cli.run._signals import TerminationSignal, terminate_like_interrupt
+
+    _write_pid(started.root, pid=111)
+
+    def stop_and_get_signalled(pid, **_):
+        os.kill(os.getpid(), signal.SIGTERM)  # arrives in the middle of the teardown
+        started.terminated.append(pid)
+        return True
+
+    monkeypatch.setattr(ls, "_terminate_process", stop_and_get_signalled)
+    with pytest.raises(TerminationSignal), terminate_like_interrupt():
+        ls.stop_server(started.root, pid=111)
+    assert started.terminated == [111]
+    assert not ls.pid_file_path(started.root).exists()
+    # Idempotent: a second teardown finds nothing left to do.
+    assert ls.stop_server(started.root) is False
+
+
 def test_pid_file_is_written_atomically(started):
     ls.write_pid_file(started.root, pid=1, port=2, runtime="fastapi", checkpointer="memory")
     state_dir = started.root / ls.PID_DIR
@@ -342,9 +449,9 @@ def test_activity_heartbeat_stamps_until_stopped(started):
 def test_get_server_port(started, monkeypatch):
     assert ls.get_server_port(started.root) is None
     _write_pid(started.root, port=18085)
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
     assert ls.get_server_port(started.root) == 18085
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: False)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: False)
     assert ls.get_server_port(started.root) is None
 
 
@@ -452,9 +559,52 @@ def test_a_wildcard_listener_counts_as_in_use():
     assert ls.port_problem(18643) is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="TIME_WAIT bind semantics are POSIX")
+def test_a_port_whose_last_connections_linger_is_free():
+    """A restart right after a browser session: only TIME_WAIT/FIN_WAIT_2 sockets remain.
+
+    uvicorn binds with SO_REUSEADDR and starts fine there; the preflight used to
+    refuse the port for about 30 seconds.
+    """
+    import socket
+
+    port = 18861
+    server = _listen(port)
+    client = socket.create_connection(("127.0.0.1", port))
+    conn, _addr = server.accept()
+    conn.close()  # the server side closes first: its port goes to FIN_WAIT_2, then TIME_WAIT
+    server.close()
+    try:
+        time.sleep(0.1)
+        assert ls.port_problem(port) is None
+        client.close()
+        time.sleep(0.1)
+        assert ls.port_problem(port) is None
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_bind_probes_still_see_a_listener_that_does_not_answer(monkeypatch, host):
+    """The connect probe can miss a listener (a full backlog, a stopped process): the
+    binds still refuse it, the wildcard one included (the macOS shadowing case)."""
+    import socket
+
+    sock = _listen(18862, host=host)
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError())
+            )
+            problem = ls.port_problem(18862)
+    finally:
+        sock.close()
+    assert problem is not None and "cannot be bound" in problem
+
+
 def test_pinned_port_does_not_silently_reuse_a_server_elsewhere(started, monkeypatch):
     _write_pid(started.root, pid=111, port=18081)
-    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port: True)
+    monkeypatch.setattr(ls, "_is_server_alive", lambda pid, port, create_time=None: True)
     with pytest.raises(ls.PortUnavailableError, match="already running on port 18081"):
         ls.ensure_server(started.root, "app", runtime="fastapi", port=18644)
     # The same port is simply reused.

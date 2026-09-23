@@ -52,7 +52,7 @@ from graph_agents_cli._project import (
     require_agent_directory,
 )
 from graph_agents_cli.run._local_server import PortUnavailableError, port_problem
-from graph_agents_cli.run._signals import terminate_like_interrupt
+from graph_agents_cli.run._signals import shielded, terminate_like_interrupt
 
 _console = Console()
 
@@ -233,7 +233,10 @@ def _run_foreground(args: list[str], env: dict[str, str]) -> int:
         with terminate_like_interrupt():
             return proc.wait()
     except BaseException:
-        _stop_tree(proc)
+        # A second Ctrl-C or SIGTERM must not cut the stop short (it would leave
+        # the reloader's worker listening): it is handled once the tree is gone.
+        with shielded():
+            _stop_tree(proc)
         raise
 
 

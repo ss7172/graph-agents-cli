@@ -142,8 +142,8 @@ def test_overlapping_edit_is_left_alone_and_reported_with_the_change(
     assert result.exit_code == 0, result.output
     assert staging.read_text() == mine  # never a guess, never two redis: keys
     out = result.output
-    assert f"{STAGING}: your edits overlap the template's change" in out
-    assert "(template after)" in out and "+redis:" in out
+    assert f"{STAGING}: left as it is, because you changed the keys" in out
+    assert "redis: you set {enabled: true}; the new settings set {enabled: false}" in out
 
 
 def test_dry_run_changes_nothing_and_previews_the_merge(
