@@ -42,8 +42,10 @@ policy whose `startup_problems()` reports a misconfiguration stops it outside
 
 LangGraph Server's own meta routes (`/docs`, `/openapi.json`, `/info`,
 `/metrics`) are outside this auth. `langgraph dev` keeps them (LangGraph
-Studio reads `/info`); a deployed server image turns them off with
-`"disable_meta": true` in its `LANGGRAPH_HTTP`, which leaves only `/ok`.
+Studio reads `/info`). The server image built from the project's Dockerfile
+sets `"disable_meta": true` in its `LANGGRAPH_HTTP`, which removes them all
+but `/ok`; this app's own `/metrics` (optionally behind `METRICS_TOKEN`) is
+served in their place. A custom image must set the same flag.
 
 The retired name `product-session` is still read as `custom`, with a warning.
 """
@@ -59,6 +61,7 @@ import os
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
@@ -90,6 +93,9 @@ LEGACY_ALIASES = {"product-session": CUSTOM}
 # The one attribute key that may hold secrets: api name -> credential string,
 # forwarded by `app_utils.api_client` for `auth: forward` APIs.
 CREDENTIALS_KEY = "credentials"
+
+# Optional secret key of `Principal.hashed_id()` (HMAC-SHA256); unset = plain sha256.
+PRINCIPAL_HASH_SALT_ENV = "PRINCIPAL_HASH_SALT"
 
 _TRUE = ("1", "true", "yes", "on")
 
@@ -128,8 +134,19 @@ class Principal:
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def hashed_id(self) -> str:
-        """sha256 of the id, first 16 hex characters (what `metadata` trace capture records)."""
-        return hashlib.sha256(self.id.encode("utf-8")).hexdigest()[:16]
+        """The id hashed, first 16 hex characters: what logs, traces and run records carry.
+
+        HMAC-SHA256 keyed with `PRINCIPAL_HASH_SALT` when that is set, else
+        plain sha256 (the default, kept for compatibility). A secret salt stops
+        anyone holding logs or traces from confirming a guessed id (an email
+        address, say) by hashing it; changing the salt changes every hash, so
+        new hashes no longer match older logs and run records.
+        """
+        data = self.id.encode("utf-8")
+        salt = (os.environ.get(PRINCIPAL_HASH_SALT_ENV) or "").strip()
+        if salt:
+            return hmac.new(salt.encode("utf-8"), data, hashlib.sha256).hexdigest()[:16]
+        return hashlib.sha256(data).hexdigest()[:16]
 
     def public_attributes(self) -> dict[str, Any]:
         """`attributes` without `credentials`: safe to persist, log or trace."""
@@ -462,10 +479,19 @@ class JwksCache:
     """The issuer's signing keys, fetched from a JWKS URL and cached.
 
     Keys are refetched when the cache (`ttl_s`) expires and when a token
-    names a key id the cache does not know (key rotation). Fetch attempts,
-    including failed ones, are at most one per `refetch_interval_s`, so a
-    flood of tokens with random key ids cannot flood the issuer. A failed
-    refresh keeps the last good keys for `stale_grace_s` more.
+    names a key id the cache does not know (key rotation).
+
+    * Single flight: at most one fetch runs at a time; every request that
+      needs it waits for that fetch and shares its result (a rotated key is
+      fetched once however many requests carry it).
+    * Stale while revalidate: once the cache has expired, requests keep
+      verifying with the cached keys while a background fetch refreshes them,
+      so a slow or hanging issuer never stalls a request the cached keys can
+      verify. A failed refresh keeps the last good keys for `stale_grace_s`
+      more; after that requests wait for a fetch and get 503 when it fails.
+    * Bounded: fetch attempts, failed ones included, are at most one per
+      `refetch_interval_s` (a flood of tokens with random key ids cannot flood
+      the issuer), and each has a total deadline of twice `timeout_s`.
     """
 
     def __init__(
@@ -487,14 +513,7 @@ class JwksCache:
         self._keys: list[dict[str, Any]] = []
         self._fetched_at: float | None = None
         self._last_attempt: float | None = None
-        self._lock: asyncio.Lock | None = None
-        self._lock_loop: asyncio.AbstractEventLoop | None = None
-
-    def _get_lock(self) -> asyncio.Lock:
-        loop = asyncio.get_running_loop()
-        if self._lock is None or self._lock_loop is not loop:
-            self._lock, self._lock_loop = asyncio.Lock(), loop
-        return self._lock
+        self._task: asyncio.Task[bool] | None = None
 
     def _age(self, now: float) -> float | None:
         return None if self._fetched_at is None else now - self._fetched_at
@@ -510,33 +529,71 @@ class JwksCache:
     def _may_attempt(self, now: float) -> bool:
         return self._last_attempt is None or now - self._last_attempt >= self.refetch_interval_s
 
+    def _in_flight(self) -> asyncio.Task[bool] | None:
+        """The fetch running on this event loop, if any."""
+        task = self._task
+        if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+            return None
+        return task
+
+    def _start_fetch(self) -> asyncio.Task[bool]:
+        # No await between the callers' checks and this: one fetch per loop.
+        previous_attempt, self._last_attempt = self._last_attempt, self._clock()
+        self._task = asyncio.get_running_loop().create_task(self._refresh(previous_attempt))
+        return self._task
+
+    @staticmethod
+    async def _join(task: asyncio.Task[bool]) -> bool:
+        # Shielded: a request that goes away (client disconnect) does not
+        # cancel the fetch other requests are waiting for.
+        return await asyncio.shield(task)
+
     async def keys(self) -> list[dict[str, Any]]:
         """The current key set; raises `JwksUnavailable` when there is none to use."""
-        if self._fresh(self._clock()):
+        now = self._clock()
+        if self._fresh(now):
             return self._keys
-        async with self._get_lock():
-            if not self._fresh(self._clock()) and self._may_attempt(self._clock()):
-                await self._refresh()
-            if self._usable(self._clock()):
-                return self._keys
+        task = self._in_flight()
+        if task is None and self._may_attempt(now):
+            task = self._start_fetch()
+        if self._usable(now):
+            return self._keys  # the refresh (if any) completes in the background
+        if task is not None:
+            await self._join(task)
+        if self._usable(self._clock()):
+            return self._keys
         raise JwksUnavailable(self.url)
 
-    async def refresh_for_unknown_kid(self) -> bool:
-        """Refetch because a token named an unknown key id; False when rate-limited or failed."""
-        async with self._get_lock():
+    async def refresh_for_unknown_kid(self, kid: str | None = None) -> bool:
+        """Refetch because a token named an unknown key id `kid`.
+
+        True when the key set is worth looking at again: another request's
+        fetch already brought `kid`, or the fetch this call started or joined
+        succeeded. False when rate-limited or the fetch failed.
+        """
+        if kid is not None and any(k.get("kid") == kid for k in self._keys):
+            return True
+        task = self._in_flight()
+        if task is None:
             if not self._may_attempt(self._clock()):
                 return False
-            return await self._refresh()
+            task = self._start_fetch()
+        return await self._join(task)
 
-    async def _refresh(self) -> bool:
-        previous_attempt, self._last_attempt = self._last_attempt, self._clock()
+    async def idle(self) -> None:
+        """Wait until no fetch is running (for tests and orderly shutdown)."""
+        task = self._in_flight()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _refresh(self, previous_attempt: float | None) -> bool:
         try:
             # A total deadline too: the per-read timeout alone lets a server that
-            # trickles bytes hold the lock (and every request waiting on it).
+            # trickles bytes keep a fetch (and the requests waiting on it) going.
             keys = await asyncio.wait_for(self._fetch(), timeout=2 * self.timeout_s)
         except asyncio.CancelledError:
-            # The caller went away (client disconnect): not the issuer's fault,
-            # so the next request may try again at once.
+            # Stopped from outside (the event loop is shutting down), not the
+            # issuer's fault: the next request may try again at once.
             self._last_attempt = previous_attempt
             raise
         except Exception as exc:
@@ -746,8 +803,9 @@ class JwtPolicy:
         keys = await self._jwks_keys()
         jwk = self._select(keys, algorithm, kid)
         if jwk is None and kid is not None and all(k.get("kid") != kid for k in keys):
-            # Possibly a rotated key: refetch (rate-limited) and look again.
-            if await self.jwks.refresh_for_unknown_kid():
+            # Possibly a rotated key: refetch (one fetch shared by every request
+            # carrying it, rate-limited) and look again.
+            if await self.jwks.refresh_for_unknown_kid(kid):
                 keys = await self._jwks_keys()
                 jwk = self._select(keys, algorithm, kid)
         if jwk is None:
@@ -912,6 +970,36 @@ async def authenticate_and_authorize(
 
 ROLE_PERMISSION_PREFIX = "role:"
 
+# Where `build_sdk_auth` leaves the policy's 401 challenge (`WWW-Authenticate`)
+# in the request's ASGI state: LangGraph Server drops the headers of an auth
+# error, and `middleware.AuthErrorMiddleware` puts them back.
+AUTH_CHALLENGE_STATE_KEY = "auth_challenge"
+
+# The native API's thread copy (`POST /threads/{thread_id}/copy`).
+_THREAD_COPY_PATH = re.compile(r"(?:^|/)threads/[^/]+/copy/?$")
+# Whether the request being authorized is a thread copy. Set by the
+# authenticate handler for every request it sees (the resource handlers run
+# later in the same request, in the same context).
+_THREAD_COPY: ContextVar[bool] = ContextVar("thread_copy", default=False)
+
+
+def _is_thread_copy(request: Any) -> bool:
+    scope = getattr(request, "scope", None) or {}
+    path = scope.get("path") or ""
+    return scope.get("method") == "POST" and bool(_THREAD_COPY_PATH.search(path))
+
+
+def _stash_challenge(request: Any, headers: Mapping[str, str] | None) -> None:
+    """Keep a 401's `WWW-Authenticate` in the request state (see `AuthErrorMiddleware`)."""
+    challenge = next(
+        (v for k, v in (headers or {}).items() if k.lower() == "www-authenticate"), None
+    )
+    scope = getattr(request, "scope", None)
+    if challenge and isinstance(scope, dict):
+        state = scope.setdefault("state", {})
+        if isinstance(state, dict):
+            state[AUTH_CHALLENGE_STATE_KEY] = challenge
+
 
 def build_sdk_auth() -> Any:
     """A `langgraph_sdk.Auth` whose handlers delegate to the selected policy.
@@ -926,6 +1014,14 @@ def build_sdk_auth() -> Any:
       `AUTH_READ_ACROSS_ROLES` relaxes only the read and search filters
       (read-across roles may *read* others' threads, never change them), and
       an update can never change a thread's `principal_id` or `tenant`.
+      A copy (`POST /threads/{id}/copy`) is a write: it creates a thread that
+      keeps the source's metadata, owner included, so its source must be the
+      caller's own thread whatever the caller's roles.
+    * the raw principal id is kept only in the thread metadata, where the
+      owner filters need it. The server merges thread metadata into every
+      run's metadata (and from there into traced config metadata and
+      checkpoint metadata); a run on an existing thread therefore carries the
+      hashed id (`Principal.hashed_id()`) under `principal_id` instead.
     * assistants, crons, store: any authenticated principal may read (read,
       search, get, list_namespaces); create, update, put and delete are
       allowed only to a role listed in `AUTH_ADMIN_ROLES` (empty = nobody).
@@ -938,6 +1034,12 @@ def build_sdk_auth() -> Any:
     These handlers cover the native API called from outside the app; the
     custom routes' loopback SDK calls bypass the server's auth middleware, so
     `chat.py` enforces the thread rule in-app.
+
+    The server answers an auth error with a bare 401/403 (without the policy's
+    `WWW-Authenticate` challenge) and turns any other status (a policy's 503)
+    into a 500; `middleware.AuthErrorMiddleware`, installed by `fast_api_app.py`
+    under langgraph-server, restores both. It relies on the server's default
+    middleware order (no `"middleware_order": "auth_first"` in langgraph.json).
     """
     from langgraph_sdk import Auth
 
@@ -957,9 +1059,16 @@ def build_sdk_auth() -> Any:
         # auth); it is trusted as an admin under APP_ENV=dev only.
         return isinstance(ctx.user, Auth.types.StudioUser) and dev_mode()
 
+    def _reads_across(ctx: Any) -> bool:
+        return bool(_roles_of(ctx) & read_across_roles())
+
     def _owner_filter(ctx: Any) -> dict[str, Any] | None:
-        """Read filter: none for a read-across role, else the caller's own threads."""
-        if _roles_of(ctx) & read_across_roles():
+        """Read filter: none for a read-across role, else the caller's own threads.
+
+        The server's copy reads its source with this filter; a copy is a
+        write, so there the filter is the caller's own threads for every role.
+        """
+        if _reads_across(ctx) and not _THREAD_COPY.get():
             return None  # no filter: may read across principals
         return {"principal_id": ctx.user.identity}
 
@@ -986,10 +1095,13 @@ def build_sdk_auth() -> Any:
 
     @auth.authenticate
     async def authenticate(request: Any) -> dict[str, Any]:
+        _THREAD_COPY.set(_is_thread_copy(request))
         policy = get_policy()
         try:
             principal = await policy.authenticate(request)
         except HTTPException as exc:
+            if exc.status_code == 401:
+                _stash_challenge(request, exc.headers)
             raise Auth.exceptions.HTTPException(
                 status_code=exc.status_code, detail=str(exc.detail), headers=exc.headers
             ) from exc
@@ -1019,6 +1131,17 @@ def build_sdk_auth() -> Any:
 
     @auth.on.threads.create
     async def on_threads_create(ctx: Any, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict) and "metadata" not in value and not _THREAD_COPY.get():
+            # The server creates a thread without metadata only for a copy,
+            # which keeps its source's metadata (owner included) and ignores
+            # what is stamped here. Not recognised as a copy, its source may
+            # not have been limited to the caller's own threads: fail closed
+            # for the roles whose reads are not.
+            if _reads_across(ctx):
+                raise Auth.exceptions.HTTPException(
+                    status_code=403,
+                    detail="Read-across roles may read other principals' threads, not copy them.",
+                )
         metadata = _metadata_of(value)
         metadata["principal_id"] = ctx.user.identity
         metadata["tenant"] = None
@@ -1048,10 +1171,19 @@ def build_sdk_auth() -> Any:
 
     @auth.on.threads.create_run
     async def on_threads_create_run(ctx: Any, value: Any) -> dict[str, Any] | None:
-        # When the run creates its thread, the thread's metadata is the run's
-        # config metadata overlaid with this metadata: stamp both owner keys.
         metadata = _metadata_of(value)
-        metadata["principal_id"] = ctx.user.identity
+        if value.get("thread_id") is None or value.get("if_not_exists") == "create":
+            # The run may create its thread, whose metadata is then the run's
+            # config metadata overlaid with this metadata: stamp both owner
+            # keys. The raw id is the ownership stamp the filters compare, so
+            # it is needed here (and this run's metadata carries it too).
+            metadata["principal_id"] = ctx.user.identity
+        else:
+            # The thread exists and keeps its own stamp (the filter below
+            # checks it). The server copies the run's metadata, thread
+            # metadata merged in, into traces and checkpoints: override the
+            # raw id there with the hashed one.
+            metadata["principal_id"] = Principal(id=str(ctx.user.identity)).hashed_id()
         metadata["tenant"] = None
         return _strict_owner_filter(ctx)
 

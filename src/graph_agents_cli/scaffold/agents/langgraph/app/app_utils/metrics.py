@@ -14,6 +14,13 @@
 
 """Prometheus metrics served at `GET /metrics` (`METRICS_ENABLED`, default true).
 
+`METRICS_TOKEN` (optional, a secret): when set, `/metrics` answers only
+requests carrying `Authorization: Bearer <METRICS_TOKEN>` (401 otherwise), as
+defence in depth behind keeping the endpoint off the public ingress. `/health`
+and `/ready` stay open for the probes. Under langgraph-server this is the
+`/metrics` of the server image, which turns the server's own meta routes off
+(`disable_meta`); `langgraph dev` keeps the server's `/metrics` in front of it.
+
 Per process (scrape every replica):
 
 * `http_requests_total{method, route, status}` and
@@ -31,6 +38,7 @@ ids, principals or client input.
 
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Any
 
@@ -91,6 +99,26 @@ def metrics_enabled() -> bool:
     if raw in _FALSE:
         return False
     raise SettingsError(f"METRICS_ENABLED={raw!r} must be true or false.")
+
+
+def metrics_token() -> str | None:
+    """`METRICS_TOKEN`, or None when unset or blank (then `/metrics` needs no token)."""
+    token = (os.environ.get("METRICS_TOKEN") or "").strip()
+    return token or None
+
+
+def metrics_authorized(authorization: str | None) -> bool:
+    """True when no token is configured or `authorization` is `Bearer <METRICS_TOKEN>`."""
+    token = metrics_token()
+    if token is None:
+        return True
+    scheme, _, presented = (authorization or "").partition(" ")
+    presented = presented.strip()
+    return (
+        scheme.lower() == "bearer"
+        and bool(presented)
+        and hmac.compare_digest(presented.encode("utf-8"), token.encode("utf-8"))
+    )
 
 
 def render() -> tuple[bytes, str]:

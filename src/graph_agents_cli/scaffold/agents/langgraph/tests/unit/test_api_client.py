@@ -21,6 +21,7 @@ checked to happen before anything is sent.
 from __future__ import annotations
 
 import importlib
+import os
 import pkgutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -402,18 +403,78 @@ def _project_policy() -> ApiPolicy | None:
     return ApiPolicy.load(path) if path.is_file() else None
 
 
+def _tool_modules(package: Any) -> list[str]:
+    """Every module under the tools package, subpackages included (what lint reads).
+
+    `*.py` files anywhere below the package (hidden and cache directories
+    skipped, symlinked directories followed once), a subpackage's own
+    `__init__.py` included; the package's top-level `__init__.py` is the registry.
+    """
+    root = Path(package.__file__).resolve().parent
+    names: list[str] = []
+    seen: set[str] = set()
+    for directory, dirs, files in os.walk(root, followlinks=True):
+        real = os.path.realpath(directory)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
+        relative = Path(directory).relative_to(root)
+        for filename in sorted(files):
+            if not filename.endswith(".py") or (not relative.parts and filename == "__init__.py"):
+                continue
+            parts = [*relative.parts] + ([] if filename == "__init__.py" else [filename[:-3]])
+            names.append(".".join([package.__name__, *parts]))
+    return sorted(names)
+
+
 def test_every_tool_declares_calls_its_policy_allows() -> None:
-    """Every `API_CALLS` entry names a declared API and passes its rules (what lint checks)."""
+    """Every `API_CALLS` entry names a declared API and passes its rules (what lint checks).
+
+    Tool subpackages count: lint reads every module below `tools/`, and so does this test.
+    """
     import {{cookiecutter.agent_directory}}.tools as tools
 
     policy = _project_policy()
-    for info in pkgutil.iter_modules(tools.__path__):
-        module = importlib.import_module(f"{tools.__name__}.{info.name}")
+    modules = _tool_modules(tools)
+    # At least every module and subpackage `get_tools()` imports.
+    depth = len(tools.__name__.split("."))
+    walked = {name.split(".")[depth] for name in modules}
+    assert {info.name for info in pkgutil.iter_modules(tools.__path__)} <= walked
+    for name in modules:
+        module = importlib.import_module(name)
         for call in getattr(module, "API_CALLS", []):
-            assert policy is not None, (
-                f"{info.name} declares API calls but there is no api-policy.yaml"
-            )
+            assert policy is not None, f"{name} declares API calls but there is no api-policy.yaml"
             policy.check(call["api"], call["method"], call.get("operation_id"), call.get("path"))
+
+
+def test_the_tool_module_walk_covers_subpackages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk above reaches nested modules and subpackage `__init__`s, like lint."""
+    package = tmp_path / "walked_tools"
+    (package / "nested" / "deeper").mkdir(parents=True)
+    (package / "__pycache__").mkdir()
+    (package / ".hidden").mkdir()
+    for relative in (
+        "__init__.py",
+        "top.py",
+        "nested/__init__.py",
+        "nested/inner.py",
+        "nested/deeper/leaf.py",
+        "__pycache__/cached.py",
+        ".hidden/secret.py",
+    ):
+        (package / relative).write_text("API_CALLS = []\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    walked = importlib.import_module("walked_tools")
+    assert _tool_modules(walked) == [
+        "walked_tools.nested",
+        "walked_tools.nested.deeper.leaf",
+        "walked_tools.nested.inner",
+        "walked_tools.top",
+    ]
 
 
 def test_the_project_policy_is_valid() -> None:

@@ -20,14 +20,22 @@ action, then resource, then action, then the global handler).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from langgraph_sdk import Auth
+from starlette.requests import Request
 
-from {{cookiecutter.agent_directory}}.app_utils.auth import build_sdk_auth, reset_policy_cache
+from {{cookiecutter.agent_directory}}.app_utils.auth import (
+    Principal,
+    build_sdk_auth,
+    reset_policy_cache,
+)
+from {{cookiecutter.agent_directory}}.app_utils.middleware import AuthErrorMiddleware
 
 RESOURCE_ACTIONS = {
     "threads": ("create", "read", "update", "delete", "search", "create_run"),
@@ -52,9 +60,15 @@ WRITES = {
 }
 
 
+SOURCE = "11111111-1111-1111-1111-111111111111"
+COPY = "22222222-2222-2222-2222-222222222222"
+
+
 @pytest.fixture
 def auth(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     monkeypatch.setenv("AUTH_POLICY", "shared-bearer")
+    monkeypatch.setenv("API_KEY", "k")
+    monkeypatch.delenv("PRINCIPAL_HASH_SALT", raising=False)
     monkeypatch.setenv("AUTH_ADMIN_ROLES", "admin, platform")
     monkeypatch.setenv("AUTH_READ_ACROSS_ROLES", "support")
     monkeypatch.setenv("APP_ENV", "prod")
@@ -70,6 +84,18 @@ def _user(identity: str, *roles: str) -> Any:
         is_authenticated=True,
         permissions=["chat.send", *(f"role:{r}" for r in roles)],
     )
+
+
+def _http(method: str, path: str, authorization: str | None = "Bearer k") -> Request:
+    headers = [(b"authorization", authorization.encode())] if authorization else []
+    return Request(
+        {"type": "http", "method": method, "path": path, "headers": headers, "query_string": b""}
+    )
+
+
+async def _authenticate(auth: Any, method: str, path: str) -> None:
+    """What the server does first for every native API request (per-request state included)."""
+    await auth._authenticate_handler(request=_http(method, path))
 
 
 def _handler(auth: Any, resource: str, action: str) -> Any:
@@ -193,3 +219,120 @@ async def test_an_owner_cannot_hand_a_thread_to_another_principal(auth: Any) -> 
     assert await _dispatch(auth, _user("alice"), "threads", "update", {"thread_id": "t1"}) == {
         "principal_id": "alice"
     }
+
+
+async def test_a_copy_is_a_write_even_for_read_across_roles(auth: Any) -> None:
+    """The server's copy reads its source with the read filter, then authorizes a create
+    without metadata (the copy keeps the source's metadata, owner included)."""
+    support = _user("sam", "support")
+
+    async def copy_as(user: Any) -> Any:
+        await _authenticate(auth, "POST", f"/threads/{SOURCE}/copy")
+        source_filter = await _dispatch(auth, user, "threads", "read", {"thread_id": SOURCE})
+        await _dispatch(auth, user, "threads", "create", {"thread_id": COPY})
+        return source_filter
+
+    # The source is limited to the caller's own threads: alice's is "not found" to sam.
+    assert await copy_as(support) == {"principal_id": "sam"}
+    assert await copy_as(_user("alice")) == {"principal_id": "alice"}
+    # Everywhere else sam still reads across.
+    await _authenticate(auth, "GET", f"/threads/{SOURCE}")
+    assert await _dispatch(auth, support, "threads", "read", {"thread_id": SOURCE}) is None
+    await _authenticate(auth, "POST", "/threads/search")
+    assert await _dispatch(auth, support, "threads", "search", {}) is None
+    # A metadata-less create the handler cannot tell apart from a copy fails
+    # closed for read-across roles (the source filter may have been lifted).
+    await _authenticate(auth, "POST", f"/threads/{SOURCE}/fork")
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await _dispatch(auth, support, "threads", "create", {"thread_id": COPY})
+    assert exc.value.status_code == 403
+    assert await _dispatch(auth, _user("bob"), "threads", "create", {"thread_id": COPY}) == {
+        "principal_id": "bob"
+    }
+
+
+async def test_the_copy_flag_is_per_request(auth: Any) -> None:
+    """Concurrent requests (separate tasks, like the server's) never see each other's flag."""
+    support = _user("sam", "support")
+    gate = asyncio.Event()
+
+    async def copying() -> Any:
+        await _authenticate(auth, "POST", f"/threads/{SOURCE}/copy")
+        await gate.wait()
+        return await _dispatch(auth, support, "threads", "read", {"thread_id": SOURCE})
+
+    async def reading() -> Any:
+        await _authenticate(auth, "GET", f"/threads/{SOURCE}")
+        gate.set()
+        return await _dispatch(auth, support, "threads", "read", {"thread_id": SOURCE})
+
+    assert await asyncio.gather(copying(), reading()) == [{"principal_id": "sam"}, None]
+
+
+async def test_native_runs_on_existing_threads_carry_the_hashed_owner_id(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRINCIPAL_HASH_SALT", "pepper")
+    alice = _user("alice@example.com")
+    hashed = Principal(id="alice@example.com").hashed_id()
+    run: dict[str, Any] = {"thread_id": SOURCE, "if_not_exists": "reject", "metadata": {}}
+    assert await _dispatch(auth, alice, "threads", "create_run", run) == {
+        "principal_id": "alice@example.com"  # the filter still checks the thread's raw stamp
+    }
+    assert run["metadata"] == {"principal_id": hashed, "tenant": None}
+    # A run that may create its thread stamps the raw id: it becomes the thread's owner.
+    for creating in (
+        {"thread_id": SOURCE, "if_not_exists": "create", "metadata": {}},
+        {"thread_id": None, "metadata": {"principal_id": "mallory"}},
+    ):
+        await _dispatch(auth, alice, "threads", "create_run", creating)
+        assert creating["metadata"]["principal_id"] == "alice@example.com"
+
+
+async def test_the_native_api_gets_the_policys_challenge_and_status(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LangGraph Server keeps only the detail of a 401 and turns a 503 into a 500.
+
+    The fake below behaves like its auth middleware: it calls the authenticate
+    handler, answers 401/403 bare and lets any other status escape.
+    """
+
+    async def server(scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await auth._authenticate_handler(request=Request(scope, receive))
+        except Auth.exceptions.HTTPException as exc:
+            if exc.status_code not in (401, 403):
+                raise
+            await send({"type": "http.response.start", "status": exc.status_code, "headers": []})
+            await send({"type": "http.response.body", "body": b'{"detail": "bare"}'})
+            return
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=AuthErrorMiddleware(server)), base_url="http://server"
+    )
+    async with client:
+        r = await client.get("/assistants/search", headers={"Authorization": "Bearer wrong"})
+        assert r.status_code == 401 and r.headers["www-authenticate"] == "Bearer"
+        r = await client.get("/assistants/search", headers={"Authorization": "Bearer k"})
+        assert r.status_code == 200 and "www-authenticate" not in r.headers
+        monkeypatch.delenv("API_KEY")  # a misconfigured policy answers 503, not 500
+        r = await client.get("/assistants/search", headers={"Authorization": "Bearer k"})
+        assert r.status_code == 503 and "API_KEY is not configured" in r.json()["detail"]
+
+
+async def test_the_auth_error_middleware_leaves_other_errors_alone() -> None:
+    async def failing(scope: Any, receive: Any, send: Any) -> None:
+        raise RuntimeError("not an auth error")
+
+    async def late(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise Auth.exceptions.HTTPException(status_code=503)
+
+    for app in (failing, late):
+        transport = httpx.ASGITransport(app=AuthErrorMiddleware(app))
+        async with httpx.AsyncClient(transport=transport, base_url="http://server") as client:
+            with pytest.raises((RuntimeError, Auth.exceptions.HTTPException)):
+                await client.get("/threads")
