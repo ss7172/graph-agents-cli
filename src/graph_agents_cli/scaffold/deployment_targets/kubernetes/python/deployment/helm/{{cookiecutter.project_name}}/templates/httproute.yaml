@@ -16,10 +16,14 @@ spec:
     - {{ .Values.gateway.hostname | quote }}
   {{- end }}
   rules:
+    # Only the agent's API (route.publicPaths, plus route.devPaths under
+    # APP_ENV=dev): /health, /ready and /metrics are not published.
     - matches:
+        {{- range (include "agent.publicPaths" . | fromYamlArray) }}
         - path:
-            type: PathPrefix
-            value: /
+            type: {{ .type }}
+            value: {{ .path | quote }}
+        {{- end }}
       backendRefs:
         - name: {{ include "agent.fullname" . }}
           port: {{ .Values.service.port }}

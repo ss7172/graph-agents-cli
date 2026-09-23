@@ -26,7 +26,9 @@
 #   helm-push: `graph-agents-cli deploy --env prod --image ...` on the
 #              self-hosted runner runs helm with the already pushed image, with
 #              the kubeconfig of the `production` environment, then verifies the
-#              rollout (rollout status, /health and /ready through a port-forward).
+#              rollout (rollout status, /health and /ready through a port-forward),
+#              both in one kube context (environments.prod.context, else the
+#              kubeconfig's current one).
 # This file is copied verbatim into the project (not rendered).
 
 name: promote-to-prod
@@ -56,6 +58,7 @@ jobs:
       chart_path: ${{ steps.settings.outputs.chart_path }}
       release: ${{ steps.settings.outputs.release }}
       namespace: ${{ steps.settings.outputs.namespace }}
+      kube_context: ${{ steps.settings.outputs.kube_context }}
       graph_agents_cli_spec: ${{ steps.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
@@ -65,15 +68,22 @@ jobs:
         run: |
           # .github/agent.env is data and is never sourced: each NAME=VALUE line is
           # checked and copied to GITHUB_ENV, so a value may hold spaces or shell
-          # metacharacters (a PEP 508 install spec, for example). Comment and blank
-          # lines are skipped; blanks around the value, one pair of quotes around it
-          # and a trailing " # comment" are dropped (no escapes, no expansion).
+          # metacharacters (a PEP 508 install spec, for example). Only the settings
+          # listed in `known` are accepted: any other name (BASH_ENV, SHELLOPTS, PS4,
+          # PATH, PYTHONPATH, ...) could change how later steps run. To add a setting,
+          # extend `known` in all three workflows. Comment and blank lines are skipped;
+          # blanks around the value, one pair of quotes around it and a trailing
+          # " # comment" are dropped (no escapes, no expansion). Nothing reaches
+          # GITHUB_ENV unless the whole file is valid.
           file=.github/agent.env
+          known="IMAGE_REPOSITORY RELEASE_NAME CHART_PATH RUNTIME CD GRAPH_AGENTS_CLI_SPEC"
           if [ ! -f "$file" ]; then
             echo "::error file=$file::$file is missing: it holds the project settings these workflows read." >&2
             exit 1
           fi
           lineno=0
+          seen=" "
+          settings=()
           while IFS= read -r line || [ -n "$line" ]; do
             lineno=$((lineno + 1))
             line="${line%$'\r'}"
@@ -89,12 +99,24 @@ jobs:
             fi
             name="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
-            case "$name" in
-              GITHUB_* | RUNNER_* | ACTIONS_* | PATH | HOME | BASH_ENV | ENV | NODE_OPTIONS | LD_*)
-                echo "::error file=$file,line=$lineno::$name cannot be set from $file." >&2
+            case " $known " in
+              *" $name "*) ;;
+              *)
+                hint=""
+                if [ "$name" = CLI_VERSION_PIN ]; then
+                  hint=" (replaced by GRAPH_AGENTS_CLI_SPEC=<install spec>)"
+                fi
+                echo "::error file=$file,line=$lineno::$name is not a setting these workflows read${hint}; known: $known." >&2
                 exit 1
                 ;;
             esac
+            case "$seen" in
+              *" $name "*)
+                echo "::error file=$file,line=$lineno::$name is set twice." >&2
+                exit 1
+                ;;
+            esac
+            seen="$seen$name "
             value="${value#"${value%%[![:space:]]*}"}"
             quote="${value:0:1}"
             if [ "$quote" = '"' ] || [ "$quote" = "'" ]; then
@@ -108,8 +130,15 @@ jobs:
               value="${value%%[[:space:]]#*}"
               value="${value%"${value##*[![:space:]]}"}"
             fi
-            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+            if [[ "$value" == *[[:cntrl:]]* ]]; then
+              echo "::error file=$file,line=$lineno::$name: control characters are not allowed in a value." >&2
+              exit 1
+            fi
+            settings+=("$name=$value")
           done < "$file"
+          if [ "${#settings[@]}" -gt 0 ]; then
+            printf '%s\n' "${settings[@]}" >> "$GITHUB_ENV"
+          fi
 
       - name: Resolve the tag to promote
         id: settings
@@ -159,6 +188,12 @@ jobs:
             echo "::error file=$manifest::Invalid prod namespace '$NAMESPACE'." >&2
             exit 1
           fi
+          # The kube context `deploy` uses; empty = the kubeconfig's current one.
+          KUBE_CONTEXT="$(yq -r '.environments.prod.context // ""' "$manifest")"
+          if [ -n "$KUBE_CONTEXT" ] && { ! [[ "$KUBE_CONTEXT" =~ ^[[:graph:]]+$ ]] || [[ "$KUBE_CONTEXT" == -* ]]; }; then
+            echo "::error file=$manifest::Invalid prod kube context '$KUBE_CONTEXT'." >&2
+            exit 1
+          fi
           if ! [[ "$RELEASE_NAME" =~ ^[a-z0-9]([-a-z0-9]{0,51}[a-z0-9])?$ ]]; then
             echo "::error file=.github/agent.env::Invalid RELEASE_NAME '$RELEASE_NAME'." >&2
             exit 1
@@ -170,6 +205,7 @@ jobs:
             echo "chart_path=${CHART_PATH}"
             echo "release=${RELEASE_NAME}"
             echo "namespace=${NAMESPACE}"
+            echo "kube_context=${KUBE_CONTEXT}"
             echo "graph_agents_cli_spec=${GRAPH_AGENTS_CLI_SPEC}"
           } >> "$GITHUB_OUTPUT"
 
@@ -188,6 +224,9 @@ jobs:
       # fine-grained PAT or a GitHub App token as GH_PR_TOKEN to lift that limit.
       GH_TOKEN: ${{ secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN }}
       GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+      # The CLI's own `deploy`: no extension (committed, or installed on the
+      # runner) can replace it while it holds the PR token.
+      GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -223,9 +262,13 @@ jobs:
       contents: read
     env:
       GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+      # The CLI's own `deploy`: no extension (committed, or installed on the
+      # runner) can replace it while it holds the cluster credentials.
+      GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
       IMAGE: ${{ needs.settings.outputs.image }}
       RELEASE: ${{ needs.settings.outputs.release }}
       NAMESPACE: ${{ needs.settings.outputs.namespace }}
+      MANIFEST_CONTEXT: ${{ needs.settings.outputs.kube_context }}
       GRAPH_AGENTS_CLI_SPEC: ${{ needs.settings.outputs.graph_agents_cli_spec }}
     steps:
       - name: Checkout code
@@ -250,22 +293,48 @@ jobs:
           printf '%s\n' "$DEPLOY_KUBECONFIG" > "$RUNNER_TEMP/kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
 
+      - name: Resolve the kube context
+        # One context for the deploy and the checks after it, passed to both:
+        # the manifest's environments.prod.context when set, else the current
+        # context of DEPLOY_KUBECONFIG (what `deploy` itself would pick).
+        run: |
+          if ! command -v kubectl >/dev/null 2>&1; then
+            echo "::error::kubectl is not on the runner's PATH; the deploy and its checks need it." >&2
+            exit 1
+          fi
+          context="${MANIFEST_CONTEXT:-}"
+          if [ -z "$context" ]; then
+            context="$(kubectl config current-context 2>/dev/null || true)"
+          fi
+          if [ -z "$context" ]; then
+            echo "::error::No kube context: set environments.prod.context in graph-agents-cli-manifest.yaml or a current-context in DEPLOY_KUBECONFIG." >&2
+            exit 1
+          fi
+          if ! [[ "$context" =~ ^[[:graph:]]+$ ]] || [[ "$context" == -* ]]; then
+            echo "::error::Invalid kube context name '$context'." >&2
+            exit 1
+          fi
+          if ! kubectl config get-contexts "$context" >/dev/null 2>&1; then
+            echo "::error::Kube context '$context' is not in the DEPLOY_KUBECONFIG of the production environment." >&2
+            exit 1
+          fi
+          echo "Kube context: $context"
+          echo "KUBE_CONTEXT=$context" >> "$GITHUB_ENV"
+
       - name: Deploy to production
         # `deploy --image` in helm-push mode runs helm only (the image is already
-        # pushed); --yes accepts the kubeconfig's current context without a prompt.
+        # pushed), in the context resolved above; --yes: no prompt.
         run: |
-          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE" --yes
+          uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli deploy --env prod --image "$IMAGE" --context "$KUBE_CONTEXT" --yes
 
       - name: Verify the rollout
         run: |
           : "${NAMESPACE:?the settings job resolved no namespace}" "${RELEASE:?the settings job resolved no release}"
-          if ! command -v kubectl >/dev/null 2>&1; then
-            echo "::error::kubectl is not on the runner's PATH; it is needed to verify the rollout." >&2
-            exit 1
-          fi
-          kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE" --timeout=300s
+          : "${KUBE_CONTEXT:?no kube context was resolved}"
+          # The cluster `deploy` just used (the same context).
+          kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" rollout status "deployment/$RELEASE" --timeout=300s
           log="$RUNNER_TEMP/port-forward.log"
-          kubectl -n "$NAMESPACE" port-forward "service/$RELEASE" :http > "$log" 2>&1 &
+          kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" port-forward "service/$RELEASE" :http > "$log" 2>&1 &
           forward=$!
           trap 'kill "$forward" 2>/dev/null || true' EXIT
           port=""

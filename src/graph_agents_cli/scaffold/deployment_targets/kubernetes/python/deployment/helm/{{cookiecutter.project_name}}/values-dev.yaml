@@ -1,6 +1,8 @@
 # dev: a local-load cluster or a dev namespace. Bundled Postgres, no gateway.
 env:
   APP_ENV: dev
+# The pods start even before the app Secret exists (staging and prod require it).
+secretOptional: true
 postgresql:
   enabled: true
 {%- if cookiecutter.runtime == 'langgraph-server' %}
@@ -11,8 +13,9 @@ gateway:
   enabled: false
 image:
   # Set per deploy (`graph-agents-cli deploy --env dev` passes the tag it built;
-  # in argocd mode it writes it here). Empty until then: the chart refuses to
-  # render without a tag rather than roll out an image that was never pushed.
+  # in argocd mode it writes it here, quoted). Empty until then: the chart
+  # refuses to render without a tag rather than roll out an image that was
+  # never pushed.
   tag: ""
   pullPolicy: IfNotPresent
 tracing:

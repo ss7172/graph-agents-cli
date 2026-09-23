@@ -1,6 +1,8 @@
 # staging: external Postgres (POSTGRES_DSN / DATABASE_URI from the Secret), gateway on.
 env:
   APP_ENV: staging
+# The app Secret is required: without it the pods do not start (no keys).
+secretOptional: false
 postgresql:
   enabled: false
 {%- if cookiecutter.runtime == 'langgraph-server' %}
