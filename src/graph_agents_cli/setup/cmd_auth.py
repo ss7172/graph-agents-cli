@@ -646,6 +646,8 @@ def write_env(env_file: Path, entries: dict[str, str]) -> None:
         if not match or match.group("key") not in pending:
             continue
         value = line[match.end() :].strip()
+        # Blank as python-dotenv (every reader) sees it: `KEY=`, `KEY=""  # note`.
+        # An unquoted `KEY=  # note` is the value "# note" to dotenv, so it is set.
         if value.split(" #", 1)[0].strip() not in _BLANK_VALUES:
             continue
         key = match.group("key")
