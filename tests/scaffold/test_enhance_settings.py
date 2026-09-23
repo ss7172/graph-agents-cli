@@ -184,6 +184,34 @@ def test_force_path_reconciles_like_the_smart_merge(
     assert read_manifest(project)["secrets"]["keys"] == read_manifest(fresh)["secrets"]["keys"]
 
 
+def test_force_path_keeps_the_recorded_project_name_in_a_differently_named_checkout(
+    run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-folder render used to take the directory name, renaming the project
+    (and rendering a second chart under deployment/helm/<directory>)."""
+    project = _fresh(run_create, "agent")
+    checkout = project.with_name("my-checkout")
+    project.rename(checkout)
+
+    def fake_execute(args, project_version, use_different_version):
+        monkeypatch.setenv(enhance_mod._ENV_USING_SAVED_CONFIG, "1")
+        try:
+            sub = CliRunner().invoke(enhance, args[2:], catch_exceptions=False)
+        finally:
+            monkeypatch.delenv(enhance_mod._ENV_USING_SAVED_CONFIG, raising=False)
+        assert sub.exit_code == 0, sub.output
+        assert "Using the project name recorded in graph-agents-cli-manifest.yaml: agent" in (
+            sub.output
+        )
+        return True
+
+    monkeypatch.setattr(enhance_mod, "_execute_with_saved_config", fake_execute)
+    result = _enhance(checkout, monkeypatch, "--runtime", "langgraph-server", "--force")
+    assert result.exit_code == 0, result.output
+    assert read_manifest(checkout)["name"] == "agent"
+    assert "my-checkout" not in (checkout / "deployment/helm/mini/values.yaml").read_text()
+
+
 # ---------------------------------------------------------------------------
 # model provider
 # ---------------------------------------------------------------------------
