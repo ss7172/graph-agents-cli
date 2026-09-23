@@ -49,6 +49,7 @@ from .upgrade import (
     FileCompareResult,
     compare_all_files,
     group_results_by_action,
+    merged_config_text,
 )
 
 console = Console()
@@ -287,6 +288,14 @@ def display_results(
             console.print(f"  [dim]-[/dim] {result.path}")
         console.print()
 
+    if groups.get("merge"):
+        console.print(
+            "[bold green]Will merge the template's change into your edited config:[/bold green]"
+        )
+        for result in groups["merge"]:
+            console.print(f"  [green]✓[/green] {result.path}")
+        console.print()
+
     if groups["new"]:
         console.print("[bold yellow]Files to add:[/bold yellow]")
         for result in groups["new"]:
@@ -429,8 +438,9 @@ def apply_changes(
     dry_run: bool,
     prefer_new: bool = False,
     interactive: bool = False,
+    old_template_dir: pathlib.Path | None = None,
 ) -> dict[str, int]:
-    """Apply file changes to the project."""
+    """Apply file changes to the project (``merge`` results need ``old_template_dir``)."""
     counts = {
         "updated": 0,
         "added": 0,
@@ -438,6 +448,7 @@ def apply_changes(
         "skipped": 0,
         "conflicts_kept": 0,
         "conflicts_updated": 0,
+        "merged": 0,
     }
 
     if dry_run:
@@ -447,6 +458,19 @@ def apply_changes(
     for result in groups["auto_update"]:
         if copy_file(new_template_dir / result.path, project_dir / result.path):
             counts["updated"] += 1
+
+    for result in groups.get("merge", []):
+        merged = (
+            merged_config_text(project_dir, old_template_dir, new_template_dir, result.path)
+            if old_template_dir is not None
+            else None
+        )
+        if merged is None:
+            # Classified as mergeable a moment ago; never guess if that changed.
+            counts["skipped"] += 1
+            continue
+        (project_dir / result.path).write_text(merged, encoding="utf-8")
+        counts["merged"] += 1
 
     for result in groups["new"]:
         if copy_file(new_template_dir / result.path, project_dir / result.path):
@@ -500,6 +524,20 @@ def apply_changes(
     return counts
 
 
+def print_followups(followups: list[str], *, dry_run: bool = False) -> None:
+    """Print what the developer still has to do by hand, one numbered item each."""
+    if not followups:
+        return
+    console.print()
+    title = "Left for you after applying" if dry_run else "Left for you"
+    console.print(f"[bold yellow]{title}:[/bold yellow]")
+    for number, item in enumerate(followups, 1):
+        first, _, rest = item.partition("\n")
+        console.print(f"  {number}. {escape(first)}")
+        if rest:
+            console.print(rest.rstrip("\n"), highlight=False, markup=False)
+
+
 def run_three_way_merge(
     *,
     project_dir: pathlib.Path,
@@ -516,7 +554,8 @@ def run_three_way_merge(
     interactive: bool = False,
     operation_label: str = "upgrade",
     pre_apply_hook: Callable[[pathlib.Path], bool] | None = None,
-    post_apply_hook: Callable[[pathlib.Path, str], None] | None = None,
+    post_apply_hook: Callable[[pathlib.Path, str], list[str] | None] | None = None,
+    merge_config: bool = False,
 ) -> bool:
     """Shared 3-way merge pipeline used by both *upgrade* and *enhance*.
 
@@ -539,7 +578,10 @@ def run_three_way_merge(
         interactive: Allow interactive conflict-resolution prompts.
         operation_label: Human-readable verb for prompt/log text.
         pre_apply_hook: Callback invoked before files are written; return False to abort.
-        post_apply_hook: Callback invoked after files are written (and deps merged).
+        post_apply_hook: Callback invoked after files are written (and deps merged);
+            it may return follow-up items for the developer, printed at the end.
+        merge_config: Merge the config files the new settings re-render
+            (``upgrade.STRUCTURAL_CONFIG_FILES``) instead of skipping them (enhance).
 
     Returns:
         True if the pipeline completed (changes applied, user cancelled, or
@@ -591,8 +633,10 @@ def run_three_way_merge(
             old_template_project,
             new_template_project,
             agent_directory,
+            merge_config=merge_config,
         )
         groups = group_results_by_action(results)
+        followups = [r.followup for r in results if r.followup]
 
         dep_resolutions: list[DependencyResolution] = []
         merge_dependencies = MERGE_DEPENDENCY_HANDLERS.get(language)
@@ -626,10 +670,14 @@ def run_three_way_merge(
             + len(groups["new"])
             + len(groups["removed"])
             + len(groups["conflict"])
+            + len(groups["merge"])
         )
         has_dep_changes = any(r.status != "unchanged" for r in dep_resolutions)
         if total_changes == 0 and not has_dep_changes:
+            if post_apply_hook and not dry_run:
+                followups.extend(post_apply_hook(project_dir, language) or [])
             console.print(f"[bold green]✅[/bold green] No changes needed!{baseline_label}")
+            print_followups(followups, dry_run=dry_run)
             return True
 
         if interactive and not dry_run:
@@ -658,6 +706,7 @@ def run_three_way_merge(
             dry_run=dry_run,
             prefer_new=prefer_new,
             interactive=interactive,
+            old_template_dir=old_template_project,
         )
 
         write_dependencies = WRITE_DEPENDENCY_HANDLERS.get(language)
@@ -673,7 +722,7 @@ def run_three_way_merge(
             )
 
         if post_apply_hook and not dry_run:
-            post_apply_hook(project_dir, language)
+            followups.extend(post_apply_hook(project_dir, language) or [])
 
         console.print()
         if dry_run:
@@ -683,6 +732,8 @@ def run_three_way_merge(
             )
         else:
             console.print(f"  Updated: {counts['updated']} files")
+            if counts["merged"]:
+                console.print(f"  Merged into your edits: {counts['merged']} files")
             console.print(f"  Added: {counts['added']} files")
             console.print(f"  Removed: {counts['removed']} files")
             if counts["conflicts_kept"] or counts["conflicts_updated"]:
@@ -695,6 +746,7 @@ def run_three_way_merge(
                 f"[bold green]✅ {operation_label.capitalize()} complete![/bold green]"
                 f"{baseline_label}"
             )
+        print_followups(followups, dry_run=dry_run)
 
         return True
 

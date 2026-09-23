@@ -57,6 +57,19 @@ FILE_CATEGORIES: dict[str, list[str]] = {
 }
 
 
+# Config files a runtime, model provider, target or CD change re-renders. Under
+# ``scaffold enhance`` (``merge_config=True``) they are merged three-way instead
+# of skipped: an untouched copy takes the template's new version, an edited one
+# gets the template's change applied around the developer's edits, and edits
+# that overlap are left alone and reported. ``.env`` (secrets), ``api-policy.yaml``
+# and the eval datasets never are: an enhance does not change them.
+STRUCTURAL_CONFIG_FILES: list[str] = [
+    ".env.example",
+    "deployment/helm/*/values-*.yaml",
+    "deployment/argocd/**",
+]
+
+
 # Preserve type literals for type-safe reason matching
 PreserveType = Literal["gacli_unchanged", "already_current", "unchanged_both", None]
 
@@ -67,7 +80,7 @@ class FileCompareResult:
 
     path: str
     category: str
-    action: Literal["auto_update", "preserve", "skip", "conflict", "new", "removed"]
+    action: Literal["auto_update", "preserve", "skip", "conflict", "new", "removed", "merge"]
     reason: str
     # For preserve actions, indicates why preserved
     preserve_type: PreserveType = None
@@ -75,6 +88,8 @@ class FileCompareResult:
     current_hash: str | None = None
     old_template_hash: str | None = None
     new_template_hash: str | None = None
+    # Something the developer still has to do for this file (printed after the run).
+    followup: str | None = None
 
 
 class DependencyReadError(Exception):
@@ -129,6 +144,11 @@ def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
     return False
 
 
+def is_structural_config(path: str) -> bool:
+    """True for a config file the enhanced settings re-render (``STRUCTURAL_CONFIG_FILES``)."""
+    return _matches_any_pattern(path, STRUCTURAL_CONFIG_FILES)
+
+
 def categorize_file(path: str, agent_directory: str = "app") -> str:
     """Return category: agent_code, config_files, dependencies, or scaffolding."""
     for category, patterns in FILE_CATEGORIES.items():
@@ -156,6 +176,8 @@ def three_way_compare(
     old_template_dir: pathlib.Path,
     new_template_dir: pathlib.Path,
     agent_directory: str = "app",
+    *,
+    merge_config: bool = False,
 ) -> FileCompareResult:
     """Compare file across current, old template, and new template.
 
@@ -163,6 +185,9 @@ def three_way_compare(
     - current == old -> auto-update (user didn't modify)
     - old == new -> preserve (the CLI didn't change)
     - all differ -> conflict
+
+    ``merge_config`` (enhance) gives the ``STRUCTURAL_CONFIG_FILES`` a three-way
+    merge instead of the config-file skip.
     """
     category = categorize_file(relative_path, agent_directory)
 
@@ -200,6 +225,11 @@ def three_way_compare(
             category=category,
             action="skip",
             reason="Agent code (never modified by upgrade)",
+        )
+
+    if category == "config_files" and merge_config and is_structural_config(relative_path):
+        return _compare_structural_config(
+            relative_path, current_file, old_template_file, new_template_file, category
         )
 
     if category == "config_files":
@@ -329,6 +359,116 @@ def three_way_compare(
         old_template_hash=old_hash,
         new_template_hash=new_hash,
     )
+
+
+def _read_text(path: pathlib.Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _compare_structural_config(
+    relative_path: str,
+    current_file: pathlib.Path,
+    old_template_file: pathlib.Path,
+    new_template_file: pathlib.Path,
+    category: str,
+) -> FileCompareResult:
+    """Three-way handling of a config file the enhanced settings re-render (see STRUCTURAL_CONFIG_FILES)."""
+    from .merge3 import merge3_checked, template_diff
+
+    current_hash = _file_hash(current_file)
+    old_hash = _file_hash(old_template_file)
+    new_hash = _file_hash(new_template_file)
+    hashes = {
+        "current_hash": current_hash,
+        "old_template_hash": old_hash,
+        "new_template_hash": new_hash,
+    }
+    if old_hash == new_hash:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="skip",
+            reason="Config file (not changed by the new settings)",
+            **hashes,
+        )
+    if new_hash is None:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="skip",
+            reason="Config file the new settings no longer render (kept)",
+            followup=(
+                f"{relative_path}: no longer part of the template for the new settings; it "
+                "was kept, delete it if nothing uses it any more"
+            ),
+            **hashes,
+        )
+    if current_hash == new_hash:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="preserve",
+            reason="Already up to date",
+            preserve_type="already_current",
+            **hashes,
+        )
+    if current_hash == old_hash:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="auto_update",
+            reason="Config file you did not modify: updated for the new settings",
+            **hashes,
+        )
+    old_text = _read_text(old_template_file) if old_hash is not None else ""
+    current_text = _read_text(current_file)
+    new_text = _read_text(new_template_file)
+    merged = (
+        None
+        if old_text is None or current_text is None or new_text is None
+        else merge3_checked(old_text, current_text, new_text, relative_path)
+    )
+    if merged is not None:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="merge",
+            reason="Config file you modified: the template's change is merged around your edits",
+            **hashes,
+        )
+    diff = template_diff(old_text or "", new_text or "", relative_path)
+    return FileCompareResult(
+        path=relative_path,
+        category=category,
+        action="skip",
+        reason="Config file you modified where the template changed the same lines (kept)",
+        followup=(
+            f"{relative_path}: your edits overlap the template's change for the new settings, "
+            "so the file was left as it is. Apply this change by hand:\n" + diff
+        ),
+        **hashes,
+    )
+
+
+def merged_config_text(
+    project_dir: pathlib.Path,
+    old_template_dir: pathlib.Path,
+    new_template_dir: pathlib.Path,
+    relative_path: str,
+) -> str | None:
+    """The three-way merge of a ``merge`` result, or None when it no longer merges cleanly."""
+    from .merge3 import merge3_checked
+
+    old_file = old_template_dir / relative_path
+    old_text = _read_text(old_file) if old_file.exists() else ""
+    current_text = _read_text(project_dir / relative_path)
+    new_text = _read_text(new_template_dir / relative_path)
+    if old_text is None or current_text is None or new_text is None:
+        return None
+    return merge3_checked(old_text, current_text, new_text, relative_path)
 
 
 def collect_all_files(
@@ -589,8 +729,10 @@ def compare_all_files(
     old_template_dir: pathlib.Path,
     new_template_dir: pathlib.Path,
     agent_directory: str = "app",
+    *,
+    merge_config: bool = False,
 ) -> list[FileCompareResult]:
-    """Compare all files using 3-way comparison."""
+    """Compare all files using 3-way comparison (``merge_config``: see ``three_way_compare``)."""
     all_files = collect_all_files(project_dir, old_template_dir, new_template_dir)
 
     results = []
@@ -601,6 +743,7 @@ def compare_all_files(
             old_template_dir,
             new_template_dir,
             agent_directory,
+            merge_config=merge_config,
         )
         results.append(result)
 
@@ -618,6 +761,7 @@ def group_results_by_action(
         "conflict": [],
         "new": [],
         "removed": [],
+        "merge": [],
     }
 
     for result in results:
