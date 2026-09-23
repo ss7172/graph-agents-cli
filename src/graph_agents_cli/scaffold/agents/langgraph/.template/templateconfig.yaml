@@ -1,0 +1,28 @@
+# Copyright 2026 Google LLC
+# Modifications Copyright 2026 graph-agents-cli contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Read by the CLI when the template is selected; never copied into the
+# generated project, because the overlay skips .template/.
+name: "langgraph"
+description: "LangGraph ReAct agent served over a chat SSE API and A2A, with a FastAPI or LangGraph Server runtime, Postgres persistence, and a Helm chart"
+# empty_py leaves out any agent layer, so this template supplies its own
+# agent, server, tests, dependency locks and deployment files.
+base_template: "empty_py"
+example_question: "What's the weather in San Francisco?"
+settings:
+  language: "python"
+  deployment_targets: ["kubernetes", "none"]
+  agent_directory: "app"
+  tags: ["langgraph", "a2a"]

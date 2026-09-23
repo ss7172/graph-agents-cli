@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "greeting",
+      "messages": [{"role": "user", "content": "hi"}],
+      "expect": {"contains": ["Hello"], "no_tool_calls": true},
+      "judge": {"response_quality": {"threshold": 4}},
+      "reference": "A short, friendly greeting that offers help.",
+      "metadata": {"category": "smoke"}
+    },
+    {
+      "id": "weather",
+      "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+      "expect": {
+        "contains": ["sunny"],
+        "tool_calls": [{"name": "get_weather", "args_subset": {"query": "Paris"}}]
+      },
+      "reference": "It's 90 degrees and sunny in Paris.",
+      "context": "get_weather returns \"It's 90 degrees and sunny.\" for every place except San Francisco.",
+      "metadata": {"category": "tools"}
+    },
+    {
+      "id": "capabilities",
+      "messages": [{"role": "user", "content": "What can you do?"}],
+      "expect": {
+        "regex": "(?i)\\bweather\\b",
+        "not_contains": ["Traceback", "PolicyViolation"],
+        "no_tool_calls": true
+      },
+      "judge": {"response_quality": {"threshold": 4}},
+      "reference": "The agent explains that it can look up the weather for a place.",
+      "metadata": {"category": "smoke"}
+    }
+  ]
+}

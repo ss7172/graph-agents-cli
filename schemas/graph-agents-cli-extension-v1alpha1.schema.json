@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/google/graph-agents-cli/main/schemas/graph-agents-cli-extension-v1alpha1.schema.json",
+  "$defs": {
+    "CommandEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Run",
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "title": "CommandEntry",
+      "type": "object"
+    },
+    "Commands": {
+      "additionalProperties": false,
+      "properties": {
+        "override": {
+          "title": "Override",
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/CommandEntry"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "add": {
+          "title": "Add",
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/CommandEntry"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "Commands",
+      "type": "object"
+    },
+    "Requires": {
+      "additionalProperties": false,
+      "properties": {
+        "agents_cli": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agents Cli"
+        },
+        "on_incompatible": {
+          "default": "warn",
+          "title": "On Incompatible",
+          "anyOf": [
+            {
+              "enum": [
+                "warn",
+                "error"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "Requires",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Manifest for an graph-agents-cli extension. Generated from the CLI's own models - edit those, not this file. Experimental: this format may still change in a breaking way.",
+  "properties": {
+    "schema": {
+      "default": "graph-agents-cli-extension/v1alpha1",
+      "title": "Schema",
+      "anyOf": [
+        {
+          "const": "graph-agents-cli-extension/v1alpha1",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Name"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requires": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Requires"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "commands": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Commands"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "graph-agents-cli extension manifest (graph-agents-cli-extension/v1alpha1)",
+  "type": "object"
+}

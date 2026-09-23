@@ -1,0 +1,16 @@
+# dev: a local-load cluster or a dev namespace. Bundled Postgres, no gateway.
+env:
+  APP_ENV: dev
+postgresql:
+  enabled: true
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+redis:
+  enabled: true
+{%- endif %}
+gateway:
+  enabled: false
+image:
+  tag: latest
+  pullPolicy: IfNotPresent
+tracing:
+  enabled: false

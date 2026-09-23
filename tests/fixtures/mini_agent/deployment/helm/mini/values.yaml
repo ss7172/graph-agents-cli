@@ -1,0 +1,4 @@
+image:
+  repository: {{cookiecutter.registry}}/{{cookiecutter.project_name}}
+  tag: latest
+runtime: {{cookiecutter.runtime}}

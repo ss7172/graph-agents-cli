@@ -1,0 +1,23 @@
+# prod: external Postgres (POSTGRES_DSN / DATABASE_URI from the Secret), gateway on.
+# Changes to this file reach the cluster only through a reviewed pull request (D12).
+env:
+  APP_ENV: prod
+postgresql:
+  enabled: false
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+redis:
+  enabled: false           # REDIS_URI from the Secret
+{%- endif %}
+gateway:
+  enabled: true
+  hostname: ""
+  parentRef:
+    name: ""
+    namespace: ""
+image:
+  # Promoted by promote-to-prod (argocd mode) or passed with `deploy --image` (helm-push).
+  tag: latest
+replicaCount: 2
+pdb:
+  enabled: true
+  minAvailable: 1

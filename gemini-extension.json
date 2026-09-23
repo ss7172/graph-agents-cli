@@ -1,0 +1,5 @@
+{
+  "name": "graph-agents-cli",
+  "version": "0.1.0",
+  "description": "Scaffold, develop, evaluate, and deploy LangGraph agents on self-hosted Kubernetes. Bundles skills (skills/) for the agent development lifecycle."
+}

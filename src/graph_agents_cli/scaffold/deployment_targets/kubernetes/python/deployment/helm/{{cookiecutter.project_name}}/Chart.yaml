@@ -1,0 +1,18 @@
+apiVersion: v2
+name: {{cookiecutter.project_name}}
+description: Helm chart for the {{cookiecutter.project_name}} LangGraph agent (graph-agents-cli)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  # Optional in-cluster Postgres for dev (values-dev.yaml enables it). Staging
+  # and prod use an external database supplied through the Secret.
+  - name: postgresql
+    version: "18.x.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled
+  # Redis is only needed by the langgraph-server runtime.
+  - name: redis
+    version: "28.x.x"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: redis.enabled

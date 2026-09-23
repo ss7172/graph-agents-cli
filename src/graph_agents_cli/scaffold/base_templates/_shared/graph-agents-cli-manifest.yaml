@@ -1,0 +1,36 @@
+# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
+name: '{{cookiecutter.project_name}}'
+cli_version: '{{cookiecutter.package_version}}'
+agent_directory: '{{cookiecutter.agent_directory}}'
+base_template: '{{cookiecutter.recorded_base_template}}'
+generated_at: '{{cookiecutter.generated_at}}'
+language: '{{cookiecutter.language or "python"}}'
+create_params:
+  deployment_target: '{{cookiecutter.deployment_target}}'
+  runtime: '{{cookiecutter.runtime}}'
+  model_provider: '{{cookiecutter.model_provider}}'
+  model: '{{cookiecutter.model}}'
+  checkpointer: '{{cookiecutter.checkpointer}}'
+  registry: '{{cookiecutter.registry}}'
+  cd: '{{cookiecutter.cd}}'
+  auth_policy: '{{cookiecutter.auth_policy}}'
+  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
+  auth_policy_implemented: {{ 'false' if cookiecutter.auth_policy == 'product-session' else 'true' }}
+  agent_guidance_filename: '{{cookiecutter.agent_guidance_filename}}'
+{%- if cookiecutter.deployment_target == 'kubernetes' %}
+environments:
+  dev: { context: "", namespace: {{cookiecutter.project_name}}-dev }
+  staging: { context: "", namespace: {{cookiecutter.project_name}}-staging }
+  prod: { context: "", namespace: {{cookiecutter.project_name}}-prod }
+{%- endif %}
+secrets:
+  # Only these keys are exported from an env file into the environment's Secret.
+  keys: [{{ cookiecutter.secret_keys | join(', ') }}]
+  # Team or role responsible for provisioning and rotating the Secret (free text).
+  owner: ""
+{%- if cookiecutter.has_product_policy %}
+product_api:
+  policy_file: product-policy.yaml
+{%- endif %}
+process: {{ cookiecutter.process if cookiecutter.process else 'null' }}

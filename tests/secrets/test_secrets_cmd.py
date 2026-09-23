@@ -1,0 +1,333 @@
+# Copyright 2026 graph-agents-cli contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Tests for `secrets apply` and `secrets status` with a recording fake runner."""
+
+from __future__ import annotations
+
+import json
+import re
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from click.testing import CliRunner
+
+from graph_agents_cli.deploy._kube import Target
+from graph_agents_cli.secrets import _apply
+from graph_agents_cli.secrets.cmd_secrets import secrets_group
+
+
+def invoke(*args: str):
+    return CliRunner().invoke(secrets_group, list(args), catch_exceptions=False)
+
+
+def secret_json(*keys: str) -> str:
+    return json.dumps({"kind": "Secret", "data": {k: "eA==" for k in keys}})
+
+
+# --------------------------------------------------------------------------- unit
+
+
+def test_select_allowed_exports_only_allow_listed_non_empty_keys():
+    values = {"OPENAI_API_KEY": "a", "NOT_ALLOWED": "b", "JUDGE_API_KEY": "", "API_KEY": "k"}
+    assert _apply.select_allowed(
+        values, ["OPENAI_API_KEY", "JUDGE_API_KEY", "API_KEY", "POSTGRES_DSN"]
+    ) == {
+        "OPENAI_API_KEY": "a",
+        "API_KEY": "k",
+    }
+
+
+def test_generate_api_key_is_32_random_bytes_hex():
+    key = _apply.generate_api_key()
+    assert re.fullmatch(r"[0-9a-f]{64}", key)
+    assert key != _apply.generate_api_key()
+
+
+def test_build_plan_generates_api_key_only_when_allow_listed_and_absent():
+    target = Target(context=None, namespace="ns")
+    plan = _apply.build_plan(
+        name="x-app", target=target, allowed=["API_KEY", "OPENAI_API_KEY"], values={}
+    )
+    assert (
+        plan.generated == ["API_KEY"]
+        and "API_KEY" in plan.data
+        and plan.skipped == ["OPENAI_API_KEY"]
+    )
+    plan = _apply.build_plan(
+        name="x-app", target=target, allowed=["API_KEY"], values={"API_KEY": "given"}
+    )
+    assert plan.generated == [] and plan.data == {"API_KEY": "given"}
+    plan = _apply.build_plan(
+        name="x-app", target=target, allowed=["OPENAI_API_KEY"], values={"API_KEY": "given"}
+    )
+    assert plan.generated == [] and plan.data == {}
+
+
+def test_plan_manifest_is_opaque_and_redacted_by_default():
+    plan = _apply.SecretPlan("my-agent-app", Target("ctx", "ns"), {"API_KEY": "secret-value"})
+    doc = yaml.safe_load(plan.manifest())
+    assert doc["kind"] == "Secret" and doc["type"] == "Opaque"
+    assert doc["metadata"] == {"name": "my-agent-app", "namespace": "ns"}
+    assert doc["stringData"] == {"API_KEY": "<redacted>"}
+    assert yaml.safe_load(plan.manifest(redact=False))["stringData"] == {"API_KEY": "secret-value"}
+
+
+def test_resolve_env_file_order(project: SimpleNamespace):
+    assert _apply.resolve_env_file("dev", None).name == ".env"
+    (project.root / ".env.dev").write_text("A=1\n")
+    assert _apply.resolve_env_file("dev", None).name == ".env.dev"
+    assert _apply.resolve_env_file("prod", None).name == ".env"
+    (project.root / ".env").unlink()
+    assert _apply.resolve_env_file("prod", None) is None
+    assert _apply.resolve_env_file("prod", ".env.dev").name == ".env.dev"
+
+
+# --------------------------------------------------------------------------- apply
+
+
+def test_apply_pipes_kubectl_create_into_kubectl_apply(project: SimpleNamespace, fake):
+    fake.respond("kubectl create secret", stdout="apiVersion: v1\nkind: Secret\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    joined = fake.joined
+    create = [
+        j
+        for j in joined
+        if j.startswith("kubectl create secret generic my-agent-app --from-env-file=")
+    ]
+    assert len(create) == 1 and create[0].endswith(
+        "--dry-run=client -o yaml -n my-agent-dev --context kind-dev"
+    )
+    assert "kubectl apply -f - -n my-agent-dev --context kind-dev" in joined
+    apply_kwargs = next(kw for c, kw in fake.calls if c[:2] == ["kubectl", "apply"])
+    assert apply_kwargs["input"] == "apiVersion: v1\nkind: Secret\n"
+    content = fake.env_file_contents[0]
+    assert (
+        "OPENAI_API_KEY=sk-test" in content
+        and "NOT_ALLOWED" not in content
+        and "JUDGE_API_KEY" not in content
+    )
+    # no secret value on any command line
+    assert not any("sk-test" in j for j in joined)
+    assert "Secret my-agent-app applied in namespace my-agent-dev" in result.output
+    assert "absent from the env file: JUDGE_API_KEY, LANGSMITH_API_KEY" in result.output
+
+
+def test_apply_prints_generated_api_key_once(project: SimpleNamespace, fake):
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        rc=1,
+        stderr='Error from server (NotFound): secrets "my-agent-app" not found',
+    )
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    m = re.search(r"API_KEY=([0-9a-f]{64})", result.output)
+    assert m, result.output
+    assert f"API_KEY={m.group(1)}" in fake.env_file_contents[0]
+    assert result.output.count(m.group(1)) == 1
+    # The live Secret was consulted before generating (only for the absent API_KEY).
+    assert fake.find("kubectl get secret my-agent-app -o json")
+
+
+def test_apply_keeps_the_live_api_key_instead_of_rotating_it(project: SimpleNamespace, fake):
+    """One key per environment: a second apply/deploy without API_KEY in the file keeps it."""
+    live = "0" * 60 + "beef"
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=json.dumps({"kind": "Secret", "data": {"API_KEY": _b64(live)}}),
+    )
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert "Generated" not in result.output
+    assert "API_KEY kept from the live Secret" in result.output
+    assert live not in result.output  # never printed
+    assert f"API_KEY={live}" in fake.env_file_contents[-1]  # re-included: apply replaces data
+
+
+def test_apply_reads_the_live_key_only_when_it_would_generate(project: SimpleNamespace, fake):
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=given\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert not fake.find("kubectl get secret")
+    assert "API_KEY=given" in fake.env_file_contents[-1]
+
+
+def test_apply_treats_a_kubectl_get_failure_as_a_tool_failure_not_a_rotation(
+    project: SimpleNamespace, fake
+):
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        rc=1,
+        stderr='Error from server (Forbidden): secrets "my-agent-app" is forbidden',
+    )
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 2, result.output
+    assert "Forbidden" in result.output
+    assert not fake.any("kubectl apply")
+
+
+def test_apply_refuses_multi_line_values_before_any_kubectl_call(project: SimpleNamespace, fake):
+    """--from-env-file splits on newlines: the value would be truncated into bogus keys."""
+    (project.root / ".env.dev").write_text('OPENAI_API_KEY="line1\\nline2"\nAPI_KEY=k\n')
+    for extra in ((), ("--dry-run",)):
+        result = invoke("apply", "--env", "dev", *extra)
+        assert result.exit_code == 3, result.output
+        assert "single-line" in result.output and "OPENAI_API_KEY" in result.output
+        assert "line1" not in result.output and "line2" not in result.output
+        assert fake.calls == []
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY='a\rb'\nAPI_KEY=k\n")
+    assert invoke("apply", "--env", "dev").exit_code == 3
+
+
+def _b64(value: str) -> str:
+    import base64
+
+    return base64.b64encode(value.encode()).decode()
+
+
+def test_apply_does_not_generate_when_api_key_present_or_not_allow_listed(
+    project: SimpleNamespace, fake
+):
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=given\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0 and "Generated" not in result.output
+    assert "API_KEY=given" in fake.env_file_contents[-1]
+    project.cfg.secret_keys = ["OPENAI_API_KEY"]
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0 and "Generated" not in result.output
+    assert fake.env_file_contents[-1] == "OPENAI_API_KEY=x\n"
+
+
+def test_apply_explicit_env_file_and_environment_context(project: SimpleNamespace, fake):
+    (project.root / "prod.env").write_text("OPENAI_API_KEY=p\nPOSTGRES_DSN=d\nAPI_KEY=k\n")
+    result = invoke("apply", "--env", "prod", "--env-file", "prod.env")
+    assert result.exit_code == 0, result.output
+    assert fake.find("kubectl create secret")[0].endswith("-n my-agent-prod --context prod-cluster")
+    assert "kubectl apply -f - -n my-agent-prod --context prod-cluster" in fake.joined
+
+
+def test_apply_dry_run_prints_pipeline_and_redacted_manifest(project: SimpleNamespace, fake):
+    result = invoke("apply", "--env", "dev", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] kubectl create secret generic my-agent-app --from-env-file=" in result.output
+    assert (
+        "--dry-run=client -o yaml -n my-agent-dev --context kind-dev | kubectl apply -f - -n my-agent-dev --context kind-dev"
+        in result.output
+    )
+    assert "type: Opaque" in result.output and "<redacted>" in result.output
+    assert "sk-test" not in result.output
+    # Nothing is generated (or looked up in the cluster) under --dry-run: the real
+    # run keeps the live key when there is one, so no key is printed here.
+    assert "Generated API_KEY" not in result.output
+    assert "API_KEY is not in the env file" in result.output
+    assert not re.search(r"[0-9a-f]{64}", result.output)
+    assert "API_KEY: <redacted>" in result.output
+    assert fake.calls == []
+
+
+def test_apply_without_env_file_is_config_error(project: SimpleNamespace, fake):
+    (project.root / ".env").unlink()
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 3
+    assert "No env file found" in result.output and "OPENAI_API_KEY" in result.output
+
+
+def test_apply_with_no_allow_listed_values_is_config_error(project: SimpleNamespace, fake):
+    project.cfg.secret_keys = ["OPENAI_API_KEY"]
+    (project.root / ".env").write_text("SOMETHING_ELSE=1\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 3
+    assert "No allow-listed secret values" in result.output
+
+
+def test_apply_kubectl_failure_exits_2(project: SimpleNamespace, fake):
+    fake.respond("kubectl apply", rc=1, stderr="forbidden")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 2
+    assert "forbidden" in result.output
+
+
+def test_apply_unknown_env_exits_3(project: SimpleNamespace, fake):
+    assert invoke("apply", "--env", "qa").exit_code == 3
+
+
+# --------------------------------------------------------------------------- status
+
+
+def test_status_lists_present_and_missing_without_values(project: SimpleNamespace, fake):
+    fake.respond(
+        "kubectl get secret my-agent-app", stdout=secret_json("OPENAI_API_KEY", "API_KEY", "EXTRA")
+    )
+    result = invoke("status", "--env", "dev")
+    assert result.exit_code == 1  # some allow-listed keys are missing
+    assert (
+        "kubectl get secret my-agent-app -o json -n my-agent-dev --context kind-dev" in fake.joined
+    )
+    assert "present: OPENAI_API_KEY, API_KEY" in result.output
+    assert "missing: JUDGE_API_KEY, POSTGRES_DSN, LANGSMITH_API_KEY" in result.output
+    assert "not in the allow-list: EXTRA" in result.output
+    assert "eA==" not in result.output
+
+
+def test_status_exit_0_when_all_present(project: SimpleNamespace, fake):
+    fake.respond("kubectl get secret my-agent-app", stdout=secret_json(*project.cfg.secret_keys))
+    result = invoke("status", "--env", "staging")
+    assert result.exit_code == 0, result.output
+    assert "missing: (none)" in result.output
+    assert "--context staging-cluster" in fake.joined[-1]
+
+
+def test_status_secret_absent(project: SimpleNamespace, fake):
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        rc=1,
+        stderr='Error from server (NotFound): secrets "my-agent-app" not found',
+    )
+    result = invoke("status", "--env", "dev")
+    assert result.exit_code == 1
+    assert "not found in namespace my-agent-dev" in result.output
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Unable to connect to the server: getting credentials: exec: executable gke-gcloud-auth-plugin not found",
+        'Error from server (Forbidden): secrets "my-agent-app" is forbidden: User "x" cannot get resource "secrets"',
+    ],
+)
+def test_status_kubectl_failure_is_exit_2_not_absent(project: SimpleNamespace, fake, stderr: str):
+    fake.respond("kubectl get secret my-agent-app", rc=1, stderr=stderr)
+    result = invoke("status", "--env", "prod")
+    assert result.exit_code == 2, result.output
+    assert stderr.split(":")[-1].strip()[:20] in result.output
+    assert "not found in namespace" not in result.output
+    assert "Missing:" not in result.output
+
+
+def test_status_dry_run(project: SimpleNamespace, fake):
+    result = invoke("status", "--env", "dev", "--dry-run")
+    assert result.exit_code == 0
+    assert (
+        "[dry-run] kubectl get secret my-agent-app -o json -n my-agent-dev --context kind-dev"
+        in result.output
+    )
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("sub", ["apply", "status"])
+def test_env_is_required(sub: str):
+    result = CliRunner().invoke(secrets_group, [sub])
+    assert result.exit_code == 2 and "--env" in result.output

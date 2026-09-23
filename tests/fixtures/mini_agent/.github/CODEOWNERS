@@ -1,0 +1,2 @@
+deployment/helm/*/values-prod.yaml @prod-approvers
+deployment/argocd/application-prod.yaml @prod-approvers

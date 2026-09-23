@@ -1,0 +1,19 @@
+# LangGraph Server runtime image. Mirrors the shape of `langgraph dockerfile`
+# output. The base image is
+# graph_agents_cli._defaults.LANGGRAPH_API_IMAGE; mirror it for a disconnected
+# registry and change the FROM line accordingly.
+FROM langchain/langgraph-api:3.12
+
+ADD . /deps/{{cookiecutter.project_name}}
+
+RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir -c /api/constraints.txt -e /deps/{{cookiecutter.project_name}}
+
+# The graph, the custom routes (/chat, /health, /playground, A2A) and the auth
+# handler, exactly as langgraph.json declares them.
+ENV LANGSERVE_GRAPHS='{"agent": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/agent.py:graph"}'
+ENV LANGGRAPH_HTTP='{"app": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/fast_api_app.py:app"}'
+ENV LANGGRAPH_AUTH='{"path": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/app_utils/auth.py:auth"}'
+# Tells fast_api_app.py it is mounted inside the server (no checkpointer binding).
+ENV LANGGRAPH_SERVER=1
+
+WORKDIR /deps/{{cookiecutter.project_name}}

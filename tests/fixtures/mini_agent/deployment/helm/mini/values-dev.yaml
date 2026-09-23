@@ -1,0 +1,4 @@
+env:
+  APP_ENV: dev
+postgresql:
+  enabled: true

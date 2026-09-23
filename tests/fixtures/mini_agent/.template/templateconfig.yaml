@@ -1,0 +1,10 @@
+# Tiny cookiecutter-style agent template used by tests/scaffold.
+name: "mini_agent"
+description: "Tiny agent template for the scaffold tests"
+base_template: "mini_agent"
+settings:
+  language: "python"
+  deployment_targets: ["kubernetes", "none"]
+  agent_directory: "app"
+  extra_dependencies: []
+  tags: ["langgraph"]

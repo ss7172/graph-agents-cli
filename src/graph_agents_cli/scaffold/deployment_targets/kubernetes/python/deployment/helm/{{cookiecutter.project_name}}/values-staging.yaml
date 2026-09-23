@@ -1,0 +1,19 @@
+# staging: external Postgres (POSTGRES_DSN / DATABASE_URI from the Secret), gateway on.
+env:
+  APP_ENV: staging
+postgresql:
+  enabled: false
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+redis:
+  enabled: false           # REDIS_URI from the Secret
+{%- endif %}
+gateway:
+  enabled: true
+  hostname: ""
+  parentRef:
+    name: ""
+    namespace: ""
+image:
+  # Updated by CI (argocd mode) or passed with `deploy --image` (helm-push / direct).
+  tag: latest
+replicaCount: 1

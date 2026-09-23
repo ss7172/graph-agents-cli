@@ -1,0 +1,12 @@
+name: staging
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t "${{ vars.REGISTRY }}/agent:${{ github.sha }}" .
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}

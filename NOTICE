@@ -1,0 +1,19 @@
+graph-agents-cli
+
+This project is a fork of google-agents-cli (https://github.com/google/agents-cli),
+Copyright 2026 Google LLC, licensed under the Apache License, Version 2.0.
+
+Modifications in this fork:
+- All Google Cloud specific code paths (Vertex AI, Agent Runtime, Cloud Run, GKE,
+  Gemini Enterprise, gcloud authentication, Terraform, BigQuery analytics) removed.
+- Agent framework changed from Google ADK to LangGraph.
+- Deployment target changed to any Kubernetes cluster via Helm, with Argo CD or
+  self-hosted-runner continuous delivery.
+- Evaluation backend replaced with local deterministic checks and an in-process
+  model judge; observability replaced with LangSmith or OpenTelemetry under an
+  explicit opt-in.
+- Package, command, manifest, environment variable, and skills names renamed.
+
+Files retained from the original project keep their Google LLC copyright headers.
+New files are Copyright 2026 graph-agents-cli contributors, licensed under the
+same Apache License, Version 2.0.

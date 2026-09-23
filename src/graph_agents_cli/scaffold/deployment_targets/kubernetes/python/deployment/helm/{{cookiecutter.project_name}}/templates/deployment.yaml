@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent.fullname" . }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.hpa.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agent.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the non-secret configuration changes. Secret
+        # rotation is a `graph-agents-cli deploy --restart` (D14).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agent.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          # Secrets by reference (never templated here), then the ConfigMap.
+          envFrom:
+            - secretRef:
+                name: {{ include "agent.secretName" . }}
+                optional: true
+            - configMapRef:
+                name: {{ include "agent.fullname" . }}
+          # Chart-set variables; `env` wins over `envFrom` (D9).
+          env:
+            - name: PORT
+              value: {{ .Values.service.targetPort | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            {{- $appUrl := include "agent.appUrl" . }}
+            {{- if $appUrl }}
+            - name: APP_URL
+              value: {{ $appUrl | quote }}
+            {{- end }}
+            - name: TRACING_ENABLED
+              value: {{ .Values.tracing.enabled | quote }}
+            - name: TRACE_CAPTURE
+              value: {{ .Values.tracing.capture | quote }}
+            {{- if .Values.tracing.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.otlpEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.tracing.langsmith.project }}
+            - name: LANGSMITH_PROJECT
+              value: {{ .Values.tracing.langsmith.project | quote }}
+            {{- end }}
+            {{- if eq .Values.runtime "langgraph-server" }}
+            - name: LANGGRAPH_SERVER
+              value: "1"
+            {{- end }}
+            {{- if .Values.postgresql.enabled }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agent.postgresql.secretName" . }}
+                  key: password
+            {{- if eq .Values.runtime "langgraph-server" }}
+            - name: DATABASE_URI
+              value: {{ include "agent.postgresql.dsn" . | quote }}
+            {{- else }}
+            - name: POSTGRES_DSN
+              value: {{ include "agent.postgresql.dsn" . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            - name: REDIS_URI
+              value: {{ include "agent.redis.uri" . | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 5
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,26 @@
+{{ .Release.Name }} ({{ .Values.runtime }} runtime) is installed in namespace {{ .Release.Namespace }}.
+
+App Secret expected: {{ include "agent.secretName" . }}
+  create or rotate it with: graph-agents-cli secrets apply --env <env> --env-file .env.<env>
+  then, after rotation:     graph-agents-cli deploy --env <env> --restart
+
+{{- if .Values.gateway.enabled }}
+Traffic: HTTPRoute {{ include "agent.fullname" . }} attached to Gateway {{ .Values.gateway.parentRef.name }}{{ if .Values.gateway.hostname }} for {{ .Values.gateway.hostname }}{{ end }}.
+{{- else if .Values.ingress.enabled }}
+Traffic: Ingress {{ include "agent.fullname" . }}{{ if .Values.ingress.hostname }} for {{ .Values.ingress.hostname }}{{ end }}.
+{{- else }}
+Traffic: ClusterIP only. Port-forward for a quick check:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agent.fullname" . }} 8000:{{ .Values.service.port }}
+  curl http://127.0.0.1:8000/health
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+Postgres: bundled subchart {{ include "agent.postgresql.host" . }} (dev only).
+{{- else }}
+Postgres: external; the connection string comes from the Secret.
+{{- end }}
+{{- if and (or .Values.gateway.enabled .Values.ingress.enabled) (not (include "agent.appUrl" .)) }}
+
+WARNING: APP_URL resolves to nothing (no appUrl and no gateway/ingress hostname): the A2A
+agent card advertises the pod's bind address, which remote clients cannot dial. Set
+appUrl or a hostname in values-<env>.yaml.
+{{- end }}

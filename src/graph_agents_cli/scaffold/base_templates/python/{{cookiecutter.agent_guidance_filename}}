@@ -1,0 +1,35 @@
+process: {{ cookiecutter.process if cookiecutter.process else 'null' }}
+
+# Coding Agent Guide for {{cookiecutter.project_name}}
+
+This project was created by graph-agents-cli on the `{{cookiecutter.recorded_base_template}}` template.
+Agent code lives in `{{cookiecutter.agent_directory}}/`; the framework template that overlays this base
+replaces this file with its own guide. The rules below apply either way.
+
+## Governing process
+
+The `process:` line at the top names the process document that governs this
+project. When it is not `null`, follow that process's gates and approvals
+instead of the generic spec-before-code gate of the `graph-agents-cli-workflow`
+skill. When it is `null`, write `.graph-agents-cli-spec.md` and get it approved
+before writing code.
+
+## Rules
+
+- **Spec before code** unless the governing process says otherwise.
+- **Change only what was asked.** Preserve surrounding code, comments, config values and formatting.
+- **Never change the model** (`MODEL_PROVIDER`, `MODEL_NAME`) unless explicitly asked.
+- **Human approval before deploy.** Never run `graph-agents-cli deploy` without the user's explicit go-ahead.
+- **Run Python through uv**: `uv run python script.py`, after `uv sync`.
+- **Three strikes.** The same error three times means fix the cause, not retry.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `graph-agents-cli playground` | Run the app locally with reload |
+| `graph-agents-cli run "prompt"` | One-shot chat against the local or a deployed agent |
+| `uv run pytest tests/unit tests/integration` | Unit and integration tests |
+| `graph-agents-cli eval run` | Generate traces and grade them against the gate |
+| `graph-agents-cli lint` | Code quality and product-policy check |
+| `graph-agents-cli deploy --env <env>` | Deploy (only after the user approves) |

@@ -1,0 +1,11 @@
+name: promote-to-prod
+on:
+  workflow_dispatch:
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: gh pr create --title "Promote ${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

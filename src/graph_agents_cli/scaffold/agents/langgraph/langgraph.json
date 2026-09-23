@@ -1,0 +1,14 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./{{cookiecutter.agent_directory}}/agent.py:graph"
+  },
+  "env": ".env",
+  "http": {
+    "app": "./{{cookiecutter.agent_directory}}/fast_api_app.py:app"
+  },
+  "auth": {
+    "path": "./{{cookiecutter.agent_directory}}/app_utils/auth.py:auth"
+  },
+  "python_version": "3.12"
+}

@@ -1,0 +1,3 @@
+FROM langchain/langgraph-api:3.12
+# langgraph-server dockerfile
+ENV LANGSERVE_GRAPHS='{"agent": "/deps/app/agent.py:graph"}'

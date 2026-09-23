@@ -1,0 +1,75 @@
+[project]
+name = "{{cookiecutter.project_name}}"
+version = "0.1.0"
+description = "LangGraph agent scaffolded by graph-agents-cli"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # Agent framework
+    "langchain>=1.0,<2",
+    "langgraph>=1.0,<2",
+    "langchain-core>=1.0,<2",
+    # Model providers. All four are installed so MODEL_PROVIDER is a runtime
+    # setting (openai-compatible endpoints use langchain-openai).
+    "langchain-openai>=1.0,<2",
+    "langchain-anthropic>=1.0,<2",
+    "langchain-google-genai>=3.0,<5",
+    # Server
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "httpx>=0.27,<1",
+    "python-dotenv>=1.0,<2",
+    "pydantic>=2.7,<3",
+    "pyyaml>=6.0,<7",
+    # Persistence (fastapi runtime binds the checkpointer itself)
+    "langgraph-checkpoint-postgres>=2.0,<4",
+    "psycopg[binary]>=3.1,<4",
+    "psycopg-pool>=3.2,<4",
+    # A2A protocol
+    "a2a-sdk[http-server]>=1.0,<2",
+    # Observability (opt-in at runtime, see .env.example)
+    "opentelemetry-sdk>=1.25,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.25,<2",
+    "openinference-instrumentation-langchain>=0.1.40,<1",
+    "langsmith>=0.3,<1",
+{% if cookiecutter.runtime == 'langgraph-server' %}
+    # LangGraph Server runtime: the server package, its SDK (loopback client
+    # used by /chat) and the local dev server used by `run` and `playground`.
+    "langgraph-api>=0.2,<1",
+    "langgraph-sdk>=0.1,<1",
+    "langgraph-cli[inmem]>=0.2,<1",
+{% endif %}
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.24,<2",
+    "httpx>=0.27,<1",
+    "ruff>=0.6,<1",
+    "langgraph-cli[inmem]>=0.2,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["{{cookiecutter.agent_directory}}"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "tests/load_test/.results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["{{cookiecutter.agent_directory}}"]

@@ -1,0 +1,26 @@
+# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
+name: 'p1-none'
+cli_version: '0.1.0'
+agent_directory: 'app'
+base_template: 'langgraph'
+generated_at: <generated_at>
+language: 'python'
+create_params:
+  deployment_target: 'none'
+  runtime: 'fastapi'
+  model_provider: 'openai'
+  model: 'gpt-5-mini'
+  checkpointer: 'memory'
+  registry: ''
+  cd: 'skip'
+  auth_policy: 'shared-bearer'
+  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
+  auth_policy_implemented: true
+  agent_guidance_filename: 'GEMINI.md'
+secrets:
+  # Only these keys are exported from an env file into the environment's Secret.
+  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY]
+  # Team or role responsible for provisioning and rotating the Secret (free text).
+  owner: ""
+process: null

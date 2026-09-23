@@ -1,0 +1,138 @@
+# Default values for {{cookiecutter.project_name}} (CONTRACTS section 8).
+# Per-environment overrides live in values-dev.yaml, values-staging.yaml and
+# values-prod.yaml; `graph-agents-cli deploy --env <env>` passes both files.
+
+image:
+  repository: {{cookiecutter.registry}}/{{cookiecutter.project_name}}
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Names of existing image pull secrets in the namespace (operator-provided).
+imagePullSecrets: []
+
+replicaCount: 1
+
+# Informational: selects the variable names for the subchart-derived
+# connection strings (fastapi -> POSTGRES_DSN, langgraph-server -> DATABASE_URI + REDIS_URI).
+runtime: {{cookiecutter.runtime}}
+
+# Non-secret environment (becomes a ConfigMap mounted with envFrom). Secret
+# values (provider key, API_KEY, POSTGRES_DSN/DATABASE_URI/REDIS_URI when the
+# subcharts are disabled, LANGSMITH_API_KEY, ...) come from `existingSecret`.
+env:
+  APP_ENV: prod
+  MODEL_PROVIDER: {{cookiecutter.model_provider}}
+  MODEL_NAME: {{cookiecutter.model}}
+{%- if cookiecutter.model_provider == 'openai-compatible' %}
+  OPENAI_BASE_URL: http://CHANGE-ME:11434/v1
+{%- endif %}
+{%- if cookiecutter.runtime == 'fastapi' %}
+  CHECKPOINTER: postgres
+{%- endif %}
+  AUTH_POLICY: {{cookiecutter.auth_policy}}
+  AUTH_READ_ACROSS_ROLES: ""
+{%- if cookiecutter.has_product_policy %}
+  PRODUCT_API_BASE_URL: http://CHANGE-ME
+{%- endif %}
+  A2A_NAME: {{cookiecutter.agent_directory}}
+  PORT: "8000"
+
+# Kubernetes Secret with the allow-listed keys (created by `graph-agents-cli
+# secrets apply`, never by this chart). Empty means "<release>-app".
+existingSecret: ""
+
+service:
+  port: 80
+  targetPort: 8000
+
+# Public base URL advertised in the A2A agent card (APP_URL). Empty derives
+# https://<gateway.hostname> (or the ingress hostname, http without TLS) when
+# a hostname is set; with neither, the pod falls back to its bind address and
+# warns, and remote A2A clients cannot dial the card's URL. `env.APP_URL`
+# (the ConfigMap) is honoured when this is empty.
+appUrl: ""
+
+# Traffic entry: Gateway API HTTPRoute (default) or a legacy Ingress.
+gateway:
+  enabled: true
+  className: ""          # informational; the parentRef selects the Gateway
+  hostname: ""
+  parentRef:
+    name: ""
+    namespace: ""
+
+ingress:
+  enabled: false
+  className: ""
+  hostname: ""
+  annotations: {}
+
+tls:
+  existingSecret: ""     # operator-provided certificate Secret
+  certManager:
+    enabled: false       # adds a cert-manager Certificate (requires cert-manager)
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+
+# Bundled Postgres (bitnami subchart). When disabled the connection string
+# comes from the Secret (POSTGRES_DSN or DATABASE_URI).
+postgresql:
+  enabled: false
+  auth:
+    database: agent
+    username: agent
+    existingSecret: ""   # subchart secret holding the user's `password` key; empty = generated
+  primary:
+    persistence:
+      size: 8Gi
+
+# Bundled Redis (bitnami subchart), langgraph-server only.
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPU: 70
+
+pdb:
+  enabled: false
+  minAvailable: 1
+
+resources: {}
+  # limits: { cpu: "1", memory: 1Gi }
+  # requests: { cpu: 250m, memory: 512Mi }
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Tracing (DECISIONS.md D17). Off unless enabled; capture defaults to metadata.
+tracing:
+  enabled: false
+  capture: metadata      # metadata | full
+  otlpEndpoint: ""       # OTLP/HTTP collector, used when no LANGSMITH_API_KEY is in the Secret
+  langsmith:
+    project: "{{cookiecutter.project_name}}"
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+nodeSelector: {}
+tolerations: []
+affinity: {}

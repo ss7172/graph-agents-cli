@@ -1,0 +1,30 @@
+# Project manifest written by `graph-agents-cli create` (CONTRACTS section 2).
+# Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
+name: 'p3-argocd'
+cli_version: '0.1.0'
+agent_directory: 'app'
+base_template: 'langgraph'
+generated_at: <generated_at>
+language: 'python'
+create_params:
+  deployment_target: 'kubernetes'
+  runtime: 'fastapi'
+  model_provider: 'openai'
+  model: 'gpt-5-mini'
+  checkpointer: 'postgres'
+  registry: 'ghcr.io/e2e'
+  cd: 'argocd'
+  auth_policy: 'product-session'
+  # false while the product-session stub is in place; deploy --env staging|prod refuses until true
+  auth_policy_implemented: false
+  agent_guidance_filename: 'GEMINI.md'
+environments:
+  dev: { context: "", namespace: p3-argocd-dev }
+  staging: { context: "", namespace: p3-argocd-staging }
+  prod: { context: "", namespace: p3-argocd-prod }
+secrets:
+  # Only these keys are exported from an env file into the environment's Secret.
+  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY]
+  # Team or role responsible for provisioning and rotating the Secret (free text).
+  owner: ""
+process: null

@@ -1,0 +1,30 @@
+# Argo CD Application for the dev environment (DECISIONS.md D9, D12).
+# Argo reconciles from main, so nothing reaches the cluster until a PR merges.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{cookiecutter.project_name}}-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # CHANGE-ME: the git URL of this repository.
+    repoURL: https://github.com/CHANGE-ME/{{cookiecutter.project_name}}.git
+    targetRevision: main
+    path: deployment/helm/{{cookiecutter.project_name}}
+    helm:
+      releaseName: {{cookiecutter.project_name}}
+      valueFiles:
+        - values.yaml
+        - values-dev.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{cookiecutter.project_name}}-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,31 @@
+# Build context exclusions for `graph-agents-cli build` / `deploy` (context `.`).
+# Docker does not read .gitignore: without this file the image (and the
+# registry it is pushed to) would carry .env with the API keys, the virtualenv,
+# .git (with a CI checkout token), artifacts and the local run state.
+.git
+.github
+.env
+.env.*
+!.env.example
+.venv
+.venv*
+.graph-agents-cli/
+artifacts/
+deployment/
+tests/
+docs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.saved_chats
+.locust_env
+.persist_vector_store
+*.pem
+*-key.json
+credentials*.json
+.vscode/
+.idea/
+Dockerfile*
+.dockerignore

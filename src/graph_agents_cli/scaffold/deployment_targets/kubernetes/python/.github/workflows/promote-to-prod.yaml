@@ -1,0 +1,156 @@
+# Copyright 2026 Google LLC
+# Modifications Copyright 2026 graph-agents-cli contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Promote the staging image to production (D12). Runs in the GitHub
+# `production` environment, which controls who may initiate a promotion, and
+# only from main. Image tags are the SHORT commit SHA (${GITHUB_SHA::7}), as
+# the staging workflow pushes them. According to CD in .github/agent.env:
+#   argocd:    `graph-agents-cli deploy --env prod --image ...` updates
+#              values-prod.yaml on deploy/prod/<tag> and opens a PR; it is NOT
+#              merged here. The merge (code-owner review, no self-approval,
+#              pr_checks green) is the single production gate.
+#   helm-push: `graph-agents-cli deploy --env prod --image ...` on the
+#              self-hosted runner runs helm with the already pushed image.
+# This file is copied verbatim into the project (not rendered).
+
+name: promote-to-prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (short commit SHA) to promote. Empty = the tag currently in values-staging.yaml."
+        required: false
+        default: ""
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    outputs:
+      cd: ${{ steps.settings.outputs.cd }}
+      image: ${{ steps.settings.outputs.image }}
+      tag: ${{ steps.settings.outputs.tag }}
+      chart_path: ${{ steps.settings.outputs.chart_path }}
+      cli_version_pin: ${{ steps.settings.outputs.cli_version_pin }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve the tag to promote
+        id: settings
+        # The dispatch input reaches the shell through `env`, never by expression
+        # interpolation into the script (that would let a collaborator run
+        # commands in the production-environment jobs below).
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -a; . .github/agent.env; set +a
+          TAG="$IMAGE_TAG"
+          if [ -n "$TAG" ] && ! [[ "$TAG" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "image_tag must be a short commit SHA (7-40 hex characters), got '$TAG'." >&2
+            exit 1
+          fi
+          if [ -z "$TAG" ]; then
+            TAG="$(yq '.image.tag' "${CHART_PATH}/values-staging.yaml")"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "latest" ] || [ "$TAG" = "null" ]; then
+            echo "No promotable tag: pass image_tag or land a staging build first." >&2
+            exit 1
+          fi
+          # Docker tag grammar: no shell metacharacters or newlines can reach the outputs.
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid image tag: '$TAG'" >&2
+            exit 1
+          fi
+          echo "cd=${CD}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "chart_path=${CHART_PATH}" >> "$GITHUB_OUTPUT"
+          echo "cli_version_pin=${CLI_VERSION_PIN}" >> "$GITHUB_OUTPUT"
+
+  open_prod_pr:
+    needs: settings
+    if: needs.settings.outputs.cd == 'argocd'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      # `deploy` opens the pull request through gh with this token. A pull
+      # request opened with the workflow token does not trigger pr_checks
+      # (GitHub never starts workflows from GITHUB_TOKEN events); store a
+      # fine-grained PAT or a GitHub App token as GH_PR_TOKEN to lift that limit.
+      GH_TOKEN: ${{ secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN }}
+      GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Open the production PR (merge is the gate)
+        # In argocd mode `deploy` never runs helm: it rewrites image.tag in
+        # values-prod.yaml, commits that one file on deploy/prod/<tag> from
+        # origin/main and opens (or updates) the pull request. The commit needs
+        # a git identity.
+        env:
+          IMAGE: ${{ needs.settings.outputs.image }}
+          CLI_VERSION_PIN: ${{ needs.settings.outputs.cli_version_pin }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          uvx "graph-agents-cli${CLI_VERSION_PIN}" deploy --env prod --image "$IMAGE"
+
+  deploy_helm_push:
+    needs: settings
+    if: needs.settings.outputs.cd == 'helm-push'
+    runs-on: self-hosted
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Configure kubeconfig
+        run: |
+          install -m 0700 -d "$HOME/.kube"
+          printf '%s' "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
+          chmod 0600 "$HOME/.kube/config"
+
+      - name: Deploy to production
+        # `deploy --image` in helm-push mode runs helm only (the image is already pushed).
+        env:
+          GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+          IMAGE: ${{ needs.settings.outputs.image }}
+          CLI_VERSION_PIN: ${{ needs.settings.outputs.cli_version_pin }}
+        run: |
+          uvx "graph-agents-cli${CLI_VERSION_PIN}" deploy --env prod --image "$IMAGE"
