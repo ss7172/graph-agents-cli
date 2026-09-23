@@ -417,7 +417,15 @@ def _compare_structural_config(
         "old_template_hash": old_hash,
         "new_template_hash": new_hash,
     }
-    if current_hash is None and new_hash is not None and category == "scaffolding":
+    if current_hash is None and new_hash is None:
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="skip",
+            reason="File not present",
+            **hashes,
+        )
+    if current_hash is None and category == "scaffolding":
         # Like any scaffolding file the project lacks (config files are handled
         # before this: one the developer removed is never re-added).
         return FileCompareResult(
@@ -433,6 +441,24 @@ def _compare_structural_config(
             category=category,
             action="skip",
             reason="Config file (not changed by the new settings)",
+            **hashes,
+        )
+    if new_hash is None and category == "scaffolding" and current_hash is not None:
+        # Gone with the rest of what the new settings no longer render (the whole
+        # chart when the target leaves kubernetes), as any scaffolding file.
+        if current_hash == old_hash:
+            return FileCompareResult(
+                path=relative_path,
+                category=category,
+                action="removed",
+                reason="File removed from the template (you didn't modify it)",
+                **hashes,
+            )
+        return FileCompareResult(
+            path=relative_path,
+            category=category,
+            action="conflict",
+            reason="File removed from the template but you modified it",
             **hashes,
         )
     if new_hash is None:

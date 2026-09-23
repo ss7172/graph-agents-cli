@@ -310,8 +310,10 @@ def _execute_with_saved_config(
             # This CLI already ran the saved configuration and said why it
             # stopped. Falling back would only repeat the same enhance in process
             # (after the manifest was rewritten, so it could even report
-            # success): keep its exit code, e.g. 1 when required items are left.
-            raise click.exceptions.Exit(e.returncode or 1) from e
+            # success): keep its exit code, e.g. 1 when required items are left
+            # (128 + N when a signal N ended it).
+            code = e.returncode if e.returncode > 0 else 128 - e.returncode
+            raise click.exceptions.Exit(code if e.returncode else 1) from e
         console.print(
             f"❌ Failed to execute with locked version {project_version}: {e}",
             style="bold red",
@@ -1146,7 +1148,20 @@ def enhance(
 
     api-policy.yaml is never touched by enhance: it belongs to the project.
 
+    A runtime or model-provider change is applied to the files it shapes,
+    including ones you edited (the chart values key by key, around your
+    edits). What cannot be applied is listed under 'Left for you'; the steps
+    marked (required) leave the image or the chart on the old settings (an
+    edited Dockerfile gets the new version beside it as Dockerfile.new).
+
     Use --dry-run to preview changes before applying them.
+
+    \b
+    Exit codes:
+      0  applied (anything left for you is optional)
+      1  applied, but steps marked (required) are left for you
+      2  usage error (e.g. a model chosen for another provider)
+      3  configuration error (no project for --dry-run, a legacy policy file)
     """
     if not skip_welcome:
         display_welcome_banner(enhance_mode=True, quiet=auto_approve)
@@ -1290,8 +1305,17 @@ def enhance(
                 "Keeping the recorded value (or 'skip'). Use --cd to configure CD.[/yellow]"
             )
 
+    recorded_config = find_project_config(current_dir)
     if name:
         project_name = name
+    elif recorded_config is not None and recorded_config.project_name:
+        # The name the project was created with (its chart directory, release
+        # and image are named after it), whatever the checkout directory is called.
+        project_name = recorded_config.project_name
+        console.print(
+            f"Using the project name recorded in graph-agents-cli-manifest.yaml: {project_name}",
+            style="dim",
+        )
     else:
         project_name = current_dir.name
         console.print(f"Using current directory name as project name: {project_name}", style="dim")

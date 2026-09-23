@@ -143,6 +143,21 @@ def test_a_block_added_by_the_template_next_to_a_developer_block_is_not_duplicat
     assert [c.path for c in result.conflicts] == [("redis",)]
 
 
+def test_keys_brought_in_by_a_merge_key_are_left_but_the_others_are_edited() -> None:
+    ours = _edit(
+        BASE,
+        "env:\n  APP_ENV: prod\n  MODEL_PROVIDER: openai\n",
+        "common: &common\n  MODEL_PROVIDER: openai\n\nenv:\n  <<: *common\n  APP_ENV: prod\n",
+    )
+    result = merge_keys(BASE, ours, THEIRS, VALUES)
+    assert result is not None
+    assert [c.path for c in result.conflicts] == [("env", "MODEL_PROVIDER")]
+    data = yaml.safe_load(result.text)
+    assert data["env"]["MODEL_PROVIDER"] == "openai"  # still the anchor's: reported
+    assert data["env"]["MODEL_NAME"] == "claude-sonnet-5"
+    assert data["runtime"] == "langgraph-server" and "CHECKPOINTER" not in data["env"]
+
+
 def test_flow_mappings_are_left_to_the_developer() -> None:
     base = "env: {A: 1, B: 2}\nother: 1\n"
     theirs = "env: {A: 1, B: 2, C: 3}\nother: 1\n"

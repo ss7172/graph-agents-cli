@@ -240,6 +240,9 @@ def _remove(lines: list[str], first: int, last: int, comments: list[int]) -> str
 # ---------------------------------------------------------------------------
 
 
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
 class _Unsupported(Exception):
     """The edit cannot be made safely in this text (flow style, missing parent...)."""
 
@@ -270,16 +273,25 @@ class _YamlDoc:
             raise _Unsupported("not a non-empty block mapping")
         return node
 
+    @staticmethod
+    def _own_pairs(node: yaml.MappingNode) -> list[tuple[yaml.Node, yaml.Node]]:
+        """The entries written in this mapping (a ``<<`` merge key brings others in)."""
+        return [
+            (key_node, value_node)
+            for key_node, value_node in node.value
+            if isinstance(key_node, yaml.ScalarNode) and key_node.tag != _MERGE_TAG
+        ]
+
     def _pair(self, node: yaml.Node, key: Any) -> tuple[yaml.Node, yaml.Node] | None:
         if not isinstance(node, yaml.MappingNode):
             return None
-        for key_node, value_node in node.value:
-            if isinstance(key_node, yaml.ScalarNode) and self._key(key_node) == key:
+        for key_node, value_node in self._own_pairs(node):
+            if self._key(key_node) == key:
                 return key_node, value_node
         return None
 
     def keys(self, mapping: yaml.MappingNode) -> list[Any]:
-        return [self._key(k) for k, _v in mapping.value]
+        return [self._key(k) for k, _v in self._own_pairs(mapping)]
 
     def entry(self, path: tuple[Any, ...]) -> tuple[yaml.Node, yaml.Node, int, int]:
         """``(key node, value node, first line, last line)`` of the entry at ``path``."""

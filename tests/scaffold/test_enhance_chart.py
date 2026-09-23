@@ -227,6 +227,38 @@ def test_dry_run_lists_the_required_steps_changes_nothing_and_exits_zero(
     assert "env.MODEL_NAME: you set 'gpt-4.1'" in out
 
 
+@pytest.mark.parametrize(
+    ("current", "old", "new", "action"),
+    [
+        ("a: 1\n", "a: 1\n", None, "removed"),  # the target left kubernetes: goes with the chart
+        ("a: 2\n", "a: 1\n", None, "conflict"),  # edited: kept, and listed
+        (None, "a: 1\n", None, "skip"),  # already gone: nothing to say
+        (None, None, "a: 1\n", "new"),  # the target moved to kubernetes
+        (None, "a: 1\n", "a: 2\n", "new"),  # deleted by the developer: re-added like scaffolding
+    ],
+)
+def test_chart_values_yaml_keeps_scaffolding_semantics_for_added_and_removed_files(
+    tmp_path: pathlib.Path, current, old, new, action
+) -> None:
+    from graph_agents_cli.scaffold.utils.upgrade import three_way_compare
+
+    dirs = {name: tmp_path / name for name in ("project", "old", "new")}
+    for name, text in (("project", current), ("old", old), ("new", new)):
+        if text is not None:
+            path = dirs[name] / "deployment/helm/k/values.yaml"
+            path.parent.mkdir(parents=True)
+            path.write_text(text)
+    result = three_way_compare(
+        "deployment/helm/k/values.yaml",
+        dirs["project"],
+        dirs["old"],
+        dirs["new"],
+        merge_config=True,
+    )
+    assert result.action == action
+    assert result.followup is None
+
+
 def test_a_failed_same_version_replay_keeps_its_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
