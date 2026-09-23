@@ -268,3 +268,20 @@ def test_read_project_config_without_manifest_is_default(tmp_path: pathlib.Path)
     cfg = read_project_config(str(tmp_path))
     assert cfg.project_name == ""
     assert cfg.deployment_target == "none"
+
+
+@pytest.mark.parametrize(
+    "policy_file", ["policies/api.yaml", "other-policy.yaml", "../api-policy.yaml"]
+)
+def test_a_policy_file_the_agent_would_not_load_is_a_config_error(policy_file: str) -> None:
+    """The agent and the Dockerfiles use only api-policy.yaml: lint must check that file."""
+    with pytest.raises(click.ClickException) as exc:
+        ProjectConfig.from_dict({"name": "x", "api_policy": {"policy_file": policy_file}})
+    assert exc.value.exit_code == 3
+    assert repr(policy_file) in exc.value.message
+    assert "Rename the file to api-policy.yaml" in exc.value.message
+
+
+def test_a_policy_file_spelled_with_a_leading_dot_slash_is_accepted() -> None:
+    cfg = ProjectConfig.from_dict({"name": "x", "api_policy": {"policy_file": "./api-policy.yaml"}})
+    assert cfg.api_policy_file == "api-policy.yaml"

@@ -262,3 +262,150 @@ def test_the_bundled_sample_policy_is_valid() -> None:
     data = yaml.safe_load(text)
     assert cli.policy_errors(data) == []
     assert list(data["apis"]) == ["example"]
+
+
+# --- repeated keys ------------------------------------------------------------------
+
+DUPLICATE_KEYS = [
+    # The narrower rule is read first; plain safe_load would apply the later "*".
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "    allowed_methods: ['*']\n",
+    # A second definition of the same API would silently drop the first one's denial.
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "    denied_operations:\n      - path: /admin\n"
+    "  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  b:\n    base_url_env: B\n    auth: none\n    allowed_methods: ['*']\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "    allowed_operations:\n      - path: /items/{id}\n        path: /admin\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "    pagination: {page_size_param: limit, max_page_size: 5, max_page_size: 5000}\n",
+]
+
+
+@pytest.mark.parametrize("document", DUPLICATE_KEYS)
+def test_repeated_keys_are_refused_by_both_with_the_same_error(
+    runtime: ModuleType, tmp_path: Path, document: str
+) -> None:
+    assert yaml.safe_load(document)  # plain YAML would accept it, keeping the last value
+    assert cli.parse_policy_yaml(document) == runtime.parse_policy_yaml(document)
+    data, errors = cli.parse_policy_yaml(document)
+    assert data is None and "found duplicate key" in errors[0]
+
+    path = tmp_path / "api-policy.yaml"
+    path.write_text(document, encoding="utf-8")
+    with pytest.raises(cli.ApiPolicyFileError) as cli_exc:
+        cli.load_policy_document(path)
+    with pytest.raises(runtime.ApiPolicyError) as runtime_exc:
+        runtime.ApiPolicy.load(path)
+    assert runtime_exc.value.errors == cli_exc.value.errors == errors
+
+
+def test_merge_keys_are_not_repeated_keys(runtime: ModuleType) -> None:
+    document = (
+        "apis:\n  a: &base\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+        "  b:\n    <<: *base\n    base_url_env: B\n"
+    )
+    for side in (cli, runtime):
+        data, errors = side.parse_policy_yaml(document)
+        assert errors == []
+        assert data["apis"]["b"] == {
+            "base_url_env": "B",
+            "auth": "none",
+            "allowed_methods": ["GET"],
+        }
+        assert side.policy_errors(data) == []
+
+
+# --- denials fail closed, paths are compared normalised -------------------------------
+
+DENIALS = yaml.safe_load(
+    "apis:\n"
+    "  d:\n"
+    "    base_url_env: D\n"
+    "    auth: none\n"
+    "    allowed_methods: ['*']\n"
+    "    denied_operations:\n"
+    "      - operationId: deleteItem\n"
+    "        methods: [DELETE]\n"
+    "      - path: /admin/{section}\n"
+    "      - operationId: purge\n"
+    "        path: /items/{id}/purge\n"
+)
+
+DENIAL_CALLS = [
+    # (method, operation_id, path, refused, unnamed field named in the reason)
+    ("DELETE", "deleteItem", "/items/1", True, None),
+    ("DELETE", "DeleteItem", "/items/1", True, None),
+    ("DELETE", None, "/items/1", True, "operation_id"),
+    ("DELETE", "", "/items/1", True, "operation_id"),
+    ("DELETE", "archiveItem", "/items/1", False, None),
+    ("GET", None, "/items/1", False, None),
+    ("GET", "getAdmin", None, True, "path"),
+    ("GET", "x", "/admin/1", True, None),
+    ("GET", "x", "/admin/1/", True, None),
+    ("GET", "x", "/ADMIN/1", True, None),
+    ("GET", "x", "/%61dmin/1", True, None),
+    ("GET", "x", "/%41DMIN/1", True, None),
+    ("GET", "x", "/admin/{section}", True, None),
+    ("GET", "x", "/administrator/1", False, None),
+    ("POST", None, "/items/1/purge", True, "operation_id"),
+    ("POST", "purge", "/items/1/purge", True, None),
+    ("POST", "other", "/items/1/purge", False, None),
+    ("POST", "purge", "/items/1", False, None),
+]
+
+
+@pytest.mark.parametrize(("method", "operation_id", "path", "refused", "unnamed"), DENIAL_CALLS)
+def test_denials_fail_closed_the_same_way(
+    runtime: ModuleType,
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    refused: bool,
+    unnamed: str | None,
+) -> None:
+    api = DENIALS["apis"]["d"]
+    reason = cli.refusal_reason(api, method, operation_id, path)
+    assert reason == runtime.refusal_reason(api, method, operation_id, path)
+    assert (reason is not None) is refused, reason
+    if unnamed:
+        assert f"the call names no {unnamed}" in reason
+    elif reason:
+        assert "the call names no" not in reason
+
+
+@pytest.mark.parametrize(
+    ("template", "path", "ignore_case", "expected"),
+    [
+        ("/items/{id}", "/items/1/", False, True),
+        ("/items/{id}/", "/items/1", False, True),
+        ("/items", "/items/", False, True),
+        ("/", "/", False, True),
+        ("/items/{id}", "/%69tems/1", False, True),
+        # An encoded slash stays encoded: one segment here (the client refuses it separately).
+        ("/items/{id}", "/items/a%2fb", False, True),
+        ("/items/a%2fb", "/items/a%2Fb", False, True),
+        ("/items/{id}", "/ITEMS/1", False, False),
+        ("/items/{id}", "/ITEMS/1", True, True),
+        ("/items/{id}", "/items//", False, False),
+    ],
+)
+def test_paths_are_compared_normalised_by_both(
+    runtime: ModuleType, template: str, path: str, ignore_case: bool, expected: bool
+) -> None:
+    assert cli.path_matches(template, path, ignore_case=ignore_case) is expected
+    assert runtime.path_matches(template, path, ignore_case=ignore_case) is expected
+
+
+def test_allows_still_need_the_named_fields(runtime: ModuleType) -> None:
+    """The fail-closed rule is for denials: an allow must be shown, so an unnamed field fails it."""
+    api = {
+        "allowed_methods": ["GET"],
+        "allowed_operations": [{"operationId": "getItem"}, {"path": "/items/{id}"}],
+    }
+    for side in (cli, runtime):
+        assert side.refusal_reason(api, "GET", None, "/other") == "not in allowed_operations"
+        assert side.refusal_reason(api, "GET", "getItem", "/other") is None
+        assert side.refusal_reason(api, "GET", None, "/items/1/") is None
+        assert side.refusal_reason(api, "GET", None, "/ITEMS/1") == "not in allowed_operations"

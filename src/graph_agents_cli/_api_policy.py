@@ -67,6 +67,9 @@ HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 _PATH_SEGMENT_RE = re.compile(r"^(?:[^/?#\s{}]|\{[A-Za-z_][A-Za-z0-9_]*\})+$")
 _PLACEHOLDER_SPLIT_RE = re.compile(r"(\{[^/{}]+\})")
 
+_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
 _POLICY_KEYS = ("apis",)
 _API_KEYS = (
     "base_url_env",
@@ -90,6 +93,45 @@ LEGACY_POLICY_HINT = (
     "allowed_methods (for example [GET]), write auth: forward instead of "
     "forwarded-session, and name the file api-policy.yaml"
 )
+
+
+class PolicyLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` that refuses a key repeated within one mapping, at any level.
+
+    Plain ``safe_load`` silently keeps the last duplicate, so a reviewer reading
+    ``allowed_methods: [GET]`` would miss a later ``allowed_methods: ["*"]``
+    that is the one applied. Merge keys (``<<: *anchor``) still work.
+    """
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        if isinstance(node, yaml.MappingNode):
+            seen: set[Any] = set()
+            for key_node, _value_node in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue
+                key = self.construct_object(key_node, deep=deep)
+                try:
+                    duplicate = key in seen
+                except TypeError:  # an unhashable key: the base loader reports it
+                    continue
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"found duplicate key {key!r}",
+                        key_node.start_mark,
+                    )
+                seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def parse_policy_yaml(text: str) -> tuple[Any, list[str]]:
+    """Parse api-policy.yaml text: ``(data, [])``, or ``(None, [error])`` when it is
+    not valid YAML (a duplicate key included)."""
+    try:
+        return yaml.load(text, Loader=PolicyLoader), []
+    except yaml.YAMLError as exc:
+        return None, [f"not valid YAML: {exc}"]
 
 
 def policy_errors(data: Any) -> list[str]:
@@ -291,38 +333,92 @@ def path_template_problem(path: Any) -> str | None:
     return None
 
 
-def path_matches(template: str, path: str) -> bool:
+def normalize_path(path: str) -> str:
+    """``path`` in the form policy paths are compared in.
+
+    Percent-encoded unreserved characters are decoded (``/%61dmin`` is
+    ``/admin``), other escapes are upper-cased (``%2f`` is ``%2F``), and one
+    trailing slash is dropped (``/items/1/`` is ``/items/1``), so equivalent
+    spellings of a path match the same entries.
+    """
+
+    def _escape(match: re.Match[str]) -> str:
+        char = chr(int(match.group(0)[1:], 16))
+        return char if char in _UNRESERVED else match.group(0).upper()
+
+    path = _ESCAPE_RE.sub(_escape, path)
+    return path[:-1] if len(path) > 1 and path.endswith("/") else path
+
+
+def path_matches(template: str, path: str, *, ignore_case: bool = False) -> bool:
     """Whether ``path`` is covered by ``template``.
 
     A ``{name}`` placeholder matches exactly one non-empty segment, so
     ``/items/{item_id}`` covers ``/items/42``, ``/items/{id}`` and itself.
+    Both sides are compared normalised (``normalize_path``). Letter case
+    counts unless ``ignore_case``: denials ignore it, so ``/ADMIN/1`` cannot
+    slip past a denial of ``/admin/{x}`` on a case-insensitive server.
     """
-    if template == path:
+    template, path = normalize_path(template), normalize_path(path)
+    if template == path or (ignore_case and template.casefold() == path.casefold()):
         return True
     pattern = "".join(
         "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
         for part in _PLACEHOLDER_SPLIT_RE.split(template)
     )
-    return re.fullmatch(pattern, path) is not None
+    return re.fullmatch(pattern, path, re.IGNORECASE if ignore_case else 0) is not None
+
+
+def _methods_match(entry: Mapping[str, Any], method: str) -> bool:
+    methods = entry.get("methods")
+    return not methods or method.upper() in {str(m).upper() for m in methods}
 
 
 def operation_matches(
     entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
 ) -> bool:
-    """Whether an allowed/denied operation entry covers the call.
+    """Whether an ``allowed_operations`` entry covers the call.
 
     AND semantics: every field the entry pins (``operationId``, ``path``,
     ``methods``) must match. A call that does not name a pinned field (no
-    operation id, or no path) does not match that entry.
+    operation id, or no path) does not match: an allow must be shown.
     """
-    methods = entry.get("methods")
-    if methods and method.upper() not in {str(m).upper() for m in methods}:
+    if not _methods_match(entry, method):
         return False
     pinned_id = entry.get("operationId")
     if pinned_id is not None and operation_id != pinned_id:
         return False
     pinned_path = entry.get("path")
     if pinned_path is not None and (path is None or not path_matches(pinned_path, path)):
+        return False
+    return pinned_id is not None or pinned_path is not None
+
+
+def denial_matches(
+    entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+) -> bool:
+    """Whether a ``denied_operations`` entry may cover the call (fail closed).
+
+    Every field the entry pins must match, as for an allow, but a pinned field
+    the call does not name counts as matching: a call without an operation id
+    cannot be told apart from a denied ``operationId``, so it is refused.
+    Operation ids and paths are compared ignoring letter case.
+    """
+    if not _methods_match(entry, method):
+        return False
+    pinned_id = entry.get("operationId")
+    if (
+        pinned_id is not None
+        and operation_id is not None
+        and str(operation_id).casefold() != str(pinned_id).casefold()
+    ):
+        return False
+    pinned_path = entry.get("path")
+    if (
+        pinned_path is not None
+        and path is not None
+        and not path_matches(pinned_path, path, ignore_case=True)
+    ):
         return False
     return pinned_id is not None or pinned_path is not None
 
@@ -348,17 +444,34 @@ def refusal_reason(
     """Why the API's policy refuses the call, or None when it is allowed.
 
     Every rule must pass: the method is in ``allowed_methods`` (``["*"]``
-    allows every method); no ``denied_operations`` entry matches (denials
-    win); and, when ``allowed_operations`` is present, one of its entries
-    matches.
+    allows every method); no ``denied_operations`` entry may cover the call
+    (denials win, and a call that does not name a field a denial pins is
+    refused by it: ``denial_matches``); and, when ``allowed_operations`` is
+    present, one of its entries matches (``operation_matches``).
     """
     method = method.upper()
+    operation_id = operation_id or None
+    path = path or None
     allowed = [str(m).upper() for m in api.get("allowed_methods") or []]
     if ANY_METHOD not in allowed and method not in allowed:
         return f"method {method} is not in allowed_methods {allowed}"
     for entry in api.get("denied_operations") or []:
-        if operation_matches(entry, method, operation_id, path):
-            return f"denied by denied_operations ({describe_operation(entry)})"
+        if denial_matches(entry, method, operation_id, path):
+            reason = f"denied by denied_operations ({describe_operation(entry)})"
+            unnamed = [
+                name
+                for name, pinned, given in (
+                    ("operation_id", "operationId", operation_id),
+                    ("path", "path", path),
+                )
+                if entry.get(pinned) is not None and given is None
+            ]
+            if unnamed:
+                reason += (
+                    f": the call names no {' and no '.join(unnamed)}, so it cannot be ruled "
+                    "out; name it on the call and in API_CALLS"
+                )
+            return reason
     allowed_operations = api.get("allowed_operations")
     if allowed_operations is not None and not any(
         operation_matches(entry, method, operation_id, path) for entry in allowed_operations
@@ -398,19 +511,42 @@ class LegacyApiPolicyError(click.ClickException):
     exit_code = 3
 
 
+class ApiPolicyConfigError(click.ClickException):
+    """The manifest names a policy file the agent would not load (exit 3)."""
+
+    exit_code = 3
+
+
 def load_policy_document(path: str | Path) -> dict[str, Any]:
     """Read and validate an api-policy file; raise ``ApiPolicyFileError`` listing every problem."""
     policy_path = Path(path)
     try:
-        data = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        text = policy_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ApiPolicyFileError(policy_path, [f"cannot read the file: {exc}"]) from exc
-    except yaml.YAMLError as exc:
-        raise ApiPolicyFileError(policy_path, [f"not valid YAML: {exc}"]) from exc
-    errors = policy_errors(data)
+    data, errors = parse_policy_yaml(text)
+    errors = errors or policy_errors(data)
     if errors:
         raise ApiPolicyFileError(policy_path, errors)
     return dict(data)
+
+
+def manifest_policy_file_problem(value: Any, manifest_name: str) -> str | None:
+    """Why the manifest's ``api_policy.policy_file`` cannot be used, or None.
+
+    The agent loads ``api-policy.yaml`` from the project root (or
+    ``API_POLICY_PATH``) and the Dockerfiles copy only that file, so a manifest
+    naming another file would make ``lint`` check a file the agent never
+    enforces.
+    """
+    if not value or Path(str(value)) == Path(POLICY_FILENAME):
+        return None
+    return (
+        f"api_policy.policy_file in {manifest_name} is {str(value)!r}, but the agent loads "
+        f"{POLICY_FILENAME} from the project root (the Dockerfiles copy only that file), so "
+        f"lint would check a file the agent never enforces. Rename the file to "
+        f"{POLICY_FILENAME} and set api_policy: {{policy_file: {POLICY_FILENAME}}}."
+    )
 
 
 @dataclass(frozen=True)

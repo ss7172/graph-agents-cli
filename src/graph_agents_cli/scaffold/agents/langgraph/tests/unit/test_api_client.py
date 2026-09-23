@@ -57,6 +57,7 @@ apis:
       - path: /listing
     denied_operations:
       - operationId: getSecret
+        path: /secret
       - path: /items/admin
     timeouts_ms: {connect: 1500, read: 2500}
     pagination: {page_size_param: pageSize, max_page_size: 200}
@@ -69,6 +70,15 @@ apis:
     base_url_env: PUBLIC_API_BASE_URL
     auth: none
     allowed_methods: [GET, POST]
+  records:
+    base_url_env: RECORDS_API_BASE_URL
+    auth: none
+    allowed_methods: ["*"]
+    denied_operations:
+      - operationId: deleteRecord
+        methods: [DELETE]
+      - path: /admin/{section}
+    pagination: {page_size_param: limit, max_page_size: 50}
 """
 
 
@@ -87,6 +97,7 @@ def policy_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("ITEMS_API_TOKEN", "tok")
     monkeypatch.setenv("DIRECTORY_API_BASE_URL", "http://directory.test/api/v2/")
     monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://public.test")
+    monkeypatch.setenv("RECORDS_API_BASE_URL", "https://records.test")
     reset_policy_cache()
     yield path
     reset_policy_cache()
@@ -135,6 +146,11 @@ def test_undeclared_api_is_refused(policy_file: Path) -> None:
         (
             "apis:\n  A:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
             "invalid API name",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+            "    allowed_methods: ['*']\n",
+            "found duplicate key 'allowed_methods'",
         ),
     ],
 )
@@ -268,6 +284,42 @@ async def test_concrete_paths_are_validated(policy_file: Path, path: str) -> Non
     assert calls == []
 
 
+async def test_an_operation_id_denial_refuses_calls_that_do_not_name_one(policy_file: Path) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("records", transport=_transport(calls))
+    # Without an operation id the call cannot be told apart from deleteRecord.
+    with pytest.raises(ApiPolicyError, match="names no operation_id"):
+        await client.request("DELETE", "/records/{record_id}", path_params={"record_id": "1"})
+    with pytest.raises(ApiPolicyError, match="denied"):
+        await client.request(
+            "DELETE",
+            "/records/{record_id}",
+            operation_id="deleteRecord",
+            path_params={"record_id": "1"},
+        )
+    assert calls == []
+    await client.request(
+        "DELETE",
+        "/records/{record_id}",
+        operation_id="archiveRecord",
+        path_params={"record_id": "1"},
+    )
+    await client.get("/records/1")  # the denial pins DELETE
+    assert [(c.method, c.url.path) for c in calls] == [
+        ("DELETE", "/records/1"),
+        ("GET", "/records/1"),
+    ]
+
+
+@pytest.mark.parametrize("path", ["/admin/1", "/admin/1/", "/ADMIN/1", "/%61dmin/1", "/Admin/%31"])
+async def test_path_denials_cover_equivalent_spellings(policy_file: Path, path: str) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("records", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError, match="denied"):
+        await client.get(path, operation_id="getAdmin")
+    assert calls == []
+
+
 def test_path_rendering_encodes_each_value_as_one_segment() -> None:
     assert render_path("/sites/{site_id}/topology", {"site_id": "x y"}) == "/sites/x%20y/topology"
     assert render_path("/items/{item_id}", {"item_id": "a?b=1#f"}) == "/items/a%3Fb%3D1%23f"
@@ -290,6 +342,34 @@ async def test_page_size_is_capped(policy_file: Path, value: Any, allowed: bool)
         with pytest.raises(ApiPolicyError, match="max_page_size"):
             await client.get("/listing", params={"pageSize": value})
         assert calls == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        [("limit", "5000")],
+        {"Limit": 5000},
+        "limit=5000",
+        [("limit", "10"), ("limit", "5000")],
+        {"LIMIT": "10", "limit": "51"},
+        {"limit": " 10"},
+        {"limit": "1e3"},
+        {"limit": "9" * 5000},
+    ],
+)
+async def test_page_size_cap_covers_every_spelling(policy_file: Path, params: Any) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("records", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError, match="max_page_size"):
+        await client.get("/records", params=params)
+    assert calls == []
+
+
+async def test_the_checked_query_is_the_one_sent(policy_file: Path) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("records", transport=_transport(calls))
+    await client.get("/records", params=[("limit", "20"), ("tag", "a"), ("tag", "b")])
+    assert calls[0].url.params.multi_items() == [("limit", "20"), ("tag", "a"), ("tag", "b")]
 
 
 async def test_redirects_and_errors_are_not_followed(policy_file: Path) -> None:

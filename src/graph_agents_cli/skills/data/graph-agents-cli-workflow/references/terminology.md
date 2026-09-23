@@ -34,7 +34,7 @@ choosing flags or editing configuration.
 | "in-memory", "no database locally" | `CHECKPOINTER=memory` (the `.env.example` default; run records are in-process) |
 | "run history", "usage records" | run records (follow the checkpointer; payload only under `TRACE_CAPTURE=full`) |
 
-## Auth and product access
+## Auth and outbound API access
 
 | User says | CLI value |
 |---|---|

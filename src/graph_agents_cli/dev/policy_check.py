@@ -29,7 +29,9 @@ or the API client. Each declared call must name an API declared in
 with the same strict schema, and calls are matched with the same rules, as the
 runtime client of the scaffolded project (``graph_agents_cli._api_policy``
 holds the shared copy). When an API sets ``openapi:``, every call must also
-exist in that spec by ``operationId`` or by ``path`` + ``method``.
+exist in that spec by ``operationId`` or by ``path`` + ``method``, and a call
+declared by ``operation_id`` alone is judged with the path the spec gives it
+(the client always sends one), so path denials apply to it.
 
 Fail closed: without a policy file every declared call is refused, as the
 runtime would refuse it. A module that still declares the retired
@@ -269,6 +271,25 @@ def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], se
     return by_id, pairs
 
 
+def _spec_operation_hint(call: DeclaredCall, by_id: Mapping[str, tuple[str, str]]) -> str:
+    """For a refused call declared without an operation id: the spec's id(s) for its path.
+
+    The operation id is not filled in for the policy decision: the client
+    judges a call by the ``operation_id`` the tool passes, so a check that
+    assumed the spec's id would pass calls the client refuses.
+    """
+    if call.operation_id or not call.path:
+        return ""
+    ids = sorted(
+        op_id
+        for op_id, (spec_path, spec_method) in by_id.items()
+        if spec_method == call.method and path_matches(spec_path, call.path)
+    )
+    if not ids:
+        return ""
+    return f" (the OpenAPI spec names this operation {' or '.join(ids)})"
+
+
 def check_call(
     call: DeclaredCall,
     document: Mapping[str, Any] | None,
@@ -289,13 +310,18 @@ def check_call(
             STATUS_DENIED,
             f"API {call.api!r} is not declared in {policy_file} (declared: {declared})",
         )
-    reason = refusal_reason(api, call.method, call.operation_id, call.path)
-    if reason:
-        return CheckResult(call, STATUS_DENIED, reason)
-
     spec = (specs or {}).get(call.api)
+    by_id, pairs = _index_openapi(spec) if spec is not None else ({}, set())
+    path = call.path
+    if path is None and call.operation_id in by_id and by_id[call.operation_id][1] == call.method:
+        # The client always sends a path: judge the one the spec gives the operation,
+        # so path denials apply to a call declared by operation_id alone.
+        path = by_id[call.operation_id][0]
+    reason = refusal_reason(api, call.method, call.operation_id, path)
+    if reason:
+        return CheckResult(call, STATUS_DENIED, reason + _spec_operation_hint(call, by_id))
+
     if spec is not None:
-        by_id, pairs = _index_openapi(spec)
         if call.operation_id and call.operation_id in by_id:
             spec_path, spec_method = by_id[call.operation_id]
             if spec_method != call.method:

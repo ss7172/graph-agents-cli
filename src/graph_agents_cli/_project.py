@@ -31,6 +31,7 @@ from typing import Any
 import click
 import yaml
 
+from graph_agents_cli._api_policy import ApiPolicyConfigError, manifest_policy_file_problem
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_CD,
@@ -240,7 +241,10 @@ class ProjectConfig:
         if not isinstance(api_policy, Mapping):
             raise click.ClickException(f"malformed api_policy in {filename}")
         policy_file = api_policy.get("policy_file")
-        cfg.api_policy = ApiPolicyConfig(policy_file=str(policy_file) if policy_file else None)
+        problem = manifest_policy_file_problem(policy_file, filename)
+        if problem:
+            raise ApiPolicyConfigError(problem)
+        cfg.api_policy = ApiPolicyConfig(policy_file=API_POLICY_FILENAME if policy_file else None)
         cfg.has_legacy_product_api = "product_api" in data
 
         process = data.get("process")

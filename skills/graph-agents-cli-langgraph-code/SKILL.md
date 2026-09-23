@@ -151,10 +151,15 @@ when the project declares an API policy):
   params=None, json_body=None, headers=None)` (and `client.get(...)`) refuses, before sending,
   any method or operation outside the policy with `ApiPolicyError`. Policy `path` entries are
   templates (`{param}` matches one segment, for `lint` and the client alike); an entry pinning
-  both `operationId` and `path` needs both to match; denials win. Pass `path` as the declared
+  both `operationId` and `path` needs both to match. Denials win and fail closed: a call that
+  does not name a field a denial pins is refused by it, so when the API has a denial by
+  `operationId` alone, pass `operation_id=` on every call and declare it in `API_CALLS` (or pin
+  the denial's `path`). Paths match after decoding percent-encoded unreserved characters and
+  ignoring one trailing slash; denials also ignore letter case. Pass `path` as the declared
   template and the values in `path_params`; a concrete path is validated (no dot segments,
   encoded slashes, empty segments, query or fragment). A base URL with a path prefix works (the
-  path is joined under it), `pagination.max_page_size` is enforced, redirects are never followed.
+  path is joined under it), `pagination.max_page_size` is enforced (every value of the
+  parameter, in any letter case and any `params` shape), redirects are never followed.
   Let the errors propagate: the scaffolded `agent.py` middleware turns them into a
   `ToolMessage(status="error")` the model can read; never swallow them silently.
 - Credentials come from the policy, never from the tool: `auth: bearer` sends the API's

@@ -242,11 +242,91 @@ def test_denied_operations_win_over_allows(project):
         ("/sites/{siteId}/topology", "/sites/42/topology/extra", False),
         ("/sites/{siteId}/topology", "/sites/topology", False),
         ("/items/{id}.json", "/items/7.json", True),
-        ("/items", "/items/", False),
+        # One trailing slash is not a different path.
+        ("/items", "/items/", True),
+        ("/items/{id}", "/%69tems/7", True),
+        ("/items/{id}", "/Items/7", False),
     ],
 )
 def test_path_matches(template: str, path: str, expected: bool):
     assert path_matches(template, path) is expected
+
+
+def test_an_operation_id_denial_refuses_calls_that_name_no_operation_id(tmp_path):
+    """Fail closed: the client cannot tell such a call apart from the denied operation."""
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "t.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "a", "method": "DELETE", "path": "/items/{item_id}"},\n'
+        '    {"api": "a", "method": "DELETE", "operation_id": "archiveItem", "path": "/items/{id}"},\n'
+        '    {"api": "a", "method": "GET", "path": "/items/{item_id}"},\n'
+        "]\n"
+    )
+    write_policy(
+        tmp_path, a=api(denied_operations=[{"operationId": "deleteItem", "methods": ["DELETE"]}])
+    )
+    report = pc.build_report(tmp_path, "app")
+    by_call = {(r.call.method, r.call.operation): r for r in report.results}
+    refused = by_call[("DELETE", "/items/{item_id}")]
+    assert refused.status == pc.STATUS_DENIED
+    assert "the call names no operation_id" in refused.reason
+    assert by_call[("DELETE", "archiveItem /items/{id}")].status == pc.STATUS_ALLOWED
+    # The denial pins DELETE: other methods are unaffected.
+    assert by_call[("GET", "/items/{item_id}")].status == pc.STATUS_ALLOWED
+
+
+def test_the_spec_names_the_operation_of_a_call_declared_by_path(tmp_path):
+    """The auditor's case: the spec maps DELETE /items/{item_id} to the denied deleteItem."""
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "t.py").write_text(
+        'API_CALLS = [{"api": "a", "method": "DELETE", "path": "/items/{item_id}"}]\n'
+    )
+    spec = {"paths": {"/items/{item_id}": {"delete": {"operationId": "deleteItem"}}}}
+    (tmp_path / "openapi.yaml").write_text(yaml.safe_dump(spec))
+    write_policy(
+        tmp_path, a=api(openapi="openapi.yaml", denied_operations=[{"operationId": "deleteItem"}])
+    )
+    report = pc.build_report(tmp_path, "app")
+    assert report.violations == 1
+    reason = report.results[0].reason
+    assert "denied by denied_operations (operationId=deleteItem)" in reason
+    assert "the OpenAPI spec names this operation deleteItem" in reason
+
+
+def test_a_call_declared_by_operation_id_is_judged_with_the_spec_path(tmp_path):
+    """The client always sends a path, so a path denial applies to an id-only declaration."""
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "t.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "a", "method": "GET", "operation_id": "getAdmin"},\n'
+        '    {"api": "a", "method": "GET", "operation_id": "getItem"},\n'
+        "]\n"
+    )
+    spec = {
+        "paths": {
+            "/admin/{section}": {"get": {"operationId": "getAdmin"}},
+            "/items/{id}": {"get": {"operationId": "getItem"}},
+        }
+    }
+    (tmp_path / "openapi.yaml").write_text(yaml.safe_dump(spec))
+    write_policy(
+        tmp_path, a=api(openapi="openapi.yaml", denied_operations=[{"path": "/Admin/{x}"}])
+    )
+    result = statuses(pc.build_report(tmp_path, "app"))
+    assert result == {"getAdmin": pc.STATUS_DENIED, "getItem": pc.STATUS_ALLOWED}
+
+
+def test_a_repeated_policy_key_is_invalid(project):
+    (project / "api-policy.yaml").write_text(
+        "apis:\n  incidents:\n    base_url_env: X\n    auth: none\n    allowed_methods: [GET]\n"
+        "    allowed_methods: ['*']\n"
+    )
+    report = pc.build_report(project, "app")
+    assert [r.status for r in report.results] == [pc.STATUS_INVALID]
+    assert "found duplicate key 'allowed_methods'" in report.results[0].reason
 
 
 def test_strict_policy_errors_are_reported(project):

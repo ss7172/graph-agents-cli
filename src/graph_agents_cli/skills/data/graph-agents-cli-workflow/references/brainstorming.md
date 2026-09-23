@@ -36,9 +36,9 @@ When unsure, start light and escalate as complexity surfaces.
 - Ask at least one clarifying question before proposing approaches, and never present a full spec
   in your first reply. (Exceptions: a trivial agent, or a genuinely non-interactive run.)
 - Prefer multiple-choice questions.
-- Cover: problem, tools and product operations plus credential, safety, model provider and egress,
-  runtime and persistence, auth policy, deployment shape. Follow the user's lead rather than a
-  script.
+- Cover: problem, tools and the API operations they need plus credential, safety, model provider
+  and egress, runtime and persistence, auth policy, deployment shape. Follow the user's lead
+  rather than a script.
 - YAGNI: prune features that do not serve the stated purpose.
 
 ## When you cannot ask
@@ -103,7 +103,7 @@ approval message.
 3. **Scope:** 3+ subgraphs or integrations? Did you carve out a first slice?
 4. **Measurable success criteria:** each criterion is an `expect` check, a judge threshold, or a
    pass/fail eval, not "works well".
-5. **Policy:** every product operation a tool needs is in the policy allow-list, and nothing the
+5. **Policy:** every API operation a tool needs is in the policy allow-list, and nothing the
    policy denies is assumed.
 6. **Ambiguity:** could a requirement be read two ways? Pick one and make it explicit.
 

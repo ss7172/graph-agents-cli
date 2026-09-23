@@ -98,8 +98,13 @@ refused. Each API declares `base_url_env` (the URL may carry a path prefix), `au
 `token_env`, or `forward`, which sends the caller's own `attributes["credentials"][<api>]`; not available
 under langgraph-server, which would persist it), the required `allowed_methods`, and optional
 `allowed_operations` / `denied_operations` (an entry pinning both `operationId` and `path` needs both to
-match; denials win), `openapi`, `timeouts_ms` and `pagination` (`max_page_size` is enforced). Unknown keys are
-errors, so a typo never widens access.
+match), `openapi`, `timeouts_ms` and `pagination` (`max_page_size` is enforced for every spelling of the
+parameter). Unknown and repeated keys are errors, so a typo never widens access. Denials win and fail closed: a
+call that does not name a field a denial pins is refused by it, so a denial by `operationId` alone refuses every
+call without `operation_id` (name it on the call and in `API_CALLS`, or pin the denial's `path`). Paths match
+after decoding percent-encoded unreserved characters and ignoring one trailing slash; letter case counts for
+allows and is ignored for denials. Pass model input as `path_params` of a declared template, never as part of a
+concrete path.
 {%- if cookiecutter.has_api_policy %}
 This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
 {%- else %}

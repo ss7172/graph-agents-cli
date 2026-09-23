@@ -178,7 +178,7 @@ apis:
         path: /incidents/{incident_id}   # both pinned: both must match
       - path: /sites/{siteId}/topology
         methods: [GET]
-    denied_operations: []                # same entry shape; denials win
+    denied_operations: []                # same entry shape; denials win and fail closed
     openapi: docs/incidents-openapi.yaml # optional; lint validates declared calls against it
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
@@ -189,6 +189,12 @@ apis:
   unrestricted fallback. `request(method, path, operation_id=None, path_params=None, ...)`
   refuses, before sending, any method or operation outside the policy (`ApiPolicyError`, a tool
   error the model can read); configuration or HTTP failures raise `ApiCallError`.
+- Matching: an entry pinning several fields needs all of them to match. Denials win and fail
+  closed: a call that does not name a field a denial pins (no `operation_id` against an
+  `operationId` denial) is refused by it. Paths are compared after decoding percent-encoded
+  unreserved characters and ignoring one trailing slash; allows are case-sensitive, denials are
+  not. `pagination.max_page_size` applies to every value of the parameter, in any letter case.
+  Repeated YAML keys are errors, like unknown keys.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
   the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the
@@ -199,10 +205,12 @@ apis:
   `dev/policy_check.py`, which reads those literals with `ast` (no import, no model SDK),
   validates `api-policy.yaml` with the runtime's own schema rules (the two copies are kept
   byte-identical by a CLI test), and checks every call against its API and, when `openapi:` is
-  set (resolved relative to the project root), the spec by `operationId` or `path` + `method`.
+  set (resolved relative to the project root), the spec by `operationId` or `path` + `method`
+  (a call declared by `operation_id` alone is judged with the spec's path for it).
   `pr_checks` fails on a violation.
 - Both Dockerfiles copy `api-policy.yaml` into the image when the project has one. The manifest
-  records `api_policy: {policy_file: api-policy.yaml}`; the key is absent without a policy.
+  records `api_policy: {policy_file: api-policy.yaml}`; the key is absent without a policy. Any
+  other `policy_file` is a config error (exit 3): the agent loads only `api-policy.yaml`.
 - The CLI never edits the policy after scaffolding; `scaffold enhance` and `upgrade` leave it
   untouched. A project on the retired `product-policy.yaml` / `product_api:` format stops
   `create`, `enhance`, `upgrade` and `lint` with migration steps (exit 3).

@@ -270,3 +270,11 @@ def test_run_outside_project_exit_3(
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cmd_run, [])
     assert result.exit_code == 3
+
+
+def test_session_token_is_accepted_but_hidden_from_help(runner: CliRunner) -> None:
+    """Like `run` and `eval generate`: a consumer-specific shortcut for --header."""
+    result = runner.invoke(cmd_run, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert "--session-token" not in result.output
+    assert "--header" in result.output

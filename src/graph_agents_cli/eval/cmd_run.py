@@ -146,7 +146,12 @@ def _grade_override_argv(
 )
 @click.option("--header", "-H", multiple=True, help="Extra HTTP header 'Key: Value' (repeatable).")
 @click.option("--cookie", multiple=True, help="Cookie 'name=value' (repeatable).")
-@click.option("--session-token", default=None, help="Sent as X-Session-Token.")
+@click.option(
+    "--session-token",
+    default=None,
+    hidden=True,
+    help="Sent as X-Session-Token; prefer --header 'X-Session-Token: ...'.",
+)
 @click.option("--app-name", default=None, help="Agent name recorded in the traces.")
 @click.option(
     "--timeout",
