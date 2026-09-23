@@ -289,3 +289,19 @@ def test_checked_merge_refuses_a_line_merge_that_changes_the_meaning() -> None:
     assert merge3_checked(env_base, "A=1\nB=1\nX=2\n", "A=1\nB=1\nX=3\n", ".env.example") is None
     merged = merge3_checked(env_base, "A=2\nB=1\n", "A=1\nB=1\nC=3\n", ".env.example")
     assert merged == "A=2\nB=1\nC=3\n"
+
+
+def test_dry_run_errors_exit_non_zero(tmp_path: pathlib.Path, monkeypatch, run_create) -> None:
+    """They used to print 'Error: ...' and exit 0, so scripts took them for success."""
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(enhance, ["--cd", "argocd", "--dry-run", "-y"])
+    assert result.exit_code == 3, result.output
+    assert "no graph-agents-cli-manifest.yaml" in result.output
+    result = CliRunner().invoke(enhance, ["--dry-run", "--force", "-y"])
+    assert result.exit_code == 2, result.output
+
+    project = _fresh(run_create, "agent")
+    monkeypatch.chdir(project)
+    result = CliRunner().invoke(enhance, ["--dry-run", "-y", "--skip-checks"])
+    assert result.exit_code == 2, result.output
+    assert "--dry-run requires specifying what to change" in result.output

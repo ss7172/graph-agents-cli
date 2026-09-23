@@ -64,10 +64,84 @@ def test_declined_confirm_is_a_clean_abort(stub) -> None:
 
 
 def test_unexpected_exception_still_prints_the_traceback(stub) -> None:
+    """A bug keeps its traceback; exit 2 (tool failure), never 1 (a failed gate)."""
+
     @stub
     def _boom():
         raise RuntimeError("boom")
 
     result = CliRunner().invoke(main_module.main, ["stub-cmd"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Traceback" in result.output and "boom" in result.output
+
+
+class LangSmithConnectionError(Exception):
+    """Named like the SDK's class: matched by name, the SDK is never imported."""
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "fragment"),
+    [
+        (ConnectionRefusedError(61, "Connection refused"), 2, "network error"),
+        (LangSmithConnectionError("POST /datasets failed\nmore"), 2, "network error"),
+        (PermissionError(13, "Permission denied"), 2, "PermissionError"),
+        (__import__("json").JSONDecodeError("Expecting value", "x", 0), 3, "invalid JSON"),
+    ],
+)
+def test_environment_errors_are_one_line(stub, monkeypatch, exc, code, fragment) -> None:
+    monkeypatch.delenv(main_module.DEBUG_ENV, raising=False)
+
+    @stub
+    def _fail():
+        raise exc
+
+    result = CliRunner().invoke(main_module.main, ["stub-cmd"])
+    assert result.exit_code == code, result.output
+    assert fragment in result.output
+    assert "Traceback" not in result.output
+    assert f"set {main_module.DEBUG_ENV}=1" in result.output
+    assert "more" not in result.output.split("Error:", 1)[1].splitlines()[0]
+
+
+def test_yaml_errors_are_configuration_errors(stub, monkeypatch) -> None:
+    import yaml
+
+    @stub
+    def _fail():
+        yaml.safe_load("a: [unclosed")
+
+    result = CliRunner().invoke(main_module.main, ["stub-cmd"])
+    assert result.exit_code == 3, result.output
+    assert "invalid YAML" in result.output and "Traceback" not in result.output
+
+
+def test_debug_env_shows_the_traceback(stub, monkeypatch) -> None:
+    monkeypatch.setenv(main_module.DEBUG_ENV, "1")
+
+    @stub
+    def _fail():
+        raise ConnectionResetError("reset")
+
+    result = CliRunner().invoke(main_module.main, ["stub-cmd"])
+    assert result.exit_code == 2
+    assert "Traceback" in result.output
+
+
+def test_log_warnings_are_not_printed_as_warning_root(monkeypatch, capsys) -> None:
+    """Without a configured handler, logging.warning printed 'WARNING:root:...'."""
+    import logging
+
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", [])
+    monkeypatch.setattr(root, "level", logging.WARNING)
+    main_module._configure_logging()
+    try:
+        logging.warning("graph-agents-cli: applying %d extension command(s)", 1)
+        logging.error("broken")
+        logging.info("quiet")
+    finally:
+        root.handlers = []
+    err = capsys.readouterr().err
+    assert "Warning: graph-agents-cli: applying 1 extension command(s)" in err
+    assert "Error: broken" in err
+    assert "WARNING:root" not in err and "quiet" not in err

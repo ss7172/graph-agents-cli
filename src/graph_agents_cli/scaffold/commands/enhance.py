@@ -41,6 +41,7 @@ from graph_agents_cli._defaults import (
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import (
     API_POLICY_FILENAME,
+    NotInProjectError,
     ProjectConfig,
     find_project_config,
     find_project_root,
@@ -1037,8 +1038,7 @@ def enhance(
     has_cli_overrides = bool(cli_override_args)
 
     if dry_run and force:
-        console.print("[bold red]Error:[/bold red] --dry-run is not compatible with --force mode.")
-        return
+        raise click.UsageError("--dry-run is not compatible with --force.")
 
     if base_template and not validate_base_template(base_template):
         hint = (
@@ -1070,11 +1070,10 @@ def enhance(
                     overrides = saved_config_result
             else:
                 if dry_run:
-                    console.print(
-                        "[bold red]Error:[/bold red] --dry-run requires specifying what to change "
-                        "(e.g. --deployment-target kubernetes or --cd argocd) or interactive customization."
+                    raise click.UsageError(
+                        "--dry-run requires specifying what to change (e.g. "
+                        "--deployment-target kubernetes or --cd argocd) or --interactive."
                     )
-                    return
                 if check_and_execute_with_saved_config(
                     project_dir=current_dir,
                     auto_approve=auto_approve,
@@ -1096,11 +1095,11 @@ def enhance(
                 return
             console.print("[yellow]⚠️  Smart-merge failed, falling back to standard mode.[/yellow]")
         elif dry_run:
-            console.print(
-                "[bold red]Error:[/bold red] --dry-run requires saved project metadata "
-                "(graph-agents-cli-manifest.yaml file)."
+            raise NotInProjectError(
+                "--dry-run compares against the project's saved settings, and there is no "
+                "graph-agents-cli-manifest.yaml here or in a parent directory.\n"
+                "  Run it from a project created by graph-agents-cli."
             )
-            return
         elif has_cli_overrides:
             console.print("[dim]No saved metadata found - using standard overwrite mode.[/dim]")
     else:

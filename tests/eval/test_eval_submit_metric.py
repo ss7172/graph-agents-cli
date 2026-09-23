@@ -236,6 +236,35 @@ def test_submit_uploads_dataset_examples_experiment_runs_and_feedback(
     assert "Updating LangSmith dataset" in result.output
 
 
+def test_submit_unreachable_endpoint_is_one_line_exit_2(
+    project: Path,
+    runner: CliRunner,
+    fake_judge: FakeJudge,
+    fake_langsmith,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK's connection error used to surface as a ~200-line traceback."""
+
+    class LangSmithConnectionError(Exception):
+        pass
+
+    def unreachable(self, **kwargs):
+        raise LangSmithConnectionError(
+            "Connection error caused failure to POST /datasets\n  ... 200 more lines"
+        )
+
+    monkeypatch.setattr(fake_langsmith, "create_dataset", unreachable)
+    write_traces(project, good_traces())
+    assert runner.invoke(cmd_grade, [], catch_exceptions=False).exit_code == 0
+    monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+    result = runner.invoke(cmd_submit, ["--endpoint", "http://127.0.0.1:18645"])
+    assert result.exit_code == 2, result.output
+    assert "could not reach http://127.0.0.1:18645" in result.output
+    assert "LangSmithConnectionError: Connection error caused failure" in result.output
+    assert "200 more lines" not in result.output
+    assert "Traceback" not in result.output
+
+
 def test_submit_reports_missing_langsmith_package(
     project: Path, runner: CliRunner, fake_judge: FakeJudge, monkeypatch: pytest.MonkeyPatch
 ) -> None:

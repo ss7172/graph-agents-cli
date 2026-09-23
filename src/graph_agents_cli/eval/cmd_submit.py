@@ -44,6 +44,34 @@ from graph_agents_cli.eval.gate import STATUS_PASSED
 
 LANGSMITH_API_KEY = "LANGSMITH_API_KEY"
 LANGSMITH_ENDPOINT = "LANGSMITH_ENDPOINT"
+# The upload failed (network, auth, the service): a tool failure, not the gate.
+EXIT_SUBMIT_FAILED = 2
+
+
+class SubmitFailedError(click.ClickException):
+    """LangSmith rejected or never received the upload (exit 2)."""
+
+    exit_code = EXIT_SUBMIT_FAILED
+
+
+def _describe_upload_failure(exc: Exception, endpoint: str | None) -> str:
+    endpoint = endpoint or "the default LangSmith endpoint"
+    first_line = (str(exc).strip().splitlines() or [""])[0][:300]
+    name = type(exc).__name__
+    lowered = name.lower()
+    if "connection" in lowered or "timeout" in lowered or isinstance(exc, OSError):
+        hint = (
+            f"could not reach {endpoint}; check --endpoint / {LANGSMITH_ENDPOINT} and the network"
+        )
+    elif "auth" in lowered or "forbidden" in lowered:
+        hint = f"LangSmith refused the credentials; check {LANGSMITH_API_KEY}"
+    else:
+        hint = "LangSmith refused the upload"
+    detail = f" ({name}: {first_line})" if first_line else f" ({name})"
+    return (
+        f"eval submit failed: {hint}{detail}.\n"
+        "  The local results are unchanged; the eval gate never depends on this upload."
+    )
 
 
 def _langsmith_client(api_key: str, endpoint: str | None) -> Any:
@@ -345,15 +373,24 @@ def cmd_submit(
     console.print(
         f"Submitting [cyan]{results_path}[/cyan] ({len(results_doc['cases'])} case(s)) to LangSmith..."
     )
-    report = upload(
-        client,
-        dataset=ds,
-        results=results_doc,
-        traces=trace_map,
-        dataset_name=name,
-        experiment=experiment_name,
-        console=console,
-    )
+    try:
+        report = upload(
+            client,
+            dataset=ds,
+            results=results_doc,
+            traces=trace_map,
+            dataset_name=name,
+            experiment=experiment_name,
+            console=console,
+        )
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        # The LangSmith SDK raises its own classes (connection, auth, rate
+        # limit, ...): one line naming what failed, not the SDK's traceback.
+        raise SubmitFailedError(
+            _describe_upload_failure(exc, endpoint or env.get(LANGSMITH_ENDPOINT))
+        ) from exc
     console.print(
         f"[green]Uploaded[/green] {report['examples']} example(s), {report['runs']} run(s), "
         f"{report['feedback']} feedback score(s)."
