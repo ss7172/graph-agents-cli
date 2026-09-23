@@ -69,6 +69,66 @@ def test_a_fixed_override_cannot_stand_for_an_older_version(
     assert v.INSTALL_SPEC_ENV in message and "{version}" in message
 
 
+@pytest.mark.parametrize(
+    ("override", "problem"),
+    [
+        # A newline would add its own NAME=VALUE line to .github/agent.env ($GITHUB_ENV).
+        ("git+https://git.example/gac@v{version}\nEVIL=1", "a newline at position 39"),
+        ("git+https://git.example/gac\r\nX=1", "a carriage return"),
+        ("git+https://git.example/gac @v1", "a space at position 28"),
+        ("git+https://git.example/gac\t@v1", "a tab"),
+        # Spaces only as the separator of a PEP 508 direct reference.
+        ("graph-agents-cli  @ git+https://git.example/gac", "a space at position 17"),
+        ("graph-agents-cli @ git+https://git.example/gac @v1", "a space at position 17"),
+        ("graph-agents-cli @ git+https://x/gac\n@v{version}", "a newline"),
+        ("git+https://git.example/gac\u2028X=1", "whitespace (U+2028)"),
+        ("git+https://git.example/gac\x1b[31m", "a control character (U+001B)"),
+        ("git+https://git.example/gac\u202e", "a control character (U+202E)"),
+    ],
+)
+def test_a_malformed_override_is_a_configuration_error(
+    monkeypatch: pytest.MonkeyPatch, override: str, problem: str
+) -> None:
+    monkeypatch.setenv(v.INSTALL_SPEC_ENV, override)
+    for call in (
+        lambda: v.install_spec("0.1.0"),
+        lambda: v.pinned_install_spec("0.1.0"),
+        v.cli_install_spec,
+    ):
+        with pytest.raises(v.InvalidInstallSpecError) as excinfo:
+            call()
+        assert excinfo.value.exit_code == 3
+        message = excinfo.value.format_message()
+        assert f"{v.INSTALL_SPEC_ENV} contains {problem}" in message
+        assert "no control characters and no whitespace" in message
+    # A copyable hint never fails and never shows the malformed value.
+    hint = v.install_command(version="0.1.0")
+    assert hint.endswith(f"{REPO}@v0.1.0") and "EVIL" not in hint
+
+
+def test_a_nul_byte_is_named_too() -> None:
+    # os.environ cannot hold one on POSIX; the check does not rely on that.
+    assert v._invalid_character("git+https://x/gac\x00") == "a NUL byte at position 18"
+    assert v._invalid_character("git+https://x/gac@v{version}") is None
+
+
+def test_a_pep508_direct_reference_keeps_its_spaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`name @ url` is a supported override (the workflows pass it to uvx as one argument)."""
+    monkeypatch.setenv(
+        v.INSTALL_SPEC_ENV, "graph-agents-cli @ git+https://git.example/gac@v{version}"
+    )
+    spec = v.install_spec("0.1.0")
+    assert spec == "graph-agents-cli @ git+https://git.example/gac@v0.1.0"
+    assert (
+        v.requirement(spec, "a2a") == "graph-agents-cli[a2a] @ git+https://git.example/gac@v0.1.0"
+    )
+
+
+def test_surrounding_whitespace_is_still_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(v.INSTALL_SPEC_ENV, "\n  git+https://git.example/gac@v{version} \n")
+    assert v.install_spec("0.1.0") == "git+https://git.example/gac@v0.1.0"
+
+
 def test_requirement_with_extras_for_a_url_spec() -> None:
     assert v.requirement(f"{REPO}@v0.2.0", "a2a") == f"graph-agents-cli[a2a] @ {REPO}@v0.2.0"
     assert v.requirement(f"{REPO}@v0.2.0") == f"{REPO}@v0.2.0"

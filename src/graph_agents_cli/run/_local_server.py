@@ -16,7 +16,8 @@
 """Background local server management for ``run`` and ``eval generate``.
 
 The pid file is ``.graph-agents-cli/run_server.json``
-with keys ``{pid, port, started_at, last_activity, runtime, checkpointer, state}``.
+with keys ``{pid, port, started_at, last_activity, runtime, checkpointer, state,
+create_time}``.
 The command depends on the manifest ``runtime``:
 
 * ``fastapi``          -> ``uv run uvicorn <agent_dir>.fast_api_app:app --host 127.0.0.1 --port N``
@@ -39,6 +40,19 @@ Two invocations may race for the same project (``eval generate`` beside a
 (``.graph-agents-cli/run_server.lock``), the pid file is written atomically,
 and ``stop_server(pid=...)`` always stops the process this invocation started
 even when the pid file has since been replaced by another invocation.
+
+A record can outlive its server (a CLI killed at the wrong moment, a reboot)
+and PIDs are reused, so a recorded PID is never trusted alone: ``create_time``
+(the process creation time, from psutil) must still match before the process
+is reused or signalled. A record without it (written by an older CLI) must at
+least name a uvicorn or ``langgraph`` process serving the recorded port.
+Stopping a server and removing its record runs with signals held
+(``_signals.shielded``), so a SIGTERM during the teardown cannot leave a
+record behind.
+
+A server that cannot be started (it exits during startup, never gets
+healthy, or a server for another runtime holds the project) is a tool failure:
+:class:`ServerStartError`, exit 2.
 """
 
 from __future__ import annotations
@@ -64,6 +78,7 @@ from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
 from graph_agents_cli._runner import popen_resolved_detached, redact_cmd
+from graph_agents_cli.run._signals import shielded
 
 PID_DIR = ".graph-agents-cli"
 PID_FILENAME = "run_server.json"
@@ -75,6 +90,14 @@ _MAX_PORT_ATTEMPTS = 10
 RUN_PORT_ENV = "GRAPH_AGENTS_CLI_RUN_PORT"
 # Exit code for a port that cannot be used: the fix is configuration (--port).
 EXIT_PORT_UNAVAILABLE = 3
+# Exit code for a server that could not be started: a tool failure, never the
+# 1 that `eval run` reserves for a failed gate.
+EXIT_SERVER_START_FAILED = 2
+# Seconds two readings of one process's creation time may differ by.
+_CREATE_TIME_TOLERANCE = 1.0
+# Servers this process started: pid -> creation time, to recognise them when the
+# pid file no longer names them.
+_STARTED: dict[int, float | None] = {}
 STATE_STARTING = "starting"
 STATE_READY = "ready"
 DEFAULT_IDLE_TIMEOUT = 1800  # 30 minutes
@@ -125,7 +148,7 @@ def build_serve_command(*, agent_dir: str, port: int, runtime: str) -> list[str]
         ]
     if runtime == RUNTIME_LANGGRAPH_SERVER:
         return ["uv", "run", "langgraph", "dev", "--no-browser", "--port", str(port)]
-    raise click.ClickException(
+    raise UnsupportedRuntimeError(
         f"Unsupported runtime {runtime!r} in graph-agents-cli-manifest.yaml.\n"
         f"  Expected one of: {', '.join(SUPPORTED_RUNTIMES)}"
     )
@@ -137,6 +160,18 @@ class PortUnavailableError(click.ClickException):
     exit_code = EXIT_PORT_UNAVAILABLE
 
 
+class ServerStartError(click.ClickException):
+    """The local server could not be started or reused (exit 2, a tool failure)."""
+
+    exit_code = EXIT_SERVER_START_FAILED
+
+
+class UnsupportedRuntimeError(click.ClickException):
+    """The manifest names a runtime this CLI cannot serve (exit 3, a configuration error)."""
+
+    exit_code = 3
+
+
 def port_problem(port: int, host: str = "127.0.0.1") -> str | None:
     """Why ``port`` cannot be used for a local server on ``host``, or None when it is free.
 
@@ -145,6 +180,12 @@ def port_problem(port: int, host: str = "127.0.0.1") -> str | None:
     (the address the server will use), and a bind on all interfaces, which
     fails next to a wildcard listener even where the loopback bind would
     succeed (macOS), so the new server would shadow the other one on loopback.
+
+    The binds use the socket options the server's own bind uses: uvicorn (also
+    under ``langgraph dev``) sets ``SO_REUSEADDR`` on POSIX, so the connections
+    a stopped server leaves in TIME_WAIT or FIN_WAIT_2 for a minute do not make
+    its port "in use"; only a listening socket does. Windows is left without
+    it: there the option would let the bind take over a live listener.
     """
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.25):
@@ -154,6 +195,8 @@ def port_problem(port: int, host: str = "127.0.0.1") -> str | None:
     for address in dict.fromkeys((host, "0.0.0.0")):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                if os.name != "nt":
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind((address, port))
         except OSError as exc:
             where = "all interfaces" if address == "0.0.0.0" else address
@@ -215,7 +258,7 @@ def ensure_server(
     then reuses the server instead of starting a second one.
     """
     if runtime not in SUPPORTED_RUNTIMES:
-        raise click.ClickException(
+        raise UnsupportedRuntimeError(
             f"Unsupported runtime {runtime!r} in graph-agents-cli-manifest.yaml.\n"
             f"  Expected one of: {', '.join(SUPPORTED_RUNTIMES)}"
         )
@@ -238,7 +281,7 @@ def ensure_server(
                 pinned_port=pinned_port,
             )
     except LockTimeout as exc:
-        raise click.ClickException(
+        raise ServerStartError(
             f"Another graph-agents-cli invocation has held the local server lock for more than "
             f"{wait:.0f}s ({PID_DIR}/{LOCK_FILENAME}).\n"
             "  Wait for it to finish, or remove the lock file if that process is gone."
@@ -258,7 +301,7 @@ def _ensure_server_locked(
 ) -> ServerInfo:
     info = read_pid_file(project_root)
     if info:
-        if _is_server_alive(info.get("pid", 0), info.get("port", 0)):
+        if _is_server_alive(info.get("pid", 0), info.get("port", 0), info.get("create_time")):
             if pinned_port is not None and info.get("port") != pinned_port:
                 raise PortUnavailableError(
                     f"This project's local server is already running on port "
@@ -268,7 +311,7 @@ def _ensure_server_locked(
                 )
             existing_runtime = info.get("runtime")
             if existing_runtime and existing_runtime != runtime:
-                raise click.ClickException(
+                raise ServerStartError(
                     f"Cannot reuse the running local server: it was started for the "
                     f"{existing_runtime!r} runtime, but the project now uses {runtime!r}.\n"
                     "  Run 'graph-agents-cli run --stop-server' first, then retry."
@@ -300,6 +343,8 @@ def _ensure_server_locked(
         port = _find_free_port()
     proc = _start_server(project_root=project_root, agent_dir=agent_dir, port=port, runtime=runtime)
     pid = proc.pid
+    created = _create_time(pid)
+    _STARTED[pid] = created
     try:
         # Recorded before the (long) readiness wait: if this CLI is killed now,
         # `run --stop-server` and the next invocation still find the process.
@@ -310,6 +355,7 @@ def _ensure_server_locked(
             runtime=runtime,
             checkpointer=checkpointer,
             state=STATE_STARTING,
+            create_time=created,
         )
         health = _wait_for_ready(project_root, port, proc=proc, timeout=startup_timeout)
     except BaseException:
@@ -317,13 +363,15 @@ def _ensure_server_locked(
         # must not keep running in the background on the chosen port. A child
         # that already exited was reaped by poll(); terminating it again would
         # only log a spurious "not found" warning.
-        if proc.poll() is None:
-            _terminate_process(pid)
-            try:
-                proc.wait(timeout=5)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-        _remove_pid_file_if(project_root, pid)
+        with shielded():
+            if proc.poll() is None:
+                _terminate_process(pid, create_time=created, port=port, own_child=True)
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            _remove_pid_file_if(project_root, pid)
+            _STARTED.pop(pid, None)
         raise
     live_checkpointer = str(health.get("checkpointer") or checkpointer)
     write_pid_file(
@@ -333,6 +381,7 @@ def _ensure_server_locked(
         runtime=runtime,
         checkpointer=live_checkpointer,
         state=STATE_READY,
+        create_time=created,
     )
     if keep_running:
         click.secho(f"Local server started on port {port} (PID {pid}, {runtime}).", dim=True)
@@ -358,18 +407,30 @@ def stop_server(project_root: Path, pid: int | None = None) -> bool:
     file is left alone, so a server started by this invocation is never
     orphaned and another invocation's record is never deleted.
 
-    Returns ``True`` if a server was stopped.
+    Idempotent, and it runs to the end even when SIGTERM or Ctrl-C arrives
+    meanwhile (the signal is handled once the record is gone). A recorded
+    process that is no longer the server (its PID was reused) is never
+    signalled; its record is just removed.
+
+    Returns ``True`` if a running server was stopped (``False`` for none, or
+    only a stale record, which is removed).
     """
-    info = read_pid_file(project_root)
-    if pid is not None and (not info or info.get("pid") != pid):
-        _terminate_process(pid)
-        click.secho("Local server stopped.", dim=True)
-        return True
-    if not info:
-        return False
-    _cleanup(project_root, info)
-    click.secho("Local server stopped.", dim=True)
-    return True
+    with shielded():
+        info = read_pid_file(project_root)
+        if pid is not None and (not info or info.get("pid") != pid):
+            stopped = _terminate_process(pid, create_time=_STARTED.get(pid))
+            _STARTED.pop(pid, None)
+        elif not info:
+            return False
+        else:
+            stopped = _cleanup(project_root, info)
+        if stopped:
+            click.secho("Local server stopped.", dim=True)
+        elif info and (pid is None or info.get("pid") == pid):
+            click.secho(
+                "Removed the record of a local server that was no longer running.", dim=True
+            )
+        return stopped
 
 
 def get_server_port(project_root: Path) -> int | None:
@@ -377,7 +438,7 @@ def get_server_port(project_root: Path) -> int | None:
     info = read_pid_file(project_root)
     if not info:
         return None
-    if not _is_server_alive(info.get("pid", 0), info.get("port", 0)):
+    if not _is_server_alive(info.get("pid", 0), info.get("port", 0), info.get("create_time")):
         return None
     return info["port"]
 
@@ -543,7 +604,7 @@ def _wait_for_ready(
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
-            raise click.ClickException(
+            raise ServerStartError(
                 f"Local server process exited during startup (exit code {proc.returncode}).\n"
                 + _log_hint(project_root)
             )
@@ -552,7 +613,7 @@ def _wait_for_ready(
             return health
         sleep(0.3)
 
-    raise click.ClickException(
+    raise ServerStartError(
         f"Local server did not become healthy within {timeout}s (GET /health).\n"
         + _log_hint(project_root)
     )
@@ -600,6 +661,7 @@ def write_pid_file(
     runtime: str,
     checkpointer: str,
     state: str = STATE_READY,
+    create_time: float | None = None,
 ) -> None:
     now = datetime.now(UTC).isoformat()
     data = {
@@ -610,6 +672,9 @@ def write_pid_file(
         "runtime": runtime,
         "checkpointer": checkpointer,
         "state": state,
+        # The process's creation time: tells this server from a later process
+        # that was given the same PID (null when it could not be read).
+        "create_time": create_time,
     }
     _write_json_atomic(pid_file_path(project_root), data)
 
@@ -650,9 +715,44 @@ def _is_idle(info: dict, idle_timeout: int) -> bool:
         return True
 
 
-def _is_server_alive(pid: int, port: int) -> bool:
-    """Return ``True`` if the process exists AND the port is open."""
-    if not pid or not port or not psutil.pid_exists(pid):
+def _create_time(pid: int) -> float | None:
+    """The creation time of process ``pid``, or None when it cannot be read."""
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.Error, OSError):
+        return None
+
+
+def _server_process(
+    pid: Any, *, create_time: Any = None, port: Any = None
+) -> psutil.Process | None:
+    """Process ``pid`` when it is still the recorded local server, else None.
+
+    With a recorded ``create_time`` the process must have been created then
+    (a PID reused by another process was not). Without one (a record written
+    by an older CLI) its command line must be a local server's: uvicorn or
+    ``langgraph``, with the recorded ``port`` among its arguments.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        process = psutil.Process(pid)
+        if create_time is not None:
+            same = abs(process.create_time() - float(create_time)) < _CREATE_TIME_TOLERANCE
+            return process if same else None
+        cmdline = process.cmdline()
+    except (psutil.Error, OSError, TypeError, ValueError):
+        return None
+    if not any("uvicorn" in part or "langgraph" in part for part in cmdline):
+        return None
+    if port is not None and str(port) not in cmdline:
+        return None
+    return process
+
+
+def _is_server_alive(pid: int, port: int, create_time: float | None = None) -> bool:
+    """``True`` when ``pid`` is still the recorded server process AND its port is open."""
+    if not pid or not port or _server_process(pid, create_time=create_time, port=port) is None:
         return False
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=1):
@@ -661,29 +761,67 @@ def _is_server_alive(pid: int, port: int) -> bool:
         return False
 
 
-def _terminate_process(pid: int) -> None:
-    """Terminate ``pid`` and its children; a vanished process is not an error."""
+def _terminate_process(
+    pid: int,
+    *,
+    create_time: float | None = None,
+    port: int | None = None,
+    own_child: bool = False,
+) -> bool:
+    """Stop the server ``pid`` and its children (SIGTERM, then SIGKILL after 3 s).
+
+    Nothing is signalled unless ``pid`` is still that server (see
+    :func:`_server_process`): a record can outlive its process, and the PID
+    may belong to something else by now. ``own_child``: ``pid`` is a child of
+    this process that was not reaped yet, so its PID cannot have been reused.
+    Returns True when it was stopped.
+    """
+    parent = _server_process(pid, create_time=create_time, port=port)
+    if parent is None and own_child:
+        try:
+            parent = psutil.Process(pid)
+        except psutil.Error:
+            parent = None
+    if parent is None:
+        if psutil.pid_exists(pid):
+            logging.warning(
+                "The recorded local server (PID %d) is gone and its PID now belongs to "
+                "another process, which was left alone.",
+                pid,
+            )
+        return False
     try:
-        parent = psutil.Process(pid)
         children = parent.children(recursive=True)
-        for child in children:
-            try:
-                child.terminate()
-            except psutil.NoSuchProcess:
-                pass
-        parent.terminate()
-        psutil.wait_procs([*children, parent], timeout=3)
-    except psutil.NoSuchProcess:
-        logging.warning("Local server process with PID %d not found, skipping termination.", pid)
+    except psutil.Error:
+        children = []
+    for process in (*children, parent):
+        try:
+            process.terminate()
+        except psutil.Error:
+            pass
+    _gone, alive = psutil.wait_procs([*children, parent], timeout=3)
+    for process in alive:
+        try:
+            process.kill()
+        except psutil.Error:
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=2)
+    return True
 
 
-def _cleanup(project_root: Path, info: dict) -> None:
-    """Terminate the server process and remove the pid file."""
-    pid = info.get("pid")
-    if pid:
-        _terminate_process(pid)
-    path = pid_file_path(project_root)
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        logging.warning("Failed to remove pid file %s: %s", path, exc)
+def _cleanup(project_root: Path, info: dict) -> bool:
+    """Stop the recorded server (if it is still that server) and remove its record.
+
+    Returns True when a running server was stopped, False for a stale record.
+    """
+    with shielded():
+        pid = info.get("pid")
+        stopped = False
+        if pid:
+            stopped = _terminate_process(
+                pid, create_time=info.get("create_time"), port=info.get("port")
+            )
+            _STARTED.pop(pid, None)
+        _remove_pid_file_if(project_root, pid)
+        return stopped

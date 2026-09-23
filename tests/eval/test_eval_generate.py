@@ -167,6 +167,23 @@ def test_generate_stops_server_even_when_dispatch_fails(
     assert fake_local_server.stopped == 1
 
 
+def test_a_local_server_that_cannot_start_is_a_tool_failure(
+    project: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 2, as documented (0/2/3): never 1, which `eval run` reads as a failed gate."""
+    from graph_agents_cli.run import _local_server
+
+    def cannot_start(*args, **kwargs):
+        raise _local_server.ServerStartError(
+            "Local server process exited during startup (exit code 3)."
+        )
+
+    monkeypatch.setattr(_local_server, "ensure_server", cannot_start)
+    result = runner.invoke(cmd_generate, [])
+    assert result.exit_code == 2, result.output
+    assert "exited during startup" in result.output
+
+
 def test_generate_credentials_env_cookie_session_token(
     project: Path, runner: CliRunner, fake_chat, monkeypatch: pytest.MonkeyPatch
 ) -> None:

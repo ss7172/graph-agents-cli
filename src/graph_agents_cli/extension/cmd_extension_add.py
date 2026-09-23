@@ -24,7 +24,7 @@ from pathlib import Path
 import click
 
 from graph_agents_cli.__init__ import __version__
-from graph_agents_cli._project import find_project_root
+from graph_agents_cli._project import NotInProjectError, find_project_root
 from graph_agents_cli._trust import require_confirmation
 from graph_agents_cli.extension._compat import is_compatible
 from graph_agents_cli.extension._loader import (
@@ -198,16 +198,18 @@ def cmd_add(
     except RefParseError as e:
         raise click.ClickException(str(e)) from e
 
-    if not confirm_trust(ref, auto_approve=auto_approve):
-        raise click.ClickException("Aborted: extension not trusted.")
-
     root = scope_root(scope)
     if root is None:
-        raise click.ClickException(
+        # Checked before the trust prompt: nothing to confirm when it cannot install.
+        raise NotInProjectError(
             "No graph-agents-cli-manifest.yaml found. Run inside a project (extensions "
             "install at project scope by default), or pass --global to install "
             "for all projects."
         )
+
+    if not confirm_trust(ref, auto_approve=auto_approve):
+        raise click.ClickException("Aborted: extension not trusted.")
+
     project_root = root if scope == "project" else find_project_root(Path.cwd())
 
     source = ref.raw

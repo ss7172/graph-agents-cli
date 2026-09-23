@@ -361,6 +361,25 @@ def test_update_with_a_version_placeholder_and_no_release(runner, monkeypatch: p
     assert "{version}" in result.output and "left as is" in result.output
 
 
+def test_update_refuses_a_malformed_install_spec(runner, monkeypatch: pytest.MonkeyPatch):
+    """Not a best-effort warning like an offline upgrade: a configuration error (exit 3)."""
+    runs: list[list[str]] = []
+    monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: None)
+    monkeypatch.setattr(cmd_update, "run", lambda args, **k: runs.append(list(args)))
+    monkeypatch.setattr(version_mod, "get_latest_version", lambda: "0.3.0")
+    monkeypatch.setenv(version_mod.INSTALL_SPEC_ENV, "git+https://mirror.example/gac\nEVIL=1")
+    result = runner.invoke(update_command, ["-y"])
+    assert result.exit_code == 3, result.output
+    assert "contains a newline" in result.output
+    assert runs == []
+
+
+def test_setup_refuses_a_malformed_install_spec(runner, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(version_mod.INSTALL_SPEC_ENV, "git+https://mirror.example/gac @v1")
+    with pytest.raises(version_mod.InvalidInstallSpecError):
+        cmd_setup._cli_install_args(dev=False)
+
+
 def test_update_global_and_best_effort_upgrade(runner, monkeypatch: pytest.MonkeyPatch):
     npx_calls: list[list[str]] = []
     monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: npx_calls.append(list(a)))

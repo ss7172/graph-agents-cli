@@ -34,7 +34,9 @@ installs) and fails silently when GitHub is unreachable.
 
 import logging
 import os
+import re
 import time
+import unicodedata
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -65,8 +67,69 @@ class InstallSpecError(click.ClickException):
     exit_code = 3
 
 
+class InvalidInstallSpecError(InstallSpecError):
+    """``GRAPH_AGENTS_CLI_INSTALL_SPEC`` is malformed: whitespace or control characters (exit 3)."""
+
+
+# A PEP 508 direct reference, `graph-agents-cli[extras] @ <url>`: the one form
+# whose spec holds whitespace, exactly the single spaces around its `@`.
+_DIRECT_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]*\])? @ \S+")
+
+
+def _invalid_character(value: str) -> str | None:
+    """Describe the first character an install spec may not contain, or None.
+
+    Control and format characters (newline, CR, NUL, escape, bidi overrides...)
+    and every whitespace character are refused, except the two spaces of a
+    PEP 508 direct reference (``name @ url``).
+    """
+    names = {
+        "\n": "a newline",
+        "\r": "a carriage return",
+        "\0": "a NUL byte",
+        "\t": "a tab",
+        " ": "a space",
+    }
+    for position, char in enumerate(value):
+        category = unicodedata.category(char)
+        if char == " ":
+            continue  # judged below, once nothing worse was found
+        if char in names:
+            what = names[char]
+        elif char.isspace() or category in ("Zl", "Zp"):
+            what = f"whitespace (U+{ord(char):04X})"
+        elif category in ("Cc", "Cf"):
+            what = f"a control character (U+{ord(char):04X})"
+        else:
+            continue
+        return f"{what} at position {position + 1}"
+    if " " in value and _DIRECT_REFERENCE.fullmatch(value) is None:
+        return f"{names[' ']} at position {value.index(' ') + 1}"
+    return None
+
+
 def _install_spec_override() -> str:
-    return os.environ.get(INSTALL_SPEC_ENV, "").strip()
+    """The override, stripped; :class:`InvalidInstallSpecError` when it cannot be a spec.
+
+    The spec is written into every generated project's ``.github/agent.env``
+    (one NAME=VALUE per line, loaded into ``$GITHUB_ENV``) and passed to ``uv``
+    as one argument: a newline would add lines of its own to the workflows'
+    environment, and stray whitespace or an invisible control character would
+    make a different command than the one shown. It is refused instead.
+    """
+    value = os.environ.get(INSTALL_SPEC_ENV, "").strip()
+    problem = _invalid_character(value)
+    if problem is not None:
+        shown = repr(value) if len(value) <= 120 else repr(value[:117]) + "..."
+        raise InvalidInstallSpecError(
+            f"{INSTALL_SPEC_ENV} contains {problem}: {shown}.\n"
+            "  It must be a single install spec (a git URL such as "
+            f"git+https://git.example.com/{PACKAGE_NAME}@v{VERSION_PLACEHOLDER}, a local "
+            f"path, a wheel, {PACKAGE_NAME}==<version>, or {PACKAGE_NAME} @ <url>) with no "
+            "control characters and no whitespace (except the spaces around the @ of "
+            f"'{PACKAGE_NAME} @ <url>'). Fix it or unset it."
+        )
+    return value
 
 
 def install_spec(version: str | None = None) -> str:
@@ -90,8 +153,13 @@ def install_spec(version: str | None = None) -> str:
                 f"release found); set it to a spec without {VERSION_PLACEHOLDER}."
             )
         return override.replace(VERSION_PLACEHOLDER, known)
-    if known:
-        return f"git+{REPO_URL}@v{known}"
+    return _default_install_spec(known)
+
+
+def _default_install_spec(version: str | None) -> str:
+    """The repository's spec: the ``v<version>`` tag, or the default branch."""
+    if version and version != UNKNOWN_VERSION:
+        return f"git+{REPO_URL}@v{version}"
     return f"git+{REPO_URL}"
 
 
@@ -140,6 +208,10 @@ def install_command(extras: str | None = None, *, version: str | None = None) ->
 
     try:
         spec = install_spec(version)
+    except InvalidInstallSpecError:
+        # A hint must not fail (or print the malformed override): the command that
+        # needs the spec reports the error itself.
+        spec = _default_install_spec(version)
     except InstallSpecError:
         spec = _install_spec_override()  # a hint: the user fills in {version}
     return shlex.join(["uv", "tool", "install", "--force", requirement(spec, extras)])

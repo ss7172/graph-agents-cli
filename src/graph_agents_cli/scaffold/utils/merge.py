@@ -36,6 +36,7 @@ import tempfile
 from collections.abc import Callable
 from typing import Literal
 
+import click
 from rich.markup import escape
 from rich.prompt import Prompt
 
@@ -47,8 +48,10 @@ from .upgrade import (
     DependencyReadError,
     DependencyResolution,
     FileCompareResult,
+    Followup,
     compare_all_files,
     group_results_by_action,
+    is_image_definition,
     merged_config_text,
 )
 
@@ -293,7 +296,8 @@ def display_results(
             "[bold green]Will merge the template's change into your edited config:[/bold green]"
         )
         for result in groups["merge"]:
-            console.print(f"  [green]✓[/green] {result.path}")
+            partly = " [dim](except keys you changed too)[/dim]" if result.followup else ""
+            console.print(f"  [green]✓[/green] {result.path}{partly}")
         console.print()
 
     if groups["new"]:
@@ -524,7 +528,17 @@ def apply_changes(
     return counts
 
 
-def print_followups(followups: list[str], *, dry_run: bool = False) -> None:
+class IncompleteMergeError(click.ClickException):
+    """The merge was applied, but items marked required are left for the developer (exit 1).
+
+    Until they are done the project does not build or deploy with the settings
+    its manifest records, so a script must not carry on as if it did.
+    """
+
+    exit_code = 1
+
+
+def print_followups(followups: list[str | Followup], *, dry_run: bool = False) -> None:
     """Print what the developer still has to do by hand, one numbered item each."""
     if not followups:
         return
@@ -532,10 +546,107 @@ def print_followups(followups: list[str], *, dry_run: bool = False) -> None:
     title = "Left for you after applying" if dry_run else "Left for you"
     console.print(f"[bold yellow]{title}:[/bold yellow]")
     for number, item in enumerate(followups, 1):
-        first, _, rest = item.partition("\n")
-        console.print(f"  {number}. {escape(first)}")
+        text = item.text if isinstance(item, Followup) else item
+        required = isinstance(item, Followup) and item.required
+        first, _, rest = text.partition("\n")
+        mark = "[bold red](required)[/bold red] " if required else ""
+        console.print(f"  {number}. {mark}{escape(first)}")
         if rest:
             console.print(rest.rstrip("\n"), highlight=False, markup=False)
+
+
+def _finish(followups: list[str | Followup], *, dry_run: bool) -> None:
+    """Print the follow-ups; raise :class:`IncompleteMergeError` when a required one is left."""
+    print_followups(followups, dry_run=dry_run)
+    required = [f for f in followups if isinstance(f, Followup) and f.required]
+    if required and not dry_run:
+        raise IncompleteMergeError(
+            f"{len(required)} item(s) marked (required) above must be done by hand: until then "
+            "the project does not build or deploy with the settings "
+            "graph-agents-cli-manifest.yaml records."
+        )
+
+
+def _same_file(a: pathlib.Path, b: pathlib.Path) -> bool:
+    try:
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def _sidecar_path(project_dir: pathlib.Path, relative_path: str, source: pathlib.Path) -> str:
+    """``<file>.new`` (or ``.new.2``, ...): a free name, or one already holding ``source``."""
+    candidate = f"{relative_path}.new"
+    number = 1
+    while (project_dir / candidate).exists() and not _same_file(project_dir / candidate, source):
+        number += 1
+        candidate = f"{relative_path}.new.{number}"
+    return candidate
+
+
+def _kept_conflict_followups(
+    conflicts: list[FileCompareResult],
+    *,
+    project_dir: pathlib.Path,
+    old_template_dir: pathlib.Path,
+    new_template_dir: pathlib.Path,
+    dry_run: bool,
+    prefer_new: bool,
+) -> list[Followup]:
+    """What is left for each conflict that kept the developer's version (enhance).
+
+    Every difference between the two snapshots of an enhance comes from the
+    settings change, so a kept conflict is part of that change that did not
+    happen: its template diff is listed. A file that defines the image cannot be
+    left behind (it would build the old settings): the template's version is
+    written next to it as ``<file>.new`` and the item is required.
+    """
+    from .merge3 import template_diff
+
+    items: list[Followup] = []
+    for result in conflicts:
+        current = project_dir / result.path
+        new_file = new_template_dir / result.path
+        if dry_run and prefer_new:
+            continue
+        if not dry_run and new_file.exists() and _same_file(current, new_file):
+            continue  # resolved in favour of the new version
+        if not new_file.exists():
+            items.append(
+                Followup(
+                    f"{result.path}: you edited it and the new settings no longer use it; it "
+                    "was kept, delete it if nothing needs it"
+                )
+            )
+            continue
+        if is_image_definition(result.path):
+            sidecar = _sidecar_path(project_dir, result.path, new_file)
+            if not dry_run:
+                copy_file(new_file, project_dir / sidecar)
+            verb = "will be" if dry_run else "was"
+            items.append(
+                Followup(
+                    f"{result.path}: your edited version was kept, and it builds the image for "
+                    f"the old settings. The template's {result.path} for the new settings {verb} "
+                    f"written to {sidecar}: carry your edits over to it, then replace "
+                    f"{result.path} with it (and delete {sidecar}).",
+                    required=True,
+                )
+            )
+            continue
+        old_file = old_template_dir / result.path
+        old_text = (
+            old_file.read_text(encoding="utf-8", errors="replace") if old_file.exists() else ""
+        )
+        new_text = new_file.read_text(encoding="utf-8", errors="replace")
+        items.append(
+            Followup(
+                f"{result.path}: you edited it and the new settings change it too; your version "
+                "was kept. Apply the template's change by hand:\n"
+                + template_diff(old_text, new_text, result.path)
+            )
+        )
+    return items
 
 
 def run_three_way_merge(
@@ -554,7 +665,7 @@ def run_three_way_merge(
     interactive: bool = False,
     operation_label: str = "upgrade",
     pre_apply_hook: Callable[[pathlib.Path], bool] | None = None,
-    post_apply_hook: Callable[[pathlib.Path, str], list[str] | None] | None = None,
+    post_apply_hook: Callable[[pathlib.Path, str], list[str | Followup] | None] | None = None,
     merge_config: bool = False,
 ) -> bool:
     """Shared 3-way merge pipeline used by both *upgrade* and *enhance*.
@@ -581,12 +692,19 @@ def run_three_way_merge(
         post_apply_hook: Callback invoked after files are written (and deps merged);
             it may return follow-up items for the developer, printed at the end.
         merge_config: Merge the config files the new settings re-render
-            (``upgrade.STRUCTURAL_CONFIG_FILES``) instead of skipping them (enhance).
+            (``upgrade.STRUCTURAL_CONFIG_FILES``) instead of skipping them, and
+            list what every kept conflict leaves undone (enhance).
 
     Returns:
         True if the pipeline completed (changes applied, user cancelled, or
         nothing to do). False if a template snapshot could not be generated;
         the project was not modified.
+
+    Raises:
+        IncompleteMergeError: changes were applied, but a follow-up marked
+            required is left (an image definition that kept the old settings,
+            dependency changes that could not be written, or whatever the
+            post-apply hook marks required). Never raised under ``dry_run``.
     """
     same_config = sorted(old_args) == sorted(new_args) and old_version is None
     baseline_label = f" {BASELINE_CURRENT_LABEL}" if baseline == "current" and old_version else ""
@@ -636,7 +754,7 @@ def run_three_way_merge(
             merge_config=merge_config,
         )
         groups = group_results_by_action(results)
-        followups = [r.followup for r in results if r.followup]
+        followups: list[str | Followup] = [r.followup for r in results if r.followup]
 
         dep_resolutions: list[DependencyResolution] = []
         merge_dependencies = MERGE_DEPENDENCY_HANDLERS.get(language)
@@ -677,7 +795,7 @@ def run_three_way_merge(
             if post_apply_hook and not dry_run:
                 followups.extend(post_apply_hook(project_dir, language) or [])
             console.print(f"[bold green]✅[/bold green] No changes needed!{baseline_label}")
-            print_followups(followups, dry_run=dry_run)
+            _finish(followups, dry_run=dry_run)
             return True
 
         if interactive and not dry_run:
@@ -709,17 +827,46 @@ def run_three_way_merge(
             old_template_dir=old_template_project,
         )
 
-        write_dependencies = WRITE_DEPENDENCY_HANDLERS.get(language)
-        if (
-            not dry_run
-            and has_dep_changes
-            and write_dependencies is not None
-            and write_dependencies(project_dir, dep_resolutions)
-        ):
-            console.print(
-                "[dim] Dependencies updated; run [bold]graph-agents-cli install[/bold] "
-                "to install the new versions.[/dim]"
+        if merge_config:
+            followups.extend(
+                _kept_conflict_followups(
+                    groups["conflict"],
+                    project_dir=project_dir,
+                    old_template_dir=old_template_project,
+                    new_template_dir=new_template_project,
+                    dry_run=dry_run,
+                    prefer_new=prefer_new,
+                )
             )
+
+        write_dependencies = WRITE_DEPENDENCY_HANDLERS.get(language)
+        if not dry_run and has_dep_changes and write_dependencies is not None:
+            if write_dependencies(project_dir, dep_resolutions):
+                console.print(
+                    "[dim] Dependencies updated; run [bold]graph-agents-cli install[/bold] "
+                    "to install the new versions.[/dim]"
+                )
+                if merge_config:
+                    followups.append(
+                        Followup(
+                            "Run `graph-agents-cli install` to bring uv.lock (and .venv) up to "
+                            "date with the new dependencies: the image installs exactly what "
+                            "uv.lock pins"
+                        )
+                    )
+            elif merge_config:
+                changes = ", ".join(
+                    f"-{r.name}" if r.status == "removed" else f"+{r.full_name()}"
+                    for r in dep_resolutions
+                    if r.status in ("added", "updated", "removed")
+                )
+                followups.append(
+                    Followup(
+                        "pyproject.toml: the dependency changes for the new settings could not "
+                        f"be written (see the warning above); make them by hand: {changes}",
+                        required=True,
+                    )
+                )
 
         if post_apply_hook and not dry_run:
             followups.extend(post_apply_hook(project_dir, language) or [])
@@ -742,11 +889,17 @@ def run_three_way_merge(
                     f"{counts['conflicts_kept']} kept yours"
                 )
             console.print()
-            console.print(
-                f"[bold green]✅ {operation_label.capitalize()} complete![/bold green]"
-                f"{baseline_label}"
-            )
-        print_followups(followups, dry_run=dry_run)
+            if any(isinstance(f, Followup) and f.required for f in followups):
+                console.print(
+                    f"[bold yellow]⚠️  {operation_label.capitalize()} applied, with required "
+                    f"steps left for you (below).[/bold yellow]{baseline_label}"
+                )
+            else:
+                console.print(
+                    f"[bold green]✅ {operation_label.capitalize()} complete![/bold green]"
+                    f"{baseline_label}"
+                )
+        _finish(followups, dry_run=dry_run)
 
         return True
 

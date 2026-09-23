@@ -22,7 +22,12 @@ import click
 
 from graph_agents_cli import _api_policy, _tools
 from graph_agents_cli._output import Console
-from graph_agents_cli._project import MANIFEST_FILENAME, find_project_config, find_project_root
+from graph_agents_cli._project import (
+    MANIFEST_FILENAME,
+    NotInProjectError,
+    find_project_config,
+    find_project_root,
+)
 
 from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.generation_metadata import metadata_to_cli_args
@@ -114,9 +119,11 @@ def upgrade(
 
     metadata = find_project_config(project_dir)
     if not metadata:
-        console.print("[bold red]Error:[/bold red] No graph-agents-cli metadata found.")
-        console.print(f"Ensure {MANIFEST_FILENAME} exists in your project root.")
-        raise SystemExit(1)
+        # A configuration error (exit 3), like every other command outside a project.
+        raise NotInProjectError(
+            f"No {MANIFEST_FILENAME} found in {project_dir} or its parents.\n"
+            "  Run scaffold upgrade from a project graph-agents-cli created, or pass its path."
+        )
 
     # The retired product API policy must be migrated first: an upgrade would
     # otherwise re-render the project without it.

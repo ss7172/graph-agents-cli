@@ -58,6 +58,22 @@ def test_add_accepts_a_bare_absolute_path(project: Path, tmp_path: Path) -> None
     assert (project / "extensions" / "team-tools" / "graph-agents-cli-extension.yaml").exists()
 
 
+def test_add_outside_a_project_is_a_configuration_error(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 3 like every command that needs a project, and before any trust prompt."""
+    src = write_extension(tmp_path / "ext", "team-tools", add={"hello": ["echo", "hi"]})
+    elsewhere = tmp_path / "not-a-project"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    result = cli("extension", "add", str(src), "-i", input="y\n")
+    assert result.exit_code == 3, result.output
+    assert "No graph-agents-cli-manifest.yaml found" in result.output
+    assert "--global" in result.output
+    assert "trust" not in result.output.lower()
+    assert not (elsewhere / "extensions").exists()
+
+
 def test_relative_paths_are_recorded_against_the_project_root(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

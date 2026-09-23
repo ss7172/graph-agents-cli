@@ -90,6 +90,22 @@ def _fake_generate_writing_traces(project: Path):
     return handler
 
 
+def test_run_exits_2_not_1_when_the_local_server_cannot_start(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge, overrides, monkeypatch
+) -> None:
+    """1 means "the gate failed": a broken environment must not read as a quality regression."""
+    from graph_agents_cli.run import _local_server
+
+    def cannot_start(*args, **kwargs):
+        raise _local_server.ServerStartError("Local server did not become healthy within 60s.")
+
+    monkeypatch.setattr(_local_server, "ensure_server", cannot_start)
+    result = runner.invoke(cmd_run, [])
+    assert result.exit_code == 2, result.output
+    assert "did not become healthy" in result.output
+    assert "Step 2/2" not in result.output
+
+
 def test_run_builtin_generate_and_grade_exit_0(
     project: Path, runner: CliRunner, fake_chat, fake_judge: FakeJudge, overrides
 ) -> None:
