@@ -30,6 +30,7 @@ import click
 from graph_agents_cli import _tools
 from graph_agents_cli._project import chdir_project_root, read_project_config
 from graph_agents_cli._runner import run
+from graph_agents_cli.deploy._image import reference_problem as image_reference_problem
 
 DEFAULT_TAG = "latest"
 DOCKERFILE = "Dockerfile"
@@ -94,10 +95,15 @@ def cmd_build(
         ctx.exit(EXIT_CONFIG_ERROR)
 
     project_name = getattr(cfg, "project_name", "") or getattr(cfg, "name", "")
-    image = image_name(
-        project_name=project_name,
-        registry=registry if registry is not None else getattr(cfg, "registry", ""),
-    )
+    effective_registry = registry if registry is not None else getattr(cfg, "registry", "")
+    image = image_name(project_name=project_name, registry=effective_registry)
+    # Checked before docker runs (and under --dry-run): the scaffold's placeholder
+    # registry, or any malformed reference, would otherwise surface as a docker
+    # parser error that does not name the setting to change.
+    problem = image_reference_problem(image, tag, registry=effective_registry)
+    if problem:
+        click.secho(problem, fg="red", err=True)
+        ctx.exit(EXIT_CONFIG_ERROR)
     commands = build_commands(image=image, tag=tag, push=push)
 
     if dry_run:

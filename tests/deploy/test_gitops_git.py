@@ -126,6 +126,89 @@ def test_noop_is_judged_on_origin_main_not_the_local_file(repos) -> None:
     assert "deploy/prod/old0000" not in _git("branch", "--list", cwd=bare)
 
 
+def _fresh_ci_clone(bare: Path, tmp: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A shallow clone of main, as actions/checkout makes: no refs for other branches."""
+    clone = tmp / name
+    _git("clone", "-q", "--depth", "1", "--branch", "main", f"file://{bare}", str(clone), cwd=tmp)
+    for k, v in (("user.name", "bot"), ("user.email", "bot@example.com")):
+        _git("config", k, v, cwd=clone)
+    monkeypatch.chdir(clone / "apps" / "agent")
+    return clone
+
+
+def _promote(tag: str = "abc1234") -> None:
+    with pytest.raises(ConfigError, match="GITHUB_TOKEN"):
+        gitops.write_desired_state(
+            env="prod",
+            values_path=REL,
+            image_repository="ghcr.io/o/app",
+            tag=tag,
+            project_name="app",
+        )
+
+
+def test_retrying_a_promotion_from_a_fresh_ci_clone_is_idempotent(
+    repos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first run pushed deploy/prod/<tag>; a retry in a fresh clone must not fail with
+    'stale info', and with nothing changed it must not replace the branch (an approved PR
+    would otherwise lose its approval)."""
+    bare, _dev = repos
+    _promote()
+    branch = "deploy/prod/abc1234"
+    first = _git("rev-parse", branch, cwd=bare)
+    _fresh_ci_clone(bare, tmp_path, "ci1", monkeypatch)
+    _promote()
+    assert _git("rev-parse", branch, cwd=bare) == first
+
+
+def test_retry_after_main_moved_replaces_the_branch(
+    repos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare, _dev = repos
+    _promote()
+    branch = "deploy/prod/abc1234"
+    first = _git("rev-parse", branch, cwd=bare)
+    # main moves on (an unrelated commit), then the promotion is re-run from a fresh clone.
+    seed = tmp_path / "seed"
+    (seed / "README.md").write_text("moved\n")
+    _git("commit", "-q", "-am", "move main", cwd=seed)
+    _git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    _fresh_ci_clone(bare, tmp_path, "ci2", monkeypatch)
+    _promote()
+    second = _git("rev-parse", branch, cwd=bare)
+    assert second != first
+    assert _git("rev-parse", f"{branch}^", cwd=bare) == _git("rev-parse", "main", cwd=bare)
+
+
+def test_the_lease_still_refuses_a_push_that_landed_in_between(
+    repos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bare, _dev = repos
+    _promote()
+    branch = "deploy/prod/abc1234"
+    first = _git("rev-parse", branch, cwd=bare)
+    # Someone pushes to the branch after this run read it with ls-remote.
+    seed = tmp_path / "seed"
+    _git("fetch", "-q", "origin", f"{branch}:{branch}", cwd=seed)
+    _git("checkout", "-q", branch, cwd=seed)
+    (seed / "README.md").write_text("reviewer fix\n")
+    _git("commit", "-q", "-am", "reviewer fix", cwd=seed)
+    _git("push", "-q", "origin", f"{branch}:{branch}", cwd=seed)
+    theirs = _git("rev-parse", branch, cwd=bare)
+    # main moves too, so this run's commit differs from the one it read.
+    _git("checkout", "-q", "main", cwd=seed)
+    _git("pull", "-q", "origin", "main", cwd=seed)
+    (seed / "NOTES.md").write_text("main moved\n")
+    _git("add", "NOTES.md", cwd=seed)
+    _git("commit", "-q", "-m", "move main", cwd=seed)
+    _git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    monkeypatch.setattr(gitops, "_remote_branch_sha", lambda _b: first)
+    with pytest.raises(_kube.ToolFailed):
+        _promote()
+    assert _git("rev-parse", branch, cwd=bare) == theirs
+
+
 def test_file_absent_from_origin_main_is_a_config_error(repos) -> None:
     bare, _dev = repos
     with pytest.raises(ConfigError, match="not committed on origin/main"):

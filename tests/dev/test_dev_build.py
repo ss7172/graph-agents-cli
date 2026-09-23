@@ -78,6 +78,37 @@ def test_build_docker_failure_exits_2(fake_project, recorded_runs):
     assert "docker build failed" in result.output
 
 
+@pytest.mark.parametrize("args", [[], ["--dry-run"], ["--push"]])
+def test_build_placeholder_registry_is_a_config_error(fake_project, recorded_runs, args):
+    """`create` writes ghcr.io/CHANGE-ME without a git remote; docker would reject it late."""
+    (fake_project.root / "Dockerfile").write_text("FROM python:3.12\n")
+    fake_project.cfg.registry = "ghcr.io/CHANGE-ME"
+    result = CliRunner().invoke(cmd_build, args)
+    assert result.exit_code == 3, result.output
+    assert "still the placeholder 'ghcr.io/CHANGE-ME'" in result.output
+    assert "create_params.registry" in result.output and "--registry" in result.output
+    assert recorded_runs.commands == []
+    # --registry overrides the placeholder.
+    ok = CliRunner().invoke(cmd_build, [*args, "--registry", "ghcr.io/acme"])
+    assert ok.exit_code == 0, ok.output
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (["--registry", "ghcr.io/Acme"], "must be lowercase"),
+        (["--tag", "v1/2"], "the tag 'v1/2'"),
+        (["--registry", "bad_host.io/acme"], "not a valid registry host"),
+    ],
+)
+def test_build_invalid_reference_is_a_config_error(fake_project, recorded_runs, args, fragment):
+    (fake_project.root / "Dockerfile").write_text("FROM python:3.12\n")
+    result = CliRunner().invoke(cmd_build, ["--dry-run", *args])
+    assert result.exit_code == 3, result.output
+    assert fragment in result.output
+    assert recorded_runs.commands == []
+
+
 def test_build_missing_dockerfile_exits_3(fake_project, recorded_runs):
     result = CliRunner().invoke(cmd_build, [])
     assert result.exit_code == 3

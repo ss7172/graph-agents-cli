@@ -25,12 +25,14 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
-from graph_agents_cli.deploy import _kube, _modes, gitops
+from graph_agents_cli.deploy import _image, _kube, _modes, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings
 from graph_agents_cli.deploy._kube import Target, ToolFailed
 from graph_agents_cli.deploy._values import load_chart_values
+from graph_agents_cli.secrets import _required
 
 MIN_KUBERNETES = (1, 28)
 DISCONNECTED = "disconnected"
@@ -371,7 +373,7 @@ def check_cluster(
             False,
             "exists"
             if rc == 0
-            else "absent (helm --create-namespace creates it; `secrets apply` needs it first in CD modes)",
+            else "absent (`deploy` and `secrets apply` create it; Argo CD with CreateNamespace)",
         )
     )
 
@@ -400,17 +402,143 @@ def check_cluster(
     else:
         checks.append(Check("image pull secrets", SKIP, False, "none referenced in values"))
 
-    rc, _s, _ = _kubectl(["get", "secret", settings.secret_name], target, namespaced=True)
+    rc, secret, _ = _kubectl(["get", "secret", settings.secret_name], target, namespaced=True)
     cd_mode = settings.cd != "skip"
+    required = _required.required_keys(settings, values)
+    present: set[str] = set()
+    if isinstance(secret, dict):
+        present = set(secret.get("data") or {}) | set(secret.get("stringData") or {})
+    missing = [k for k in required if k not in present]
+    provision = f"graph-agents-cli secrets apply --env {env} --env-file .env.{env}"
+    if rc != 0:
+        status, detail, hint = MISSING if cd_mode else WARN, "absent", provision
+    elif missing and isinstance(secret, dict):
+        status = MISSING if cd_mode else WARN
+        detail = f"present, missing required key(s): {', '.join(missing)}"
+        hint = provision
+    else:
+        status, detail, hint = (
+            OK,
+            "present" + (f" with the required key(s) {', '.join(required)}" if required else ""),
+            "",
+        )
+    # In cd skip, `deploy` applies the Secret from the env file itself, then
+    # refuses before helm when a required key is still missing.
+    checks.append(Check(f"app secret {settings.secret_name}", status, cd_mode, detail, hint))
+    return checks
+
+
+def _codeowners_placeholders() -> list[str]:
+    path = Path(".github") / "CODEOWNERS"
+    if not path.is_file():
+        return []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return [
+        line.strip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#") and _image.has_placeholder(line)
+    ]
+
+
+def _argocd_placeholders() -> list[str]:
+    """``deployment/argocd/*.yaml`` files whose ``repoURL`` still holds the placeholder."""
+    import yaml
+
+    found: list[str] = []
+    for path in sorted((Path("deployment") / "argocd").glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        spec = doc.get("spec") if isinstance(doc, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        sources = [spec.get("source"), *(spec.get("sources") or [])]
+        urls = [str(s.get("repoURL") or "") for s in sources if isinstance(s, dict)]
+        if any(_image.has_placeholder(url) for url in urls):
+            found.append(str(path))
+    return found
+
+
+def _env_placeholders(values: dict[str, Any]) -> list[str]:
+    env = values.get("env") if isinstance(values.get("env"), dict) else {}
+    return sorted(k for k, v in env.items() if isinstance(v, str) and _image.has_placeholder(v))
+
+
+def check_placeholders(settings: DeploySettings, values: dict[str, Any]) -> list[Check]:
+    """Scaffold placeholders (``CHANGE-ME``) that break a build, a rollout or the production gate."""
+    checks: list[Check] = []
+    registry = settings.registry
+    problem = (
+        _image.reference_problem(
+            f"{registry.rstrip('/')}/{settings.project_name}", None, registry=registry
+        )
+        if registry
+        else "create_params.registry is empty"
+    )
     checks.append(
         Check(
-            f"app secret {settings.secret_name}",
-            OK if rc == 0 else (MISSING if cd_mode else WARN),
-            cd_mode,
-            "present" if rc == 0 else "absent",
-            "" if rc == 0 else f"graph-agents-cli secrets apply --env {env} --env-file .env.{env}",
+            "placeholder: registry",
+            MISSING if problem else OK,
+            True,
+            registry if not problem else problem.splitlines()[0],
+            ""
+            if not problem
+            else "set create_params.registry in graph-agents-cli-manifest.yaml (e.g. ghcr.io/<org>)",
         )
     )
+    repository = str(_get(values, "image", "repository", default="") or "")
+    argocd = settings.cd == _modes.ARGOCD
+    chart_placeholder = _image.has_placeholder(repository)
+    checks.append(
+        Check(
+            "placeholder: chart image.repository",
+            (MISSING if argocd else WARN) if chart_placeholder else OK,
+            argocd,
+            repository or "(unset)",
+            ""
+            if not chart_placeholder
+            else "set image.repository in the chart's values.yaml (Argo CD renders it as is; "
+            "`deploy` overrides it with --set)",
+        )
+    )
+    env_keys = _env_placeholders(values)
+    checks.append(
+        Check(
+            "placeholder: chart env",
+            MISSING if env_keys else OK,
+            True,
+            f"CHANGE-ME in env.{', env.'.join(env_keys)}" if env_keys else "none",
+            ""
+            if not env_keys
+            else "replace the placeholder URLs in values.yaml / values-<env>.yaml",
+        )
+    )
+    owners = _codeowners_placeholders()
+    gated = settings.cd != "skip"
+    checks.append(
+        Check(
+            "placeholder: CODEOWNERS",
+            (MISSING if gated else WARN) if owners else OK,
+            gated,
+            f"{len(owners)} rule(s) name a CHANGE-ME owner" if owners else "no placeholder owner",
+            ""
+            if not owners
+            else "name the team or users who approve production changes in .github/CODEOWNERS "
+            "(GitHub ignores unknown owners, so the code-owner review gate would require nobody)",
+        )
+    )
+    if argocd:
+        apps = _argocd_placeholders()
+        checks.append(
+            Check(
+                "placeholder: argocd repoURL",
+                MISSING if apps else OK,
+                True,
+                f"CHANGE-ME repoURL in {', '.join(apps)}" if apps else "set",
+                "" if not apps else "set spec.source.repoURL to this repository's git URL",
+            )
+        )
     return checks
 
 
@@ -685,7 +813,11 @@ def run_checks(
     if env:
         base = settings.target(env)
         target = Target(context=context_resolver(settings, env), namespace=base.namespace)
-        mode = _modes.derive_mode(settings.cd, target.context)
+        local = None
+        if settings.cd == "skip":
+            # The same cluster-based detection `deploy` uses, not the context name alone.
+            local = local_load.detect(target.context)[0] is not None
+        mode = _modes.derive_mode(settings.cd, target.context, local=local)
     else:
         mode = _modes.derive_mode(settings.cd, None)
     report = Report(env=env, profile=profile, mode=mode)
@@ -694,6 +826,7 @@ def run_checks(
         report.checks += check_cluster(settings, env or "", target, values)
     else:
         report.checks.append(Check("cluster", SKIP, False, "pass --env to check the cluster"))
+    report.checks += check_placeholders(settings, values)
     report.checks += check_github(settings)
     if profile == DISCONNECTED:
         report.checks += check_disconnected(settings, values)

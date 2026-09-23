@@ -11,23 +11,54 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""graph-agents-cli deploy command — deploy the agent to Kubernetes."""
+"""graph-agents-cli deploy command — deploy the agent to Kubernetes.
+
+Every check that needs only the project (chart and values, image reference,
+env file) runs before anything touches a cluster, so a configuration error
+never leaves a half-done deploy behind. Then the kube context is printed (and
+confirmed outside ``dev``), and only then are images built and loaded or
+pushed, the Secret applied, its required keys verified, and helm run.
+"""
 
 from __future__ import annotations
 
 import datetime as _dt
+import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import click
 
 from graph_agents_cli._output import Console
-from graph_agents_cli.deploy import _kube, _modes, gitops, local_load
+from graph_agents_cli.deploy import _image, _kube, _modes, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings, load_settings
 from graph_agents_cli.deploy._kube import ConfigError, Refused, Target
+from graph_agents_cli.deploy._modes import ResolvedContext
 from graph_agents_cli.deploy._values import load_chart_values, split_image_ref
 from graph_agents_cli.secrets import _apply as secrets_apply
+from graph_agents_cli.secrets import _required
 
-PROTECTED_ENVS = ("staging", "prod")
+PROTECTED_ENVS = _modes.PROTECTED_ENVS
+DEFAULT_TIMEOUT = "5m"
+_DURATION = re.compile(r"^(?=\d)(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+DIAGNOSTIC_PODS = 3
+DIAGNOSTIC_LOG_LINES = 40
+DIAGNOSTIC_EVENTS = 15
+
+
+def _timeout_option(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    """A helm duration: ``300`` (seconds), ``300s``, ``10m`` or ``1h30m``; never zero."""
+    raw = (value or "").strip().lower()
+    if raw.isdigit():
+        raw += "s"
+    match = _DURATION.match(raw)
+    if not match or not any(match.groups()) or not any(int(g or 0) for g in match.groups()):
+        raise click.BadParameter(
+            f"{value!r} is not a duration; use for example 300s, 10m or 1h30m."
+        )
+    return raw
 
 
 @click.command("deploy")
@@ -42,7 +73,20 @@ PROTECTED_ENVS = ("staging", "prod")
     "--env-file",
     "env_file",
     default=None,
-    help="Env file for the Secret; defaults to .env.<env> then .env.",
+    help="Env file for the Secret; defaults to .env.<env> (dev also falls back to .env).",
+)
+@click.option(
+    "--context",
+    "context",
+    default=None,
+    help="Kube context to use instead of environments.<env>.context.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    "yes",
+    is_flag=True,
+    help="Accept the kubeconfig's current context outside dev without prompting.",
 )
 @click.option("--status", "status", is_flag=True, help="Show rollout status instead of deploying.")
 @click.option(
@@ -55,7 +99,7 @@ PROTECTED_ENVS = ("staging", "prod")
     "--force-direct",
     "force_direct",
     is_flag=True,
-    help="helm-push mode: allow a direct workstation deploy to staging/prod.",
+    help="helm-push mode: allow a deploy to staging/prod from outside CI.",
 )
 @click.option(
     "--dry-run",
@@ -67,17 +111,44 @@ PROTECTED_ENVS = ("staging", "prod")
     "--tag",
     "tag",
     default=None,
-    help="Image tag for a local build (default: short git sha, else a timestamp).",
+    help="Image tag for a local build (default: short git sha, plus -dirty-<time> for "
+    "uncommitted changes; a timestamp outside git).",
+)
+@click.option(
+    "--timeout",
+    "timeout",
+    default=DEFAULT_TIMEOUT,
+    show_default=True,
+    callback=_timeout_option,
+    help="How long helm waits for the rollout (e.g. 300s, 10m).",
+)
+@click.option(
+    "--atomic/--no-atomic",
+    "atomic",
+    default=True,
+    show_default=True,
+    help="Roll back a failed rollout (after printing pod diagnostics).",
+)
+@click.option(
+    "--rotate-api-key",
+    "rotate_api_key",
+    is_flag=True,
+    help="Replace the live API_KEY with the one in the env file (otherwise the live key wins).",
 )
 def cmd_deploy(
     env: str,
     image: str | None,
     env_file: str | None,
+    context: str | None,
+    yes: bool,
     status: bool,
     restart: bool,
     force_direct: bool,
     dry_run: bool,
     tag: str | None,
+    timeout: str,
+    atomic: bool,
+    rotate_api_key: bool,
 ) -> None:
     """Deploy the agent to Kubernetes (mode depends on the project's CD setting).
 
@@ -86,16 +157,21 @@ def cmd_deploy(
       skip       direct: build, local-load or push, apply the Secret, helm upgrade
       helm-push  CI builds and pushes; deploy --image runs helm only
       argocd     never runs helm: writes image.tag into values-<env>.yaml and opens a PR
+    \b
+    Outside dev the kube context must be recorded in the manifest
+    (environments.<env>.context) or passed with --context; the kubeconfig's
+    current context is used only after a confirmation (or --yes).
     """
     console = Console()
     settings = load_settings()
-    target = settings.target(env)
-    context = _modes.resolve_context(settings, env)
-    target = Target(context=context, namespace=target.namespace)
-    mode = _modes.derive_mode(settings.cd, context)
+    namespace = settings.target(env).namespace
+    _modes.derive_mode(settings.cd, None)  # an unknown cd value is a configuration error
+    resolved = _modes.resolve(settings, env, context)
+    target = Target(context=resolved.name, namespace=namespace)
 
     if status:
-        _show_status(settings, env, target, mode, dry_run=dry_run, console=console)
+        _modes.announce(env, resolved, console=console)
+        _show_status(settings, env, target, dry_run=dry_run, console=console)
         return
 
     if env in PROTECTED_ENVS and not settings.auth_policy_implemented:
@@ -107,45 +183,53 @@ def cmd_deploy(
         )
 
     if restart:
-        _restart(settings, target, mode, dry_run=dry_run, console=console)
+        _modes.announce(env, resolved, console=console)
+        _modes.confirm(env, resolved, yes=yes, dry_run=dry_run, console=console, action="restart")
+        _restart(settings, target, dry_run=dry_run, console=console)
         return
 
-    console.print(
-        f"Environment: {env}  namespace: {target.namespace}  context: {context or '(current)'}"
-    )
-    console.print(f"Mode: {_modes.describe(mode)}")
-
-    if mode == _modes.ARGOCD:
-        _deploy_argocd(
-            settings, env, image=image, env_file=env_file, tag=tag, dry_run=dry_run, console=console
-        )
-        return
-
-    if mode == _modes.HELM_PUSH:
-        _deploy_helm_push(
-            settings,
-            env,
-            target,
-            image=image,
-            env_file=env_file,
-            tag=tag,
-            force_direct=force_direct,
-            dry_run=dry_run,
-            console=console,
-        )
-        return
-
-    _deploy_direct(
-        settings,
-        env,
-        target,
-        mode,
+    console.print(f"Environment: {env}  namespace: {namespace}")
+    options = _Options(
         image=image,
         env_file=env_file,
         tag=tag,
+        yes=yes,
+        force_direct=force_direct,
         dry_run=dry_run,
-        console=console,
+        timeout=timeout,
+        atomic=atomic,
+        rotate_api_key=rotate_api_key,
     )
+    if settings.cd == _modes.ARGOCD:
+        _deploy_argocd(settings, env, resolved, options, console=console)
+    elif settings.cd == _modes.HELM_PUSH:
+        _deploy_helm_push(settings, env, resolved, target, options, console=console)
+    else:
+        _deploy_direct(settings, env, resolved, target, options, console=console)
+
+
+@dataclass(frozen=True)
+class _Options:
+    image: str | None
+    env_file: str | None
+    tag: str | None
+    yes: bool
+    force_direct: bool
+    dry_run: bool
+    timeout: str
+    atomic: bool
+    rotate_api_key: bool
+
+
+@dataclass(frozen=True)
+class _ImagePlan:
+    repository: str
+    tag: str
+    build: bool
+
+    @property
+    def ref(self) -> str:
+        return f"{self.repository}:{self.tag}"
 
 
 # --------------------------------------------------------------------------- modes
@@ -154,112 +238,180 @@ def cmd_deploy(
 def _deploy_direct(
     settings: DeploySettings,
     env: str,
+    resolved: ResolvedContext,
     target: Target,
-    mode: str,
+    opts: _Options,
     *,
-    image: str | None,
-    env_file: str | None,
-    tag: str | None,
-    dry_run: bool,
     console: Console,
 ) -> None:
+    # Project-only checks first: nothing below them may touch a cluster.
     _require_chart(settings, env)
-    if image:
-        repository, image_tag = split_image_ref(image)
-        console.print(f"Using image {image} (build and push skipped).")
-    else:
-        repository = settings.image_repository
-        image_tag = tag or _default_tag()
-        _build(settings, repository, image_tag, dry_run=dry_run, console=console)
-        if mode == _modes.LOCAL_LOAD:
-            _load(
-                target.context or "", f"{repository}:{image_tag}", dry_run=dry_run, console=console
-            )
+    plan = _image_plan(settings, opts, console=console)
+    path = secrets_apply.resolve_env_file(env, opts.env_file)
+    if path is None and not _modes.is_dev_env(env):
+        raise secrets_apply.missing_env_file_error(env, settings.secret_keys)
+    values: dict[str, str] = {}
+    if path is not None:
+        values = secrets_apply.read_env_file(path)
+        secrets_apply.check_file_values(
+            values, settings.secret_keys, rotate_api_key=opts.rotate_api_key, source=path
+        )
+    elif opts.rotate_api_key:
+        raise ConfigError("--rotate-api-key needs an env file that sets API_KEY.")
+
+    _modes.announce(env, resolved, console=console)
+    _modes.confirm(
+        env, resolved, yes=opts.yes, dry_run=opts.dry_run, console=console, action="deploy to"
+    )
+
+    if plan.build:
+        cluster, why = local_load.detect(target.context)
+        mode = _modes.LOCAL_LOAD if cluster else _modes.REGISTRY
+        detail = f": {cluster.describe()}" if cluster else f" ({why})" if why else ""
+        console.print(f"Mode: {_modes.describe(mode)}{detail}", markup=False)
+        _build(settings, plan, dry_run=opts.dry_run, console=console)
+        if cluster is not None:
+            _load(cluster, plan.ref, dry_run=opts.dry_run, console=console)
         else:
             _kube.run_cmd(
-                ["docker", "push", f"{repository}:{image_tag}"],
-                capture=False,
-                dry_run=dry_run,
-                console=console,
+                ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
             )
+    else:
+        console.print("Mode: direct, image given (build, load and push skipped)")
+        console.print(f"Using image {plan.ref}.")
 
-    _apply_secret(settings, env, target, env_file=env_file, dry_run=dry_run, console=console)
-    _helm_upgrade(settings, env, target, repository, image_tag, dry_run=dry_run, console=console)
-    _print_done(settings, env, f"{repository}:{image_tag}", dry_run=dry_run, console=console)
+    if path is None:
+        console.print(
+            f"  No env file found (.env.{env} or .env); the Secret {settings.secret_name} is "
+            "left as is.",
+            style="yellow",
+        )
+    else:
+        console.print(
+            f"Applying Secret {settings.secret_name} from {path} (allow-listed keys only)."
+        )
+        secrets_apply.provision(
+            name=settings.secret_name,
+            env=env,
+            target=target,
+            allowed=settings.secret_keys,
+            path=path,
+            values=values,
+            rotate_api_key=opts.rotate_api_key,
+            dry_run=opts.dry_run,
+            console=console,
+        )
+    _verify_secret(settings, env, target, cd_mode=False, dry_run=opts.dry_run, console=console)
+    _helm_upgrade(settings, env, target, plan, opts, console=console)
+    _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
 
 def _deploy_helm_push(
     settings: DeploySettings,
     env: str,
+    resolved: ResolvedContext,
     target: Target,
+    opts: _Options,
     *,
-    image: str | None,
-    env_file: str | None,
-    tag: str | None,
-    force_direct: bool,
-    dry_run: bool,
     console: Console,
 ) -> None:
-    _refuse_secrets(settings, env, env_file, mode=_modes.HELM_PUSH, console=console)
+    _refuse_secrets(settings, env, opts, mode=_modes.HELM_PUSH, console=console)
     _require_chart(settings, env)
-    if image:
-        repository, image_tag = split_image_ref(image)
-    else:
-        if env in PROTECTED_ENVS and not force_direct:
-            raise Refused(
-                f"Refusing a direct workstation deploy to {env} in helm-push mode.\n"
-                "  CI on the self-hosted runner runs `deploy --image <ref> --env "
-                f"{env}`; pass --force-direct to override."
-            )
-        repository = settings.image_repository
-        image_tag = tag or _default_tag()
-        _build(settings, repository, image_tag, dry_run=dry_run, console=console)
-        _kube.run_cmd(
-            ["docker", "push", f"{repository}:{image_tag}"],
-            capture=False,
-            dry_run=dry_run,
-            console=console,
+    if env in PROTECTED_ENVS and not opts.force_direct and not _kube.in_ci():
+        raise Refused(
+            f"Refusing to deploy {env} from outside CI in helm-push mode (with or without "
+            "--image).\n"
+            f"  The staging and promote-to-prod workflows run `deploy --env {env} --image <ref>` "
+            "on the self-hosted runner (GITHUB_ACTIONS=true); pass --force-direct to deploy "
+            "from here anyway."
         )
-    _helm_upgrade(settings, env, target, repository, image_tag, dry_run=dry_run, console=console)
-    _print_done(settings, env, f"{repository}:{image_tag}", dry_run=dry_run, console=console)
+    plan = _image_plan(settings, opts, console=console)
+
+    _modes.announce(env, resolved, console=console)
+    _modes.confirm(
+        env, resolved, yes=opts.yes, dry_run=opts.dry_run, console=console, action="deploy to"
+    )
+    console.print(f"Mode: {_modes.describe(_modes.HELM_PUSH)}")
+    if plan.build:
+        _build(settings, plan, dry_run=opts.dry_run, console=console)
+        _kube.run_cmd(
+            ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
+        )
+    _verify_secret(settings, env, target, cd_mode=True, dry_run=opts.dry_run, console=console)
+    _helm_upgrade(settings, env, target, plan, opts, console=console)
+    _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
 
 def _deploy_argocd(
     settings: DeploySettings,
     env: str,
+    resolved: ResolvedContext,
+    opts: _Options,
     *,
-    image: str | None,
-    env_file: str | None,
-    tag: str | None,
-    dry_run: bool,
     console: Console,
 ) -> None:
-    _refuse_secrets(settings, env, env_file, mode=_modes.ARGOCD, console=console)
+    console.print(f"Mode: {_modes.describe(_modes.ARGOCD)}")
+    console.print(
+        f"  No cluster is contacted (kube context {resolved.name or '(none)'} is not used): "
+        "Argo CD applies the change after the pull request merges.",
+        style="dim",
+        markup=False,
+    )
+    _refuse_secrets(settings, env, opts, mode=_modes.ARGOCD, console=console)
     values_path = settings.values_file(env)
     if not values_path.is_file():
         raise ConfigError(f"Values file not found: {values_path}")
-    if image:
-        repository, image_tag = split_image_ref(image)
+    chart_repository = str(
+        (load_chart_values(settings.chart_dir, env).get("image") or {}).get("repository") or ""
+    )
+    if _image.has_placeholder(chart_repository):
+        raise ConfigError(
+            f"image.repository in the chart values is still the placeholder {chart_repository!r}; "
+            "Argo CD would pull it. Set image.repository in "
+            f"{settings.chart_dir / 'values.yaml'} (and create_params.registry in the manifest)."
+        )
+    if opts.image:
+        repository, image_tag = split_image_ref(opts.image)
+        problem = _image.reference_problem(repository, image_tag)
+        if problem:
+            raise ConfigError(f"--image: {problem}")
+        if chart_repository and repository != chart_repository:
+            console.print(
+                f"  argocd mode writes only image.tag: Argo CD pulls {chart_repository}:"
+                f"{image_tag}, not {repository}:{image_tag}. Change image.repository in the "
+                "chart values if the repository moved.",
+                style="yellow",
+                markup=False,
+            )
     else:
         repository = (settings.registry and settings.image_repository) or None
-        image_tag = tag or _default_tag()
+        image_tag = opts.tag or gitops.short_sha() or _timestamp()
+        problem = _image.tag_problem(image_tag)
+        if problem:
+            raise ConfigError(f"--tag: {problem}.")
         console.print(
             f"  No --image given; writing tag {image_tag!r}. The image must already be pushed "
             "by CI for Argo CD to roll it out.",
             style="yellow",
         )
+        if opts.tag is None and gitops.worktree_dirty():
+            console.print(
+                "  The working tree has uncommitted changes; they are not in the image CI "
+                f"built for {image_tag}.",
+                style="yellow",
+            )
     result = gitops.write_desired_state(
         env=env,
         values_path=values_path,
         image_repository=repository,
         tag=image_tag,
         project_name=settings.project_name,
-        dry_run=dry_run,
+        dry_run=opts.dry_run,
         console=console,
     )
     if not result.changed:
         return
-    what = "Would open" if dry_run else ("Opened" if result.created else "Updated")
+    what = "Would open" if opts.dry_run else ("Opened" if result.created else "Updated")
     where = f" {result.url}" if result.url else ""
     console.print(
         f"{what} pull request on branch {result.branch}.{where}", style="green", markup=False
@@ -317,71 +469,124 @@ def _dockerfile(settings: DeploySettings) -> str:
     raise ConfigError("No Dockerfile found in the project root.")
 
 
-def _default_tag() -> str:
-    return gitops.short_sha() or _dt.datetime.now(_dt.UTC).strftime("%Y%m%d%H%M%S")
+def _timestamp() -> str:
+    return _dt.datetime.now(_dt.UTC).strftime("%Y%m%d%H%M%S")
 
 
-def _build(
-    settings: DeploySettings, repository: str, tag: str, *, dry_run: bool, console: Console
-) -> None:
+def _workstation_tag(console: Console) -> str:
+    """The short commit SHA; ``<sha>-dirty-<time>`` with uncommitted changes; a timestamp outside git.
+
+    Rebuilding at the same commit under the same tag renders an identical pod
+    spec (and ``IfNotPresent`` nodes keep the old image), so helm reports
+    success while nothing rolls out. A dirty tree therefore always gets a new tag.
+    """
+    sha = gitops.short_sha()
+    if not sha:
+        return _timestamp()
+    if gitops.worktree_dirty():
+        tag = f"{sha}-dirty-{_timestamp()}"
+        console.print(
+            f"  The working tree has uncommitted changes: tagging the image {tag} so the "
+            "rollout picks them up. Commit first for a reproducible deploy.",
+            style="yellow",
+            markup=False,
+        )
+        return tag
+    return sha
+
+
+def _image_plan(settings: DeploySettings, opts: _Options, *, console: Console) -> _ImagePlan:
+    """The image to deploy, validated before docker, kubectl or helm run (exit 3 when invalid)."""
+    if opts.image:
+        repository, image_tag = split_image_ref(opts.image)
+        problem = _image.reference_problem(repository, image_tag)
+        if problem:
+            raise ConfigError(f"--image: {problem}")
+        return _ImagePlan(repository, image_tag, build=False)
+    if _image.has_placeholder(settings.registry):
+        raise ConfigError(_image.placeholder_message(settings.registry))
+    repository = settings.image_repository
+    image_tag = opts.tag or _workstation_tag(console)
+    problem = _image.reference_problem(repository, image_tag, registry=settings.registry)
+    if problem:
+        raise ConfigError(problem)
+    return _ImagePlan(repository, image_tag, build=True)
+
+
+def _build(settings: DeploySettings, plan: _ImagePlan, *, dry_run: bool, console: Console) -> None:
     dockerfile = _dockerfile(settings)
     _kube.run_cmd(
-        ["docker", "build", "-t", f"{repository}:{tag}", "-f", dockerfile, "."],
+        ["docker", "build", "-t", plan.ref, "-f", dockerfile, "."],
         capture=False,
         dry_run=dry_run,
         console=console,
     )
 
 
-def _load(context: str, image: str, *, dry_run: bool, console: Console) -> None:
-    commands = local_load.local_load_commands(context, image)
+def _load(cluster: local_load.LocalCluster, image: str, *, dry_run: bool, console: Console) -> None:
+    commands = local_load.local_load_commands(cluster, image)
     if not commands:
-        console.print(f"  {context}: the cluster shares the docker daemon; no image load needed.")
+        console.print(f"  {cluster.describe()}: no image load needed.", markup=False)
     for cmd in commands:
         _kube.run_cmd(cmd, capture=False, dry_run=dry_run, console=console)
 
 
-def _apply_secret(
-    settings: DeploySettings,
-    env: str,
-    target: Target,
-    *,
-    env_file: str | None,
-    dry_run: bool,
-    console: Console,
-) -> None:
-    path = secrets_apply.resolve_env_file(env, env_file)
-    if path is None:
-        console.print(
-            f"  No env file found (.env.{env} or .env); the Secret {settings.secret_name} is left as is.",
-            style="yellow",
-        )
-        return
-    console.print(f"Applying Secret {settings.secret_name} from {path} (allow-listed keys only).")
-    values = secrets_apply.read_env_file(path)
-    existing = secrets_apply.existing_values_for_plan(
-        settings.secret_name, target, settings.secret_keys, values, dry_run=dry_run
-    )
-    plan = secrets_apply.build_plan(
-        name=settings.secret_name,
-        target=target,
-        allowed=settings.secret_keys,
-        values=values,
-        existing=existing,
-        dry_run=dry_run,
-    )
-    secrets_apply.apply_plan(plan, dry_run=dry_run, console=console)
-
-
 def _refuse_secrets(
-    settings: DeploySettings, env: str, env_file: str | None, *, mode: str, console: Console
+    settings: DeploySettings, env: str, opts: _Options, *, mode: str, console: Console
 ) -> None:
     procedure = secrets_apply.provisioning_procedure(
         project=settings.project_name, env=env, owner=settings.secrets_owner, mode=mode
     )
-    if env_file:
-        raise Refused(f"--env-file is not accepted in {mode} mode.\n  {procedure}")
+    for flag, given in (("--env-file", opts.env_file), ("--rotate-api-key", opts.rotate_api_key)):
+        if given:
+            raise Refused(f"{flag} is not accepted in {mode} mode.\n  {procedure}")
     console.print(f"  {procedure}", style="dim", markup=False)
+
+
+def _verify_secret(
+    settings: DeploySettings,
+    env: str,
+    target: Target,
+    *,
+    cd_mode: bool,
+    dry_run: bool,
+    console: Console,
+) -> None:
+    """Refuse (exit 1) before helm when the Secret lacks a key the pods cannot run without."""
+    required = _required.required_keys(settings, load_chart_values(settings.chart_dir, env))
+    if not required:
+        return
+    name = settings.secret_name
+    if dry_run:
+        console.print(
+            f"  [dry-run] would check that Secret {name} holds the required key(s): "
+            + ", ".join(required),
+            style="cyan",
+            markup=False,
+        )
+        return
+    present = secrets_apply.secret_keys_present(name, target, console=console)
+    missing = required if present is None else [k for k in required if k not in present]
+    if not missing:
+        console.print(
+            f"  Secret {name} holds the required key(s): {', '.join(required)}.", style="dim"
+        )
+        return
+    absent = " (the Secret does not exist)" if present is None else ""
+    if cd_mode:
+        fix = (
+            f"The Secret owner provisions them with `graph-agents-cli secrets apply --env {env} "
+            f"--env-file .env.{env}`"
+        )
+    else:
+        fix = f"Add them to the env file (.env.{env}) and re-run deploy"
+    raise Refused(
+        f"Secret {name} in {target.namespace} is missing required key(s): "
+        f"{', '.join(missing)}{absent}.\n"
+        "  Without them the pods crash or answer every request with 503; helm was not run.\n"
+        f"  {fix}, or remove a key from secrets.keys in graph-agents-cli-manifest.yaml if "
+        f"{env} does not need it."
+    )
 
 
 def _helm_args(settings: DeploySettings, env: str, repository: str, tag: str) -> list[str]:
@@ -467,17 +672,40 @@ def _helm_upgrade(
     settings: DeploySettings,
     env: str,
     target: Target,
-    repository: str,
-    tag: str,
+    plan: _ImagePlan,
+    opts: _Options,
     *,
-    dry_run: bool,
     console: Console,
 ) -> None:
-    common = _helm_args(settings, env, repository, tag)
-    upgrade = ["upgrade", "--install", settings.release, *common, "--create-namespace", "--wait"]
-    _helm_dependency_build(settings, dry_run=dry_run, console=console)
-    if dry_run:
+    """``helm upgrade --install --wait --timeout``; on failure print diagnostics, then roll back.
+
+    The rollback (``--atomic``, the default) is done here rather than with
+    helm's own ``--atomic``: helm rolls back before it returns, which deletes
+    the failed pods and their logs, the very output that explains the failure.
+    It follows helm's rule: back to the newest deployed or superseded revision,
+    or uninstall a first install that never succeeded.
+    """
+    common = _helm_args(settings, env, plan.repository, plan.tag)
+    upgrade = [
+        "upgrade",
+        "--install",
+        settings.release,
+        *common,
+        "--create-namespace",
+        "--wait",
+        "--timeout",
+        opts.timeout,
+    ]
+    _helm_dependency_build(settings, dry_run=opts.dry_run, console=console)
+    if opts.dry_run:
         _kube.echo_cmd(_kube.helm_args(upgrade, target), dry_run=True, console=console)
+        if opts.atomic:
+            console.print(
+                "  [dry-run] a failed rollout prints pod diagnostics and is rolled back "
+                "(--no-atomic keeps it).",
+                style="cyan",
+                markup=False,
+            )
         console.print(
             "  [dry-run] rendering with `helm template` instead:", style="cyan", markup=False
         )
@@ -491,7 +719,179 @@ def _helm_upgrade(
         if result.stdout:
             console.print(result.stdout, highlight=False, markup=False)
         return
-    _kube.helm(upgrade, target, capture=False, console=console)
+    result = _kube.helm(upgrade, target, capture=False, check=False, console=console)
+    if result.returncode == 0:
+        return
+    _print_rollout_diagnostics(settings, target, console=console)
+    if opts.atomic:
+        outcome = _roll_back(settings, target, opts.timeout, console=console)
+    else:
+        outcome = (
+            "the failed release was left in place (--no-atomic); roll back with "
+            f"`helm rollback {settings.release} -n {target.namespace}`"
+        )
+    detail = (result.stderr or "").strip()
+    raise _kube.ToolFailed(
+        f"helm upgrade failed (exit code {result.returncode}) for {settings.release} in "
+        f"{target.namespace}; {outcome}." + (f"\n{detail}" if detail else "")
+    )
+
+
+def _diag(console: Console, args: list[str], target: Target, *, tail: int | None = None) -> str:
+    """Run a read-only kubectl for diagnostics and print it; never raises. Returns stdout."""
+    cmd = _kube.kubectl_args(args, target)
+    try:
+        result = _kube.run_cmd(cmd, check=False, quiet=True)
+    except _kube.ToolFailed as e:
+        console.print(f"  $ {_kube.format_cmd(cmd)}\n    {e}", markup=False, highlight=False)
+        return ""
+    out = (result.stdout or "").rstrip() or (result.stderr or "").rstrip() or "(no output)"
+    lines = out.splitlines()
+    if tail is not None and len(lines) > tail + 1:
+        lines = lines[:1] + lines[-tail:]  # keep the header row
+    console.print(f"  $ {_kube.format_cmd(cmd)}", style="dim", markup=False, highlight=False)
+    for line in lines:
+        console.print(f"    {line}", markup=False, highlight=False)
+    return result.stdout or ""
+
+
+def _pod_ready(pod: dict[str, Any]) -> bool:
+    status = pod.get("status") or {}
+    if status.get("phase") == "Succeeded":
+        return True
+    return any(
+        c.get("type") == "Ready" and str(c.get("status")) == "True"
+        for c in status.get("conditions") or []
+    )
+
+
+def _container_notes(pod: dict[str, Any]) -> list[str]:
+    status = pod.get("status") or {}
+    notes: list[str] = []
+    for c in (status.get("initContainerStatuses") or []) + (status.get("containerStatuses") or []):
+        name = c.get("name", "?")
+        state = c.get("state") or {}
+        last = (c.get("lastState") or {}).get("terminated") or {}
+        if "waiting" in state:
+            w = state["waiting"] or {}
+            notes.append(f"{name}: waiting {w.get('reason', '')} {w.get('message', '')}".rstrip())
+        elif "terminated" in state:
+            t = state["terminated"] or {}
+            notes.append(f"{name}: terminated {t.get('reason', '')} exit {t.get('exitCode')}")
+        if last:
+            notes.append(
+                f"{name}: last run {last.get('reason', '')} exit {last.get('exitCode')} "
+                f"(restarts {c.get('restartCount', 0)})"
+            )
+    return notes
+
+
+def _print_rollout_diagnostics(
+    settings: DeploySettings, target: Target, *, console: Console
+) -> None:
+    """Pods, container states, warning events and recent logs of the release (best effort)."""
+    selector = f"app.kubernetes.io/instance={settings.release}"
+    console.print(
+        f"Rollout of {settings.release} in {target.namespace} failed; diagnostics:",
+        style="yellow",
+    )
+    _diag(console, ["get", "pods", "-l", selector, "-o", "wide"], target)
+    try:
+        listing = _kube.run_cmd(
+            _kube.kubectl_args(["get", "pods", "-l", selector, "-o", "json"], target),
+            check=False,
+            quiet=True,
+        )
+        pods = json.loads(listing.stdout or "{}").get("items") or []
+    except (_kube.ToolFailed, json.JSONDecodeError, AttributeError):
+        pods = []
+    failing = [p for p in pods if isinstance(p, dict) and not _pod_ready(p)]
+    for pod in failing[:DIAGNOSTIC_PODS]:
+        name = (pod.get("metadata") or {}).get("name", "?")
+        for note in _container_notes(pod):
+            console.print(f"  {name}: {note}", markup=False, highlight=False)
+    _diag(
+        console,
+        ["get", "events", "--field-selector", "type=Warning", "--sort-by=.lastTimestamp"],
+        target,
+        tail=DIAGNOSTIC_EVENTS,
+    )
+    for pod in failing[:DIAGNOSTIC_PODS]:
+        name = (pod.get("metadata") or {}).get("name", "?")
+        logs = _diag(
+            console,
+            ["logs", name, "--all-containers", f"--tail={DIAGNOSTIC_LOG_LINES}"],
+            target,
+        )
+        restarted = any(
+            int(c.get("restartCount") or 0) > 0
+            for c in (pod.get("status") or {}).get("containerStatuses") or []
+        )
+        if restarted and not logs.strip():
+            _diag(
+                console,
+                ["logs", name, "--all-containers", "--previous", f"--tail={DIAGNOSTIC_LOG_LINES}"],
+                target,
+            )
+
+
+def _roll_back(settings: DeploySettings, target: Target, timeout: str, *, console: Console) -> str:
+    """Undo a failed ``helm upgrade --install`` the way helm's ``--atomic`` would; describe it."""
+    release = settings.release
+    history = _kube.helm(
+        ["history", release, "-o", "json"], target, check=False, quiet=True, console=console
+    )
+    try:
+        revisions = json.loads(history.stdout or "[]") if history.returncode == 0 else []
+    except json.JSONDecodeError:
+        revisions = []
+    revisions = [
+        r for r in revisions if isinstance(r, dict) and str(r.get("revision", "")).isdigit()
+    ]
+    if not revisions:
+        return "no release was recorded, so there is nothing to roll back"
+    latest = max(revisions, key=lambda r: int(r["revision"]))
+    healthy = ("deployed", "superseded")
+    if str(latest.get("status", "")).lower() in healthy:
+        return f"revision {latest['revision']} is still the deployed one; nothing to roll back"
+    good = [
+        r
+        for r in revisions
+        if str(r.get("status", "")).lower() in healthy
+        and int(r["revision"]) < int(latest["revision"])
+    ]
+    if good:
+        revision = str(max(int(r["revision"]) for r in good))
+        console.print(f"Rolling back {release} to revision {revision} (--atomic).", style="yellow")
+        result = _kube.helm(
+            ["rollback", release, revision, "--wait", "--timeout", timeout],
+            target,
+            capture=False,
+            check=False,
+            console=console,
+        )
+        if result.returncode == 0:
+            return f"rolled back to revision {revision}"
+        return (
+            f"the rollback to revision {revision} also failed (exit code {result.returncode}); "
+            f"check `helm history {release} -n {target.namespace}`"
+        )
+    console.print(
+        f"Uninstalling {release}: the first install never succeeded (--atomic).", style="yellow"
+    )
+    result = _kube.helm(
+        ["uninstall", release, "--wait", "--timeout", timeout],
+        target,
+        capture=False,
+        check=False,
+        console=console,
+    )
+    if result.returncode == 0:
+        return "the failed first install was uninstalled (there was no earlier revision)"
+    return (
+        f"uninstalling the failed first install also failed (exit code {result.returncode}); "
+        f"check `helm status {release} -n {target.namespace}`"
+    )
 
 
 def _print_done(
@@ -508,12 +908,11 @@ def _show_status(
     settings: DeploySettings,
     env: str,
     target: Target,
-    mode: str,
     *,
     dry_run: bool,
     console: Console,
 ) -> None:
-    if mode == _modes.ARGOCD and _kube.tool_available("argocd"):
+    if settings.cd == _modes.ARGOCD and _kube.tool_available("argocd"):
         _kube.run_cmd(
             ["argocd", "app", "get", f"{settings.project_name}-{env}"],
             capture=False,
@@ -530,10 +929,8 @@ def _show_status(
     )
 
 
-def _restart(
-    settings: DeploySettings, target: Target, mode: str, *, dry_run: bool, console: Console
-) -> None:
-    if mode == _modes.ARGOCD:
+def _restart(settings: DeploySettings, target: Target, *, dry_run: bool, console: Console) -> None:
+    if settings.cd == _modes.ARGOCD:
         console.print(
             "  Warning: this environment is reconciled by Argo CD with self-heal; the restart "
             "annotation may be reverted. Prefer an Argo resource action (restart) on the Deployment.",

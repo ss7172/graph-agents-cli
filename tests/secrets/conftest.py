@@ -18,6 +18,8 @@ No test here needs a network, a cluster, or a model key.
 
 from __future__ import annotations
 
+import base64
+import json
 import shlex
 import subprocess
 from collections.abc import Callable
@@ -27,18 +29,62 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from graph_agents_cli import _project, _runner, _tools
 
 
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode()).decode()
+
+
 @dataclass
 class FakeRunner:
-    """Records every command and answers from a list of (pattern, rc, stdout, stderr)."""
+    """Records every command and answers from a list of (pattern, rc, stdout, stderr).
+
+    Without a matching registered answer, the app Secret round-trips through
+    ``secrets``: ``kubectl create secret ... --from-env-file`` renders the temp
+    file, ``kubectl apply -f -`` stores it and ``kubectl get secret -o json``
+    returns it (or kubectl's NotFound).
+    """
 
     calls: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
     responses: list[tuple[Callable[[str], bool], int, str, str]] = field(default_factory=list)
     missing_tools: set[str] = field(default_factory=set)
     env_file_contents: list[str] = field(default_factory=list)
+    secrets: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def _simulate(
+        self, args: list[str], kwargs: dict[str, Any]
+    ) -> subprocess.CompletedProcess[str] | None:
+        if args[:3] == ["kubectl", "create", "secret"] and "--dry-run=client" in args:
+            env_file = next(a.split("=", 1)[1] for a in args if a.startswith("--from-env-file="))
+            data = {}
+            if Path(env_file).is_file():
+                for line in Path(env_file).read_text().splitlines():
+                    key, _, value = line.partition("=")
+                    data[key] = _b64(value)
+            body = {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": args[4]}}
+            return subprocess.CompletedProcess(args, 0, yaml.safe_dump({**body, "data": data}), "")
+        if args[:2] == ["kubectl", "apply"] and kwargs.get("input"):
+            doc = yaml.safe_load(kwargs["input"]) or {}
+            name = (doc.get("metadata") or {}).get("name")
+            if doc.get("kind") == "Secret" and name:
+                self.secrets[name] = {
+                    k: base64.b64decode(v).decode() for k, v in (doc.get("data") or {}).items()
+                }
+                return subprocess.CompletedProcess(args, 0, f"secret/{name} serverside-applied", "")
+        if args[:3] == ["kubectl", "get", "secret"] and "json" in args:
+            name = args[3]
+            if name in self.secrets:
+                data = {k: _b64(v) for k, v in self.secrets[name].items()}
+                return subprocess.CompletedProcess(
+                    args, 0, json.dumps({"kind": "Secret", "data": data}), ""
+                )
+            return subprocess.CompletedProcess(
+                args, 1, "", f'Error from server (NotFound): secrets "{name}" not found'
+            )
+        return None
 
     def respond(
         self,
@@ -66,6 +112,9 @@ class FakeRunner:
         for match, rc, out, err in self.responses:
             if match(joined):
                 return subprocess.CompletedProcess(args, rc, out, err)
+        simulated = self._simulate(args, kwargs)
+        if simulated is not None:
+            return simulated
         return subprocess.CompletedProcess(args, 0, "", "")
 
     def require_tool(self, name: str, install_hint: str = "") -> str:
@@ -87,8 +136,12 @@ class FakeRunner:
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeRunner:
     runner = FakeRunner()
+    # The kind CLI on this "machine" knows the conftest's dev cluster (context kind-dev).
+    runner.respond("kind get clusters", stdout="dev\n")
     monkeypatch.setattr(_runner, "run_resolved", runner)
     monkeypatch.setattr(_tools, "require_tool", runner.require_tool)
+    # Tests decide whether they run "in CI"; the suite itself may run under GitHub Actions.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     return runner
 
 
