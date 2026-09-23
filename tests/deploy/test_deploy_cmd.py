@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import json
+import re
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,13 +26,16 @@ import respx
 import yaml
 from click.testing import CliRunner
 
+from graph_agents_cli.deploy import _modes
 from graph_agents_cli.deploy.cmd_deploy import cmd_deploy
 
 KUBE_VERSION = json.dumps({"serverVersion": {"major": "1", "minor": "30", "gitVersion": "v1.30.0"}})
+SSA = "kubectl apply --server-side --field-manager=graph-agents-cli --force-conflicts -f -"
+STAGING_ENV = "OPENAI_API_KEY=sk-staging\nPOSTGRES_DSN=postgresql://s/db\nAPI_KEY=staging-key\n"
 
 
-def invoke(*args: str):
-    return CliRunner().invoke(cmd_deploy, list(args), catch_exceptions=False)
+def invoke(*args: str, input: str | None = None):
+    return CliRunner().invoke(cmd_deploy, list(args), catch_exceptions=False, input=input)
 
 
 CHART_PATH = "deployment/helm/my-agent"
@@ -72,6 +77,10 @@ def _pushed_content(fake) -> str:
     return next(kw["input"] for c, kw in fake.calls if c[:3] == ["git", "hash-object", "-w"])
 
 
+def _index(joined: list[str], prefix: str) -> int:
+    return next(i for i, j in enumerate(joined) if j.startswith(prefix))
+
+
 # --------------------------------------------------------------------------- direct modes
 
 
@@ -80,6 +89,8 @@ def test_local_load_mode_builds_loads_applies_secret_and_upgrades(project: Simpl
     result = invoke("--env", "dev")
     assert result.exit_code == 0, result.output
     assert "direct, local-load" in result.output
+    assert "kind cluster 'dev'" in result.output
+    assert "Kube context: kind-dev (from environments.dev.context" in result.output
     joined = fake.joined
     assert "docker build -t ghcr.io/my-org/my-agent:abc1234 -f Dockerfile ." in joined
     assert "kind load docker-image ghcr.io/my-org/my-agent:abc1234 --name dev" in joined
@@ -92,7 +103,9 @@ def test_local_load_mode_builds_loads_applies_secret_and_upgrades(project: Simpl
     assert create and create[0].endswith(
         "--dry-run=client -o yaml -n my-agent-dev --context kind-dev"
     )
-    assert "kubectl apply -f - -n my-agent-dev --context kind-dev" in joined
+    # Server-side apply: no last-applied annotation holding the values.
+    assert f"{SSA} -n my-agent-dev --context kind-dev" in joined
+    assert not any(j.startswith("kubectl apply -f -") for j in joined)
     helm = next(j for j in joined if j.startswith("helm upgrade --install my-agent"))
     assert (
         "deployment/helm/my-agent -f deployment/helm/my-agent/values.yaml -f deployment/helm/my-agent/values-dev.yaml"
@@ -102,7 +115,9 @@ def test_local_load_mode_builds_loads_applies_secret_and_upgrades(project: Simpl
         "--set image.repository=ghcr.io/my-org/my-agent --set image.tag=abc1234 --set existingSecret=my-agent-app"
         in helm
     )
-    assert helm.endswith("--create-namespace --wait -n my-agent-dev --kube-context kind-dev")
+    assert helm.endswith(
+        "--create-namespace --wait --timeout 5m -n my-agent-dev --kube-context kind-dev"
+    )
     # The secret env file holds only allow-listed, non-empty keys.
     assert len(fake.env_file_contents) == 1
     content = fake.env_file_contents[0]
@@ -110,35 +125,76 @@ def test_local_load_mode_builds_loads_applies_secret_and_upgrades(project: Simpl
     assert "POSTGRES_DSN=postgresql://u:p@db/agent" in content
     assert "NOT_ALLOWED" not in content
     assert "JUDGE_API_KEY" not in content
-    assert "API_KEY=" in content  # generated
-    assert "Generated API_KEY" in result.output
+    key = re.search(r"API_KEY=([0-9a-f]{64})", content).group(1)  # generated
+    # ... saved to the env file (0600), never printed.
+    assert "Generated API_KEY" in result.output and "saved it to .env (mode 0600)" in result.output
+    assert key not in result.output
+    env_file = project.root / ".env"
+    assert f"API_KEY={key}\n" in env_file.read_text()
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    # The Secret was read and its required keys checked before anything was built or applied.
+    assert _index(joined, "kubectl get secret my-agent-app") < _index(joined, "docker build")
+    assert _index(joined, "docker build") < _index(joined, "kubectl create secret")
+    assert "will hold the required key(s): OPENAI_API_KEY, API_KEY" in result.output
 
 
 def test_direct_deploy_keeps_the_live_api_key(project: SimpleNamespace, fake):
     """Every direct-mode deploy re-applies the Secret; it must not rotate API_KEY each time."""
-    import base64
-
     _git_defaults(fake)
     live = "f" * 64
-    fake.respond(
-        "kubectl get secret my-agent-app",
-        stdout=json.dumps({"data": {"API_KEY": base64.b64encode(live.encode()).decode()}}),
-    )
+    fake.secrets["my-agent-app"] = {"API_KEY": live, "LANGSMITH_API_KEY": "ls-live"}
     result = invoke("--env", "dev", "--tag", "t")
     assert result.exit_code == 0, result.output
     assert "Generated API_KEY" not in result.output
-    assert "kept from the live Secret" in result.output
+    assert "Kept from the live Secret" in result.output
     assert f"API_KEY={live}" in fake.env_file_contents[0]
-    assert live not in result.output
+    # A live allow-listed key the env file does not set is kept, not deleted.
+    assert "LANGSMITH_API_KEY=ls-live" in fake.env_file_contents[0]
+    assert live not in result.output and "ls-live" not in result.output
+
+
+def test_live_api_key_wins_over_a_different_one_in_the_env_file(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.secrets["my-agent-app"] = {"API_KEY": "live-key"}
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=local-key\n")
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-app"]["API_KEY"] == "live-key"
+    assert "differs from the live Secret; the live key is kept" in result.output
+    assert "--rotate-api-key" in result.output
+    assert "live-key" not in result.output and "local-key" not in result.output
+
+
+def test_rotate_api_key_replaces_the_live_key(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.secrets["my-agent-app"] = {"API_KEY": "live-key"}
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=new-key\n")
+    result = invoke("--env", "dev", "--tag", "t", "--rotate-api-key")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-app"]["API_KEY"] == "new-key"
+    assert "API_KEY rotated" in result.output and "--restart" in result.output
+
+
+def test_rotate_api_key_needs_api_key_in_the_env_file(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    result = invoke("--env", "dev", "--tag", "t", "--rotate-api-key")
+    assert result.exit_code == 3, result.output
+    assert "sets no API_KEY" in result.output
+    assert not fake.any("docker") and not fake.any("kubectl") and not fake.find("helm")
 
 
 def test_registry_mode_pushes_when_context_is_not_a_dev_cluster(project: SimpleNamespace, fake):
     _git_defaults(fake)
     project.cfg.environments["dev"]["context"] = ""
     fake.respond("kubectl config current-context", stdout="prod-cluster\n")
+    fake.respond("kubectl config view --minify", stdout="https://10.0.0.1:6443")
     result = invoke("--env", "dev", "--tag", "v9")
     assert result.exit_code == 0, result.output
     assert "direct, registry" in result.output
+    assert (
+        "Kube context: prod-cluster (the kubeconfig's current context; server https://10.0.0.1:6443)"
+        in result.output
+    )
     assert "docker push ghcr.io/my-org/my-agent:v9" in fake.joined
     assert not fake.any("kind load")
     helm = fake.find("helm upgrade")[0]
@@ -149,9 +205,20 @@ def test_current_context_used_when_environment_has_none(project: SimpleNamespace
     _git_defaults(fake)
     project.cfg.environments["dev"]["context"] = ""
     fake.respond("kubectl config current-context", stdout="minikube\n")
+    fake.respond("minikube profile list", stdout=json.dumps({"valid": [{"Name": "minikube"}]}))
     result = invoke("--env", "dev", "--tag", "t")
     assert result.exit_code == 0, result.output
     assert "minikube image load ghcr.io/my-org/my-agent:t" in fake.joined
+
+
+def test_context_flag_overrides_the_manifest(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("kind get clusters", stdout="other\n")
+    result = invoke("--env", "dev", "--tag", "t", "--context", "kind-other")
+    assert result.exit_code == 0, result.output
+    assert "Kube context: kind-other (from --context" in result.output
+    assert "kind load docker-image ghcr.io/my-org/my-agent:t --name other" in fake.joined
+    assert fake.find("helm upgrade")[0].endswith("--kube-context kind-other")
 
 
 def test_docker_desktop_needs_no_load(project: SimpleNamespace, fake):
@@ -161,6 +228,60 @@ def test_docker_desktop_needs_no_load(project: SimpleNamespace, fake):
     assert result.exit_code == 0, result.output
     assert "no image load needed" in result.output
     assert not fake.any("docker push")
+
+
+# --------------------------------------------------------------------------- local cluster detection
+
+
+def _kind_nodes(cluster: str) -> str:
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "metadata": {"name": f"{cluster}-control-plane"},
+                    "spec": {"providerID": f"kind://docker/{cluster}/{cluster}-control-plane"},
+                }
+            ]
+        }
+    )
+
+
+def test_renamed_kind_context_is_detected_from_the_nodes(project: SimpleNamespace, fake):
+    """A kind cluster behind a renamed context still gets local-load, not a registry push."""
+    _git_defaults(fake)
+    project.cfg.environments["dev"]["context"] = "my-laptop-cluster"
+    fake.respond("kubectl get nodes", stdout=_kind_nodes("gac-eval"))
+    fake.respond("kind get clusters", stdout="gac-eval\n")
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "direct, local-load" in result.output
+    assert "kind load docker-image ghcr.io/my-org/my-agent:t --name gac-eval" in fake.joined
+    assert not fake.any("docker push")
+
+
+def test_kind_named_context_without_a_local_kind_cluster_pushes(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("kind get clusters", stdout="something-else\n")
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "direct, registry" in result.output
+    assert "does not list 'dev'" in result.output
+    assert fake.any("docker push") and not fake.any("kind load")
+
+
+def test_kind_named_context_on_a_real_cluster_pushes(project: SimpleNamespace, fake):
+    """The nodes win over the name: a `kind-*` context on a cloud cluster is not local."""
+    _git_defaults(fake)
+    fake.respond(
+        "kubectl get nodes",
+        stdout=json.dumps(
+            {"items": [{"metadata": {"name": "n1"}, "spec": {"providerID": "aws:///eu/i-1"}}]}
+        ),
+    )
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "direct, registry" in result.output
+    assert "nodes are not a local dev cluster" in result.output
 
 
 def test_image_flag_skips_build_in_direct_mode(project: SimpleNamespace, fake):
@@ -183,13 +304,100 @@ def test_timestamp_tag_when_git_unavailable(project: SimpleNamespace, fake):
     assert tag.isdigit() and len(tag) == 14
 
 
-def test_missing_env_file_leaves_secret_alone(project: SimpleNamespace, fake):
+def test_dirty_tree_gets_a_unique_tag_and_a_warning(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("git status --porcelain -- .", stdout=" M app/agent.py\n")
+    result = invoke("--env", "dev")
+    assert result.exit_code == 0, result.output
+    build = fake.find("docker build")[0]
+    tag = build.split("-t ")[1].split(" ")[0].split(":")[1]
+    assert re.fullmatch(r"abc1234-dirty-\d{14}", tag), tag
+    assert "uncommitted changes" in result.output
+    assert f"image.tag={tag}" in fake.find("helm upgrade")[0]
+
+
+def test_clean_tree_uses_the_short_sha(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("git status --porcelain -- .", stdout="")
+    result = invoke("--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert (
+        "docker build -t ghcr.io/my-org/my-agent:abc1234"
+        in fake.joined[_index(fake.joined, "docker build")]
+    )
+    assert "uncommitted" not in result.output
+
+
+def test_missing_env_file_in_dev_leaves_the_secret_alone(project: SimpleNamespace, fake):
     (project.root / ".env").unlink()
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k", "API_KEY": "a"}
     result = invoke("--env", "dev", "--tag", "t")
     assert result.exit_code == 0, result.output
     assert "Secret my-agent-app is left as is" in result.output
     assert not fake.any("create secret")
     assert fake.find("helm upgrade")
+
+
+def test_missing_required_secret_key_refuses_before_helm(project: SimpleNamespace, fake):
+    """No env file and no Secret: the pods would crash-loop, so helm never runs (exit 1)."""
+    (project.root / ".env").unlink()
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "missing required key(s): OPENAI_API_KEY, API_KEY (the Secret does not exist)" in (
+        result.output
+    )
+    assert "nothing was built, applied or deployed" in result.output
+    assert "secrets.keys" in result.output and not fake.any("docker build")
+    assert not fake.find("helm upgrade")
+
+
+def test_incomplete_secret_is_refused_before_anything_changes(project: SimpleNamespace, fake):
+    """A prod env file without POSTGRES_DSN (and no live one): no build, no apply, no helm."""
+    _git_defaults(fake)
+    (project.root / ".env.prod").write_text("OPENAI_API_KEY=p\nAPI_KEY=k\n")
+    fake.secrets["my-agent-app"] = {"API_KEY": "k"}
+    result = invoke("--env", "prod", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "missing required key(s): POSTGRES_DSN" in result.output
+    assert "Add them to .env.prod" in result.output
+    assert not fake.any("docker") and not fake.any("kubectl apply")
+    assert not fake.any("kubectl create") and not fake.find("helm")
+    assert fake.secrets["my-agent-app"] == {"API_KEY": "k"}
+
+
+def test_undecodable_live_api_key_is_never_replaced_silently(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=file-key\n")
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=json.dumps({"kind": "Secret", "data": {"API_KEY": "//79"}}),  # not UTF-8
+    )
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 3, result.output
+    assert "not UTF-8 text" in result.output and "--rotate-api-key" in result.output
+    assert not fake.any("kubectl apply") and not fake.any("docker")
+
+
+def test_unknown_context_is_a_config_error_before_building(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("kubectl config get-contexts", stdout="kind-dev\nprod-cluster\n")
+    result = invoke("--env", "dev", "--tag", "t", "--context", "kind-typo")
+    assert result.exit_code == 3, result.output
+    assert "'kind-typo' (from --context) is not in the kubeconfig" in result.output
+    assert "kind-dev, prod-cluster" in result.output
+    assert not fake.any("docker") and not fake.find("helm")
+    fake.respond("helm template", stdout="kind: Deployment\n")
+    dry = invoke("--env", "dev", "--tag", "t", "--context", "kind-typo", "--dry-run")
+    assert dry.exit_code == 0 and "is not in the kubeconfig" in dry.output
+
+
+def test_dirty_check_ignores_paths_that_never_reach_the_image(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    result = invoke("--env", "dev")
+    assert result.exit_code == 0, result.output
+    status = next(j for j in fake.joined if j.startswith("git status --porcelain -- ."))
+    for path in ("deployment", ".github", "tests", "docs"):
+        assert f"':(exclude){path}'" in status
 
 
 def test_env_file_precedence_dot_env_env(project: SimpleNamespace, fake):
@@ -207,6 +415,193 @@ def test_explicit_env_file_must_exist(project: SimpleNamespace, fake):
     assert "Env file not found" in result.output
 
 
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_staging_and_prod_never_fall_back_to_dot_env(project: SimpleNamespace, fake, env: str):
+    """The local .env holds a developer's keys: a staging/prod deploy must not push them."""
+    _git_defaults(fake)
+    result = invoke("--env", env, "--tag", "t")
+    assert result.exit_code == 3, result.output
+    assert f"No env file for {env}" in result.output and f".env.{env}" in result.output
+    assert "never used" in result.output
+    assert fake.calls == [] or not any(
+        j.startswith(("docker", "kind", "kubectl create", "kubectl apply", "helm"))
+        for j in fake.joined
+    )
+
+
+def test_staging_deploy_uses_its_own_env_file(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    (project.root / ".env.staging").write_text(STAGING_ENV)
+    result = invoke("--env", "staging", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "from .env.staging" in result.output
+    assert fake.secrets["my-agent-app"] == {
+        "OPENAI_API_KEY": "sk-staging",
+        "POSTGRES_DSN": "postgresql://s/db",
+        "API_KEY": "staging-key",
+    }
+    assert "sk-test" not in fake.env_file_contents[0]  # nothing from the local .env
+    helm = fake.find("helm upgrade")[0]
+    assert helm.endswith("-n my-agent-staging --kube-context staging-cluster")
+
+
+# --------------------------------------------------------------------------- namespaces
+
+
+def test_namespace_is_created_before_the_secret_on_a_fresh_cluster(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond(
+        "kubectl get namespace my-agent-dev",
+        rc=1,
+        stderr='Error from server (NotFound): namespaces "my-agent-dev" not found',
+    )
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    joined = fake.joined
+    assert "kubectl create namespace my-agent-dev --context kind-dev" in joined
+    assert _index(joined, "kubectl create namespace") < _index(joined, "kubectl create secret")
+    assert "Created namespace my-agent-dev" in result.output
+
+
+def test_existing_namespace_is_not_recreated(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert fake.find("kubectl get namespace my-agent-dev")
+    assert not fake.find("kubectl create namespace")
+
+
+def test_namespace_rbac_denial_is_not_fatal(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond(
+        "kubectl get namespace",
+        rc=1,
+        stderr='Error from server (Forbidden): namespaces "my-agent-dev" is forbidden',
+    )
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "assuming it exists" in result.output
+    assert not fake.find("kubectl create namespace")
+
+
+def test_namespace_read_failure_is_a_tool_failure(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("kubectl get namespace", rc=1, stderr="Unable to connect to the server")
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 2, result.output
+    assert not fake.any("create secret") and not fake.find("helm upgrade")
+
+
+# --------------------------------------------------------------------------- kube context safety
+
+
+def _implicit_staging(project: SimpleNamespace, fake) -> None:
+    _git_defaults(fake)
+    (project.root / ".env.staging").write_text(STAGING_ENV)
+    project.cfg.environments["staging"]["context"] = ""
+    fake.respond("kubectl config current-context", stdout="whatever-is-current\n")
+    fake.respond("kubectl config view --minify", stdout="https://prod.example:443")
+
+
+def test_implicit_context_outside_dev_is_refused_non_interactively(project: SimpleNamespace, fake):
+    _implicit_staging(project, fake)
+    result = invoke("--env", "staging", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "Kube context: whatever-is-current (the kubeconfig's current context; server" in (
+        result.output
+    )
+    assert "without confirmation" in result.output and "--yes" in result.output
+    assert "environments.staging.context" in result.output
+    assert not any(
+        j.startswith(("docker", "kind", "kubectl create", "kubectl apply", "helm"))
+        for j in fake.joined
+    )
+
+
+def test_yes_accepts_the_current_context(project: SimpleNamespace, fake):
+    _implicit_staging(project, fake)
+    result = invoke("--env", "staging", "--tag", "t", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Using the current context 'whatever-is-current' for staging (--yes)" in result.output
+    assert fake.find("helm upgrade")[0].endswith("--kube-context whatever-is-current")
+
+
+def test_context_flag_needs_no_confirmation(project: SimpleNamespace, fake):
+    _implicit_staging(project, fake)
+    result = invoke("--env", "staging", "--tag", "t", "--context", "staging-ctx")
+    assert result.exit_code == 0, result.output
+    assert fake.find("helm upgrade")[0].endswith("--kube-context staging-ctx")
+
+
+@pytest.mark.parametrize(("answer", "code"), [("y\n", 0), ("n\n", 1)])
+def test_interactive_prompt_confirms_the_current_context(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch, answer: str, code: int
+):
+    _implicit_staging(project, fake)
+    monkeypatch.setattr(_modes, "_interactive", lambda: True)
+    result = invoke("--env", "staging", "--tag", "t", input=answer)
+    assert result.exit_code == code, result.output
+    assert "Deploy to staging on context 'whatever-is-current'?" in result.output
+    assert bool(fake.find("helm upgrade")) is (code == 0)
+
+
+def test_no_context_at_all_outside_dev_is_a_config_error(project: SimpleNamespace, fake):
+    _implicit_staging(project, fake)
+    fake.respond("kubectl config current-context", rc=1, stderr="current-context is not set")
+    result = invoke("--env", "staging", "--tag", "t", "--yes")
+    assert result.exit_code == 3, result.output
+    assert "No kube context for staging" in result.output
+
+
+def test_dry_run_with_an_implicit_context_only_reports(project: SimpleNamespace, fake):
+    _implicit_staging(project, fake)
+    fake.respond("helm template", stdout="kind: Deployment\n")
+    result = invoke("--env", "staging", "--tag", "t", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "the real run asks to confirm 'whatever-is-current'" in result.output
+
+
+def test_restart_outside_dev_needs_an_explicit_context(project: SimpleNamespace, fake):
+    project.cfg.environments["prod"]["context"] = ""
+    fake.respond("kubectl config current-context", stdout="somewhere\n")
+    result = invoke("--env", "prod", "--restart")
+    assert result.exit_code == 1, result.output
+    assert not fake.any("rollout restart")
+    assert invoke("--env", "prod", "--restart", "--yes").exit_code == 0
+
+
+# --------------------------------------------------------------------------- image references
+
+
+def test_placeholder_registry_is_a_config_error_before_docker(project: SimpleNamespace, fake):
+    project.cfg.registry = "ghcr.io/CHANGE-ME"
+    project.cfg.create_params["registry"] = "ghcr.io/CHANGE-ME"
+    for extra in ((), ("--dry-run",)):
+        result = invoke("--env", "dev", *extra)
+        assert result.exit_code == 3, result.output
+        assert "still the placeholder 'ghcr.io/CHANGE-ME'" in result.output
+        assert "create_params.registry" in result.output
+    assert not fake.any("docker") and not fake.find("helm")
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (("--image", "ghcr.io/My-Org/app:1"), "must be lowercase"),
+        (("--image", "ghcr.io/org//app:1"), "empty component"),
+        (("--tag", "v1/2"), "the tag 'v1/2'"),
+        (("--tag", "-bad"), "the tag '-bad'"),
+    ],
+)
+def test_invalid_image_reference_is_a_config_error(
+    project: SimpleNamespace, fake, args: tuple[str, ...], fragment: str
+):
+    result = invoke("--env", "dev", *args)
+    assert result.exit_code == 3, result.output
+    assert fragment in result.output
+    assert not fake.any("docker") and not fake.find("helm")
+
+
 # --------------------------------------------------------------------------- dry run
 
 
@@ -216,9 +611,14 @@ def test_dry_run_prints_commands_and_runs_helm_template_only(project: SimpleName
     assert result.exit_code == 0, result.output
     assert "[dry-run] docker build -t ghcr.io/my-org/my-agent:t1" in result.output
     assert "[dry-run] kind load docker-image" in result.output
+    assert "[dry-run] kubectl create namespace my-agent-dev" in result.output
     assert "[dry-run] kubectl create secret generic my-agent-app" in result.output
-    assert "| kubectl apply -f - -n my-agent-dev" in result.output
+    assert f"| {SSA} -n my-agent-dev" in result.output
+    assert "[dry-run] would check that Secret my-agent-app holds the required key(s)" in (
+        result.output
+    )
     assert "[dry-run] helm upgrade --install my-agent" in result.output
+    assert "--wait --timeout 5m" in result.output
     assert "kind: Deployment" in result.output
     assert (
         "stringData" in result.output
@@ -227,11 +627,120 @@ def test_dry_run_prints_commands_and_runs_helm_template_only(project: SimpleName
     )
     executed = fake.joined
     assert not any(
-        j.startswith(("docker", "kind", "kubectl create", "kubectl apply", "helm upgrade"))
+        j.startswith(
+            (
+                "docker",
+                "kind load",
+                "kubectl create",
+                "kubectl apply",
+                "helm upgrade",
+                "kubectl get secret",
+            )
+        )
         for j in executed
     )
     assert any(j.startswith("helm template my-agent deployment/helm/my-agent") for j in executed)
     assert "Would deploy my-agent" in result.output
+
+
+# --------------------------------------------------------------------------- rollout failure
+
+
+def _failed_upgrade(fake, history: list[dict]) -> None:
+    fake.respond("helm upgrade", rc=1, stderr="Error: context deadline exceeded")
+    fake.respond("helm history", stdout=json.dumps(history))
+    fake.respond(
+        "kubectl get pods -l app.kubernetes.io/instance=my-agent -o json",
+        stdout=json.dumps(
+            {
+                "items": [
+                    {
+                        "metadata": {"name": "my-agent-abc"},
+                        "status": {
+                            "phase": "Running",
+                            "conditions": [{"type": "Ready", "status": "False"}],
+                            "containerStatuses": [
+                                {
+                                    "name": "agent",
+                                    "restartCount": 3,
+                                    "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                                    "lastState": {"terminated": {"reason": "Error", "exitCode": 1}},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ),
+    )
+    fake.respond("kubectl logs my-agent-abc", stdout="OpenAIError: Missing credentials\n")
+
+
+def test_failed_rollout_prints_diagnostics_then_rolls_back(project: SimpleNamespace, fake):
+    _failed_upgrade(
+        fake,
+        [
+            {"revision": 3, "status": "superseded"},
+            {"revision": 4, "status": "deployed"},
+            {"revision": 5, "status": "failed"},
+        ],
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    out = result.output
+    assert "diagnostics" in out
+    assert "agent: waiting CrashLoopBackOff" in out and "last run Error exit 1" in out
+    assert "OpenAIError: Missing credentials" in out
+    joined = fake.joined
+    assert any(j.startswith("kubectl get events --field-selector type=Warning") for j in joined)
+    # Diagnostics are read before the rollback removes the failed pods.
+    assert _index(joined, "kubectl logs my-agent-abc") < _index(joined, "helm rollback")
+    rollback = fake.find("helm rollback")[0]
+    assert rollback.startswith("helm rollback my-agent 4 --wait --timeout 5m -n my-agent-dev")
+    assert "rolled back to revision 4" in out
+    assert not fake.find("helm uninstall")
+
+
+def test_failed_first_install_is_uninstalled(project: SimpleNamespace, fake):
+    _failed_upgrade(fake, [{"revision": 1, "status": "failed"}])
+    result = invoke("--env", "dev", "--image", "x/y:1", "--timeout", "90")
+    assert result.exit_code == 2, result.output
+    assert fake.find("helm upgrade")[0].count("--timeout 90s") == 1
+    assert fake.find("helm uninstall my-agent --wait --timeout 90s")
+    assert "failed first install was uninstalled" in result.output
+
+
+def test_no_atomic_keeps_the_failed_release(project: SimpleNamespace, fake):
+    _failed_upgrade(
+        fake, [{"revision": 1, "status": "deployed"}, {"revision": 2, "status": "failed"}]
+    )
+    result = invoke("--env", "dev", "--image", "x/y:1", "--no-atomic")
+    assert result.exit_code == 2, result.output
+    assert "OpenAIError" in result.output  # diagnostics still printed
+    assert not fake.find("helm rollback") and not fake.find("helm uninstall")
+    assert "left in place (--no-atomic)" in result.output
+
+
+def test_failure_before_a_new_revision_needs_no_rollback(project: SimpleNamespace, fake):
+    """A render or validation error records no revision: no diagnostics, no rollback."""
+    _failed_upgrade(fake, [{"revision": 7, "status": "deployed"}])
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "no new revision" in result.output and "nothing to roll back" in result.output
+    assert "diagnostics" not in result.output and not fake.any("kubectl logs")
+    assert not fake.find("helm rollback") and not fake.find("helm uninstall")
+    # A first install that failed before helm recorded anything: nothing to undo either.
+    fake.respond("helm history", rc=1, stderr="Error: release: not found")
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2 and "no new revision" in result.output
+    assert not fake.find("helm uninstall")
+
+
+@pytest.mark.parametrize("value", ["0", "0s", "5x", "m", "-1"])
+def test_invalid_timeout_is_a_usage_error(project: SimpleNamespace, fake, value: str):
+    result = CliRunner().invoke(cmd_deploy, ["--env", "dev", "--timeout", value])
+    assert result.exit_code == 2, result.output
+    assert "not a duration" in result.output
 
 
 # --------------------------------------------------------------------------- helm-push
@@ -241,16 +750,28 @@ def test_helm_push_refuses_staging_from_workstation(project: SimpleNamespace, fa
     project.cfg.create_params["cd"] = "helm-push"
     result = invoke("--env", "staging")
     assert result.exit_code == 1
-    assert "Refusing a direct workstation deploy to staging" in result.output
+    assert "Refusing to deploy staging from outside CI" in result.output
     assert not fake.any("helm upgrade")
 
 
-def test_helm_push_with_image_only_runs_helm(project: SimpleNamespace, fake):
+def test_helm_push_refusal_cannot_be_bypassed_with_image(project: SimpleNamespace, fake):
     project.cfg.create_params["cd"] = "helm-push"
+    result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:deadbeef")
+    assert result.exit_code == 1, result.output
+    assert "with or without --image" in result.output and "--force-direct" in result.output
+    assert not fake.find("helm")
+
+
+def test_helm_push_in_ci_with_image_only_runs_helm(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    project.cfg.create_params["cd"] = "helm-push"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k", "POSTGRES_DSN": "d", "API_KEY": "a"}
     result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:deadbeef")
     assert result.exit_code == 0, result.output
     assert not fake.any("docker")
-    assert not fake.any("create secret")
+    assert not fake.any("create secret") and not fake.any("kubectl apply")
     helm = fake.find("helm upgrade")[0]
     assert (
         "--set image.tag=deadbeef" in helm
@@ -259,10 +780,24 @@ def test_helm_push_with_image_only_runs_helm(project: SimpleNamespace, fake):
     assert "never touches Secrets" in result.output
 
 
+def test_helm_push_refuses_when_the_secret_lacks_required_keys(
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch
+):
+    project.cfg.create_params["cd"] = "helm-push"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k"}
+    result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:deadbeef")
+    assert result.exit_code == 1, result.output
+    assert "missing required key(s): POSTGRES_DSN, API_KEY" in result.output
+    assert "secrets apply --env prod --env-file .env.prod" in result.output
+    assert not fake.find("helm upgrade")
+
+
 def test_helm_push_dev_from_workstation_builds_and_pushes_without_secrets(
     project: SimpleNamespace, fake
 ):
     project.cfg.create_params["cd"] = "helm-push"
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k", "API_KEY": "a"}
     result = invoke("--env", "dev", "--tag", "t")
     assert result.exit_code == 0, result.output
     assert fake.any("docker build") and fake.any("docker push ghcr.io/my-org/my-agent:t")
@@ -273,16 +808,18 @@ def test_helm_push_dev_from_workstation_builds_and_pushes_without_secrets(
 
 def test_helm_push_force_direct_allows_staging(project: SimpleNamespace, fake):
     project.cfg.create_params["cd"] = "helm-push"
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k", "POSTGRES_DSN": "d", "API_KEY": "a"}
     result = invoke("--env", "staging", "--tag", "t", "--force-direct")
     assert result.exit_code == 0, result.output
     assert fake.any("docker push") and fake.find("helm upgrade")
 
 
-def test_helm_push_refuses_env_file(project: SimpleNamespace, fake):
+@pytest.mark.parametrize("flag", [("--env-file", ".env"), ("--rotate-api-key",)])
+def test_helm_push_refuses_secret_flags(project: SimpleNamespace, fake, flag: tuple[str, ...]):
     project.cfg.create_params["cd"] = "helm-push"
-    result = invoke("--env", "dev", "--env-file", ".env")
+    result = invoke("--env", "dev", *flag)
     assert result.exit_code == 1
-    assert "--env-file is not accepted in helm-push mode" in result.output
+    assert f"{flag[0]} is not accepted in helm-push mode" in result.output
     assert "platform-team" in result.output
 
 
@@ -303,10 +840,12 @@ def test_argocd_writes_tag_commits_pushes_and_opens_pr(project: SimpleNamespace,
         "image:\n  tag: staging-old\npostgresql:\n  enabled: false\n"
     )
     assert "working tree is left unchanged" in result.output
+    assert "No cluster is contacted" in result.output
     joined = fake.joined
     assert not fake.find("helm")
     assert not fake.find("docker")
     assert not fake.any("create secret")
+    assert not fake.any("kubectl")
     assert "git fetch origin main" in joined
     assert "git rev-parse --show-prefix" in joined
     assert "git cat-file blob origin/main:deployment/helm/my-agent/values-staging.yaml" in joined
@@ -320,9 +859,11 @@ def test_argocd_writes_tag_commits_pushes_and_opens_pr(project: SimpleNamespace,
         "git commit-tree tree222 -p origin/main -m 'deploy(staging): my-agent -> sha999'" in joined
     )
     assert "git update-ref refs/heads/deploy/staging/sha999 commit333" in joined
+    assert "git ls-remote --heads origin refs/heads/deploy/staging/sha999" in joined
+    # The lease names what origin holds now ("" = must not exist): no "stale info" in CI.
     assert (
-        "git push --force-with-lease -u origin deploy/staging/sha999:deploy/staging/sha999"
-        in joined
+        "git push --force-with-lease=refs/heads/deploy/staging/sha999: -u origin "
+        "deploy/staging/sha999:deploy/staging/sha999" in joined
     )
     assert any(
         j.startswith(
@@ -341,6 +882,61 @@ def test_argocd_writes_tag_commits_pushes_and_opens_pr(project: SimpleNamespace,
     assert plumbing and "GIT_INDEX_FILE" in plumbing[0]["env"]
     push_kwargs = next(kw for c, kw in fake.calls if c[:2] == ["git", "push"])
     assert push_kwargs.get("env") is None
+
+
+def test_argocd_retry_leases_on_the_existing_remote_branch(project: SimpleNamespace, fake):
+    """Re-running a promotion replaces the bot branch; the lease is the remote's sha."""
+    project.cfg.create_params["cd"] = "argocd"
+    _git_defaults(fake, chart=project.chart)
+    fake.respond("git ls-remote --heads origin", stdout="f00d\trefs/heads/deploy/prod/v2\n")
+    result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:v2")
+    assert result.exit_code == 0, result.output
+    assert any(
+        j.startswith("git push --force-with-lease=refs/heads/deploy/prod/v2:f00d ")
+        for j in fake.joined
+    )
+
+
+def test_argocd_retry_with_the_same_change_pushes_nothing(project: SimpleNamespace, fake):
+    """Same tree on the same base: nothing is pushed, so an approved PR keeps its approval."""
+    project.cfg.create_params["cd"] = "argocd"
+    _git_defaults(fake, chart=project.chart)
+    fake.respond("git ls-remote --heads origin", stdout="f00d\trefs/heads/deploy/prod/v2\n")
+    # shlex.join quotes the ^{...} specs, so match on the bare spec.
+    for spec, out in (
+        ("f00d^", "base999"),
+        ("f00d^{tree}", "tree222"),
+        ("f00d^{commit}", "f00d"),
+        ("origin/main^{commit}", "base999"),
+    ):
+        fake.respond(lambda j, s=spec: j.endswith((f" {s}", f" '{s}'")), stdout=f"{out}\n")
+    result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:v2")
+    assert result.exit_code == 0, result.output
+    assert "already holds this change" in result.output
+    assert not fake.any("git push") and not fake.any("git commit-tree")
+    assert "git update-ref refs/heads/deploy/prod/v2 f00d" in fake.joined
+
+
+def test_argocd_warns_when_image_repository_differs_from_the_chart(project: SimpleNamespace, fake):
+    project.cfg.create_params["cd"] = "argocd"
+    _git_defaults(fake, chart=project.chart)
+    result = invoke("--env", "staging", "--image", "ghcr.io/other/app:sha1")
+    assert result.exit_code == 0, result.output
+    assert "writes only image.tag" in result.output
+    assert "ghcr.io/my-org/my-agent:sha1" in result.output
+
+
+def test_argocd_refuses_a_placeholder_chart_repository(project: SimpleNamespace, fake):
+    project.cfg.create_params["cd"] = "argocd"
+    _git_defaults(fake, chart=project.chart)
+    values = (project.chart / "values.yaml").read_text()
+    (project.chart / "values.yaml").write_text(
+        values.replace("ghcr.io/my-org/my-agent", "ghcr.io/CHANGE-ME/my-agent")
+    )
+    result = invoke("--env", "staging", "--image", "ghcr.io/my-org/my-agent:sha1")
+    assert result.exit_code == 3, result.output
+    assert "Argo CD would pull it" in result.output
+    assert not fake.any("git push")
 
 
 def test_argocd_updates_existing_pr(project: SimpleNamespace, fake):
@@ -429,9 +1025,10 @@ def test_argocd_project_below_the_git_root_uses_repo_relative_paths(project: Sim
 
 @pytest.mark.parametrize("cd", ["helm-push", "argocd"])
 def test_digest_image_reference_is_refused_before_any_tool_runs(
-    project: SimpleNamespace, fake, cd: str
+    project: SimpleNamespace, fake, monkeypatch: pytest.MonkeyPatch, cd: str
 ):
     project.cfg.create_params["cd"] = cd
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     _git_defaults(fake, chart=project.chart)
     result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent@sha256:deadbeef")
     assert result.exit_code == 3, result.output
@@ -531,14 +1128,18 @@ def test_argocd_dry_run_touches_nothing(project: SimpleNamespace, fake):
     assert "[dry-run] gh pr create" in result.output
     assert "Would open pull request" in result.output
     assert not fake.any("git push") and not fake.any("gh pr")
+    assert not fake.any("git ls-remote")
 
 
 def test_argocd_without_image_uses_git_sha_and_warns(project: SimpleNamespace, fake):
     project.cfg.create_params["cd"] = "argocd"
     _git_defaults(fake, chart=project.chart)
+    fake.respond("git status --porcelain -- .", stdout="?? new.py\n")
     result = invoke("--env", "dev")
     assert result.exit_code == 0, result.output
     assert "must already be pushed" in result.output
+    # CI built the commit, not the local edits: the tag is the plain sha, with a warning.
+    assert "uncommitted changes; they are not in the image CI built" in result.output
     pushed = _pushed_content(fake)
     assert yaml.safe_load(pushed)["image"]["tag"] == "abc1234"
     # Comments and other keys of the base copy survive the rewrite.
@@ -552,6 +1153,7 @@ def test_argocd_without_image_uses_git_sha_and_warns(project: SimpleNamespace, f
 def test_status_runs_rollout_status(project: SimpleNamespace, fake):
     result = invoke("--env", "dev", "--status")
     assert result.exit_code == 0, result.output
+    assert "Kube context: kind-dev" in result.output
     assert (
         "kubectl rollout status deployment/my-agent -n my-agent-dev --context kind-dev"
         in fake.joined
@@ -575,6 +1177,16 @@ def test_status_argocd_falls_back_to_kubectl(project: SimpleNamespace, fake):
         "kubectl rollout status deployment/my-agent -n my-agent-staging --context staging-cluster"
         in fake.joined
     )
+
+
+def test_status_with_an_implicit_context_is_read_only_and_needs_no_confirmation(
+    project: SimpleNamespace, fake
+):
+    project.cfg.environments["prod"]["context"] = ""
+    fake.respond("kubectl config current-context", stdout="somewhere\n")
+    result = invoke("--env", "prod", "--status")
+    assert result.exit_code == 0, result.output
+    assert "Kube context: somewhere (the kubeconfig's current context" in result.output
 
 
 def test_restart_runs_rollout_restart(project: SimpleNamespace, fake):
@@ -614,6 +1226,7 @@ def test_refuses_staging_when_auth_policy_not_implemented(project: SimpleNamespa
         assert "auth_policy_implemented: false" in result.output
     assert not fake.find("helm")
     # dev is still allowed, and --status is read-only so it is allowed everywhere.
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k"}
     assert invoke("--env", "dev", "--image", "x:1").exit_code == 0
     assert invoke("--env", "prod", "--status").exit_code == 0
 
@@ -667,6 +1280,7 @@ def test_blank_gateway_parent_ref_is_a_config_error_before_any_tool(project: Sim
     (project.chart / "values-prod.yaml").write_text(
         "image:\n  tag: prod-old\ngateway:\n  enabled: false\n"
     )
+    (project.root / ".env.prod").write_text(STAGING_ENV)
     assert invoke("--env", "prod", "--tag", "t").exit_code == 0
 
 

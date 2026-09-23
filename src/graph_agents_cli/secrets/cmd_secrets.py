@@ -20,9 +20,10 @@ import click
 from graph_agents_cli._click import LazyGroup
 from graph_agents_cli._output import Console
 from graph_agents_cli.deploy import _modes
-from graph_agents_cli.deploy._config import load_settings
-from graph_agents_cli.deploy._kube import ConfigError, Target
-from graph_agents_cli.secrets import _apply
+from graph_agents_cli.deploy._config import DeploySettings, load_settings
+from graph_agents_cli.deploy._kube import Target
+from graph_agents_cli.deploy._values import load_chart_values
+from graph_agents_cli.secrets import _apply, _required
 
 
 @click.group("secrets", cls=LazyGroup)
@@ -36,58 +37,111 @@ def secrets_group() -> None:
     """
 
 
-def _target(settings, env: str) -> Target:
-    base = settings.target(env)
-    return Target(context=_modes.resolve_context(settings, env), namespace=base.namespace)
+def _resolve(
+    settings: DeploySettings, env: str, context: str | None
+) -> tuple[_modes.ResolvedContext, Target]:
+    namespace = settings.target(env).namespace
+    resolved = _modes.resolve(settings, env, context)
+    return resolved, Target(context=resolved.name, namespace=namespace)
+
+
+_CONTEXT_HELP = "Kube context to use instead of environments.<env>.context."
 
 
 @secrets_group.command("apply")
 @click.option("--env", "env", required=True, help="Target environment (dev, staging, prod).")
 @click.option(
-    "--env-file", "env_file", default=None, help="Env file; defaults to .env.<env> then .env."
+    "--env-file",
+    "env_file",
+    default=None,
+    help="Env file; defaults to .env.<env> (dev also falls back to .env).",
+)
+@click.option("--context", "context", default=None, help=_CONTEXT_HELP)
+@click.option(
+    "--yes",
+    "-y",
+    "yes",
+    is_flag=True,
+    help="Accept the kubeconfig's current context outside dev without prompting.",
+)
+@click.option(
+    "--rotate-api-key",
+    "rotate_api_key",
+    is_flag=True,
+    help="Replace the live API_KEY with the one in the env file (otherwise the live key wins).",
 )
 @click.option(
     "--dry-run", "dry_run", is_flag=True, help="Print the kubectl pipeline and a redacted manifest."
 )
-def cmd_secrets_apply(env: str, env_file: str | None, dry_run: bool) -> None:
+def cmd_secrets_apply(
+    env: str,
+    env_file: str | None,
+    context: str | None,
+    yes: bool,
+    rotate_api_key: bool,
+    dry_run: bool,
+) -> None:
     """Create or update the app Secret from the allow-listed keys of an env file."""
     console = Console()
     settings = load_settings()
-    target = _target(settings, env)
+    resolved, target = _resolve(settings, env, context)
     path = _apply.resolve_env_file(env, env_file)
     if path is None:
-        raise ConfigError(
-            f"No env file found: pass --env-file or create .env.{env} (or .env) with the allow-listed keys: "
-            + ", ".join(settings.secret_keys)
-        )
-    console.print(
-        f"Secret {settings.secret_name} in {target.namespace} (context {target.context or 'current'}) from {path}"
-    )
+        raise _apply.missing_env_file_error(env, settings.secret_keys)
     values = _apply.read_env_file(path)
-    existing = _apply.existing_values_for_plan(
-        settings.secret_name, target, settings.secret_keys, values, dry_run=dry_run
+    _apply.check_file_values(
+        values, settings.secret_keys, rotate_api_key=rotate_api_key, source=path
     )
-    plan = _apply.build_plan(
+    console.print(f"Secret {settings.secret_name} in {target.namespace} from {path}")
+    _modes.announce(env, resolved, console=console)
+    _modes.confirm(
+        env, resolved, yes=yes, dry_run=dry_run, console=console, action="apply the Secret for"
+    )
+    _apply.provision(
         name=settings.secret_name,
+        env=env,
         target=target,
         allowed=settings.secret_keys,
+        path=path,
         values=values,
-        existing=existing,
+        rotate_api_key=rotate_api_key,
         dry_run=dry_run,
+        console=console,
     )
-    _apply.apply_plan(plan, dry_run=dry_run, console=console)
 
 
 @secrets_group.command("status")
 @click.option("--env", "env", required=True, help="Target environment (dev, staging, prod).")
+@click.option("--context", "context", default=None, help=_CONTEXT_HELP)
+@click.option(
+    "--strict",
+    "strict",
+    is_flag=True,
+    help="Also exit 1 when an optional allow-listed key is missing.",
+)
 @click.option(
     "--dry-run", "dry_run", is_flag=True, help="Print the kubectl command without running it."
 )
-def cmd_secrets_status(env: str, dry_run: bool) -> None:
-    """List which allow-listed keys are present in the app Secret (never values)."""
+def cmd_secrets_status(env: str, context: str | None, strict: bool, dry_run: bool) -> None:
+    """List which allow-listed keys are present in the app Secret (never values).
+
+    \b
+    Exit codes (usable as a CI or pre-deploy gate):
+      0  the Secret holds every required key (optional ones may be missing)
+      1  the Secret is missing, or a required key is (any key with --strict)
+      2  kubectl failed (unreachable cluster, credentials, RBAC)
+      3  configuration error (unknown environment, no manifest)
+    Required keys follow the environment's chart values: the model provider's key
+    (not for openai-compatible), API_KEY under shared-bearer, and POSTGRES_DSN or
+    DATABASE_URI/REDIS_URI unless the bundled subchart provides them.
+    """
     console = Console()
     settings = load_settings()
-    target = _target(settings, env)
+    resolved, target = _resolve(settings, env, context)
+    _modes.announce(env, resolved, console=console)
+    values = load_chart_values(settings.chart_dir, env)
+    required = _required.required_keys(settings, values)
+    optional = [k for k in settings.secret_keys if k not in required]
     present = _apply.secret_keys_present(
         settings.secret_name, target, dry_run=dry_run, console=console
     )
@@ -99,15 +153,21 @@ def cmd_secrets_status(env: str, dry_run: bool) -> None:
         )
         console.print("  Missing: " + ", ".join(settings.secret_keys))
         raise SystemExit(1)
-    missing = [k for k in settings.secret_keys if k not in present]
+    missing_required = [k for k in required if k not in present]
+    missing_optional = [k for k in optional if k not in present]
     found = [k for k in settings.secret_keys if k in present]
     extra = sorted(present - set(settings.secret_keys))
     console.print(f"Secret {settings.secret_name} in {target.namespace}:")
     console.print("  present: " + (", ".join(found) or "(none)"), style="green")
     console.print(
-        "  missing: " + (", ".join(missing) or "(none)"), style="yellow" if missing else "green"
+        "  missing required: " + (", ".join(missing_required) or "(none)"),
+        style="red" if missing_required else "green",
+    )
+    console.print(
+        "  missing optional: " + (", ".join(missing_optional) or "(none)"),
+        style="yellow" if missing_optional else "green",
     )
     if extra:
         console.print("  not in the allow-list: " + ", ".join(extra), style="dim")
-    if missing:
+    if missing_required or (strict and missing_optional):
         raise SystemExit(1)

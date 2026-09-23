@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from graph_agents_cli.deploy import _modes, gitops, local_load
+from graph_agents_cli.deploy import _image, _modes, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings
 from graph_agents_cli.deploy._kube import ConfigError, Refused
 from graph_agents_cli.deploy._values import rewrite_image_tag, set_image_tag, split_image_ref
@@ -71,23 +71,169 @@ def test_derive_mode_rejects_unknown_cd():
         ("kind-dev", [["kind", "load", "docker-image", "img:1", "--name", "dev"]]),
         ("k3d-local", [["k3d", "image", "import", "img:1", "-c", "local"]]),
         ("minikube", [["minikube", "image", "load", "img:1"]]),
+        ("minikube-two", [["minikube", "image", "load", "img:1", "-p", "minikube-two"]]),
         ("docker-desktop", []),
         ("orbstack", []),
     ],
 )
 def test_local_load_commands(context, expected):
-    assert local_load.local_load_commands(context, "img:1") == expected
+    cluster = local_load.from_context_name(context)
+    assert cluster is not None
+    assert local_load.local_load_commands(cluster, "img:1") == expected
 
 
 def test_local_load_k3s_uses_docker_save_then_ctr_import(tmp_path: Path):
-    cmds = local_load.local_load_commands("k3s", "img:1", tar_path=tmp_path / "i.tar")
+    cluster = local_load.LocalCluster(local_load.K3S)
+    cmds = local_load.local_load_commands(cluster, "img:1", tar_path=tmp_path / "i.tar")
     assert cmds[0][:3] == ["docker", "save", "-o"]
     assert cmds[1][:4] == ["k3s", "ctr", "images", "import"]
 
 
-def test_local_load_rejects_unknown_context():
-    with pytest.raises(ConfigError):
-        local_load.local_load_commands("prod-cluster", "img:1")
+def test_context_name_alone_is_not_a_dev_cluster_for_other_names():
+    assert local_load.from_context_name("prod-cluster") is None
+    assert local_load.from_context_name(None) is None
+
+
+def _node(name: str, provider: str = "", labels: dict | None = None) -> dict:
+    return {"metadata": {"name": name, "labels": labels or {}}, "spec": {"providerID": provider}}
+
+
+@pytest.mark.parametrize(
+    ("nodes", "kind", "name"),
+    [
+        ([_node("c-control-plane", "kind://docker/my-kind/c-control-plane")], "kind", "my-kind"),
+        ([_node("c", "kind://podman/pod-kind/c")], "kind", "pod-kind"),
+        ([_node("k3d-lab-server-0", "k3s://k3d-lab-server-0")], "k3d", "lab"),
+        ([_node("box", "k3s://box")], "k3s", ""),
+        ([_node("minikube", labels={"minikube.k8s.io/name": "p2"})], "minikube", "p2"),
+        ([_node("docker-desktop")], "shared-daemon", "docker-desktop"),
+        ([_node("lima-rancher-desktop", "k3s://lima-rancher-desktop")], "shared-daemon", None),
+    ],
+)
+def test_local_cluster_from_nodes(nodes, kind, name):
+    cluster = local_load.from_nodes(nodes)
+    assert cluster is not None and cluster.kind == kind
+    if name is not None:
+        assert cluster.name == name
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        [_node("ip-10-0-0-1", "aws:///eu-west-1a/i-0abc")],
+        [_node("gke-pool-1", "gce://proj/zone/gke-pool-1")],
+        [_node("worker-1")],
+    ],
+)
+def test_real_clusters_are_not_local(nodes):
+    assert local_load.from_nodes(nodes) is None
+
+
+def test_remote_k3s_node_is_not_this_machine(monkeypatch: pytest.MonkeyPatch, fake):
+    monkeypatch.setattr(local_load, "_local_hostnames", lambda: {"my-laptop"})
+    fake.respond(
+        "kubectl get nodes",
+        stdout='{"items": [{"metadata": {"name": "edge-7"}, '
+        '"spec": {"providerID": "k3s://edge-7"}}]}',
+    )
+    cluster, why = local_load.detect("prod")
+    assert cluster is None and "none of its nodes is this machine" in why
+    fake.respond(
+        "kubectl get nodes",
+        stdout='{"items": [{"metadata": {"name": "my-laptop"}, '
+        '"spec": {"providerID": "k3s://my-laptop"}}]}',
+    )
+    cluster, _ = local_load.detect("default")
+    assert cluster is not None and cluster.kind == local_load.K3S
+
+
+def test_docker_desktop_on_kind_nodes_keeps_the_shared_daemon(fake):
+    fake.respond(
+        "kubectl get nodes",
+        stdout='{"items": [{"metadata": {"name": "desktop-control-plane"}, '
+        '"spec": {"providerID": "kind://docker/desktop/desktop-control-plane"}}]}',
+    )
+    fake.respond("kind get clusters", stdout="")
+    cluster, _ = local_load.detect("docker-desktop")
+    assert cluster is not None and cluster.kind == local_load.SHARED_DAEMON
+    assert local_load.local_load_commands(cluster, "img:1") == []
+    # The same nodes behind any other context name are not local (no push to a laptop).
+    cluster, why = local_load.detect("some-context")
+    assert cluster is None and "does not list 'desktop'" in why
+
+
+def test_detect_needs_the_local_tool_to_list_the_cluster(fake):
+    fake.missing_tools.add("kind")
+    cluster, why = local_load.detect("kind-dev")
+    assert cluster is None and "not available on this machine" in why
+    fake.missing_tools.clear()
+    fake.respond("k3d cluster list", stdout='[{"name": "lab"}]')
+    cluster, _ = local_load.detect("k3d-lab")
+    assert cluster is not None and cluster.kind == local_load.K3D
+    cluster, why = local_load.detect("k3d-other")
+    assert cluster is None and "does not list 'other'" in why
+
+
+@pytest.mark.parametrize(
+    ("repository", "tag", "fragment"),
+    [
+        ("ghcr.io/CHANGE-ME/app", "1", "placeholder"),
+        ("ghcr.io/Org/app", "1", "must be lowercase"),
+        ("ghcr.io/org/app", "v1/2", "the tag"),
+        ("ghcr.io/org/app", "x" * 129, "the tag"),
+        ("ghcr.io/org/-app", "1", "may only hold"),
+        ("bad_host.io/org/app", "1", "not a valid registry host"),
+        ("ghcr.io/org//app", "1", "empty component"),
+    ],
+)
+def test_image_reference_problems(repository, tag, fragment):
+    problem = _image.reference_problem(repository, tag)
+    assert problem is not None and fragment in problem
+
+
+@pytest.mark.parametrize(
+    ("repository", "tag"),
+    [
+        ("ghcr.io/org/app", "abc1234"),
+        ("ghcr.io/org/app", "abc1234-dirty-20260923120000"),
+        ("localhost:5000/app", "1.0"),
+        ("registry.local/team/sub/app_x", "v1"),
+        ("app", "latest"),
+        ("[::1]:5000/app", "t"),
+        ("Registry.Example.com/app", "t"),
+    ],
+)
+def test_valid_image_references(repository, tag):
+    assert _image.reference_problem(repository, tag) is None
+
+
+def test_placeholder_registry_message_names_the_setting():
+    problem = _image.reference_problem("ghcr.io/CHANGE-ME/app", "t", registry="ghcr.io/CHANGE-ME")
+    assert "create_params.registry" in problem and "--registry" in problem
+
+
+def test_confirm_rules(monkeypatch: pytest.MonkeyPatch, fake):
+    from graph_agents_cli._output import Console
+    from graph_agents_cli.deploy._kube import ConfigError as Config
+    from graph_agents_cli.deploy._kube import Refused as Refusal
+
+    console = Console()
+    current = _modes.ResolvedContext("ctx", _modes.CURRENT)
+    manifest = _modes.ResolvedContext("ctx", _modes.MANIFEST)
+    none = _modes.ResolvedContext(None, _modes.NONE)
+    monkeypatch.setattr(_modes, "_interactive", lambda: False)
+    kw = {"dry_run": False, "console": console, "action": "deploy to"}
+    # dev and explicit contexts pass silently.
+    _modes.confirm("dev", current, yes=False, **kw)
+    _modes.confirm("prod", manifest, yes=False, **kw)
+    # Any other environment (not only staging/prod) needs --yes for the current context.
+    for env in ("staging", "prod", "qa"):
+        with pytest.raises(Refusal):
+            _modes.confirm(env, current, yes=False, **kw)
+        _modes.confirm(env, current, yes=True, **kw)
+        with pytest.raises(Config):
+            _modes.confirm(env, none, yes=True, **kw)
+    _modes.confirm("prod", none, yes=False, dry_run=True, console=console, action="deploy to")
 
 
 @pytest.mark.parametrize(

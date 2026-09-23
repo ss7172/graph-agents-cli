@@ -120,6 +120,32 @@ def short_sha() -> str | None:
     return (result.stdout or "").strip() or None
 
 
+# Project paths the scaffold's .dockerignore keeps out of the image: changing them
+# (chart values, Chart.lock written by `helm dependency build`, workflows, tests)
+# does not change what a rebuild would contain.
+NOT_IN_IMAGE = ("deployment", ".github", "tests", "docs")
+
+
+def worktree_dirty() -> bool | None:
+    """Whether the image's sources in the project have uncommitted changes (``None`` outside git).
+
+    Limited to the project directory (``-- .``), so edits elsewhere in a monorepo
+    do not count, and to paths that reach the image (``NOT_IN_IMAGE`` excluded).
+    Untracked files count (a new module not yet added is part of the build
+    context), ignored ones do not.
+    """
+    excludes = [f":(exclude){path}" for path in NOT_IN_IMAGE]
+    try:
+        result = run_cmd(
+            ["git", "status", "--porcelain", "--", ".", *excludes], check=False, quiet=True
+        )
+    except ToolFailed:
+        return None
+    if result.returncode != 0:
+        return None
+    return bool((result.stdout or "").strip())
+
+
 def branch_name(env: str, tag: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", tag).strip("-.") or "image"
     return f"deploy/{env}/{safe}"
@@ -200,6 +226,49 @@ def _base_values_text(base_ref: str, index_path: str, values_path: Path, *, dry_
     )
 
 
+def _remote_branch_sha(branch: str) -> str:
+    """The commit ``origin`` holds for ``refs/heads/<branch>``; ``""`` when the branch is absent."""
+    ref = f"refs/heads/{branch}"
+    result = run_cmd(["git", "ls-remote", "--heads", "origin", ref], check=False, quiet=True)
+    if result.returncode != 0:
+        raise ToolFailed(
+            f"git ls-remote origin {ref} failed (exit code {result.returncode}):\n"
+            f"{(result.stderr or result.stdout or '').strip()}"
+        )
+    for line in (result.stdout or "").splitlines():
+        sha, _, name = line.partition("\t")
+        if name.strip() == ref:
+            return sha.strip()
+    return ""
+
+
+def _rev(spec: str) -> str | None:
+    result = run_cmd(["git", "rev-parse", "--verify", "--quiet", spec], check=False, quiet=True)
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+def _remote_has_same_change(remote_sha: str, branch: str, tree: str, base_ref: str) -> bool:
+    """True when ``origin/<branch>`` already is this change: same tree, parented on the base."""
+    if _rev(f"{remote_sha}^{{commit}}") is None:
+        # A fresh (shallow) CI checkout has never seen the branch: fetch just that commit.
+        run_cmd(
+            ["git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}"],
+            check=False,
+            quiet=True,
+        )
+    remote_tree = _rev(f"{remote_sha}^{{tree}}")
+    remote_parent = _rev(f"{remote_sha}^")
+    base_commit = _rev(f"{base_ref}^{{commit}}")
+    return (
+        bool(remote_tree)
+        and remote_tree == tree
+        and bool(base_commit)
+        and (remote_parent == base_commit)
+    )
+
+
 def _commit_single_file(
     *,
     index_path: str,
@@ -210,7 +279,17 @@ def _commit_single_file(
     dry_run: bool,
     console: Console,
 ) -> None:
-    """Commit ``content`` at ``index_path`` on ``branch`` from ``base_ref`` (no checkout switch)."""
+    """Commit ``content`` at ``index_path`` on ``branch`` from ``base_ref`` and push it.
+
+    No checkout switch. The branch is bot-owned and deterministic (one tag, one
+    change), so a re-run replaces it. The push leases on the commit ``origin``
+    holds right now (read with ``ls-remote``, ``""`` for "must not exist"): a
+    bare ``--force-with-lease`` compares against a remote-tracking ref that a
+    fresh CI checkout does not have and is rejected as "stale info", while an
+    explicit lease still refuses to overwrite a push that lands in between.
+    When ``origin`` already holds the same change on the same base, nothing is
+    pushed, so a retried promotion does not reset an approved pull request.
+    """
     blob = run_cmd(
         ["git", "hash-object", "-w", "--stdin"],
         input_text=content,
@@ -231,6 +310,14 @@ def _commit_single_file(
             ["git", "write-tree"], env=env, dry_run=dry_run, console=console
         ).stdout.strip()
     tree = tree or "<tree>"
+    remote_sha = "<sha on origin, empty when absent>" if dry_run else _remote_branch_sha(branch)
+    if not dry_run and remote_sha and _remote_has_same_change(remote_sha, branch, tree, base_ref):
+        run_cmd(["git", "update-ref", f"refs/heads/{branch}", remote_sha], console=console)
+        console.print(
+            f"  origin/{branch} already holds this change on {base_ref}; nothing to push.",
+            markup=False,
+        )
+        return
     commit = run_cmd(
         ["git", "commit-tree", tree, "-p", base_ref, "-m", message],
         dry_run=dry_run,
@@ -239,7 +326,14 @@ def _commit_single_file(
     commit = commit or "<commit>"
     run_cmd(["git", "update-ref", f"refs/heads/{branch}", commit], dry_run=dry_run, console=console)
     run_cmd(
-        ["git", "push", "--force-with-lease", "-u", "origin", f"{branch}:{branch}"],
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{remote_sha}",
+            "-u",
+            "origin",
+            f"{branch}:{branch}",
+        ],
         dry_run=dry_run,
         console=console,
         capture=False,

@@ -194,5 +194,93 @@ def current_context() -> str | None:
     return (result.stdout or "").strip() or None
 
 
+def context_names() -> set[str]:
+    """Context names in the kubeconfig (empty when they cannot be listed; never raises)."""
+    try:
+        result = run_cmd(
+            ["kubectl", "config", "get-contexts", "-o", "name"], check=False, quiet=True
+        )
+    except ToolFailed:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
+
+
+def server_url(context: str | None) -> str | None:
+    """The API server URL the kubeconfig records for ``context`` (read locally, never raises)."""
+    cmd = [
+        "kubectl",
+        "config",
+        "view",
+        "--minify",
+        "-o",
+        "jsonpath={.clusters[0].cluster.server}",
+    ]
+    if context:
+        cmd += ["--context", context]
+    try:
+        result = run_cmd(cmd, check=False, quiet=True)
+    except ToolFailed:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+def in_ci() -> bool:
+    """True inside a GitHub Actions job (the runner sets ``GITHUB_ACTIONS=true``)."""
+    return os.environ.get("GITHUB_ACTIONS", "").strip().lower() == "true"
+
+
+def ensure_namespace(
+    target: Target, *, dry_run: bool = False, console: Console | None = None
+) -> None:
+    """Create ``target.namespace`` when it does not exist (idempotent).
+
+    A fresh cluster has no ``<name>-<env>`` namespace yet, and the Secret is
+    applied before ``helm --create-namespace`` runs (in CD modes helm never runs
+    from here at all). A caller without permission to read namespaces
+    (namespace-scoped RBAC) is assumed to work in an existing one; any other
+    failure is a tool failure (exit 2).
+    """
+    console = console or Console()
+    ns = target.namespace
+    create = kubectl_args(["create", "namespace", ns], target, namespaced=False)
+    if dry_run:
+        console.print(
+            f"  [dry-run] {format_cmd(create)}  (only when the namespace does not exist)",
+            style="cyan",
+            highlight=False,
+            markup=False,
+        )
+        return
+    probe = kubectl(
+        ["get", "namespace", ns, "-o", "name"], target, namespaced=False, check=False, quiet=True
+    )
+    if probe.returncode == 0:
+        return
+    stderr = (probe.stderr or "").strip()
+    if "(Forbidden)" in stderr:
+        console.print(
+            f"  Cannot read namespace {ns} (RBAC); assuming it exists.", style="dim", markup=False
+        )
+        return
+    if "(NotFound)" not in stderr:
+        raise ToolFailed(
+            f"Command failed (exit code {probe.returncode}): "
+            f"{format_cmd(kubectl_args(['get', 'namespace', ns], target, namespaced=False))}"
+            + (f"\n{stderr}" if stderr else "")
+        )
+    result = run_cmd(create, check=False, console=console)
+    if result.returncode != 0 and "(AlreadyExists)" not in (result.stderr or ""):
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ToolFailed(
+            f"Command failed (exit code {result.returncode}): {format_cmd(create)}"
+            + (f"\n{detail}" if detail else "")
+        )
+    console.print(f"  Created namespace {ns}.")
+
+
 def pipe_description(first: list[str], second: list[str]) -> str:
     return f"{shlex.join(first)} | {shlex.join(second)}"

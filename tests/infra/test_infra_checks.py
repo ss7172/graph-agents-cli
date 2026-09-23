@@ -45,7 +45,11 @@ def healthy_cluster(fake, *, ns: str = "my-agent-dev") -> None:
     fake.respond("kubectl get gatewayclass -o json", stdout=items("envoy"))
     fake.respond("kubectl get ingressclass -o json", stdout=items())
     fake.respond(f"kubectl get namespace {ns}", stdout="{}")
-    fake.respond("kubectl get secret my-agent-app", stdout="{}")
+    fake.secrets["my-agent-app"] = {
+        "OPENAI_API_KEY": "k",
+        "POSTGRES_DSN": "d",
+        "API_KEY": "a",
+    }
 
 
 def by_name(report: dict, name: str) -> dict:
@@ -382,6 +386,117 @@ def test_table_output_lists_hints(project: SimpleNamespace, fake):
 
 def test_unknown_env_exits_3(project: SimpleNamespace, fake):
     assert invoke("--env", "qa").exit_code == 3
+
+
+def test_app_secret_missing_required_keys(project: SimpleNamespace, fake):
+    healthy_cluster(fake, ns="my-agent-prod")
+    (project.chart / "values-prod.yaml").write_text("gateway:\n  enabled: false\n")
+    fake.secrets["my-agent-app"] = {"OPENAI_API_KEY": "k"}
+    check = by_name(report_of(invoke("--env", "prod", "--json")), "app secret my-agent-app")
+    # cd skip: `deploy` provisions it from the env file, so this is a warning.
+    assert check["status"] == "warn" and check["required"] is False
+    assert "missing required key(s): POSTGRES_DSN, API_KEY" in check["detail"]
+    project.cfg.create_params["cd"] = "helm-push"
+    fake.respond("gh auth status", rc=1)
+    result = invoke("--env", "prod", "--json")
+    assert result.exit_code == 1
+    check = by_name(report_of(result), "app secret my-agent-app")
+    assert check["status"] == "missing" and check["required"] is True
+
+
+def test_placeholders_pass_on_a_configured_project(project: SimpleNamespace, fake):
+    report = report_of(invoke("--json"))
+    for name in (
+        "placeholder: registry",
+        "placeholder: chart image.repository",
+        "placeholder: chart env",
+        "placeholder: CODEOWNERS",
+    ):
+        assert by_name(report, name)["status"] == "ok", name
+    assert not any(c["name"] == "placeholder: argocd repoURL" for c in report["checks"])
+
+
+def test_placeholder_registry_fails(project: SimpleNamespace, fake):
+    project.cfg.registry = "ghcr.io/CHANGE-ME"
+    project.cfg.create_params["registry"] = "ghcr.io/CHANGE-ME"
+    result = invoke("--json")
+    assert result.exit_code == 1
+    check = by_name(report_of(result), "placeholder: registry")
+    assert check["status"] == "missing" and check["required"] is True
+    assert "create_params.registry" in check["hint"]
+
+
+def test_placeholder_codeowners_blocks_cd_modes_and_warns_in_skip(project: SimpleNamespace, fake):
+    github = project.root / ".github"
+    github.mkdir()
+    (github / "CODEOWNERS").write_text(
+        "# Replace @CHANGE-ME below.\n"
+        "deployment/helm/my-agent/values-prod.yaml @CHANGE-ME/production-approvers\n"
+    )
+    check = by_name(report_of(invoke("--json")), "placeholder: CODEOWNERS")
+    assert check["status"] == "warn" and check["required"] is False
+    assert "1 rule(s)" in check["detail"]  # the comment line does not count
+    project.cfg.create_params["cd"] = "helm-push"
+    fake.respond("gh auth status", rc=1)
+    result = invoke("--json")
+    assert result.exit_code == 1
+    check = by_name(report_of(result), "placeholder: CODEOWNERS")
+    assert check["status"] == "missing" and check["required"] is True
+    (github / "CODEOWNERS").write_text("deployment/** @acme/approvers\n")
+    assert by_name(report_of(invoke("--json")), "placeholder: CODEOWNERS")["status"] == "ok"
+
+
+def test_placeholder_argocd_repo_url_and_chart_repository(project: SimpleNamespace, fake):
+    project.cfg.create_params["cd"] = "argocd"
+    fake.respond("gh auth status", rc=1)
+    argocd = project.root / "deployment" / "argocd"
+    argocd.mkdir(parents=True)
+    (argocd / "application-prod.yaml").write_text(
+        "spec:\n  source:\n    # CHANGE-ME: the git URL of this repository.\n"
+        "    repoURL: https://github.com/CHANGE-ME/my-agent.git\n"
+    )
+    (argocd / "application-dev.yaml").write_text(
+        "spec:\n  source:\n    # CHANGE-ME: a comment only\n"
+        "    repoURL: https://github.com/acme/my-agent.git\n"
+    )
+    values = (project.chart / "values.yaml").read_text()
+    (project.chart / "values.yaml").write_text(
+        values.replace("ghcr.io/my-org/my-agent", "ghcr.io/CHANGE-ME/my-agent")
+    )
+    result = invoke("--json")
+    assert result.exit_code == 1
+    report = report_of(result)
+    repo = by_name(report, "placeholder: argocd repoURL")
+    assert repo["status"] == "missing" and "application-prod.yaml" in repo["detail"]
+    assert "application-dev.yaml" not in repo["detail"]
+    chart = by_name(report, "placeholder: chart image.repository")
+    assert chart["status"] == "missing" and chart["required"] is True
+
+
+def test_placeholder_chart_env_url_fails(project: SimpleNamespace, fake):
+    (project.chart / "values-dev.yaml").write_text(
+        "gateway:\n  enabled: false\nenv:\n  OPENAI_BASE_URL: http://CHANGE-ME:11434/v1\n"
+    )
+    healthy_cluster(fake)
+    result = invoke("--env", "dev", "--json")
+    assert result.exit_code == 1
+    check = by_name(report_of(result), "placeholder: chart env")
+    assert check["status"] == "missing" and "env.OPENAI_BASE_URL" in check["detail"]
+
+
+def test_mode_is_detected_from_the_cluster_not_the_context_name(project: SimpleNamespace, fake):
+    healthy_cluster(fake)
+    project.cfg.environments["dev"]["context"] = "renamed-laptop"
+    fake.respond(
+        "kubectl get nodes",
+        stdout=json.dumps(
+            {"items": [{"metadata": {"name": "n"}, "spec": {"providerID": "kind://docker/lab/n"}}]}
+        ),
+    )
+    fake.respond("kind get clusters", stdout="lab\n")
+    assert report_of(invoke("--env", "dev", "--json"))["mode"] == "local-load"
+    fake.respond("kind get clusters", stdout="")
+    assert report_of(invoke("--env", "dev", "--json"))["mode"] == "registry"
 
 
 def test_check_helpers():
