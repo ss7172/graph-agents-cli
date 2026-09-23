@@ -371,6 +371,27 @@ async def test_symmetric_and_encryption_keys_in_a_jwks_are_ignored(jwks: JwksSer
     assert (await policy.authenticate(_request(_token(RSA_A, kid="a")))).id == "user-1"
 
 
+async def test_keys_named_or_embedded_in_the_token_are_never_used(jwks: JwksServer) -> None:
+    attacker = _rsa()
+    policy = _jwks_policy(jwks)
+    for header in (
+        {"kid": "a", "jwk": _jwk(attacker, "a")},
+        {"kid": "a", "jku": "https://evil.test/jwks.json"},
+        {"kid": "a", "x5u": "https://evil.test/cert.pem"},
+    ):
+        token = jwt.encode(_claims(), attacker, algorithm="RS256", headers=header)
+        await _reject(policy, token, "invalid signature")
+    await _reject(policy, _token(attacker, kid="../../etc/passwd"), "unknown signing key")
+    assert jwks.hits == 1  # the attacker's URLs were never fetched
+
+
+async def test_a_redirecting_jwks_url_is_not_followed(jwks: JwksServer) -> None:
+    jwks.status = 302
+    with pytest.raises(HTTPException) as exc:
+        await _jwks_policy(jwks).authenticate(_request(_token(RSA_A)))
+    assert exc.value.status_code == 503
+
+
 async def test_unsupported_critical_header_is_refused() -> None:
     token = jwt.encode(_claims(), RSA_A, algorithm="RS256", headers={"kid": "a", "crit": ["exp"]})
     # Refused whichever layer notices first (PyJWT's header check or the policy's).
