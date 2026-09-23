@@ -147,6 +147,21 @@ def test_remote_k3s_node_is_not_this_machine(monkeypatch: pytest.MonkeyPatch, fa
     assert cluster is not None and cluster.kind == local_load.K3S
 
 
+def test_docker_desktop_on_kind_nodes_keeps_the_shared_daemon(fake):
+    fake.respond(
+        "kubectl get nodes",
+        stdout='{"items": [{"metadata": {"name": "desktop-control-plane"}, '
+        '"spec": {"providerID": "kind://docker/desktop/desktop-control-plane"}}]}',
+    )
+    fake.respond("kind get clusters", stdout="")
+    cluster, _ = local_load.detect("docker-desktop")
+    assert cluster is not None and cluster.kind == local_load.SHARED_DAEMON
+    assert local_load.local_load_commands(cluster, "img:1") == []
+    # The same nodes behind any other context name are not local (no push to a laptop).
+    cluster, why = local_load.detect("some-context")
+    assert cluster is None and "does not list 'desktop'" in why
+
+
 def test_detect_needs_the_local_tool_to_list_the_cluster(fake):
     fake.missing_tools.add("kind")
     cluster, why = local_load.detect("kind-dev")
@@ -197,7 +212,7 @@ def test_placeholder_registry_message_names_the_setting():
     assert "create_params.registry" in problem and "--registry" in problem
 
 
-def test_confirm_rules(monkeypatch: pytest.MonkeyPatch):
+def test_confirm_rules(monkeypatch: pytest.MonkeyPatch, fake):
     from graph_agents_cli._output import Console
     from graph_agents_cli.deploy._kube import ConfigError as Config
     from graph_agents_cli.deploy._kube import Refused as Refusal

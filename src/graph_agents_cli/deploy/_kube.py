@@ -194,6 +194,19 @@ def current_context() -> str | None:
     return (result.stdout or "").strip() or None
 
 
+def context_names() -> set[str]:
+    """Context names in the kubeconfig (empty when they cannot be listed; never raises)."""
+    try:
+        result = run_cmd(
+            ["kubectl", "config", "get-contexts", "-o", "name"], check=False, quiet=True
+        )
+    except ToolFailed:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
+
+
 def server_url(context: str | None) -> str | None:
     """The API server URL the kubeconfig records for ``context`` (read locally, never raises)."""
     cmd = [

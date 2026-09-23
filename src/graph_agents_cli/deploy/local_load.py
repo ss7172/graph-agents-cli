@@ -241,7 +241,15 @@ def detect(context: str | None) -> tuple[LocalCluster | None, str]:
         cluster = from_context_name(context)
         if cluster is None:
             return None, "its nodes cannot be read and the context name is not a dev cluster"
-    return _verify(cluster, nodes)
+    verified, why = _verify(cluster, nodes)
+    if verified is None:
+        # Docker Desktop can run its Kubernetes on kind nodes that the kind CLI does
+        # not list; the desktop apps share the docker daemon with the cluster, so
+        # their own context names still mean "no load needed" (never a push).
+        named = from_context_name(context)
+        if named is not None and named.kind == SHARED_DAEMON:
+            return named, ""
+    return verified, why
 
 
 def local_load_commands(

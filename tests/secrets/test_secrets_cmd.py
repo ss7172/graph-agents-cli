@@ -314,7 +314,7 @@ def test_apply_prod_never_replaces_the_live_api_key_without_rotate(project: Simp
     rotated = invoke("apply", "--env", "prod", "--rotate-api-key")
     assert rotated.exit_code == 0, rotated.output
     assert fake.secrets["my-agent-app"]["API_KEY"] == "someone-elses"
-    assert "deploy --env <env> --restart" in rotated.output
+    assert "deploy --env prod --restart" in rotated.output
 
 
 def test_apply_removes_a_client_side_last_applied_annotation(project: SimpleNamespace, fake):

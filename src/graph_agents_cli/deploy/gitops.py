@@ -120,15 +120,25 @@ def short_sha() -> str | None:
     return (result.stdout or "").strip() or None
 
 
+# Project paths the scaffold's .dockerignore keeps out of the image: changing them
+# (chart values, Chart.lock written by `helm dependency build`, workflows, tests)
+# does not change what a rebuild would contain.
+NOT_IN_IMAGE = ("deployment", ".github", "tests", "docs")
+
+
 def worktree_dirty() -> bool | None:
-    """Whether the project directory has uncommitted changes (``None`` outside git).
+    """Whether the image's sources in the project have uncommitted changes (``None`` outside git).
 
     Limited to the project directory (``-- .``), so edits elsewhere in a monorepo
-    do not count; untracked files count (a new module not yet added is part of
-    the build context), ignored ones do not.
+    do not count, and to paths that reach the image (``NOT_IN_IMAGE`` excluded).
+    Untracked files count (a new module not yet added is part of the build
+    context), ignored ones do not.
     """
+    excludes = [f":(exclude){path}" for path in NOT_IN_IMAGE]
     try:
-        result = run_cmd(["git", "status", "--porcelain", "--", "."], check=False, quiet=True)
+        result = run_cmd(
+            ["git", "status", "--porcelain", "--", ".", *excludes], check=False, quiet=True
+        )
     except ToolFailed:
         return None
     if result.returncode != 0:

@@ -132,9 +132,10 @@ def test_local_load_mode_builds_loads_applies_secret_and_upgrades(project: Simpl
     env_file = project.root / ".env"
     assert f"API_KEY={key}\n" in env_file.read_text()
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
-    # The Secret was checked for its required keys before helm ran.
-    assert _index(joined, "kubectl get secret my-agent-app") < _index(joined, "helm upgrade")
-    assert "holds the required key(s): OPENAI_API_KEY, API_KEY" in result.output
+    # The Secret was read and its required keys checked before anything was built or applied.
+    assert _index(joined, "kubectl get secret my-agent-app") < _index(joined, "docker build")
+    assert _index(joined, "docker build") < _index(joined, "kubectl create secret")
+    assert "will hold the required key(s): OPENAI_API_KEY, API_KEY" in result.output
 
 
 def test_direct_deploy_keeps_the_live_api_key(project: SimpleNamespace, fake):
@@ -345,8 +346,58 @@ def test_missing_required_secret_key_refuses_before_helm(project: SimpleNamespac
     assert "missing required key(s): OPENAI_API_KEY, API_KEY (the Secret does not exist)" in (
         result.output
     )
-    assert "helm was not run" in result.output and "secrets.keys" in result.output
+    assert "nothing was built, applied or deployed" in result.output
+    assert "secrets.keys" in result.output and not fake.any("docker build")
     assert not fake.find("helm upgrade")
+
+
+def test_incomplete_secret_is_refused_before_anything_changes(project: SimpleNamespace, fake):
+    """A prod env file without POSTGRES_DSN (and no live one): no build, no apply, no helm."""
+    _git_defaults(fake)
+    (project.root / ".env.prod").write_text("OPENAI_API_KEY=p\nAPI_KEY=k\n")
+    fake.secrets["my-agent-app"] = {"API_KEY": "k"}
+    result = invoke("--env", "prod", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "missing required key(s): POSTGRES_DSN" in result.output
+    assert "Add them to .env.prod" in result.output
+    assert not fake.any("docker") and not fake.any("kubectl apply")
+    assert not fake.any("kubectl create") and not fake.find("helm")
+    assert fake.secrets["my-agent-app"] == {"API_KEY": "k"}
+
+
+def test_undecodable_live_api_key_is_never_replaced_silently(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    (project.root / ".env.dev").write_text("OPENAI_API_KEY=x\nAPI_KEY=file-key\n")
+    fake.respond(
+        "kubectl get secret my-agent-app",
+        stdout=json.dumps({"kind": "Secret", "data": {"API_KEY": "//79"}}),  # not UTF-8
+    )
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 3, result.output
+    assert "not UTF-8 text" in result.output and "--rotate-api-key" in result.output
+    assert not fake.any("kubectl apply") and not fake.any("docker")
+
+
+def test_unknown_context_is_a_config_error_before_building(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    fake.respond("kubectl config get-contexts", stdout="kind-dev\nprod-cluster\n")
+    result = invoke("--env", "dev", "--tag", "t", "--context", "kind-typo")
+    assert result.exit_code == 3, result.output
+    assert "'kind-typo' (from --context) is not in the kubeconfig" in result.output
+    assert "kind-dev, prod-cluster" in result.output
+    assert not fake.any("docker") and not fake.find("helm")
+    fake.respond("helm template", stdout="kind: Deployment\n")
+    dry = invoke("--env", "dev", "--tag", "t", "--context", "kind-typo", "--dry-run")
+    assert dry.exit_code == 0 and "is not in the kubeconfig" in dry.output
+
+
+def test_dirty_check_ignores_paths_that_never_reach_the_image(project: SimpleNamespace, fake):
+    _git_defaults(fake)
+    result = invoke("--env", "dev")
+    assert result.exit_code == 0, result.output
+    status = next(j for j in fake.joined if j.startswith("git status --porcelain -- ."))
+    for path in ("deployment", ".github", "tests", "docs"):
+        assert f"':(exclude){path}'" in status
 
 
 def test_env_file_precedence_dot_env_env(project: SimpleNamespace, fake):
@@ -671,11 +722,18 @@ def test_no_atomic_keeps_the_failed_release(project: SimpleNamespace, fake):
 
 
 def test_failure_before_a_new_revision_needs_no_rollback(project: SimpleNamespace, fake):
+    """A render or validation error records no revision: no diagnostics, no rollback."""
     _failed_upgrade(fake, [{"revision": 7, "status": "deployed"}])
     result = invoke("--env", "dev", "--image", "x/y:1")
     assert result.exit_code == 2, result.output
-    assert "nothing to roll back" in result.output
+    assert "no new revision" in result.output and "nothing to roll back" in result.output
+    assert "diagnostics" not in result.output and not fake.any("kubectl logs")
     assert not fake.find("helm rollback") and not fake.find("helm uninstall")
+    # A first install that failed before helm recorded anything: nothing to undo either.
+    fake.respond("helm history", rc=1, stderr="Error: release: not found")
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2 and "no new revision" in result.output
+    assert not fake.find("helm uninstall")
 
 
 @pytest.mark.parametrize("value", ["0", "0s", "5x", "m", "-1"])

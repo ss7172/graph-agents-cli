@@ -138,11 +138,23 @@ def confirm(
 ) -> None:
     """Refuse or confirm an implicit context for any environment other than ``dev``.
 
-    ``dev`` and an explicit context (``--context`` or the manifest) pass. For
-    another environment an implicit current context needs ``--yes`` or a
-    ``y`` at the prompt; with no context at all it is a configuration error.
-    ``--dry-run`` never prompts (nothing is changed) and only reports.
+    ``dev`` and an explicit context (``--context`` or the manifest) pass, once
+    the kubeconfig is known to hold that context (checked here, so a typo stops
+    the command before anything is built). For another environment an implicit
+    current context needs ``--yes`` or a ``y`` at the prompt; with no context at
+    all it is a configuration error. ``--dry-run`` never prompts (nothing is
+    changed) and only reports.
     """
+    if resolved.explicit and resolved.name:
+        names = _kube.context_names()
+        if names and resolved.name not in names:
+            message = (
+                f"Kube context {resolved.name!r} ({resolved.describe(env)}) is not in the "
+                f"kubeconfig. Known contexts: {', '.join(sorted(names)[:10])}."
+            )
+            if not dry_run:
+                raise ConfigError(message)
+            console.print(f"  [dry-run] {message}", style="yellow", markup=False)
     if is_dev_env(env) or resolved.explicit:
         return
     how = (

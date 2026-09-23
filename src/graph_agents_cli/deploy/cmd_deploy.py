@@ -264,11 +264,44 @@ def _deploy_direct(
         env, resolved, yes=opts.yes, dry_run=opts.dry_run, console=console, action="deploy to"
     )
 
+    cluster: local_load.LocalCluster | None = None
     if plan.build:
         cluster, why = local_load.detect(target.context)
         mode = _modes.LOCAL_LOAD if cluster else _modes.REGISTRY
         detail = f": {cluster.describe()}" if cluster else f" ({why})" if why else ""
         console.print(f"Mode: {_modes.describe(mode)}{detail}", markup=False)
+    else:
+        console.print("Mode: direct, image given (build, load and push skipped)")
+        console.print(f"Using image {plan.ref}.")
+
+    # Plan the Secret and check its required keys (read-only) before anything is
+    # built, pushed or changed: an incomplete Secret stops the deploy up front.
+    secret_plan: secrets_apply.SecretPlan | None = None
+    live: secrets_apply.LiveSecret | None = None
+    if path is None:
+        _verify_secret(settings, env, target, fix_hint=None, dry_run=opts.dry_run, console=console)
+    else:
+        secret_plan, live = secrets_apply.prepare(
+            name=settings.secret_name,
+            env=env,
+            target=target,
+            allowed=settings.secret_keys,
+            path=path,
+            values=values,
+            rotate_api_key=opts.rotate_api_key,
+            dry_run=opts.dry_run,
+        )
+        _verify_secret(
+            settings,
+            env,
+            target,
+            keys=set(secret_plan.data),
+            fix_hint=f"Add them to {path} and re-run deploy",
+            dry_run=opts.dry_run,
+            console=console,
+        )
+
+    if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
         if cluster is not None:
             _load(cluster, plan.ref, dry_run=opts.dry_run, console=console)
@@ -276,11 +309,8 @@ def _deploy_direct(
             _kube.run_cmd(
                 ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
             )
-    else:
-        console.print("Mode: direct, image given (build, load and push skipped)")
-        console.print(f"Using image {plan.ref}.")
 
-    if path is None:
+    if secret_plan is None:
         console.print(
             f"  No env file found (.env.{env} or .env); the Secret {settings.secret_name} is "
             "left as is.",
@@ -290,18 +320,7 @@ def _deploy_direct(
         console.print(
             f"Applying Secret {settings.secret_name} from {path} (allow-listed keys only)."
         )
-        secrets_apply.provision(
-            name=settings.secret_name,
-            env=env,
-            target=target,
-            allowed=settings.secret_keys,
-            path=path,
-            values=values,
-            rotate_api_key=opts.rotate_api_key,
-            dry_run=opts.dry_run,
-            console=console,
-        )
-    _verify_secret(settings, env, target, cd_mode=False, dry_run=opts.dry_run, console=console)
+        secrets_apply.apply_plan(secret_plan, dry_run=opts.dry_run, console=console, live=live)
     _helm_upgrade(settings, env, target, plan, opts, console=console)
     _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
@@ -332,12 +351,22 @@ def _deploy_helm_push(
         env, resolved, yes=opts.yes, dry_run=opts.dry_run, console=console, action="deploy to"
     )
     console.print(f"Mode: {_modes.describe(_modes.HELM_PUSH)}")
+    _verify_secret(
+        settings,
+        env,
+        target,
+        fix_hint=(
+            f"The Secret owner provisions them with `graph-agents-cli secrets apply --env {env} "
+            f"--env-file .env.{env}`"
+        ),
+        dry_run=opts.dry_run,
+        console=console,
+    )
     if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
         _kube.run_cmd(
             ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
         )
-    _verify_secret(settings, env, target, cd_mode=True, dry_run=opts.dry_run, console=console)
     _helm_upgrade(settings, env, target, plan, opts, console=console)
     _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
@@ -548,11 +577,17 @@ def _verify_secret(
     env: str,
     target: Target,
     *,
-    cd_mode: bool,
+    keys: set[str] | None = None,
+    fix_hint: str | None,
     dry_run: bool,
     console: Console,
 ) -> None:
-    """Refuse (exit 1) before helm when the Secret lacks a key the pods cannot run without."""
+    """Refuse (exit 1) before anything changes when the Secret lacks a key the pods need.
+
+    ``keys`` are the keys the Secret will hold after this deploy applies it; when
+    ``None`` the live Secret is read. Nothing has been built, pushed or applied
+    when this refuses.
+    """
     required = _required.required_keys(settings, load_chart_values(settings.chart_dir, env))
     if not required:
         return
@@ -565,25 +600,28 @@ def _verify_secret(
             markup=False,
         )
         return
-    present = secrets_apply.secret_keys_present(name, target, console=console)
+    present = keys
+    if present is None:
+        present = secrets_apply.secret_keys_present(name, target, console=console)
     missing = required if present is None else [k for k in required if k not in present]
     if not missing:
         console.print(
-            f"  Secret {name} holds the required key(s): {', '.join(required)}.", style="dim"
+            f"  Secret {name} will hold the required key(s): {', '.join(required)}."
+            if keys is not None
+            else f"  Secret {name} holds the required key(s): {', '.join(required)}.",
+            style="dim",
         )
         return
     absent = " (the Secret does not exist)" if present is None else ""
-    if cd_mode:
-        fix = (
-            f"The Secret owner provisions them with `graph-agents-cli secrets apply --env {env} "
-            f"--env-file .env.{env}`"
-        )
-    else:
-        fix = f"Add them to the env file (.env.{env}) and re-run deploy"
+    fix = fix_hint or (
+        f"Put them in .env.{env} and re-run deploy, or provision them with "
+        f"`graph-agents-cli secrets apply --env {env}`"
+    )
     raise Refused(
         f"Secret {name} in {target.namespace} is missing required key(s): "
         f"{', '.join(missing)}{absent}.\n"
-        "  Without them the pods crash or answer every request with 503; helm was not run.\n"
+        "  Without them the pods crash or answer every request with 503; nothing was built, "
+        "applied or deployed.\n"
         f"  {fix}, or remove a key from secrets.keys in graph-agents-cli-manifest.yaml if "
         f"{env} does not need it."
     )
@@ -722,9 +760,19 @@ def _helm_upgrade(
     result = _kube.helm(upgrade, target, capture=False, check=False, console=console)
     if result.returncode == 0:
         return
-    _print_rollout_diagnostics(settings, target, console=console)
-    if opts.atomic:
-        outcome = _roll_back(settings, target, opts.timeout, console=console)
+    revisions = _release_history(settings, target, console=console)
+    latest = max(revisions, key=lambda r: int(r["revision"])) if revisions else None
+    attempted = latest is not None and str(latest.get("status", "")).lower() not in _HEALTHY
+    if attempted:
+        # Read before the rollback: it removes the failed pods and their logs.
+        _print_rollout_diagnostics(settings, target, console=console)
+    if not attempted:
+        outcome = (
+            "helm recorded no new revision (it failed before the rollout), so nothing "
+            "changed and there is nothing to roll back"
+        )
+    elif opts.atomic:
+        outcome = _roll_back(settings, target, revisions, opts.timeout, console=console)
     else:
         outcome = (
             "the failed release was left in place (--no-atomic); roll back with "
@@ -835,29 +883,44 @@ def _print_rollout_diagnostics(
             )
 
 
-def _roll_back(settings: DeploySettings, target: Target, timeout: str, *, console: Console) -> str:
+_HEALTHY = ("deployed", "superseded")
+
+
+def _release_history(
+    settings: DeploySettings, target: Target, *, console: Console
+) -> list[dict[str, Any]]:
+    """``helm history`` of the release (``[]`` when there is none or it cannot be read)."""
+    try:
+        history = _kube.helm(
+            ["history", settings.release, "-o", "json"],
+            target,
+            check=False,
+            quiet=True,
+            console=console,
+        )
+        revisions = json.loads(history.stdout or "[]") if history.returncode == 0 else []
+    except (_kube.ToolFailed, json.JSONDecodeError):
+        return []
+    if not isinstance(revisions, list):
+        return []
+    return [r for r in revisions if isinstance(r, dict) and str(r.get("revision", "")).isdigit()]
+
+
+def _roll_back(
+    settings: DeploySettings,
+    target: Target,
+    revisions: list[dict[str, Any]],
+    timeout: str,
+    *,
+    console: Console,
+) -> str:
     """Undo a failed ``helm upgrade --install`` the way helm's ``--atomic`` would; describe it."""
     release = settings.release
-    history = _kube.helm(
-        ["history", release, "-o", "json"], target, check=False, quiet=True, console=console
-    )
-    try:
-        revisions = json.loads(history.stdout or "[]") if history.returncode == 0 else []
-    except json.JSONDecodeError:
-        revisions = []
-    revisions = [
-        r for r in revisions if isinstance(r, dict) and str(r.get("revision", "")).isdigit()
-    ]
-    if not revisions:
-        return "no release was recorded, so there is nothing to roll back"
     latest = max(revisions, key=lambda r: int(r["revision"]))
-    healthy = ("deployed", "superseded")
-    if str(latest.get("status", "")).lower() in healthy:
-        return f"revision {latest['revision']} is still the deployed one; nothing to roll back"
     good = [
         r
         for r in revisions
-        if str(r.get("status", "")).lower() in healthy
+        if str(r.get("status", "")).lower() in _HEALTHY
         and int(r["revision"]) < int(latest["revision"])
     ]
     if good:
