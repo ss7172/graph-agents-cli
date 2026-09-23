@@ -16,15 +16,23 @@
 """Background local server management for ``run`` and ``eval generate``.
 
 The pid file is ``.graph-agents-cli/run_server.json``
-with keys ``{pid, port, started_at, last_activity, runtime, checkpointer}``.
+with keys ``{pid, port, started_at, last_activity, runtime, checkpointer, state}``.
 The command depends on the manifest ``runtime``:
 
 * ``fastapi``          -> ``uv run uvicorn <agent_dir>.fast_api_app:app --host 127.0.0.1 --port N``
 * ``langgraph-server`` -> ``uv run langgraph dev --no-browser --port N``
 
-Ports are tried from 18080. A server idle for 30 minutes is replaced. A live
-server started for a different runtime is a hard error (never terminated
-silently). Readiness is ``GET /health`` answering 200.
+The port is ``--port`` (``run``) or ``GRAPH_AGENTS_CLI_RUN_PORT`` when given
+(used exactly, refused when busy), else the first free one of 18080-18089. A
+port counts as busy when anything answers on 127.0.0.1 or it cannot be bound on
+127.0.0.1 and on all interfaces: on macOS a loopback bind succeeds next to a
+wildcard listener and would silently shadow it. A server idle for 30 minutes
+is replaced. A live server started for a different runtime is a hard error
+(never terminated silently). Readiness is ``GET /health`` answering 200.
+
+The pid file is written as soon as the process is started (``"state":
+"starting"``) and completed once it is ready, so a CLI killed during startup
+still leaves a record that ``run --stop-server`` and the next invocation find.
 
 Two invocations may race for the same project (``eval generate`` beside a
 ``run``, two CI steps): the check-start-write sequence runs under a lock file
@@ -64,6 +72,11 @@ LOG_FILENAME = "run_server.log"
 STDERR_LOG_FILENAME = "run_server.stderr.log"
 BASE_PORT = 18080
 _MAX_PORT_ATTEMPTS = 10
+RUN_PORT_ENV = "GRAPH_AGENTS_CLI_RUN_PORT"
+# Exit code for a port that cannot be used: the fix is configuration (--port).
+EXIT_PORT_UNAVAILABLE = 3
+STATE_STARTING = "starting"
+STATE_READY = "ready"
 DEFAULT_IDLE_TIMEOUT = 1800  # 30 minutes
 _STARTUP_TIMEOUT_POSIX = 60
 _STARTUP_TIMEOUT_WINDOWS = 120
@@ -118,6 +131,56 @@ def build_serve_command(*, agent_dir: str, port: int, runtime: str) -> list[str]
     )
 
 
+class PortUnavailableError(click.ClickException):
+    """The requested (or every candidate) local port is taken (exit 3)."""
+
+    exit_code = EXIT_PORT_UNAVAILABLE
+
+
+def port_problem(port: int, host: str = "127.0.0.1") -> str | None:
+    """Why ``port`` cannot be used for a local server on ``host``, or None when it is free.
+
+    Three probes, because each misses a case: something already answering on
+    127.0.0.1 (any listener that would receive our traffic), a bind on ``host``
+    (the address the server will use), and a bind on all interfaces, which
+    fails next to a wildcard listener even where the loopback bind would
+    succeed (macOS), so the new server would shadow the other one on loopback.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return f"something is already listening on 127.0.0.1:{port}"
+    except OSError:
+        pass
+    for address in dict.fromkeys((host, "0.0.0.0")):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((address, port))
+        except OSError as exc:
+            where = "all interfaces" if address == "0.0.0.0" else address
+            return f"port {port} cannot be bound on {where} ({exc.strerror or exc})"
+    return None
+
+
+def requested_port(explicit: int | None = None) -> int | None:
+    """``explicit`` (``--port``), else ``GRAPH_AGENTS_CLI_RUN_PORT``, else None (search)."""
+    if explicit is not None:
+        return _valid_port(explicit, "--port")
+    raw = os.environ.get(RUN_PORT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise click.ClickException(f"{RUN_PORT_ENV}={raw!r} is not a port number.") from None
+    return _valid_port(value, RUN_PORT_ENV)
+
+
+def _valid_port(port: int, source: str) -> int:
+    if not 1 <= port <= 65535:
+        raise click.BadParameter(f"{source} must be between 1 and 65535 (got {port}).")
+    return port
+
+
 def ensure_server(
     project_root: Path,
     agent_dir: str,
@@ -128,6 +191,7 @@ def ensure_server(
     keep_running: bool = False,
     startup_timeout: int = DEFAULT_STARTUP_TIMEOUT,
     lock_timeout: float | None = None,
+    port: int | None = None,
 ) -> ServerInfo:
     """Return a running local server's port, starting one if needed.
 
@@ -141,6 +205,10 @@ def ensure_server(
     is what ``GET /health`` reports once the server is up (the local ``.env``
     usually selects ``memory``), falling back to the argument.
 
+    ``port`` (or ``GRAPH_AGENTS_CLI_RUN_PORT``) pins the port of a server this
+    call starts; it must be free (:class:`PortUnavailableError` otherwise), and
+    a running server on another port is not reused silently.
+
     The whole read -> check -> start -> wait -> write sequence holds the
     project's lock file, so a concurrent invocation waits (up to
     ``lock_timeout``, default the startup timeout plus a grace period) and
@@ -152,6 +220,7 @@ def ensure_server(
             f"  Expected one of: {', '.join(SUPPORTED_RUNTIMES)}"
         )
 
+    pinned_port = requested_port(port)
     state_dir = project_root / PID_DIR
     state_dir.mkdir(exist_ok=True)
     wait = float(startup_timeout + _LOCK_GRACE) if lock_timeout is None else lock_timeout
@@ -166,6 +235,7 @@ def ensure_server(
                 idle_timeout=idle_timeout,
                 keep_running=keep_running,
                 startup_timeout=startup_timeout,
+                pinned_port=pinned_port,
             )
     except LockTimeout as exc:
         raise click.ClickException(
@@ -184,10 +254,18 @@ def _ensure_server_locked(
     idle_timeout: int,
     keep_running: bool,
     startup_timeout: int,
+    pinned_port: int | None = None,
 ) -> ServerInfo:
     info = read_pid_file(project_root)
     if info:
         if _is_server_alive(info.get("pid", 0), info.get("port", 0)):
+            if pinned_port is not None and info.get("port") != pinned_port:
+                raise PortUnavailableError(
+                    f"This project's local server is already running on port "
+                    f"{info.get('port')}, not {pinned_port}.\n"
+                    "  Drop --port / GRAPH_AGENTS_CLI_RUN_PORT to reuse it, or stop it first: "
+                    "graph-agents-cli run --stop-server"
+                )
             existing_runtime = info.get("runtime")
             if existing_runtime and existing_runtime != runtime:
                 raise click.ClickException(
@@ -210,23 +288,42 @@ def _ensure_server_locked(
             # Stale pid file: clean up before starting fresh.
             _cleanup(project_root, info)
 
-    port = _find_free_port()
+    if pinned_port is not None:
+        problem = port_problem(pinned_port)
+        if problem:
+            raise PortUnavailableError(
+                f"Cannot start the local server on port {pinned_port}: {problem}.\n"
+                f"  Pick another one with --port or {RUN_PORT_ENV}."
+            )
+        port = pinned_port
+    else:
+        port = _find_free_port()
     proc = _start_server(project_root=project_root, agent_dir=agent_dir, port=port, runtime=runtime)
     pid = proc.pid
     try:
+        # Recorded before the (long) readiness wait: if this CLI is killed now,
+        # `run --stop-server` and the next invocation still find the process.
+        write_pid_file(
+            project_root,
+            pid=pid,
+            port=port,
+            runtime=runtime,
+            checkpointer=checkpointer,
+            state=STATE_STARTING,
+        )
         health = _wait_for_ready(project_root, port, proc=proc, timeout=startup_timeout)
     except BaseException:
-        # No pid file exists yet, so nothing else would ever stop this process:
-        # a server that failed to come up (or a Ctrl-C while waiting) must not
-        # keep running in the background on the chosen port. A child that
-        # already exited was reaped by poll(); terminating it again would only
-        # log a spurious "not found" warning.
+        # A server that failed to come up (or a Ctrl-C/SIGTERM while waiting)
+        # must not keep running in the background on the chosen port. A child
+        # that already exited was reaped by poll(); terminating it again would
+        # only log a spurious "not found" warning.
         if proc.poll() is None:
             _terminate_process(pid)
             try:
                 proc.wait(timeout=5)
             except (subprocess.TimeoutExpired, OSError):
                 pass
+        _remove_pid_file_if(project_root, pid)
         raise
     live_checkpointer = str(health.get("checkpointer") or checkpointer)
     write_pid_file(
@@ -235,6 +332,7 @@ def _ensure_server_locked(
         port=port,
         runtime=runtime,
         checkpointer=live_checkpointer,
+        state=STATE_READY,
     )
     if keep_running:
         click.secho(f"Local server started on port {port} (PID {pid}, {runtime}).", dim=True)
@@ -318,19 +416,17 @@ def start_activity_heartbeat(
 # ---------------------------------------------------------------------------
 
 
-def _find_free_port(base: int = BASE_PORT, max_attempts: int = _MAX_PORT_ATTEMPTS) -> int:
-    """Find a free local port starting from *base*."""
+def _find_free_port(base: int | None = None, max_attempts: int = _MAX_PORT_ATTEMPTS) -> int:
+    """The first free local port (see :func:`port_problem`) from *base* (``BASE_PORT``)."""
+    base = BASE_PORT if base is None else base
     for offset in range(max_attempts):
         port = base + offset
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", port))
-                return port
-        except OSError:
-            continue
-    raise click.ClickException(
+        if port_problem(port) is None:
+            return port
+    raise PortUnavailableError(
         f"No free port found in range {base}-{base + max_attempts - 1}.\n"
-        "  Stop other servers or use --url to query a remote agent."
+        f"  Pick one with --port or {RUN_PORT_ENV}, stop other servers "
+        "(graph-agents-cli run --stop-server), or use --url to query a remote agent."
     )
 
 
@@ -503,6 +599,7 @@ def write_pid_file(
     port: int,
     runtime: str,
     checkpointer: str,
+    state: str = STATE_READY,
 ) -> None:
     now = datetime.now(UTC).isoformat()
     data = {
@@ -512,8 +609,19 @@ def write_pid_file(
         "last_activity": now,
         "runtime": runtime,
         "checkpointer": checkpointer,
+        "state": state,
     }
     _write_json_atomic(pid_file_path(project_root), data)
+
+
+def _remove_pid_file_if(project_root: Path, pid: int) -> None:
+    """Remove the pid file when it still names ``pid`` (never another invocation's)."""
+    info = read_pid_file(project_root)
+    if info and info.get("pid") == pid:
+        try:
+            pid_file_path(project_root).unlink(missing_ok=True)
+        except OSError as exc:
+            logging.warning("Failed to remove pid file %s: %s", pid_file_path(project_root), exc)
 
 
 def _update_activity(project_root: Path) -> None:

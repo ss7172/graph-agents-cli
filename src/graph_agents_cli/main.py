@@ -309,13 +309,17 @@ class _MainGroup(LazyGroup):
             # a RuntimeError, not a ClickException: let Click's standalone
             # handler print "Aborted!" and exit 1 instead of a traceback.
             raise
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as exc:
             from graph_agents_cli._output import Console
 
             console = Console(stderr=True)
             console.print(f"\ngraph-agents-cli v{__version__}", style="dim")
-            console.print("Operation cancelled by user", style="yellow")
-            ctx.exit(130)
+            # A SIGTERM/SIGHUP turned into an interrupt (run/_signals.py) exits
+            # with 128 + its signal number, like a process the signal ended.
+            exit_code = getattr(exc, "exit_code", 130)
+            reason = "terminated by a signal" if exit_code != 130 else "cancelled by user"
+            console.print(f"Operation {reason}", style="yellow")
+            ctx.exit(exit_code)
         except Exception:
             click.echo(f"graph-agents-cli v{__version__}", err=True)
             _print_is_project_moved_tip()

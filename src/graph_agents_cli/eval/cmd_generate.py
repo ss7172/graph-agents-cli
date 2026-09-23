@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import sys
@@ -47,6 +48,7 @@ from graph_agents_cli.eval._common import (
     write_json_file,
 )
 from graph_agents_cli.eval.dataset import Dataset, EvalCase, load_dataset
+from graph_agents_cli.run._signals import terminate_like_interrupt
 
 DEFAULT_CONCURRENCY = 4
 API_KEY_ENV = "GRAPH_AGENTS_CLI_API_KEY"
@@ -135,7 +137,8 @@ def _dispatch(
             trace["error"] = f"worker crashed: {type(exc).__name__}: {exc}"
             return index, trace
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+    pool = ThreadPoolExecutor(max_workers=max(1, concurrency))
+    try:
         futures = [pool.submit(_one, i, case) for i, case in enumerate(cases)]
         for future in as_completed(futures):
             index, trace = future.result()
@@ -144,6 +147,13 @@ def _dispatch(
             style = "green" if status == STATUS_OK else "red"
             detail = f"{trace['latency_ms']} ms" if status == STATUS_OK else str(trace.get("error"))
             console.print(f"[generate] {trace['case_id']}: [{style}]{status}[/{style}] ({detail})")
+    except BaseException:
+        # Ctrl-C / SIGTERM: queued cases never start, and the caller's teardown
+        # stops the server now instead of after every in-flight call timed out
+        # (those calls then fail fast against the stopped server).
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     return [t if t is not None else empty_trace(c.id) for t, c in zip(traces, cases, strict=True)]
 
 
@@ -206,28 +216,31 @@ def generate_traces(
         f"Running [cyan]{len(ds.cases)}[/cyan] case(s) from "
         f"[cyan]{', '.join(str(f.relative_to(project_root)) if f.is_relative_to(project_root) else str(f) for f in files)}[/cyan]"
     )
-    teardown: Callable[[], None] = lambda: None  # noqa: E731
-    if url:
-        base_url = url.rstrip("/")
-        console.print(f"Target: [cyan]{base_url}[/cyan]")
-    else:
-        console.print("Starting the local server...")
-        base_url, teardown = _start_local_server(project_root, meta)
-        console.print(f"Local server at [cyan]{base_url}[/cyan]")
-
     metadata = {"dataset_hash": ds.hash, "app_name": app_name}
-    try:
-        traces = _dispatch(
-            ds.cases,
-            base_url=base_url,
-            headers=headers,
-            metadata=metadata,
-            concurrency=concurrency,
-            timeout=timeout,
-            console=console,
-        )
-    finally:
-        teardown()
+    # With a local server, SIGTERM/SIGHUP unwind like Ctrl-C: the server this run
+    # started is stopped (and its pid file removed) even when a CI timeout kills it.
+    with terminate_like_interrupt() if not url else contextlib.nullcontext():
+        teardown: Callable[[], None] = lambda: None  # noqa: E731
+        if url:
+            base_url = url.rstrip("/")
+            console.print(f"Target: [cyan]{base_url}[/cyan]")
+        else:
+            console.print("Starting the local server...")
+            base_url, teardown = _start_local_server(project_root, meta)
+            console.print(f"Local server at [cyan]{base_url}[/cyan]")
+
+        try:
+            traces = _dispatch(
+                ds.cases,
+                base_url=base_url,
+                headers=headers,
+                metadata=metadata,
+                concurrency=concurrency,
+                timeout=timeout,
+                console=console,
+            )
+        finally:
+            teardown()
 
     for trace, case in zip(traces, ds.cases, strict=True):
         trace["agent_version"] = meta["agent_version"]
