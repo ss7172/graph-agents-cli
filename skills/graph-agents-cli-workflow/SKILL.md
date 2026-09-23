@@ -175,7 +175,7 @@ combinations, prototype semantics, and what `upgrade` never touches.
    `app/tools/**`, `app/policies/**`, and the reserved `app/prompts/**` and `app/graph/**`
    directories you may create. `upgrade` never modifies these.
 3. **Smoke test:** `graph-agents-cli run "your prompt"` starts the local server for the project's
-   runtime, sends one chat message over the same `/chat` SSE API the product will call, and prints
+   runtime, sends one chat message over the same `/chat` SSE API your client application will call, and prints
    the reply. Use `--start-server` when iterating on several prompts, and `--thread-id` to continue
    a thread. `-v` prints every SSE event (tool calls, results, usage).
 4. Interactive testing: `graph-agents-cli playground` (the selected application with reload and

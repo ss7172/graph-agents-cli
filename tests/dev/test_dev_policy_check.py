@@ -63,7 +63,8 @@ def project(tmp_path: Path) -> Path:
     tools.mkdir(parents=True)
     (tools / "incidents.py").write_text(TOOL_GET)
     (tools / "actions.py").write_text(TOOL_POST)
-    (tools / "_private.py").write_text(
+    # The package's __init__.py (get_tools) is not a tool module: never read.
+    (tools / "__init__.py").write_text(
         'API_CALLS = [{"api": "incidents", "method": "DELETE", "path": "/x"}]\n'
     )
     (tools / "helpers.py").write_text("def nothing():\n    return 1\n")
@@ -125,6 +126,65 @@ def test_read_api_calls_reports_unreadable_or_invalid_entries(tmp_path, source, 
     calls, problems = pc.read_api_calls(tool)
     assert calls == []
     assert len(problems) == 1 and fragment in problems[0], problems
+
+
+def test_private_modules_are_read_too(project):
+    """get_tools() imports _-prefixed modules, so their calls are checked as well."""
+    tools = project / "app" / "tools"
+    (tools / "_shared.py").write_text(
+        'API_CALLS = [{"api": "incidents", "method": "DELETE", "path": "/admin/1"}]\n'
+    )
+    calls, problems = pc.collect_declared_calls(tools)
+    assert problems == []
+    assert ("_shared.py", "DELETE", "/admin/1") in {(c.tool, c.method, c.operation) for c in calls}
+    assert "__init__.py" not in {c.tool for c in calls}
+
+
+@pytest.mark.parametrize(
+    ("source", "line"),
+    [
+        # Each case adds a DELETE the literal does not show.
+        ('API_CALLS += [{"api": "a", "method": "DELETE", "path": "/admin/1"}]\n', 2),
+        ('API_CALLS.append({"api": "a", "method": "DELETE", "path": "/admin/1"})\n', 2),
+        ('API_CALLS.extend([{"api": "a", "method": "DELETE", "path": "/x"}])\n', 2),
+        ('API_CALLS[0]["method"] = "DELETE"\n', 2),
+        ('API_CALLS = [{"api": "a", "method": "DELETE", "path": "/x"}]\n', 2),
+        ('if True:\n    API_CALLS = [{"api": "a", "method": "DELETE", "path": "/x"}]\n', 3),
+        ("from other import API_CALLS\n", 2),
+        ("def f():\n    global API_CALLS\n    API_CALLS = []\n", 4),
+        ("for API_CALLS in [[]]:\n    pass\n", 2),
+        ("del API_CALLS\n", 2),
+    ],
+)
+def test_changes_outside_the_literal_are_reported(tmp_path, source, line):
+    tool = tmp_path / "tool.py"
+    tool.write_text('API_CALLS = [{"api": "a", "method": "GET", "path": "/items"}]\n' + source)
+    calls, problems = pc.read_api_calls(tool)
+    assert [(c.method, c.operation) for c in calls] == [("GET", "/items")]
+    assert len(problems) == 1, problems
+    assert f"line {line} binds or changes API_CALLS" in problems[0]
+
+
+def test_reads_and_annotations_of_api_calls_are_not_changes(tmp_path):
+    tool = tmp_path / "tool.py"
+    tool.write_text(
+        "API_CALLS: list[dict[str, str]]\n"
+        'API_CALLS: list[dict[str, str]] = [{"api": "a", "method": "GET", "path": "/x"}]\n'
+        "NAMES = [call['path'] for call in API_CALLS]\n"
+        "COUNT = len(API_CALLS)\n"
+        "FIRST = API_CALLS[0].get('path')\n"
+    )
+    calls, problems = pc.read_api_calls(tool)
+    assert problems == []
+    assert [c.operation for c in calls] == ["/x"]
+
+
+def test_a_rebinding_without_a_literal_declaration_is_still_reported(tmp_path):
+    tool = tmp_path / "tool.py"
+    tool.write_text("API_CALLS, OTHER = [], 1\n")
+    calls, problems = pc.read_api_calls(tool)
+    assert calls == []
+    assert len(problems) == 1 and "line 1 binds or changes API_CALLS" in problems[0]
 
 
 def test_leftover_product_calls_is_an_error_with_a_rename_hint(tmp_path):
@@ -439,3 +499,113 @@ def test_run_policy_check_without_tools_dir(tmp_path):
     buf = io.StringIO()
     assert pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=200)) == 0
     assert "nothing to check" in buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# the example tool's call
+# ---------------------------------------------------------------------------
+
+
+def _example(tmp_path: Path | None = None, **apis: dict) -> pc.ExampleCall | None:
+    return pc.example_call({"apis": apis}, base_dir=tmp_path)
+
+
+def test_example_uses_the_first_allowed_operation():
+    orders = api(
+        allowed_methods=["GET"],
+        allowed_operations=[{"operationId": "listOrders", "path": "/orders"}],
+    )
+    call = _example(orders=orders)
+    assert call == pc.ExampleCall(api="orders", path="/orders", operation_id="listOrders")
+    assert call.params == ()
+
+
+def test_example_skips_operations_it_cannot_make():
+    orders = api(
+        allowed_methods=["GET", "POST"],
+        allowed_operations=[
+            {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]},
+            {"operationId": "byClass", "path": "/classes/{class}"},  # a Python keyword
+            {"operationId": "own", "path": "/runs/{runtime}"},  # the tool's own parameter
+            {"operationId": "priv", "path": "/p/{_id}"},  # pydantic refuses _ fields
+            {"operationId": "quoted", "path": '/q/"x"'},  # not safe to render
+            {"operationId": "noPath"},  # no spec to say where it lives
+            {"operationId": "getOrder", "path": "/orders/{order_id}", "methods": ["GET"]},
+        ],
+    )
+    call = _example(orders=orders)
+    assert call == pc.ExampleCall(api="orders", path="/orders/{order_id}", operation_id="getOrder")
+    assert call.params == ("order_id",)
+
+
+def test_example_falls_back_to_get_item_only_when_the_policy_allows_it():
+    assert _example(open=api()) == pc.ExampleCall(
+        api="open", path="/items/{item_id}", operation_id="getItem"
+    )
+    denied = api(denied_operations=[{"path": "/items/{id}"}])
+    assert _example(open=denied) is None
+
+
+def test_example_is_none_when_the_first_api_allows_no_get():
+    assert _example(writer=api(allowed_methods=["POST"])) is None
+    # Only the first API is used, as the template documents.
+    assert _example(writer=api(allowed_methods=["POST"]), reader=api()) is None
+
+
+def test_example_honours_fail_closed_denials_by_operation_id():
+    orders = api(
+        allowed_operations=[{"path": "/orders"}],
+        denied_operations=[{"operationId": "deleteOrder"}],
+    )
+    # A call without operation_id cannot be told apart from deleteOrder, and the
+    # getItem fallback is not in allowed_operations: no example.
+    assert _example(orders=orders) is None
+
+
+def test_example_takes_paths_and_ids_from_the_openapi_spec(tmp_path):
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump(OPENAPI))
+    by_id = api(allowed_operations=[{"operationId": "getIncident"}], openapi="spec.yaml")
+    assert _example(tmp_path, incidents=by_id) == pc.ExampleCall(
+        api="incidents", path="/incidents/{id}", operation_id="getIncident"
+    )
+    by_path = api(allowed_operations=[{"path": "/sites/{siteId}/topology"}], openapi="spec.yaml")
+    assert _example(tmp_path, incidents=by_path) == pc.ExampleCall(
+        api="incidents", path="/sites/{siteId}/topology", operation_id="getTopology"
+    )
+    # No allowed_operations: the spec's first GET, never an operation it lacks.
+    assert _example(tmp_path, incidents=api(openapi="spec.yaml")) == pc.ExampleCall(
+        api="incidents", path="/incidents/{id}", operation_id="getIncident"
+    )
+
+
+def test_example_without_its_spec_does_not_guess(tmp_path):
+    missing = api(openapi="missing.yaml")
+    assert _example(tmp_path, incidents=missing) is None
+    pinned = api(openapi="missing.yaml", allowed_operations=[{"operationId": "a", "path": "/a"}])
+    assert _example(tmp_path, incidents=pinned) == pc.ExampleCall(
+        api="incidents", path="/a", operation_id="a"
+    )
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"allowed_operations": [{"operationId": "listOrders", "path": "/orders"}]},
+        {"allowed_operations": [{"path": "/orders/{order_id}"}]},
+        {"allowed_methods": ["GET"], "denied_operations": [{"path": "/admin/{x}"}]},
+        {"allowed_methods": ["*"]},
+    ],
+)
+def test_every_example_passes_lint(tmp_path, policy):
+    """What create renders is what lint (and the runtime's shared rules) accept."""
+    document = {"apis": {"svc": api(**policy)}}
+    call = pc.example_call(document)
+    assert call is not None
+    declared = pc.DeclaredCall(
+        tool="example_api.py",
+        api=call.api,
+        method=call.method,
+        operation_id=call.operation_id,
+        path=call.path,
+    )
+    assert pc.check_call(declared, document).status == pc.STATUS_ALLOWED

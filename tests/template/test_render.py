@@ -467,6 +467,20 @@ def test_rendered_python_compiles_and_imports_use_the_agent_directory(
                 assert package == agent_dir, f"{src} imports {package}.*, not {agent_dir}.*"
 
 
+def test_harness_example_call_matches_the_engine() -> None:
+    """The harness renders the example the engine would pick for the bundled policy."""
+    import yaml
+
+    from graph_agents_cli.dev.policy_check import example_call
+    from tests.template.render import AGENT_TEMPLATE, BUNDLED_POLICY_EXAMPLE
+
+    text = (AGENT_TEMPLATE / "api-policy.yaml").read_text(encoding="utf-8")
+    text = text.replace("{{cookiecutter.project_name}}", "p").replace(
+        "{{cookiecutter.agent_directory}}", "app"
+    )
+    assert example_call(yaml.safe_load(text)) == BUNDLED_POLICY_EXAMPLE
+
+
 def test_template_sources_only_use_known_cookiecutter_variables() -> None:
     """Every `cookiecutter.<var>` in the template sources is a variable the engine provides."""
     import re
@@ -491,6 +505,7 @@ def test_template_sources_only_use_known_cookiecutter_variables() -> None:
         "process",
         "has_api_policy",
         "apis",
+        "example_api",
         "secret_keys",
         "default_judge_model",
         "cli_install_spec",
@@ -507,7 +522,7 @@ def test_template_sources_only_use_known_cookiecutter_variables() -> None:
                 )
             )
     assert used <= allowed, f"unknown cookiecutter variables: {sorted(used - allowed)}"
-    assert {"secret_keys", "has_api_policy", "apis", "cli_install_spec"} <= used
+    assert {"secret_keys", "has_api_policy", "apis", "example_api", "cli_install_spec"} <= used
     # The engine provides exactly the allowed variables (plus cookiecutter's own).
     from graph_agents_cli.scaffold.utils.template import build_cookiecutter_context
 

@@ -169,8 +169,9 @@ graph-agents-cli scaffold upgrade --baseline current   # explicit, logged opt-ou
 
 **Authentic baseline or stop.** `upgrade` regenerates the old template with the exact prior CLI
 version (`uvx --from git+https://github.com/ss7172/graph-agents-cli@v<old-version> graph-agents-cli scaffold create ...`,
-or `GRAPH_AGENTS_CLI_INSTALL_SPEC`). If that version cannot be
-fetched and run (source unreachable, version absent, `uvx` missing), `upgrade` **stops with a
+or `GRAPH_AGENTS_CLI_INSTALL_SPEC` with `{version}` filled in). If that version cannot be
+fetched and run (source unreachable, version absent, `uvx` missing, or an install-spec override
+without `{version}`, which would install some other build), `upgrade` **stops with a
 non-zero exit and no changes**, because an inauthentic baseline would misclassify files.
 `--baseline current` compares against the current templates instead; it is an explicit opt-in,
 logged, and the result summary is labelled as such. Do not pass it just to make the error go

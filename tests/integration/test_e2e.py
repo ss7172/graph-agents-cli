@@ -784,3 +784,108 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
     finally:
         tool.unlink(missing_ok=True)
         policy.write_text(original, encoding="utf-8")
+
+
+RESTRICTIVE_POLICY = """\
+apis:
+  orders:
+    base_url_env: ORDERS_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST]
+    allowed_operations:
+      - {operationId: createOrder, path: /orders, methods: [POST]}
+      - {operationId: getOrderLine, path: "/orders/{order_id}/lines/{line_no}"}
+    denied_operations:
+      - path: /orders/admin/lines/{line_no}
+"""
+
+# Dropped into the installed project: the rendered example tool, called for real
+# through the policy-enforcing client against a mock transport.
+EXAMPLE_TOOL_TEST = """\
+import httpx
+import pytest
+
+from app.app_utils import api_client
+from app.tools import example_api
+
+
+async def test_the_example_tool_calls_its_declared_path(monkeypatch):
+    monkeypatch.setenv("ORDERS_API_BASE_URL", "https://orders.test/v2")
+    api_client.reset_policy_cache()
+    sent = []
+
+    def handler(request):
+        sent.append(str(request.url))
+        return httpx.Response(200, json={"line": 7})
+
+    real = api_client.get_client
+    monkeypatch.setattr(
+        example_api,
+        "get_client",
+        lambda name, context=None: real(
+            name, context=context, transport=httpx.MockTransport(handler)
+        ),
+    )
+    call = example_api.TOOLS[0].coroutine
+    assert await call(order_id="42", line_no="7", runtime=None) == '{"line": 7}'
+    for order_id in ("admin", ".."):
+        with pytest.raises(api_client.ApiPolicyError):
+            await call(order_id=order_id, line_no="7", runtime=None)
+    assert sent == ["https://orders.test/v2/orders/42/lines/7"]
+"""
+
+
+@pytest.fixture(scope="module")
+def project7(workspace: Path) -> Path:
+    """A restrictive seed policy (one GET, with path parameters), installed."""
+    policy = workspace / "orders-policy.yaml"
+    policy.write_text(RESTRICTIVE_POLICY, encoding="utf-8")
+    project = _create(
+        workspace,
+        "p7-orders",
+        "--runtime",
+        "fastapi",
+        "--cd",
+        "skip",
+        "-d",
+        "kubernetes",
+        "--api-policy",
+        str(policy),
+    )
+    _write_env(project)
+    _ok(cli("install", cwd=project, timeout=1200))
+    return project
+
+
+def test_a_restrictive_seed_policy_gives_a_project_that_lints_and_passes_its_tests(
+    project7: Path,
+) -> None:
+    tool = (project7 / "app" / "tools" / "example_api.py").read_text(encoding="utf-8")
+    assert '"operation_id": "getOrderLine"' in tool
+    lint = _ok(cli("lint", cwd=project7, timeout=900))
+    assert "All declared API calls are allowed" in _out(lint)
+    extra = project7 / "tests" / "unit" / "test_example_tool_e2e.py"
+    extra.write_text(EXAMPLE_TOOL_TEST, encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "tests/unit",
+                "tests/integration",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=project7,
+            env=_env({"MODEL_PROVIDER": "fake"}),
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+    finally:
+        extra.unlink()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert " passed" in result.stdout

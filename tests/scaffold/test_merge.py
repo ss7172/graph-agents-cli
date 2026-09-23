@@ -268,6 +268,24 @@ def test_authentic_baseline_stops_when_uvx_fails(
     assert "--baseline current" in caplog.text
 
 
+def test_authentic_baseline_is_not_rendered_by_a_fixed_override(
+    vendored_calls, uvx_calls, monkeypatch, tmp_path, caplog
+) -> None:
+    """An override without {version} would render some other build as the old snapshot."""
+    from graph_agents_cli.scaffold.utils import version as version_module
+
+    monkeypatch.setattr(version_module, "get_current_version", lambda: "0.2.0")
+    monkeypatch.setenv(version_module.INSTALL_SPEC_ENV, "/srv/mirror/graph_agents_cli.whl")
+    assert merge.run_create_command(["--cd", "skip"], tmp_path, "p", "0.1.0") is False
+    assert vendored_calls == [] and uvx_calls == []
+    assert "{version}" in caplog.text and "--baseline current" in caplog.text
+
+    # With the placeholder the override is used, pinned to the old version.
+    monkeypatch.setenv(version_module.INSTALL_SPEC_ENV, "git+https://git.example/gac@v{version}")
+    assert merge.run_create_command(["--cd", "skip"], tmp_path, "p", "0.1.0") is False
+    assert uvx_calls[0][:3] == ["uvx", "--from", "git+https://git.example/gac@v0.1.0"]
+
+
 def test_authentic_baseline_stops_on_unfetchable_version(
     vendored_calls, uvx_calls, monkeypatch, tmp_path, caplog
 ) -> None:

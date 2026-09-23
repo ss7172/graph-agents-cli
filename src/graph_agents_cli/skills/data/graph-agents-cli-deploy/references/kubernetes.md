@@ -88,7 +88,7 @@ secrets. `values.yaml` and `templates/**` are scaffolding (3-way merged).
 | langgraph-server | chart sets `DATABASE_URI` from the subchart secret and, with `redis.enabled` (on in `values-dev.yaml` for this runtime), `REDIS_URI`; the Deployment always sets `LANGGRAPH_SERVER=1` so `fast_api_app.py` detects the mounted runtime | both from the Secret |
 
 The agent's database is agent-owned: its own credentials, migrations, backups, quotas. Never point
-it at a product's operational database.
+it at another application's operational database.
 
 ## Scaling and availability
 

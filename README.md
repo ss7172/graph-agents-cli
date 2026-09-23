@@ -34,7 +34,10 @@ graph-agents-cli login               # preflight: provider key, tracing, kubecon
 The CLI is installed from its GitHub repository (it is not published on a package index).
 `GRAPH_AGENTS_CLI_INSTALL_SPEC` overrides where `setup`, `update`, the `scaffold upgrade`
 baseline and generated projects' CI (`.github/agent.env` `GRAPH_AGENTS_CLI_SPEC`) install it
-from, for example a private mirror or a wheel.
+from, for example a private mirror or a wheel. Write `{version}` where the version goes
+(`git+https://git.example.com/graph-agents-cli@v{version}`) so the upgrade baseline and a
+version-locked `scaffold enhance` can install an older release; an override without it is
+refused for those (use `scaffold upgrade --baseline current`).
 
 `setup` installs skills with `npx skills add`, falling back to the copy bundled in the
 wheel and finally to a plain copy into `~/.agents/skills` (`./.agents/skills` with
@@ -200,7 +203,7 @@ whole lifecycle works without internet access. The disconnected profile is:
   `registry-1.docker.io`, exit 2 when unreachable).
 - Tracing off, or `TRACING_ENABLED=true` with `OTEL_EXPORTER_OTLP_ENDPOINT` to an
   in-cluster collector; no LangSmith.
-- `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` so the CLI skips the PyPI and skills checks (they
+- `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` so the CLI skips the GitHub release and skills checks (they
   also fail silently offline); skills installed from the wheel bundle.
 - `cd: skip` with direct-mode `deploy`, unless an on-network GitHub Enterprise Server hosts
   Actions.

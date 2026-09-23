@@ -37,12 +37,17 @@ Fail closed: without a policy file every declared call is refused, as the
 runtime would refuse it. A module that still declares the retired
 ``PRODUCT_CALLS`` is an error with a rename hint, and ``auth: forward`` is an
 error under the ``langgraph-server`` runtime.
+
+``example_call`` uses the same judgement to pick the call that ``create``
+renders into the example tool, so a fresh project passes this check.
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import keyword
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +63,7 @@ from graph_agents_cli._api_policy import (
     LEGACY_CALLS_NAME,
     POLICY_FILENAME,
     ApiPolicyFileError,
+    ExampleCall,
     forward_runtime_problem,
     load_policy_document,
     path_matches,
@@ -182,12 +188,102 @@ def _entry_problem(entry: Any) -> str | None:
     return None
 
 
+# Methods that change a list or a dict in place.
+_MUTATING_METHODS = frozenset(
+    {
+        "append",
+        "clear",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+        "__delitem__",
+        "__iadd__",
+        "__setitem__",
+    }
+)
+
+
+def _root_name(node: ast.AST) -> str | None:
+    """``API_CALLS`` for ``API_CALLS``, ``API_CALLS[0]["path"]`` or ``API_CALLS.append``."""
+    while isinstance(node, ast.Attribute | ast.Subscript):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _is_declaration(node: ast.stmt) -> bool:
+    """A plain ``API_CALLS = ...`` or ``API_CALLS: ... = ...`` (one target, a value)."""
+    if isinstance(node, ast.Assign):
+        target = node.targets[0] if len(node.targets) == 1 else None
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        target = node.target
+    else:
+        return False
+    return isinstance(target, ast.Name) and target.id == CALLS_NAME
+
+
+def _unread_changes(tree: ast.Module, declaration: ast.stmt | None) -> list[int]:
+    """Lines outside ``declaration`` that bind or change ``API_CALLS``, in order.
+
+    The check reads one literal. ``+=``, ``.append()``, an item assignment, a
+    second or conditional assignment, an import or a ``def`` of the name could
+    change the calls the tool makes without the check seeing them, so each is
+    reported instead of trusted. (Changes through another name, such as an
+    alias or ``globals()``, are out of reach of a static check; the runtime
+    client still refuses every call outside the policy.)
+    """
+    skip: set[int] = set()  # Name nodes that are not a change: the declaration's target
+    if isinstance(declaration, ast.Assign):
+        skip.add(id(declaration.targets[0]))
+    elif isinstance(declaration, ast.AnnAssign):
+        skip.add(id(declaration.target))
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            skip.add(id(node.target))  # an annotation alone binds nothing
+    for node in ast.walk(tree):
+        changed = False
+        if isinstance(node, ast.Name):
+            changed = (
+                node.id == CALLS_NAME
+                and isinstance(node.ctx, ast.Store | ast.Del)
+                and id(node) not in skip
+            )
+        elif isinstance(node, ast.Attribute | ast.Subscript):
+            changed = isinstance(node.ctx, ast.Store | ast.Del) and _root_name(node) == CALLS_NAME
+        elif isinstance(node, ast.Call):
+            func = node.func
+            changed = (
+                isinstance(func, ast.Attribute)
+                and func.attr in _MUTATING_METHODS
+                and _root_name(func.value) == CALLS_NAME
+            )
+        elif isinstance(node, ast.alias):
+            changed = (node.asname or node.name.split(".")[0]) == CALLS_NAME
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            changed = node.name == CALLS_NAME
+        elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar):
+            changed = node.name == CALLS_NAME
+        elif isinstance(node, ast.MatchMapping):
+            changed = node.rest == CALLS_NAME
+        if changed:
+            lines.add(getattr(node, "lineno", 0))
+    return sorted(lines)
+
+
 def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
     """Return the ``API_CALLS`` declared in ``tool_path`` plus any problems.
 
-    A tool without the name declares no calls. An ``API_CALLS`` that is not a
-    literal list of dicts is reported as a problem (the check cannot vouch for
-    it), as is a malformed entry and a leftover ``PRODUCT_CALLS``.
+    A tool without the name declares no calls. The declaration must be one
+    module-level assignment of a literal list of dicts: anything the check
+    cannot read (a non-literal value, ``+=``, ``.append()``, a second or
+    conditional assignment) is reported as a problem rather than trusted, as
+    are a malformed entry and a leftover ``PRODUCT_CALLS``.
     """
     problems: list[str] = []
     try:
@@ -196,6 +292,7 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
         return [], [f"{tool_path.name}: syntax error: {exc}"]
 
     calls: list[DeclaredCall] = []
+    declaration: ast.stmt | None = None
     for node in tree.body:
         names, value = _assigned_names(node)
         if LEGACY_CALLS_NAME in names:
@@ -204,8 +301,9 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
                 'and add "api": "<name of an API in api-policy.yaml>" to every entry'
             )
             continue
-        if CALLS_NAME not in names or value is None:
+        if declaration is not None or not _is_declaration(node) or value is None:
             continue
+        declaration = node
         literal = _literal(value)
         if not isinstance(literal, list | tuple):
             problems.append(
@@ -227,17 +325,28 @@ def read_api_calls(tool_path: Path) -> tuple[list[DeclaredCall], list[str]]:
                     path=entry.get("path") or None,
                 )
             )
+    for line in _unread_changes(tree, declaration):
+        problems.append(
+            f"{tool_path.name}: line {line} binds or changes {CALLS_NAME} outside its "
+            "module-level literal (for example +=, .append() or an assignment inside a "
+            "block), so the check cannot read those calls; declare every call in the "
+            "one literal list"
+        )
     return calls, problems
 
 
 def collect_declared_calls(tools_dir: Path) -> tuple[list[DeclaredCall], list[str]]:
-    """Read every ``*.py`` under ``tools_dir`` (non-recursive)."""
+    """Read every ``*.py`` under ``tools_dir`` except ``__init__.py`` (non-recursive).
+
+    ``_``-prefixed modules are read too: ``tools.get_tools()`` imports every
+    module of the package, so any of them can make calls.
+    """
     calls: list[DeclaredCall] = []
     problems: list[str] = []
     if not tools_dir.is_dir():
         return calls, problems
     for tool_path in sorted(tools_dir.glob("*.py")):
-        if tool_path.name.startswith("_"):
+        if tool_path.name == "__init__.py":
             continue
         found, found_problems = read_api_calls(tool_path)
         calls.extend(found)
@@ -250,24 +359,34 @@ def collect_declared_calls(tools_dir: Path) -> tuple[list[DeclaredCall], list[st
 # ---------------------------------------------------------------------------
 
 
-def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], set[tuple[str, str]]]:
-    """Map operationId -> (path, METHOD) and the set of (path, METHOD) pairs."""
-    by_id: dict[str, tuple[str, str]] = {}
-    pairs: set[tuple[str, str]] = set()
+def _spec_operations(spec: dict[str, Any]) -> list[tuple[str, str, str | None]]:
+    """Every operation of an OpenAPI spec as ``(path, METHOD, operationId or None)``, in order."""
+    operations: list[tuple[str, str, str | None]] = []
     paths = spec.get("paths") or {}
     if not isinstance(paths, dict):
-        return by_id, pairs
+        return operations
     http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
     for path, item in paths.items():
         if not isinstance(item, dict):
             continue
         for method, op in item.items():
-            if method.lower() not in http_methods or not isinstance(op, dict):
+            if not isinstance(method, str) or method.lower() not in http_methods:
                 continue
-            pairs.add((str(path), method.upper()))
+            if not isinstance(op, dict):
+                continue
             op_id = op.get("operationId")
-            if op_id:
-                by_id[str(op_id)] = (str(path), method.upper())
+            operations.append((str(path), method.upper(), str(op_id) if op_id else None))
+    return operations
+
+
+def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], set[tuple[str, str]]]:
+    """Map operationId -> (path, METHOD) and the set of (path, METHOD) pairs."""
+    by_id: dict[str, tuple[str, str]] = {}
+    pairs: set[tuple[str, str]] = set()
+    for path, method, op_id in _spec_operations(spec):
+        pairs.add((path, method))
+        if op_id:
+            by_id[op_id] = (path, method)
     return by_id, pairs
 
 
@@ -346,6 +465,137 @@ def check_call(
         return CheckResult(call, STATUS_UNKNOWN, "not found in the OpenAPI spec")
 
     return CheckResult(call, STATUS_ALLOWED, "")
+
+
+# ---------------------------------------------------------------------------
+# The example tool's call
+# ---------------------------------------------------------------------------
+
+EXAMPLE_TOOL = "example_api.py"
+# The last resort when the policy leaves every operation open.
+DEFAULT_EXAMPLE_OPERATION = ("getItem", "/items/{item_id}")
+# The example is rendered into Python source: operation ids and paths outside
+# these character sets are skipped rather than escaped.
+_EXAMPLE_OPERATION_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,99}$")
+_EXAMPLE_PATH_RE = re.compile(r"^/[A-Za-z0-9_.~{}/-]{0,199}$")
+# Each path placeholder becomes a parameter of the example tool, so it must not
+# shadow a name the tool's body uses, or one LangChain or pydantic treat specially.
+_EXAMPLE_RESERVED_PARAMS = frozenset(
+    {
+        "Any",
+        "ToolRuntime",
+        "callbacks",
+        "client",
+        "config",
+        "construct",
+        "context",
+        "copy",
+        "data",
+        "dict",
+        "fields",
+        "get_client",
+        "getattr",
+        "isinstance",
+        "json",
+        "run_manager",
+        "runtime",
+        "schema",
+        "str",
+        "tool",
+        "validate",
+    }
+)
+
+
+def _example_param_ok(name: str) -> bool:
+    return (
+        name.isidentifier()
+        and not keyword.iskeyword(name)
+        and not name.startswith(("_", "model_"))
+        and name not in _EXAMPLE_RESERVED_PARAMS
+    )
+
+
+def _example_renderable(operation_id: str | None, path: str) -> bool:
+    if operation_id is not None and not _EXAMPLE_OPERATION_ID_RE.match(operation_id):
+        return False
+    if not _EXAMPLE_PATH_RE.match(path) or path_template_problem(path) is not None:
+        return False
+    return all(_example_param_ok(name) for name in ExampleCall(api="x", path=path).params)
+
+
+def _load_example_spec(api: Mapping[str, Any], base_dir: Path | None) -> dict[str, Any] | None:
+    reference = api.get("openapi")
+    path = Path(str(reference))
+    if not path.is_absolute():
+        if base_dir is None:
+            return None
+        path = base_dir / path
+    try:
+        return load_openapi(path)
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+
+
+def _example_candidates(
+    api: Mapping[str, Any], spec: dict[str, Any] | None
+) -> list[tuple[str | None, str]]:
+    """``(operation_id, path)`` GET candidates for the example, best first."""
+    operations = _spec_operations(spec) if spec is not None else []
+    spec_gets = [(path, op_id) for path, method, op_id in operations if method == "GET"]
+    candidates: list[tuple[str | None, str]] = []
+    for entry in api.get("allowed_operations") or []:
+        methods = entry.get("methods")
+        if methods and "GET" not in {str(m).upper() for m in methods}:
+            continue
+        operation_id = entry.get("operationId")
+        path = entry.get("path")
+        if path is None:
+            # An entry by operationId alone: only the spec knows its path.
+            path = next((p for p, op_id in spec_gets if op_id == operation_id), None)
+        elif operation_id is None:
+            # Name the operation when the spec does, so denials by operationId pass.
+            operation_id = next(
+                (op_id for p, op_id in spec_gets if op_id and path_matches(p, path)), None
+            )
+        if path is not None:
+            candidates.append((operation_id, path))
+    candidates.extend((op_id, path) for path, op_id in spec_gets)
+    if spec is not None or not api.get("openapi"):
+        # When the API names a spec that cannot be read here, lint would judge the
+        # default against a spec this check never saw, so it is not offered.
+        candidates.append(DEFAULT_EXAMPLE_OPERATION)
+    return list(dict.fromkeys(candidates))
+
+
+def example_call(
+    document: Mapping[str, Any], *, base_dir: Path | None = None
+) -> ExampleCall | None:
+    """The GET the example tool makes on the policy's first API; None when it allows none.
+
+    Candidates, in order: each ``allowed_operations`` entry that admits GET
+    (a missing path or operationId taken from the API's OpenAPI spec), each GET
+    of that spec, then ``GET getItem /items/{item_id}``. The first one this
+    check accepts wins (``check_call``: the runtime client's rules plus the
+    spec), so the rendered example passes ``lint`` and the project's policy
+    test. ``base_dir`` resolves a relative ``openapi:`` path (the directory
+    holding the policy file).
+    """
+    apis = document.get("apis") or {}
+    if not apis:
+        return None
+    name, api = next(iter(apis.items()))
+    spec = _load_example_spec(api, base_dir) if api.get("openapi") else None
+    specs = {name: spec} if spec is not None else {}
+    for operation_id, path in _example_candidates(api, spec):
+        if not _example_renderable(operation_id, path):
+            continue
+        call = DeclaredCall(
+            tool=EXAMPLE_TOOL, api=name, method="GET", operation_id=operation_id, path=path
+        )
+        if check_call(call, document, specs).status == STATUS_ALLOWED:
+            return ExampleCall(api=name, path=path, operation_id=operation_id)
+    return None
 
 
 # ---------------------------------------------------------------------------

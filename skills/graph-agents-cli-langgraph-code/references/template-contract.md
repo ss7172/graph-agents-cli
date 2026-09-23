@@ -27,7 +27,8 @@ scaffolding files implement them.
 │   └── tools/
 │       ├── __init__.py          # collects TOOLS from every module; warns on a module without API_CALLS
 │       ├── weather.py           # get_weather (API_CALLS = [])
-│       └── example_api.py       # lookup_item via get_client (API_CALLS GET getItem); only with --api-policy
+│       └── example_api.py       # call_<api>_api: one GET the policy's first API allows (API_CALLS);
+│                                #   only with --api-policy, and only when that API allows such a GET
 ├── tests/
 │   ├── unit/test_policy.py      # auth policies (shared-bearer, the jwt placeholder, the custom stub)
 │   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging

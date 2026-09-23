@@ -46,7 +46,7 @@ def _headers() -> dict[str, str]:
 
 
 class ChatStreamUser(HttpUser):
-    """Each user keeps one thread and sends messages the way a product would."""
+    """Each user keeps one thread and sends messages the way a client application would."""
 
     wait_time = between(1, 3)
 

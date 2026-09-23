@@ -355,6 +355,69 @@ def test_enhance_force_keeps_the_project_api_policy(
     assert "MY_TOKEN" in manifest["secrets"]["keys"]
 
 
+def test_enhance_refuses_a_forward_api_on_langgraph_server(
+    run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """create refuses auth: forward under langgraph-server; so must enhance, on every path."""
+    import graph_agents_cli.scaffold.commands.enhance as enhance_mod
+
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(
+        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET]\n"
+    )
+    result, project = run_create("--api-policy", str(policy))
+    assert result.exit_code == 0, result.output
+    before = {p: p.read_bytes() for p in project.rglob("*") if p.is_file()}
+    monkeypatch.chdir(project)
+
+    # Smart merge.
+    result = CliRunner().invoke(enhance, ["--runtime", "langgraph-server", "-y", "--skip-checks"])
+    assert result.exit_code == 2, result.output
+    assert "auth: forward" in result.output and "langgraph-server" in result.output
+    assert {p: p.read_bytes() for p in project.rglob("*") if p.is_file()} == before
+
+    # Overwrite mode (--force) renders in place through create: refused before rendering.
+    subs = []
+
+    def fake_execute(args, project_version, use_different_version):
+        monkeypatch.setenv(enhance_mod._ENV_USING_SAVED_CONFIG, "1")
+        try:
+            subs.append(CliRunner().invoke(enhance, args[2:]))
+        finally:
+            monkeypatch.delenv(enhance_mod._ENV_USING_SAVED_CONFIG, raising=False)
+        return subs[-1].exit_code == 0
+
+    monkeypatch.setattr(enhance_mod, "_execute_with_saved_config", fake_execute)
+    CliRunner().invoke(
+        enhance, ["--force", "--runtime", "langgraph-server", "-y", "--skip-checks", "--skip-deps"]
+    )
+    assert subs and subs[-1].exit_code == 2, subs[-1].output if subs else "enhance did not run"
+    assert "auth: forward" in subs[-1].output
+    assert read_manifest(project)["create_params"]["runtime"] == "fastapi"
+    assert (project / "api-policy.yaml").read_text() == policy.read_text()
+
+
+def test_version_locked_enhance_does_not_run_a_fixed_override(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Replaying the project's older CLI through an override without {version} would
+    run another build under that version's name: continue with the current CLI instead."""
+    import graph_agents_cli.scaffold.commands.enhance as enhance_mod
+    from graph_agents_cli.scaffold.utils import version as version_module
+
+    ran: list[list[str]] = []
+    monkeypatch.setattr(enhance_mod, "run_resolved", lambda cmd, **kw: ran.append(cmd))
+    monkeypatch.setenv(version_module.INSTALL_SPEC_ENV, "/srv/mirror/graph_agents_cli.whl")
+    assert enhance_mod._execute_with_saved_config(["scaffold", "enhance"], "0.0.9", True) is False
+    assert ran == []
+    assert "{version}" in capsys.readouterr().out
+
+    monkeypatch.setenv(version_module.INSTALL_SPEC_ENV, "git+https://git.example/gac@v{version}")
+    monkeypatch.setattr(enhance_mod, "_ensure_uvx_available", lambda version: None)
+    assert enhance_mod._execute_with_saved_config(["scaffold", "enhance"], "0.0.9", True) is True
+    assert ran[0][:3] == ["uvx", "--from", "git+https://git.example/gac@v0.0.9"]
+
+
 def test_enhance_refuses_a_policy_flag(
     run_create: CreateRunner, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

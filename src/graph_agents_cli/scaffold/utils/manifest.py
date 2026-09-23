@@ -38,6 +38,7 @@ from graph_agents_cli._api_policy import (
 )
 from graph_agents_cli._api_policy import (
     ApiSummary,
+    ExampleCall,
     bearer_token_envs,
 )
 from graph_agents_cli._defaults import (
@@ -71,6 +72,10 @@ class CreateParams:
     # templates document their variables and every ``auth: bearer`` API's
     # ``token_env`` joins ``secrets.keys`` so the token reaches the Secret.
     apis: tuple[ApiSummary, ...] = ()
+    # The GET the rendered example tool makes, chosen so lint and the project's
+    # policy test accept it; None when the policy's first API allows no GET the
+    # example can make (the example is then not rendered).
+    example_call: ExampleCall | None = None
 
     @property
     def api_token_envs(self) -> list[str]:

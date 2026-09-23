@@ -349,6 +349,18 @@ def test_update_reinstalls_from_the_install_spec_override(runner, monkeypatch: p
     assert runs == [["uv", "tool", "install", "--force", "git+https://mirror.example/gac@v9"]]
 
 
+def test_update_with_a_version_placeholder_and_no_release(runner, monkeypatch: pytest.MonkeyPatch):
+    runs: list[list[str]] = []
+    monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: None)
+    monkeypatch.setattr(cmd_update, "run", lambda args, **k: runs.append(list(args)))
+    monkeypatch.setattr(version_mod, "get_latest_version", lambda: "0.0.0")
+    monkeypatch.setenv(version_mod.INSTALL_SPEC_ENV, "git+https://mirror.example/gac@v{version}")
+    result = runner.invoke(update_command, ["-y"])
+    assert result.exit_code == 0, result.output
+    assert runs == []
+    assert "{version}" in result.output and "left as is" in result.output
+
+
 def test_update_global_and_best_effort_upgrade(runner, monkeypatch: pytest.MonkeyPatch):
     npx_calls: list[list[str]] = []
     monkeypatch.setattr(cmd_update, "run_npx_skills", lambda a, m: npx_calls.append(list(a)))

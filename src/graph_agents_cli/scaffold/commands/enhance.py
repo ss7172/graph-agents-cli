@@ -72,7 +72,11 @@ from ..utils.template import (
     validate_combination,
 )
 from ..utils.upgrade import update_cli_metadata
-from ..utils.version import get_current_version, install_spec
+from ..utils.version import (
+    get_current_version,
+    pinned_install_spec,
+    pinned_spec_unavailable,
+)
 from .create import _git_origin_owner, create
 
 console = Console()
@@ -227,9 +231,18 @@ def _execute_with_saved_config(
 ) -> bool:
     """Execute enhance with saved config args (in a subprocess); True on success."""
     if use_different_version and project_version:
+        spec = pinned_install_spec(project_version)
+        if spec is None:
+            # Running the override would pass off another build as project_version.
+            console.print(f"⚠️  {pinned_spec_unavailable(project_version)}.", style="yellow")
+            console.print(
+                "⚠️  Continuing with current version, but compatibility is not guaranteed",
+                style="yellow",
+            )
+            return False
         console.print(f"📦 Using graph-agents-cli version {project_version}...", style="dim")
         _ensure_uvx_available(project_version)
-        cmd = ["uvx", "--from", install_spec(project_version), "graph-agents-cli", *args]
+        cmd = ["uvx", "--from", spec, "graph-agents-cli", *args]
     else:
         console.print("✅ Using saved configuration", style="dim")
         cmd = [sys.executable, "-m", "graph_agents_cli.main", *args]
@@ -595,13 +608,27 @@ def _default_registry(project_dir: pathlib.Path | None) -> str:
     return f"{DEFAULT_REGISTRY_HOST}/{owner}" if owner else DEFAULT_REGISTRY_PLACEHOLDER
 
 
-def _validate_effective_params(params: CreateParams) -> None:
+def _validate_effective_params(
+    params: CreateParams, project_dir: pathlib.Path | None = None
+) -> None:
+    """Refuse (usage error, exit 2) what ``create`` would refuse for the same parameters.
+
+    That includes the project's own ``api-policy.yaml``: an ``auth: forward``
+    API cannot move to the langgraph-server runtime, which persists the run
+    context and so would store the forwarded credentials.
+    """
     try:
         validate_combination(
             params.runtime, params.checkpointer, params.deployment_target, params.cd
         )
     except ValueError as e:
         raise click.UsageError(str(e)) from e
+    apis = params.apis
+    if not apis and project_dir is not None:
+        apis = _api_policy.read_summaries(project_dir / API_POLICY_FILENAME)
+    problem = _api_policy.forward_runtime_problem(apis, params.runtime)
+    if problem:
+        raise click.UsageError(f"{problem} (in {API_POLICY_FILENAME})")
 
 
 def _backfill_create_params_from_config(
@@ -659,7 +686,7 @@ def _run_smart_merge(
     language = project_config.language
 
     params = _effective_params(project_config, cli_overrides, project_dir)
-    _validate_effective_params(params)
+    _validate_effective_params(params, project_dir)
 
     old_args = metadata_to_cli_args(project_config)
     new_args = _build_enhance_create_args(project_config, cli_overrides, project_dir)

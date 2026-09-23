@@ -79,6 +79,7 @@ def cmd_update(workspace, auto_approve):
     from graph_agents_cli.scaffold.utils.version import (
         INSTALL_SPEC_ENV,
         UNKNOWN_VERSION,
+        InstallSpecError,
         get_current_version,
         get_latest_version,
         install_spec,
@@ -101,7 +102,11 @@ def cmd_update(workspace, auto_approve):
     ):
         click.secho(f"  {PACKAGE_NAME} {current} is up to date.", dim=True)
         return
-    spec = install_spec(None if latest == UNKNOWN_VERSION else latest)
+    try:
+        spec = install_spec(None if latest == UNKNOWN_VERSION else latest)
+    except InstallSpecError as exc:  # {version} in the override, no release known
+        click.secho(f"  {exc.format_message()} The CLI was left as is.", fg="yellow")
+        return
     cmd = ["uv", "tool", "install", "--force", spec]
     result = run(cmd, check=False)
     if result.returncode != 0:

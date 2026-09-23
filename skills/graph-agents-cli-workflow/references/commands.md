@@ -198,7 +198,7 @@ namespaces, and active extensions with their sources and conflicts.
 
 | Variable | Effect |
 |---|---|
-| `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` | disables the PyPI update check and the skills-version check (disconnected profile) |
+| `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` | disables the GitHub release check and the skills-version check (disconnected profile) |
 | `GRAPH_AGENTS_CLI_API_KEY` | bearer key that `run --url` and `eval generate --url` send when `--header` is absent |
 | `GRAPH_AGENTS_CLI_E2E=1` | opts the CLI repository's slow end-to-end test suite in (contributors only) |
 | `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` | bypass extension overrides (set automatically inside an override) |

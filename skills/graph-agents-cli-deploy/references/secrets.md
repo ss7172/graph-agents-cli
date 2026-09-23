@@ -42,7 +42,7 @@ graph-agents-cli secrets status --env <env> [--dry-run]                        #
   (the temporary file holds only the allow-listed keys and is deleted afterwards, so no value
   appears on a command line or in the echoed command). It generates `API_KEY` (32 random bytes,
   hex) only when it is absent from the env file **and** from the live Secret, and prints it once;
-  store it where the product keeps its credentials. An existing key is read back
+  store it where the client application keeps its credentials. An existing key is read back
   (`kubectl get secret -o json`) and re-included, so a repeated `apply` or direct-mode `deploy`
   never rotates it: one key per environment. Values must be single-line (the env-file format
   cannot carry a newline; exit 3 naming the key). Exit 3 when no env file is found or it holds
@@ -81,7 +81,7 @@ can replace this procedure later.
 3. `graph-agents-cli deploy --restart --env <env>` (`kubectl rollout restart`), because an
    externally managed Secret does not change the pod template checksum. In argocd environments,
    prefer an Argo resource action; self-heal may revert the restart annotation.
-4. For `API_KEY`, update the product's client configuration in the same window.
+4. For `API_KEY`, update the client application's configuration in the same window.
 
 ## What is never a secret
 

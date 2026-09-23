@@ -127,7 +127,7 @@ pick it up.
 | Traces in LangSmith but empty prompts | expected under `metadata`; `full` is an explicit decision |
 | OTLP exporter connection refused | endpoint must be reachable from the pod; use the collector's Service DNS and port 4318 (HTTP) |
 | Traces from `eval generate` mixed with production | use `LANGSMITH_PROJECT` per environment; eval traces are files unless tracing is on |
-| Need to know who a trace belongs to | correlate `hashed_id` with the product's session log; the raw id is never in the trace |
+| Need to know who a trace belongs to | correlate `hashed_id` with the client application's session log; the raw id is never in the trace |
 
 ## Not covered by this skill
 

@@ -46,6 +46,29 @@ def test_the_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert v.cli_install_spec() == "graph-agents-cli==0.2.0"
 
 
+def test_the_override_can_carry_the_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(v.INSTALL_SPEC_ENV, "git+https://git.example/gac@v{version}")
+    assert v.install_spec("0.1.0") == "git+https://git.example/gac@v0.1.0"
+    assert v.pinned_install_spec("0.1.0") == "git+https://git.example/gac@v0.1.0"
+    with pytest.raises(v.InstallSpecError, match="no graph-agents-cli version is known"):
+        v.install_spec(None)
+    with pytest.raises(v.InstallSpecError):
+        v.install_spec(v.UNKNOWN_VERSION)
+    # A copyable hint never fails: the user fills the placeholder in.
+    assert "@v{version}" in v.install_command(version=None)
+
+
+def test_a_fixed_override_cannot_stand_for_an_older_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert v.pinned_install_spec("0.1.0") == f"{REPO}@v0.1.0"
+    monkeypatch.setenv(v.INSTALL_SPEC_ENV, "/srv/mirror/graph_agents_cli.whl")
+    assert v.install_spec("0.1.0") == "/srv/mirror/graph_agents_cli.whl"  # setup, update, CI
+    assert v.pinned_install_spec("0.1.0") is None  # replaying 0.1.0 exactly
+    message = v.pinned_spec_unavailable("0.1.0")
+    assert v.INSTALL_SPEC_ENV in message and "{version}" in message
+
+
 def test_requirement_with_extras_for_a_url_spec() -> None:
     assert v.requirement(f"{REPO}@v0.2.0", "a2a") == f"graph-agents-cli[a2a] @ {REPO}@v0.2.0"
     assert v.requirement(f"{REPO}@v0.2.0") == f"{REPO}@v0.2.0"

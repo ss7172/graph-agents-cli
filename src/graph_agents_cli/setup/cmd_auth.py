@@ -544,7 +544,8 @@ def check_disconnected_profile(info: ProjectInfo, env: EnvView) -> list[Check]:
             Check(
                 "profile.update_check",
                 WARN,
-                f"{NO_UPDATE_CHECK_ENV} is not 1; the CLI will try PyPI and npx on each run",
+                f"{NO_UPDATE_CHECK_ENV} is not 1; the CLI will try the GitHub release check "
+                "and npx on each run",
                 f"Export {NO_UPDATE_CHECK_ENV}=1.",
             )
         )

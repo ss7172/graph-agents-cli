@@ -43,7 +43,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import click
 import yaml
@@ -580,19 +580,58 @@ def summarize(document: Mapping[str, Any]) -> tuple[ApiSummary, ...]:
     )
 
 
-def read_summaries(path: str | Path | None) -> tuple[ApiSummary, ...]:
-    """Summaries of an existing project policy; empty (with a warning) when unreadable.
+@dataclass(frozen=True)
+class ExampleCall:
+    """The GET that the rendered ``tools/example_api.py`` makes.
+
+    Chosen when the project is rendered (``dev.policy_check.example_call``) so
+    the example passes ``lint`` and the project's policy test from the first
+    commit, whatever the seed policy allows.
+    """
+
+    api: str
+    path: str
+    operation_id: str | None = None
+
+    method: ClassVar[str] = "GET"
+
+    @property
+    def params(self) -> tuple[str, ...]:
+        """The path's ``{name}`` placeholders in order, each once: the tool's parameters."""
+        return tuple(dict.fromkeys(_PLACEHOLDER_NAME_RE.findall(self.path)))
+
+    def as_context(self) -> dict[str, Any]:
+        return {
+            "api": self.api,
+            "method": self.method,
+            "operation_id": self.operation_id or "",
+            "path": self.path,
+            "params": list(self.params),
+        }
+
+
+_PLACEHOLDER_NAME_RE = re.compile(r"\{([^/{}]+)\}")
+
+
+def read_policy_document(path: str | Path | None) -> dict[str, Any] | None:
+    """An existing project policy, validated; None (with a warning) when absent or invalid.
 
     Used when a project is re-rendered: the policy belongs to the project and
     ``lint`` reports its problems, so a broken file must not stop the re-render.
     """
     if not path or not Path(path).is_file():
-        return ()
+        return None
     try:
-        return summarize(load_policy_document(path))
+        return load_policy_document(path)
     except ApiPolicyFileError as exc:
         logging.warning("%s", exc.format_message())
-        return ()
+        return None
+
+
+def read_summaries(path: str | Path | None) -> tuple[ApiSummary, ...]:
+    """Summaries of an existing project policy; empty (with a warning) when unreadable."""
+    document = read_policy_document(path)
+    return summarize(document) if document is not None else ()
 
 
 def bearer_token_envs(summaries: tuple[ApiSummary, ...] | list[ApiSummary]) -> list[str]:

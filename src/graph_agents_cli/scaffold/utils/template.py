@@ -42,7 +42,7 @@ from rich.prompt import Confirm, IntPrompt
 
 from graph_agents_cli import _defaults
 from graph_agents_cli._api_policy import POLICY_FILENAME as API_POLICY_FILENAME
-from graph_agents_cli._api_policy import ApiSummary, bearer_token_envs
+from graph_agents_cli._api_policy import ApiSummary, ExampleCall, bearer_token_envs
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_AUTH_POLICY,
@@ -230,7 +230,8 @@ def validate_combination(
 # Maps a path in the rendered project to its inclusion condition. Paths that
 # fail their condition are renamed to unused_* and removed afterwards.
 #
-# The config dict carries: deployment_target, runtime, cd, has_api_policy.
+# The config dict carries: deployment_target, runtime, cd, has_api_policy,
+# has_example_api (the policy's first API allows a GET the example can make).
 # `deployment/argocd` is listed before `deployment` so its own rule is applied
 # even when the whole directory is kept.
 
@@ -241,7 +242,7 @@ CONDITIONAL_FILES: dict[str, Any] = {
     "deployment/argocd": lambda c: c.get("cd") == "argocd",
     "deployment": lambda c: c.get("deployment_target") == "kubernetes",
     API_POLICY_FILENAME: lambda c: bool(c.get("has_api_policy", False)),
-    EXAMPLE_API_TOOL: lambda c: bool(c.get("has_api_policy", False)),
+    EXAMPLE_API_TOOL: lambda c: bool(c.get("has_example_api", False)),
 }
 
 
@@ -254,7 +255,7 @@ def apply_conditional_files(
 
     Args:
         project_path: Path to the generated project directory
-        config: dict with deployment_target, runtime, cd, has_api_policy
+        config: dict with deployment_target, runtime, cd, has_api_policy, has_example_api
         agent_directory: replaces the ``{agent_directory}`` placeholder in paths
     """
     for rel_path_template, condition_fn in CONDITIONAL_FILES.items():
@@ -755,6 +756,7 @@ def build_cookiecutter_context(
     auth_policy: str = DEFAULT_AUTH_POLICY,
     has_api_policy: bool = False,
     apis: tuple[ApiSummary, ...] | list[ApiSummary] = (),
+    example_call: ExampleCall | None = None,
     process: str | None = None,
     agent_guidance_filename: str = DEFAULT_AGENT_GUIDANCE_FILENAME,
     agent_directory: str = "app",
@@ -768,8 +770,10 @@ def build_cookiecutter_context(
     List-valued variables are wrapped in a one-element list because cookiecutter
     treats a bare list as a choice and would keep only its first item. ``apis``
     summarises the declared APIs of ``api-policy.yaml`` (name, base_url_env,
-    auth, token_env; the first one drives the example tool) and every
-    ``auth: bearer`` API's ``token_env`` joins ``secret_keys``.
+    auth, token_env) and every ``auth: bearer`` API's ``token_env`` joins
+    ``secret_keys``. ``example_api`` is the GET ``tools/example_api.py`` makes
+    (``dev.policy_check.example_call``), empty when the policy's first API
+    allows none; the example is then not rendered.
     ``auth_policy_implemented`` is derived from ``auth_policy`` unless a
     recorded value is passed (an in-folder re-render keeps the developer's flip).
     """
@@ -804,6 +808,9 @@ def build_cookiecutter_context(
         "process": process or "",
         "has_api_policy": bool(has_api_policy),
         "apis": [[summary.as_context() for summary in api_summaries]],
+        "example_api": (
+            example_call.as_context() if has_api_policy and example_call is not None else {}
+        ),
         "secret_keys": [
             default_secret_keys(model_provider, runtime, bearer_token_envs(api_summaries))
         ],
@@ -867,6 +874,7 @@ def process_template(
     auth_policy: str = DEFAULT_AUTH_POLICY,
     has_api_policy: bool = False,
     apis: tuple[ApiSummary, ...] | list[ApiSummary] = (),
+    example_call: ExampleCall | None = None,
     process: str | None = None,
     output_dir: pathlib.Path | None = None,
     remote_template_path: pathlib.Path | None = None,
@@ -888,8 +896,9 @@ def process_template(
         deployment_target: ``kubernetes`` or ``none``
         runtime, model_provider, model, checkpointer, registry, cd, auth_policy:
             the create parameters (validated by the caller)
-        has_api_policy: keep ``api-policy.yaml`` and the example API tool
+        has_api_policy: keep ``api-policy.yaml``
         apis: the APIs the policy declares (see ``build_cookiecutter_context``)
+        example_call: the GET the example API tool makes; None leaves the tool out
         process: governing process document (path or string), recorded verbatim
         output_dir: Optional output directory path, defaults to current directory
         remote_template_path: Optional path to remote template for overlay
@@ -1042,6 +1051,7 @@ def process_template(
                 auth_policy=auth_policy,
                 has_api_policy=has_api_policy,
                 apis=apis,
+                example_call=example_call,
                 process=process,
                 agent_guidance_filename=agent_guidance_filename,
                 agent_directory=agent_directory,
@@ -1065,6 +1075,16 @@ def process_template(
             logging.debug("Template processing completed successfully")
 
             generated_project_dir = temp_path / project_name
+
+            # 4b. Without a call to show, the example API tool renders empty. Drop it
+            # before anything is copied: an in-folder render (enhance --force) must
+            # neither blank nor delete an example_api.py the project already has.
+            has_example_api = has_api_policy and example_call is not None
+            if not has_example_api:
+                example_tool = generated_project_dir / EXAMPLE_API_TOOL.replace(
+                    "{agent_directory}", agent_directory
+                )
+                example_tool.unlink(missing_ok=True)
 
             # 5. Remote overlay (after cookiecutter, so its files are never rendered)
             if is_remote and remote_template_path:
@@ -1129,6 +1149,8 @@ def process_template(
                 "runtime": runtime,
                 "cd": cd,
                 "has_api_policy": has_api_policy,
+                # In folder, an example_api.py still present is the project's own (4b).
+                "has_example_api": has_example_api or in_folder,
             }
             apply_conditional_files(final_destination, conditional_config, agent_directory)
             _remove_unused_paths(final_destination)

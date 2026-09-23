@@ -107,11 +107,19 @@ allows and is ignored for denials. Pass model input as `path_params` of a declar
 concrete path.
 {%- if cookiecutter.has_api_policy %}
 This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
+{%- if cookiecutter.example_api %}
+`{{cookiecutter.agent_directory}}/tools/example_api.py` shows the pattern with one call the policy allows
+(`{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }}` on `{{ cookiecutter.example_api.api }}`): replace it with your own.
+{%- else %}
+No example tool was generated: the first API allows no GET the example could make.
+{%- endif %}
 {%- else %}
 No policy is declared yet: seed one with `graph-agents-cli create --api-policy <file>`, or write
 `api-policy.yaml` by hand and add `api_policy: {policy_file: api-policy.yaml}` to the manifest.
 {%- endif %}
-Every tool module declares `API_CALLS`; `graph-agents-cli lint` fails on an undeclared or disallowed call.
+Every tool module declares `API_CALLS` as one module-level literal list; `graph-agents-cli lint` fails on an
+undeclared or disallowed call, and on `API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional
+assignment), because it cannot read those calls.
 
 ## Authentication
 

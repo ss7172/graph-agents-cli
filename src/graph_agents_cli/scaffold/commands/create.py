@@ -42,6 +42,7 @@ from graph_agents_cli._defaults import (
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import MANIFEST_FILENAME, read_project_config
+from graph_agents_cli.dev import policy_check
 
 from ..utils import cli_options, remote_template, template
 from ..utils.fs import standard_ignore_patterns
@@ -254,6 +255,7 @@ def create(
             cd=cd,
             auth_policy=auth_policy,
             api_document=api_document,
+            api_policy_dir=pathlib.Path(api_policy).resolve().parent if api_policy else None,
             process=process,
             prototype=prototype,
             interactive=interactive,
@@ -279,10 +281,18 @@ def create(
         policy_path = destination_dir / API_POLICY_FILENAME
         if api_policy is None and policy_path.is_file():
             existing_policy = policy_path.read_bytes()
+            apis, example = _read_project_policy(policy_path)
             params = dataclasses.replace(
-                params, has_api_policy=True, apis=_api_policy.read_summaries(policy_path)
+                params, has_api_policy=True, apis=apis, example_call=example
             )
         logging.debug("Create params after carrying the recorded state: %s", params)
+        # The carried APIs never went through _resolve_create_params' check: an
+        # enhance that switches the runtime must be refused exactly like create.
+        problem = _api_policy.forward_runtime_problem(params.apis, params.runtime)
+        if problem:
+            if temp_dir_to_clean:
+                shutil.rmtree(temp_dir_to_clean, ignore_errors=True)
+            raise click.UsageError(f"{problem} (in {API_POLICY_FILENAME})")
 
     if not template_source_path:
         template_path = template.get_template_path(final_agent)
@@ -315,6 +325,7 @@ def create(
             auth_policy=params.auth_policy,
             has_api_policy=params.has_api_policy,
             apis=params.apis,
+            example_call=params.example_call,
             process=params.process,
             output_dir=destination_dir,
             remote_template_path=template_source_path,
@@ -383,6 +394,16 @@ def create(
     # later, so the next-steps banner would be wrong as well as noisy.
     if quiet:
         return
+
+    if params.has_api_policy and params.example_call is None and not in_folder:
+        tools_dir = (agent_directory or _rendered_agent_directory(rendered_path)) + "/tools"
+        console.print(
+            f"Note: {tools_dir}/example_api.py was not generated: the first API in "
+            f"{API_POLICY_FILENAME} allows no GET the example could make (lint and the "
+            "project's policy test would refuse it). Write your tools with their calls "
+            "declared in API_CALLS (see 'Outbound API access' in README.md).",
+            style="yellow",
+        )
 
     _print_next_steps(
         in_folder=in_folder,
@@ -895,6 +916,7 @@ def _resolve_create_params(
     cd: str | None,
     auth_policy: str | None,
     api_document: dict | None,
+    api_policy_dir: pathlib.Path | None,
     process: str | None,
     prototype: bool,
     interactive: bool,
@@ -998,7 +1020,36 @@ def _resolve_create_params(
         process=(process or "").strip() or None,
         # Every bearer API's token variable joins secrets.keys.
         apis=apis,
+        # A relative openapi: path is read next to the seed policy.
+        example_call=(
+            policy_check.example_call(api_document, base_dir=api_policy_dir)
+            if api_document
+            else None
+        ),
     )
+
+
+def _read_project_policy(
+    path: pathlib.Path,
+) -> tuple[tuple[_api_policy.ApiSummary, ...], _api_policy.ExampleCall | None]:
+    """The APIs and the example call of a project's own policy (empty when unreadable).
+
+    A relative ``openapi:`` path is resolved against the project root, as lint does.
+    """
+    document = _api_policy.read_policy_document(path)
+    if document is None:
+        return (), None
+    return _api_policy.summarize(document), policy_check.example_call(
+        document, base_dir=path.parent
+    )
+
+
+def _rendered_agent_directory(project_dir: pathlib.Path) -> str:
+    """The agent directory the rendered manifest records (``app`` when unreadable)."""
+    try:
+        return read_project_config(str(project_dir)).agent_directory or "app"
+    except click.ClickException:
+        return "app"
 
 
 def _carry_recorded_state(project_dir: pathlib.Path, params: CreateParams) -> CreateParams:
@@ -1020,9 +1071,10 @@ def _carry_recorded_state(project_dir: pathlib.Path, params: CreateParams) -> Cr
     if existing.auth_policy == params.auth_policy:
         updates["auth_policy_implemented"] = existing.auth_policy_implemented
     if not params.apis and existing.api_policy_file:
-        apis = _api_policy.read_summaries(project_dir / existing.api_policy_file)
+        apis, example = _read_project_policy(project_dir / existing.api_policy_file)
         if apis:
             updates["apis"] = apis
+            updates["example_call"] = example
     return dataclasses.replace(params, **updates) if updates else params
 
 

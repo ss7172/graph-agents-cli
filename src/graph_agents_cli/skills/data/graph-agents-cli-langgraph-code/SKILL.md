@@ -133,7 +133,8 @@ TOOLS = [get_incident]
 The convention, as the template implements it (`app/tools/weather.py`, and `app/tools/example_api.py`
 when the project declares an API policy):
 
-- **Every** module under `app/tools/` (except `__init__.py`) declares two module-level names:
+- **Every** module under `app/tools/` (except `__init__.py`; `_`-prefixed modules included, since
+  `get_tools()` imports them too) declares two module-level names:
   `API_CALLS`, a **literal** list of `{"api", "method", "operation_id", "path"}` dicts (`api`
   and `method` required, plus `operation_id` and/or `path`; `[]` when it calls no external API;
   an annotated assignment `API_CALLS: list[...] = [...]` is fine), and `TOOLS`, the list of tool
@@ -143,9 +144,11 @@ when the project declares an API policy):
   `API_CALLS` **statically with `ast`** (no import, no model SDK loaded), validates
   `api-policy.yaml` with the same strict schema the runtime uses, and checks each entry against
   the named API (`allowed_methods`, `allowed_operations`, `denied_operations`) and, when the API
-  names an `openapi:` spec, against that spec (by `operationId`, or by `path` + `method`). A
-  computed (non-literal) `API_CALLS` is invalid, and a leftover `PRODUCT_CALLS` is an error with
-  a rename hint.
+  names an `openapi:` spec, against that spec (by `operationId`, or by `path` + `method`). It
+  reads the one module-level literal only, so a computed (non-literal) `API_CALLS` is invalid,
+  and so is anything that binds or changes it elsewhere (`+=`, `.append()`, an item assignment,
+  a second or conditional assignment, an import): declare every call in the single literal. A
+  leftover `PRODUCT_CALLS` is an error with a rename hint.
 - `get_client(name)` fails closed: no `api-policy.yaml`, an invalid one, or an undeclared API
   raises `ApiPolicyError`. `client.request(method, path, operation_id=None, path_params=None,
   params=None, json_body=None, headers=None)` (and `client.get(...)`) refuses, before sending,
@@ -211,7 +214,7 @@ is resumed with `Command(resume=...)`. **The scaffolded chat API does not expose
 no `interrupted` status and no `metadata.resume` request convention, so a graph that interrupts
 stalls the `/chat` stream instead of pausing cleanly. Until the template wires it, keep approval
 steps out of the served graph (ask before acting via a tool that returns a question, or gate the
-action in the product) and use interrupts only in `playground --graph` (LangGraph Studio) for
+action in the client application) and use interrupts only in `playground --graph` (LangGraph Studio) for
 graph debugging. `references/langgraph.md` shows the LangGraph pattern for when the convention is
 added.
 

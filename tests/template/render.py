@@ -37,7 +37,7 @@ from pathlib import Path
 import yaml
 from cookiecutter.main import cookiecutter
 
-from graph_agents_cli._api_policy import ApiSummary, bearer_token_envs
+from graph_agents_cli._api_policy import ApiSummary, ExampleCall, bearer_token_envs
 from graph_agents_cli._defaults import (
     DEFAULT_MODELS,
     PROVIDER_KEY_VARS,
@@ -53,6 +53,9 @@ BUNDLED_POLICY_APIS = (
         token_env="EXAMPLE_API_TOKEN",
     ),
 )
+# The call `create` picks for the bundled policy (its first allowed operation);
+# tests/template/test_render.py checks the engine agrees.
+BUNDLED_POLICY_EXAMPLE = ExampleCall(api="example", path="/items/{item_id}", operation_id="getItem")
 
 try:  # Reuse the engine's post-processing when it exposes it (scaffold-core).
     from graph_agents_cli.scaffold.utils import template as _engine
@@ -132,6 +135,7 @@ class Combo:
             # A bare list is a cookiecutter *choice* (first item wins); wrapping
             # it makes the whole list the value, as the engine does for lists.
             "apis": [[api.as_context() for api in apis]],
+            "example_api": BUNDLED_POLICY_EXAMPLE.as_context() if self.has_api_policy else {},
             "secret_keys": [secret_keys],
             "default_judge_model": model,
             "cli_install_spec": "git+https://example.test/graph-agents-cli@v0.1.0",
@@ -202,6 +206,7 @@ def post_process(project: Path, combo: Combo) -> None:
             "runtime": combo.runtime,
             "cd": combo.cd,
             "has_api_policy": combo.has_api_policy,
+            "has_example_api": combo.has_api_policy,
         }
         _engine.apply_conditional_files(project, config, combo.agent_directory)
         _engine._remove_unused_paths(project)

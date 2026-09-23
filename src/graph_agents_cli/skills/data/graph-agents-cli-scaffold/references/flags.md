@@ -48,7 +48,7 @@ What each choice renders:
 | `--cd helm-push` | + `.github/workflows/{staging,promote-to-prod}.yaml`, `.github/CODEOWNERS` |
 | `--runtime langgraph-server` | server Dockerfile (`FROM langchain/langgraph-api:<pinned>`), `langgraph.json` `http.app` + `auth`, Redis toggle in values, `uv-langgraph-server.lock` -> `uv.lock` |
 | `--runtime fastapi` | python Dockerfile with uvicorn, `uv-fastapi.lock` -> `uv.lock` |
-| `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (calls the first declared API), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values |
+| `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (one GET the first declared API allows: its first allowed operation, else one from its OpenAPI spec, else `GET /items/{item_id}`; left out, with a note, when that API allows no such GET), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values |
 | `--auth-policy custom` | `auth_policy_implemented: false` (the `app/policies/custom.py` stub ships in every project) |
 | `--auth-policy jwt` | `AUTH_JWT_*` settings in `.env.example` and the chart values |
 
