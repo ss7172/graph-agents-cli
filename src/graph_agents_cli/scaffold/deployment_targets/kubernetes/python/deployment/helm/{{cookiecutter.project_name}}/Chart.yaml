@@ -4,15 +4,18 @@ description: Helm chart for the {{cookiecutter.project_name}} LangGraph agent (g
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+# Exact versions, so every `helm dependency build` resolves the same charts.
+# Their images are pinned by digest in values.yaml (see the note there on the
+# Bitnami catalogue and how to use another chart or an external database).
 dependencies:
   # Optional in-cluster Postgres for dev (values-dev.yaml enables it). Staging
   # and prod use an external database supplied through the Secret.
   - name: postgresql
-    version: "18.x.x"
+    version: "18.11.6"
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: postgresql.enabled
   # Redis is only needed by the langgraph-server runtime.
   - name: redis
-    version: "28.x.x"
+    version: "28.2.3"
     repository: oci://registry-1.docker.io/bitnamicharts
     condition: redis.enabled

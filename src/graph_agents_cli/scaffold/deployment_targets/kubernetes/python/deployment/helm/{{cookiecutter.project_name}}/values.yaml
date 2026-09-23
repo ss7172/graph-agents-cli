@@ -1,10 +1,16 @@
 # Default values for {{cookiecutter.project_name}}.
 # Per-environment overrides live in values-dev.yaml, values-staging.yaml and
 # values-prod.yaml; `graph-agents-cli deploy --env <env>` passes both files.
+# Helm merges maps key by key, so an environment file only lists what differs
+# (set a key to null there to drop a default, e.g. `resources.limits: null`).
 
 image:
   repository: {{cookiecutter.registry}}/{{cookiecutter.project_name}}
-  tag: latest
+  # Always an immutable build tag, never a default: `graph-agents-cli deploy`
+  # passes --set image.tag=<tag>, and in argocd mode CI (staging) or `deploy`
+  # (prod) writes it into values-<env>.yaml. The chart refuses to render while
+  # it is empty, so nothing rolls out an image that was never pushed.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # Names of existing image pull secrets in the namespace (operator-provided).
@@ -86,28 +92,101 @@ tls:
       name: ""
       kind: ClusterIssuer
 
-# Bundled Postgres (bitnami subchart). When disabled the connection string
-# comes from the Secret (POSTGRES_DSN or DATABASE_URI).
+# Bundled Postgres and Redis (Bitnami subcharts, pinned in Chart.yaml) are for
+# dev only; staging and prod read the connection strings from the Secret.
+#
+# The Bitnami catalogue: since August 2025 Bitnami publishes its free images
+# only as `latest` (meant for development) under docker.io/bitnami; versioned
+# tags need a Broadcom subscription and the old tags were frozen, without
+# updates, under docker.io/bitnamilegacy. So the images below are pinned by
+# digest: renders are reproducible and `latest` moving never changes a running
+# dev database. To refresh a pin, look up the current digest
+# (`docker buildx imagetools inspect docker.io/bitnami/postgresql:latest`).
+# To use something else: set postgresql.enabled / redis.enabled to false and
+# put POSTGRES_DSN (fastapi) or DATABASE_URI + REDIS_URI (langgraph-server) in
+# the Secret, pointing at a managed database, an operator such as CloudNativePG,
+# or any other chart; or replace the dependency in Chart.yaml and keep the
+# service names this chart derives (<release>-postgresql, <release>-redis-master)
+# or set the connection strings in the Secret.
 postgresql:
   enabled: false
+  image:
+    registry: registry-1.docker.io
+    repository: bitnami/postgresql
+    tag: latest
+    digest: "sha256:7d77a46bbf200709237318c27dec0eaeae2520e403dd18fdebde2be7a6b04993"
   auth:
     database: agent
     username: agent
-    existingSecret: ""   # subchart secret holding the user's `password` key; empty = generated
+    # Holds `password` (the agent's user) and `postgres-password`. This chart
+    # creates it (postgresqlSecret.create) with random values the first time
+    # and then keeps them, so the password stays the one the database volume
+    # was initialised with, across upgrades, re-renders and Argo CD syncs.
+    existingSecret: {{cookiecutter.project_name}}-postgresql-auth
   primary:
     persistence:
       size: 8Gi
 
-# Bundled Redis (bitnami subchart), langgraph-server only.
+# The bundled Postgres's credentials Secret (postgresql.auth.existingSecret):
+# created by this chart when the subchart is enabled, reused on upgrade (helm
+# lookup), kept on uninstall and ignored by Argo CD after the first sync (the
+# Applications ignore its data). Set create: false to provide your own Secret
+# under that name (keys `password` and `postgres-password`).
+postgresqlSecret:
+  create: true
+
+# Bundled Redis (Bitnami subchart), langgraph-server only.
 redis:
   enabled: false
   architecture: standalone
+  image:
+    registry: registry-1.docker.io
+    repository: bitnami/redis
+    tag: latest
+    digest: "sha256:ef8442c1ec2e28cef662999f348a4369c22343dc0c86c3bc23041fad22f13ca1"
   auth:
     enabled: false
 
+# Health probes. Liveness and startup ask whether the process answers
+# (/health); readiness asks whether the database (and run store) answer within
+# 2 s (/ready), so a pod that loses its database leaves the Service endpoints
+# instead of being restarted. Liveness and readiness start after the startup
+# probe passes (up to failureThreshold x periodSeconds for the first boot).
+probes:
+  liveness:
+    path: /health
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    path: /health
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+
+# Requests reserve capacity (and are what the HPA's CPU target is a percentage
+# of); the memory limit stops a leaking pod before it starves its node. No CPU
+# limit by default: throttling hurts latency more than it protects neighbours.
+# Override per environment in values-<env>.yaml.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# CPU-based autoscaling (needs metrics-server). The HPA owns the replica count
+# while enabled (replicaCount is ignored); the chart refuses to render it
+# without resources.requests.cpu. Keep minReplicas above pdb.minAvailable so
+# node drains can proceed.
 hpa:
   enabled: false
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 5
   targetCPU: 70
 
@@ -115,9 +194,13 @@ pdb:
   enabled: false
   minAvailable: 1
 
-resources: {}
-  # limits: { cpu: "1", memory: 1Gi }
-  # requests: { cpu: 250m, memory: 512Mi }
+# Spread the replicas over nodes when possible (never blocks scheduling).
+topologySpread:
+  enabled: false
+  topologyKey: kubernetes.io/hostname
+
+# Seconds a stopping pod gets to finish in-flight requests and streams.
+terminationGracePeriodSeconds: 30
 
 serviceAccount:
   create: true
@@ -134,17 +217,51 @@ tracing:
     project: "{{cookiecutter.project_name}}"
 
 podAnnotations: {}
+# Restricted Pod Security Standard: non-root uid/gid 1000 (the image's user),
+# no privilege escalation, no capabilities, the runtime's default seccomp
+# profile, a read-only root filesystem and no service account token.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
+  runAsGroup: 1000
   fsGroup: 1000
   seccompProfile:
     type: RuntimeDefault
 securityContext:
   allowPrivilegeEscalation: false
+  privileged: false
+  runAsNonRoot: true
   capabilities:
     drop: ["ALL"]
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
+
+# The only writable path with a read-only root filesystem: an emptyDir at
+# /tmp (HOME points there too, for libraries that cache under ~). Mount more
+# with extraVolumes / extraVolumeMounts.
+tmpVolume:
+  sizeLimit: 256Mi
+  medium: ""             # "Memory" for a tmpfs (counts against the memory limit)
+extraVolumes: []
+extraVolumeMounts: []
+
+# Optional NetworkPolicy for the agent pods (off by default; needs a CNI that
+# enforces NetworkPolicy). When enabled, ingress is limited to the http port,
+# from the sources in ingressFrom (empty: from anywhere, but only that port).
+# With restrictEgress the pods may only reach DNS (pods labelled
+# k8s-app=kube-dns; add a node-local DNS cache address yourself) plus egressTo;
+# add the model provider, the database and every API in api-policy.yaml, e.g.:
+#   egressTo:
+#     - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}}]
+#       ports: [{port: 443, protocol: TCP}]
+#     - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: postgresql}}}]
+#       ports: [{port: 5432, protocol: TCP}]
+networkPolicy:
+  enabled: false
+  ingressFrom: []
+  #   - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: gateway-system}}
+  restrictEgress: false
+  egressTo: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

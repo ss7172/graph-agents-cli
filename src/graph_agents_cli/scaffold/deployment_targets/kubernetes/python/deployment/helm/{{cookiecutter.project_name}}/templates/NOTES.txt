@@ -1,4 +1,5 @@
-{{ .Release.Name }} ({{ .Values.runtime }} runtime) is installed in namespace {{ .Release.Namespace }}.
+{{ .Release.Name }} ({{ .Values.runtime }} runtime, image tag {{ include "agent.imageTag" . }}) is installed in namespace {{ .Release.Namespace }}.
+Pods receive traffic once {{ .Values.probes.readiness.path }} answers (the database is reachable).
 
 App Secret expected: {{ include "agent.secretName" . }}
   create or rotate it with: graph-agents-cli secrets apply --env <env> --env-file .env.<env>
@@ -17,6 +18,12 @@ Traffic: ClusterIP only. Port-forward for a quick check:
 Postgres: bundled subchart {{ include "agent.postgresql.host" . }} (dev only).
 {{- else }}
 Postgres: external; the connection string comes from the Secret.
+{{- end }}
+{{- $replicas := ternary .Values.hpa.minReplicas .Values.replicaCount (and .Values.hpa.enabled true) }}
+{{- if and .Values.pdb.enabled (not (kindIs "string" .Values.pdb.minAvailable)) (ge (int .Values.pdb.minAvailable) (int $replicas)) }}
+
+WARNING: pdb.minAvailable ({{ .Values.pdb.minAvailable }}) is not below the replica count ({{ $replicas }}):
+node drains will wait forever on this Deployment. Lower pdb.minAvailable or raise the replicas.
 {{- end }}
 {{- if and (or .Values.gateway.enabled .Values.ingress.enabled) (not (include "agent.appUrl" .)) }}
 

@@ -1,5 +1,7 @@
 # Argo CD Application for the prod environment.
 # Argo reconciles from main, so nothing reaches the cluster until a PR merges.
+# The chart refuses to render until values-prod.yaml names an image tag
+# (promote-to-prod opens the PR that sets it).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -22,8 +24,18 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: {{cookiecutter.project_name}}-prod
+  # The bundled Postgres's credentials Secret is generated on the first sync
+  # (Argo CD renders without cluster access, so every render would otherwise
+  # produce a new password the database volume no longer accepts): keep the
+  # live values. Only exists when postgresql.enabled (dev by default).
+  ignoreDifferences:
+    - kind: Secret
+      name: {{cookiecutter.project_name}}-postgresql-auth
+      jsonPointers:
+        - /data
   # Production has NO automated sync (a human syncs it): after the values-prod.yaml
   # PR merges, an operator syncs the application in Argo CD.
   syncPolicy:
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true

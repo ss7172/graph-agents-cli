@@ -25,16 +25,40 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 PROJECT_NAME = "{{cookiecutter.project_name}}"
 CHART = Path(__file__).resolve().parents[2] / "deployment" / "helm" / PROJECT_NAME
 HELM = shutil.which("helm")
+# What `graph-agents-cli deploy` passes: the image tag it deploys, and the
+# Gateway the scaffolded staging/prod values leave for the operator to name.
+DEPLOY_ARGS = ("--set", "image.tag=0123abc", "--set", "gateway.parentRef.name=gw")
 
 pytestmark = pytest.mark.skipif(HELM is None, reason="helm is not installed")
 
 
 def _helm(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([HELM or "helm", *args], capture_output=True, text=True, check=False)
+
+
+def _render(env: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return _helm(
+        "template",
+        PROJECT_NAME,
+        str(CHART),
+        "-f",
+        str(CHART / f"values-{env}.yaml"),
+        "--namespace",
+        f"{PROJECT_NAME}-{env}",
+        *extra,
+    )
+
+
+def _agent_deployment(manifests: str) -> dict:
+    for doc in yaml.safe_load_all(manifests):
+        if doc and doc["kind"] == "Deployment" and doc["metadata"]["name"] == PROJECT_NAME:
+            return doc
+    raise AssertionError("the agent Deployment was not rendered")
 
 
 @pytest.fixture(scope="module")
@@ -55,25 +79,14 @@ def test_helm_lint(chart_with_dependencies: Path) -> None:
             str(chart_with_dependencies),
             "-f",
             str(chart_with_dependencies / f"values-{env}.yaml"),
-            "--set",
-            "gateway.parentRef.name=gw",
+            *DEPLOY_ARGS,
         )
         assert result.returncode == 0, f"{env}: {result.stdout}\n{result.stderr}"
 
 
 def test_helm_template_renders_every_environment(chart_with_dependencies: Path) -> None:
     for env in ("dev", "staging", "prod"):
-        result = _helm(
-            "template",
-            PROJECT_NAME,
-            str(chart_with_dependencies),
-            "-f",
-            str(chart_with_dependencies / f"values-{env}.yaml"),
-            "--set",
-            "gateway.parentRef.name=gw",
-            "--namespace",
-            f"{PROJECT_NAME}-{env}",
-        )
+        result = _render(env, *DEPLOY_ARGS)
         assert result.returncode == 0, f"{env}: {result.stderr}"
         out = result.stdout
         assert "kind: Deployment" in out and "kind: Service" in out and "kind: ConfigMap" in out
@@ -84,3 +97,31 @@ def test_helm_template_renders_every_environment(chart_with_dependencies: Path) 
         else:
             assert "kind: HTTPRoute" in out
             assert "POSTGRES_PASSWORD" not in out
+
+
+def test_pods_are_hardened_probed_and_sized(chart_with_dependencies: Path) -> None:
+    for env in ("dev", "staging", "prod"):
+        result = _render(env, *DEPLOY_ARGS)
+        assert result.returncode == 0, f"{env}: {result.stderr}"
+        pod = _agent_deployment(result.stdout)["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        assert container["image"].endswith(":0123abc")
+        assert pod["automountServiceAccountToken"] is False
+        assert pod["securityContext"]["runAsNonRoot"] is True
+        assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+        security = container["securityContext"]
+        assert security["readOnlyRootFilesystem"] is True
+        assert security["allowPrivilegeEscalation"] is False
+        assert security["capabilities"]["drop"] == ["ALL"]
+        assert {"name": "tmp", "mountPath": "/tmp"} in container["volumeMounts"]
+        assert container["readinessProbe"]["httpGet"]["path"] == "/ready"
+        assert container["livenessProbe"]["httpGet"]["path"] == "/health"
+        assert container["startupProbe"]["httpGet"]["path"] == "/health"
+        assert container["resources"]["requests"]["cpu"]
+        assert container["resources"]["limits"]["memory"]
+
+
+def test_the_chart_refuses_to_render_without_an_image_tag(chart_with_dependencies: Path) -> None:
+    result = _render("prod", "--set", "gateway.parentRef.name=gw")
+    assert result.returncode != 0
+    assert "image.tag is empty" in result.stderr

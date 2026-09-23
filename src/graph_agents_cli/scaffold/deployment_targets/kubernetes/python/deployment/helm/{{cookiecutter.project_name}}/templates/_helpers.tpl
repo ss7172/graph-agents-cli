@@ -15,10 +15,42 @@ Helpers for the graph-agents-cli agent chart. Copied verbatim into projects.
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+image.tag as a string. A tag written unquoted in a values file that looks like
+a number (a short SHA made of digits) reaches the chart as a float; print it
+back without an exponent.
+*/}}
+{{- define "agent.imageTag" -}}
+{{- $tag := .Values.image.tag -}}
+{{- if kindIs "float64" $tag -}}
+{{- $tag = printf "%.0f" $tag -}}
+{{- end -}}
+{{- if $tag -}}{{- toString $tag -}}{{- end -}}
+{{- end -}}
+
+{{/*
+Render-time checks: a misconfiguration fails `helm template` / `helm upgrade`
+(and shows as a comparison error in Argo CD) instead of producing pods that
+pull a missing image or an autoscaler that cannot compute utilisation.
+*/}}
+{{- define "agent.validate" -}}
+{{- if not (include "agent.imageTag" .) -}}
+{{- fail "image.tag is empty: deploy a built image (`graph-agents-cli deploy --env <env>` passes --set image.tag=<tag>; in argocd mode CI or `deploy` writes image.tag into values-<env>.yaml). The chart never defaults to latest." -}}
+{{- end -}}
+{{- if .Values.hpa.enabled -}}
+{{- if not (dig "requests" "cpu" "" (.Values.resources | default dict)) -}}
+{{- fail "hpa.enabled needs resources.requests.cpu: the HPA targets a percentage of the CPU request, so without one it can never scale." -}}
+{{- end -}}
+{{- if gt (int .Values.hpa.minReplicas) (int .Values.hpa.maxReplicas) -}}
+{{- fail (printf "hpa.minReplicas (%v) is greater than hpa.maxReplicas (%v)." .Values.hpa.minReplicas .Values.hpa.maxReplicas) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "agent.labels" -}}
 helm.sh/chart: {{ include "agent.chart" . }}
 {{ include "agent.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+app.kubernetes.io/version: {{ include "agent.imageTag" . | default .Chart.AppVersion | trunc 63 | trimSuffix "-" | trimSuffix "." | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 graph-agents-cli/runtime: {{ .Values.runtime | quote }}
 {{- end -}}
@@ -51,8 +83,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-postgresql" .Release.Name -}}
 {{- end -}}
 
+{{/* The subchart renders auth.existingSecret through tpl; so does this chart. */}}
 {{- define "agent.postgresql.secretName" -}}
-{{- default (printf "%s-postgresql" .Release.Name) .Values.postgresql.auth.existingSecret -}}
+{{- if .Values.postgresql.auth.existingSecret -}}
+{{- tpl .Values.postgresql.auth.existingSecret . -}}
+{{- else -}}
+{{- printf "%s-postgresql" .Release.Name -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Connection string for the bundled Postgres; $(POSTGRES_PASSWORD) expands in the container. */}}
