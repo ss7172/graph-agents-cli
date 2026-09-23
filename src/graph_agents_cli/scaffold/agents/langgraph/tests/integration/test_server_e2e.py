@@ -185,9 +185,18 @@ async def test_chat_error_event_replaces_message_end_and_records_the_run(
     events = await _chat(client, "hello")
     names = [e for e, _ in events]
     assert names == ["message.start", "error"], names
-    assert events[1][1] == {"code": "RuntimeError", "message": "model down"}
+    error = events[1][1]
+    run_id = events[0][1]["run_id"]
+    # A generic message and an id naming the logged detail; the detail itself
+    # only under APP_ENV=dev (this app runs in dev).
+    assert error["code"] == "run_failed" and error["run_id"] == run_id
+    assert error["message"] == f"The run failed. Reference: {error['error_id']}."
+    assert error["detail"] == "RuntimeError: model down"
+    monkeypatch.setenv("APP_ENV", "prod")
+    error = (await _chat(client, "hello"))[1][1]
+    assert "detail" not in error and "model down" not in str(error)
     assert RUNTIME.runs is not None
-    record = await RUNTIME.runs.get(events[0][1]["run_id"])
+    record = await RUNTIME.runs.get(run_id)
     assert record is not None
     assert record.status == "error" and record.error_type == "RuntimeError"
 

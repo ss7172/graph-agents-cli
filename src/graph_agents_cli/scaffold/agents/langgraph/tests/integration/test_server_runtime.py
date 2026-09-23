@@ -17,10 +17,15 @@
 The loopback SDK client runs under the server's `/noauth` root path, so the
 server's own auth filters never see the custom routes' calls: ownership has to
 be enforced by the app from the thread metadata it wrote at creation.
+
+The fake raises the SDK's real error types (`NotFoundError`, `ConflictError`),
+whose messages do not contain the status code: the runtime must go by the
+status, not the text.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -30,23 +35,33 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
-from {{cookiecutter.agent_directory}}.app_utils.chat import LANGGRAPH_SERVER, ChatRequest, ChatRuntime
+errors = pytest.importorskip("langgraph_sdk.errors")
 
-OWNER = Principal(id="A", roles=["viewer"])
+from {{cookiecutter.agent_directory}}.app_utils.auth import Principal  # noqa: E402
+from {{cookiecutter.agent_directory}}.app_utils.chat import (  # noqa: E402
+    LANGGRAPH_SERVER,
+    ChatRequest,
+    ChatRuntime,
+)
+from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunStore  # noqa: E402
+from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadLocks, ThreadStore  # noqa: E402
+
+OWNER = Principal(
+    id="A",
+    roles=["viewer"],
+    attributes={"tenant": "t1", "credentials": {"example": "secret-token-A"}},
+)
 STRANGER = Principal(id="B", roles=["viewer"])
 AUDITOR = Principal(id="C", roles=["auditor"])
 THREAD = "11111111-1111-1111-1111-111111111111"
+OTHER = "44444444-4444-4444-4444-444444444444"
 
 
-def _http_error(status: int, text: str) -> httpx.HTTPStatusError:
+def sdk_error(cls: type[Exception], status: int, message: str) -> Exception:
+    """An SDK error exactly as langgraph_sdk raises it (the text has no status code)."""
     request = httpx.Request("GET", "http://loopback/threads/x")
-    response = httpx.Response(status, request=request, text=text)
-    try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        return exc
-    raise AssertionError("unreachable")
+    response = httpx.Response(status, request=request, json={"detail": message})
+    return cls(message, response=response, body={"detail": message})
 
 
 class FakeSdk:
@@ -56,8 +71,19 @@ class FakeSdk:
         self.headers: list[dict[str, str] | None] = []
         self.created: list[dict[str, Any]] = []
         self.streams: list[dict[str, Any]] = []
+        self.cancelled: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
+        self.searches: list[dict[str, Any]] = []
+        self.state_updates: list[dict[str, Any]] = []
+        self.slow_stream = False
         self.threads_by_id: dict[str, dict[str, Any]] = {
-            THREAD: {"thread_id": THREAD, "metadata": {"principal_id": "A", "tenant": None}}
+            THREAD: {
+                "thread_id": THREAD,
+                "metadata": {"principal_id": "A", "tenant": None},
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-02T00:00:00+00:00",
+                "status": "idle",
+            }
         }
         self.messages = [
             {"type": "human", "id": "m1", "content": "hello"},
@@ -86,11 +112,24 @@ class FakeSdk:
         class _Threads:
             async def get(self, thread_id: str, **_: Any) -> dict[str, Any]:
                 if thread_id not in sdk.threads_by_id:
-                    raise _http_error(404, '{"detail": "Thread not found"}')
+                    raise sdk_error(
+                        errors.NotFoundError, 404, f"Thread with ID {thread_id} not found"
+                    )
                 return sdk.threads_by_id[thread_id]
 
-            async def create(self, *, thread_id: str | None = None, metadata: Any = None, **_: Any):
+            async def create(
+                self,
+                *,
+                thread_id: str | None = None,
+                metadata: Any = None,
+                if_exists: str | None = None,
+                **_: Any,
+            ):
                 thread_id = thread_id or "22222222-2222-2222-2222-222222222222"
+                if thread_id in sdk.threads_by_id:
+                    if if_exists != "do_nothing":
+                        raise sdk_error(errors.ConflictError, 409, "Thread already exists")
+                    return sdk.threads_by_id[thread_id]
                 record = {"thread_id": thread_id, "metadata": dict(metadata or {})}
                 sdk.threads_by_id[thread_id] = record
                 sdk.created.append(record)
@@ -98,14 +137,38 @@ class FakeSdk:
 
             async def get_state(self, thread_id: str, **_: Any) -> dict[str, Any]:
                 if thread_id not in sdk.threads_by_id:
-                    raise _http_error(404, '{"detail": "Thread not found"}')
+                    raise sdk_error(errors.NotFoundError, 404, "Thread not found")
                 return {"values": {"messages": sdk.messages}}
+
+            async def search(self, **kwargs: Any) -> list[dict[str, Any]]:
+                sdk.searches.append(kwargs)
+                wanted = (kwargs.get("metadata") or {}).get("principal_id")
+                found = [
+                    t
+                    for t in sdk.threads_by_id.values()
+                    if wanted is None or (t.get("metadata") or {}).get("principal_id") == wanted
+                ]
+                found.sort(
+                    key=lambda t: t.get("updated_at") or "",
+                    reverse=kwargs.get("sort_order") == "desc",
+                )
+                return found
+
+            async def delete(self, thread_id: str, **_: Any) -> None:
+                sdk.deleted.append(thread_id)
+                sdk.threads_by_id.pop(thread_id, None)
+
+            async def update_state(self, thread_id: str, values: Any, **kwargs: Any) -> None:
+                sdk.state_updates.append({"thread_id": thread_id, "values": values, **kwargs})
 
         class _Runs:
             async def stream(
                 self, thread_id: str, assistant_id: str, **kwargs: Any
             ) -> AsyncIterator[Any]:
                 sdk.streams.append({"thread_id": thread_id, "assistant_id": assistant_id, **kwargs})
+                yield SimpleNamespace(event="metadata", data={"run_id": "srv-run-1", "attempt": 1})
+                if sdk.slow_stream:
+                    await asyncio.sleep(30)
                 yield SimpleNamespace(
                     event="updates",
                     data={
@@ -154,7 +217,14 @@ class FakeSdk:
                     ],
                 )
 
-        return SimpleNamespace(threads=_Threads(), runs=_Runs())
+            async def cancel(self, thread_id: str, run_id: str, **_: Any) -> None:
+                sdk.cancelled.append((thread_id, run_id))
+
+        class _Assistants:
+            async def search(self, **_: Any) -> list[dict[str, Any]]:
+                return [{"assistant_id": "agent"}]
+
+        return SimpleNamespace(threads=_Threads(), runs=_Runs(), assistants=_Assistants())
 
 
 @pytest.fixture
@@ -162,11 +232,21 @@ def server(monkeypatch: pytest.MonkeyPatch) -> tuple[ChatRuntime, FakeSdk]:
     sdk = FakeSdk()
     monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=sdk.get_client))
     monkeypatch.setenv("RUNTIME", "langgraph-server")
-    monkeypatch.delenv("AUTH_READ_ACROSS_ROLES", raising=False)
-    monkeypatch.delenv("TRACE_CAPTURE", raising=False)
+    for name in ("AUTH_READ_ACROSS_ROLES", "TRACE_CAPTURE", "AUTH_FORWARD_HEADERS", "APP_ENV"):
+        monkeypatch.delenv(name, raising=False)
     rt = ChatRuntime()
     assert rt.runtime == LANGGRAPH_SERVER
+    # What start() sets up, without a server: in-memory run records and locks.
+    rt.db = Database("memory", runs_table="agent_runs", with_threads=False)
+    rt.runs = RunStore(rt.db)
+    rt.threads = ThreadStore(rt.db)
+    rt.locks = ThreadLocks()
+    rt.started = True
     return rt, sdk
+
+
+async def _events(rt: ChatRuntime, principal: Principal, req: ChatRequest, thread_id: str):
+    return [(e, d) async for e, d in rt.stream(principal, req, thread_id)]
 
 
 async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_events(server) -> None:
@@ -174,10 +254,16 @@ async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_event
     req = ChatRequest(
         message="weather?",
         thread_id=THREAD,
-        forward_headers={"authorization": "Bearer k", "x-request-id": "ignored"},
+        metadata={"source": "web"},
+        forward_headers={
+            "authorization": "Bearer k",
+            "cookie": "sid=1",
+            "x-session-token": "not-forwarded-by-default",
+            "x-request-id": "ignored",
+        },
     )
     assert await rt.resolve_thread(OWNER, req) == THREAD
-    events = [(e, d) async for e, d in rt.stream(OWNER, req, THREAD)]
+    events = await _events(rt, OWNER, req, THREAD)
     names = [e for e, _ in events]
     assert names == [
         "message.start",
@@ -196,9 +282,45 @@ async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_event
         "messages-tuple",
         "updates",
     ]
-    assert stream["context"]["principal_id"] == "A" and stream["metadata"]["principal_id"] == "A"
-    # Only the credential headers are forwarded to the SDK client.
-    assert sdk.headers[0] == {"authorization": "Bearer k"}
+    assert stream["multitask_strategy"] == "reject" and stream["on_disconnect"] == "cancel"
+    assert stream["config"] == {"recursion_limit": 25}
+    # The server persists run context and metadata: no credentials, no raw
+    # principal id in metadata, no client metadata under metadata capture.
+    assert stream["context"] == {
+        "principal_id": "A",
+        "roles": ["viewer"],
+        "attributes": {"tenant": "t1"},
+    }
+    assert "secret-token-A" not in repr(stream)
+    assert stream["metadata"] == {
+        "thread_id": THREAD,
+        "run_id": end["run_id"],
+        "principal_hash": OWNER.hashed_id(),
+    }
+    # Only the configured credential headers reach the SDK client.
+    assert sdk.headers[0] == {"authorization": "Bearer k", "cookie": "sid=1"}
+    record = await rt.runs.get(end["run_id"])
+    assert record is not None and record.status == "ok" and record.metadata == {"source": "web"}
+
+
+async def test_client_metadata_reaches_traces_only_under_full_capture(server, monkeypatch) -> None:
+    rt, sdk = server
+    monkeypatch.setenv("TRACE_CAPTURE", "full")
+    req = ChatRequest(message="x", thread_id=THREAD, metadata={"run_id": "SPOOFED"})
+    await _events(rt, OWNER, req, THREAD)
+    meta = sdk.streams[-1]["metadata"]
+    assert meta["run_id"] != "SPOOFED" and meta["client_metadata"] == {"run_id": "SPOOFED"}
+
+
+async def test_forwarded_headers_follow_auth_forward_headers(server, monkeypatch) -> None:
+    rt, sdk = server
+    headers = {"authorization": "Bearer k", "x-api-key": "k2", "cookie": "c"}
+    monkeypatch.setenv("AUTH_FORWARD_HEADERS", "X-Api-Key")
+    await rt.messages(OWNER, THREAD, headers)
+    assert sdk.headers[-1] == {"x-api-key": "k2"}
+    monkeypatch.setenv("AUTH_FORWARD_HEADERS", "")
+    await rt.messages(OWNER, THREAD, headers)
+    assert sdk.headers[-1] is None
 
 
 async def test_stranger_cannot_continue_or_read_another_principals_thread(server) -> None:
@@ -237,6 +359,7 @@ async def test_owner_reads_tool_args_under_metadata_capture(server) -> None:
 
 
 async def test_unknown_thread_is_created_for_the_caller_and_404_on_read(server) -> None:
+    """The SDK's NotFoundError (no '404' in its text) means 'absent', never 503."""
     rt, sdk = server
     new_id = "33333333-3333-3333-3333-333333333333"
     with pytest.raises(HTTPException) as exc:
@@ -245,19 +368,61 @@ async def test_unknown_thread_is_created_for_the_caller_and_404_on_read(server) 
     assert await rt.resolve_thread(STRANGER, ChatRequest(message="x", thread_id=new_id)) == new_id
     assert sdk.created == [{"thread_id": new_id, "metadata": {"principal_id": "B", "tenant": None}}]
     # A thread the server holds without ownership metadata fails closed.
-    sdk.threads_by_id["bare"] = {"thread_id": "bare", "metadata": {}}
+    bare = "55555555-5555-5555-5555-555555555555"
+    sdk.threads_by_id[bare] = {"thread_id": bare, "metadata": {}}
     with pytest.raises(HTTPException) as exc:
-        await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id="bare"))
+        await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=bare))
     assert exc.value.status_code == 403
 
 
-async def test_server_failure_is_503_not_403(server, monkeypatch) -> None:
+async def test_a_thread_created_in_between_by_someone_else_is_refused(server) -> None:
+    """get() says absent, but another request creates the id first: its owner wins (403)."""
+    rt, sdk = server
+    racing = "66666666-6666-6666-6666-666666666666"
+    original_get_client = sdk.get_client
+
+    def get_client(**kwargs: Any):
+        client = original_get_client(**kwargs)
+        real_get = client.threads.get
+
+        async def get_then_race(thread_id: str, **kw: Any):
+            try:
+                return await real_get(thread_id, **kw)
+            finally:
+                sdk.threads_by_id.setdefault(
+                    thread_id, {"thread_id": thread_id, "metadata": {"principal_id": "B"}}
+                )
+
+        client.threads.get = get_then_race
+        return client
+
+    sys.modules["langgraph_sdk"].get_client = get_client
+    with pytest.raises(HTTPException) as exc:
+        await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=racing))
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("thread_id", ["t-demo-1", "not a uuid", "x" * 200])
+async def test_thread_ids_must_be_uuids_under_the_server_runtime(server, thread_id: str) -> None:
+    rt, sdk = server
+    for call in (
+        rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=thread_id)),
+        rt.messages(OWNER, thread_id),
+        rt.delete_thread(OWNER, thread_id),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await call
+        assert exc.value.status_code == 422
+    assert sdk.created == [] and sdk.deleted == []
+
+
+async def test_server_failure_is_a_generic_503_not_403(server, monkeypatch) -> None:
     rt, _sdk = server
 
     def broken(**_: Any):
         class _Threads:
             async def get(self, thread_id: str, **_: Any):
-                raise httpx.ConnectError("loopback down")
+                raise httpx.ConnectError("loopback down at 10.0.0.7:8123")
 
         return SimpleNamespace(threads=_Threads(), runs=None)
 
@@ -265,19 +430,158 @@ async def test_server_failure_is_503_not_403(server, monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc:
         await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=THREAD))
     assert exc.value.status_code == 503
+    assert "10.0.0.7" not in exc.value.detail and "Reference:" in exc.value.detail
 
 
-async def test_stream_error_part_becomes_an_error_event(server, monkeypatch) -> None:
+async def test_stream_error_part_becomes_a_generic_error_event(server, monkeypatch) -> None:
     rt, _sdk = server
 
     def failing(**_: Any):
         class _Runs:
             async def stream(self, *a: Any, **k: Any) -> AsyncIterator[Any]:
-                yield SimpleNamespace(event="error", data={"message": "model down"})
+                yield SimpleNamespace(
+                    event="error", data={"error": "ValueError", "message": "db at 10.0.0.7 down"}
+                )
 
         return SimpleNamespace(threads=None, runs=_Runs())
 
     monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=failing))
-    events = [(e, d) async for e, d in rt.stream(OWNER, ChatRequest(message="x"), THREAD)]
+    events = await _events(rt, OWNER, ChatRequest(message="x"), THREAD)
     assert [e for e, _ in events] == ["message.start", "error"]
-    assert events[1][1]["code"] == "RuntimeError" and "model down" in events[1][1]["message"]
+    error = events[1][1]
+    assert error["code"] == "run_failed" and error["error_id"] in error["message"]
+    assert "10.0.0.7" not in repr(error) and "detail" not in error
+    record = await rt.runs.get(events[0][1]["run_id"])
+    assert record is not None and record.status == "error"
+
+
+async def test_recursion_limit_error_part_maps_to_its_code(server, monkeypatch) -> None:
+    rt, _sdk = server
+
+    def failing(**_: Any):
+        class _Runs:
+            async def stream(self, *a: Any, **k: Any) -> AsyncIterator[Any]:
+                yield SimpleNamespace(
+                    event="error", data={"error": "GraphRecursionError", "message": "..."}
+                )
+
+        return SimpleNamespace(threads=None, runs=_Runs())
+
+    monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=failing))
+    events = await _events(rt, OWNER, ChatRequest(message="x"), THREAD)
+    assert events[-1][1]["code"] == "recursion_limit"
+
+
+async def test_server_conflict_is_reported_as_thread_busy(server, monkeypatch) -> None:
+    """A run started through the native API holds the thread: the server rejects ours."""
+    rt, _sdk = server
+
+    def busy(**_: Any):
+        class _Runs:
+            async def stream(self, *a: Any, **k: Any) -> AsyncIterator[Any]:
+                raise sdk_error(errors.ConflictError, 409, "Thread is busy")
+                yield  # pragma: no cover
+
+        return SimpleNamespace(threads=None, runs=_Runs())
+
+    monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=busy))
+    events = await _events(rt, OWNER, ChatRequest(message="x"), THREAD)
+    assert events[-1][0] == "error" and events[-1][1]["code"] == "thread_busy"
+
+
+async def test_second_run_on_a_busy_thread_is_refused_before_the_server(server) -> None:
+    rt, sdk = server
+    lease = await rt.acquire_thread(THREAD)
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events == [
+        ("error", {"code": "thread_busy", "message": "This thread already has a run in progress."})
+    ]
+    assert sdk.streams == []
+    await lease.release()
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+
+
+async def test_timeout_cancels_the_server_run(server, monkeypatch) -> None:
+    rt, sdk = server
+    sdk.slow_stream = True
+    monkeypatch.setenv("RUN_TIMEOUT_S", "0.2")
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "error" and events[-1][1]["code"] == "timeout"
+    assert sdk.cancelled == [(THREAD, "srv-run-1")]
+    record = await rt.runs.get(events[0][1]["run_id"])
+    assert record is not None and record.status == "timeout"
+    assert THREAD not in rt.locks.held
+    assert sdk.state_updates == []  # every tool call of the thread has its result
+
+
+async def test_a_stopped_run_gets_its_open_tool_calls_answered(server, monkeypatch) -> None:
+    rt, sdk = server
+    sdk.slow_stream = True
+    sdk.messages = sdk.messages[:2]  # the assistant's tool call, no result yet
+    monkeypatch.setenv("RUN_TIMEOUT_S", "0.2")
+    await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    (update,) = sdk.state_updates
+    assert update["as_node"] == "tools"
+    (patch,) = update["values"]["messages"]
+    assert patch["tool_call_id"] == "c1" and patch["status"] == "error"
+    assert "did not finish" in patch["content"]
+
+
+async def test_list_and_delete_threads_through_the_server(server, monkeypatch) -> None:
+    rt, sdk = server
+    await rt.resolve_thread(STRANGER, ChatRequest(message="x", thread_id=OTHER))
+    listed = await rt.list_threads(OWNER, limit=10, offset=0)
+    assert [t["thread_id"] for t in listed] == [THREAD]
+    assert sdk.searches[-1]["metadata"] == {"principal_id": "A"}
+    assert sdk.searches[-1]["sort_by"] == "updated_at"
+    monkeypatch.setenv("AUTH_READ_ACROSS_ROLES", "auditor")
+    listed = await rt.list_threads(AUDITOR, limit=10, offset=0)
+    assert {t["thread_id"] for t in listed} == {THREAD, OTHER}
+    with pytest.raises(HTTPException) as exc:
+        await rt.delete_thread(AUDITOR, THREAD)  # read-across is read-only
+    assert exc.value.status_code == 403
+    await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert await rt.runs.list_for_thread(THREAD)
+    await rt.delete_thread(OWNER, THREAD)
+    assert sdk.deleted == [THREAD] and await rt.runs.list_for_thread(THREAD) == []
+    with pytest.raises(HTTPException) as exc:
+        await rt.delete_thread(OWNER, THREAD)
+    assert exc.value.status_code == 404
+
+
+async def test_retention_purges_idle_server_threads(server) -> None:
+    rt, sdk = server
+    fresh = "77777777-7777-7777-7777-777777777777"
+    sdk.threads_by_id[fresh] = {
+        "thread_id": fresh,
+        "metadata": {"principal_id": "A"},
+        "updated_at": "2999-01-01T00:00:00+00:00",
+    }
+    assert await rt.purge_expired(30) == 1
+    assert sdk.deleted == [THREAD] and fresh in sdk.threads_by_id
+
+
+def test_persistence_kind_follows_database_uri(server, monkeypatch) -> None:
+    rt, _sdk = server
+    monkeypatch.setenv("DATABASE_URI", ":memory:")  # what `langgraph dev` sets
+    assert rt.checkpointer_kind() == "memory" and not Database.for_server().is_postgres
+    monkeypatch.setenv("DATABASE_URI", "postgresql://u:p@db:5432/agent")
+    assert rt.checkpointer_kind() == "postgres"
+    db = Database.for_server()
+    assert db.is_postgres and db.runs_table == "agent_runs" and not db.with_threads
+
+
+async def test_ready_checks_the_server(server, monkeypatch) -> None:
+    rt, _sdk = server
+    assert await rt.ready() is True
+
+    def broken(**_: Any):
+        class _Assistants:
+            async def search(self, **_: Any):
+                raise httpx.ConnectError("down")
+
+        return SimpleNamespace(assistants=_Assistants())
+
+    monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=broken))
+    assert await rt.ready() is False

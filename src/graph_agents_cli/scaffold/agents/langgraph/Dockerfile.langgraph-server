@@ -1,22 +1,44 @@
 # LangGraph Server runtime image. Mirrors the shape of `langgraph dockerfile`
-# output. The base image is
-# graph_agents_cli._defaults.LANGGRAPH_API_IMAGE; mirror it for a disconnected
-# registry and change the FROM line accordingly.
-FROM langchain/langgraph-api:3.12
+# output, with two differences: the dependencies are installed at the exact
+# versions of uv.lock (not resolved again), and the server runs as uid/gid 1000.
+#
+# The base image is pinned to the langgraph-api release in uv.lock
+# (langchain/langgraph-api:<version>-py3.12): bump both together. For fully
+# reproducible builds pin it by digest as well
+# (`...:0.14.4-py3.12@sha256:<digest>`; `docker buildx imagetools inspect
+# <image>` prints it). Mirror it for a disconnected registry and change the
+# FROM line accordingly.
+FROM langchain/langgraph-api:0.14.4-py3.12
 
 # The whole project (minus .dockerignore) is the dependency, so api-policy.yaml,
 # the outbound API policy the API client enforces, is in the image when the
 # project has one.
 ADD . /deps/{{cookiecutter.project_name}}
 
-RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir -c /api/constraints.txt -e /deps/{{cookiecutter.project_name}}
+# `uv export` writes the locked versions (with hashes); they are installed
+# without resolving again, and must agree with the base image's constraints, so
+# a lock that conflicts with the server fails the build instead of the server.
+# The base image ships uv; nothing is added to it.
+RUN cd /deps/{{cookiecutter.project_name}} \
+ && uv export --frozen --no-dev --no-emit-project --no-header -o /tmp/requirements.txt \
+ && uv pip install --system --no-cache --compile-bytecode --no-deps \
+      -c /api/constraints.txt -r /tmp/requirements.txt \
+ && uv pip install --system --no-cache --compile-bytecode --no-deps \
+      -e /deps/{{cookiecutter.project_name}} \
+ && rm /tmp/requirements.txt
 
-# The graph, the custom routes (/chat, /health, /playground, A2A) and the auth
-# handler, exactly as langgraph.json declares them.
+# The graph, the custom routes (/chat, /threads, /health, /ready, /metrics,
+# /playground, A2A) and the auth handler, as langgraph.json declares them.
+# `disable_meta` turns off the server's unauthenticated meta routes (/docs,
+# /openapi.json, /info, /metrics); the app's own /metrics takes over.
 ENV LANGSERVE_GRAPHS='{"agent": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/agent.py:graph"}'
-ENV LANGGRAPH_HTTP='{"app": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/fast_api_app.py:app"}'
+ENV LANGGRAPH_HTTP='{"app": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/fast_api_app.py:app", "disable_meta": true}'
 ENV LANGGRAPH_AUTH='{"path": "/deps/{{cookiecutter.project_name}}/{{cookiecutter.agent_directory}}/app_utils/auth.py:auth"}'
 # Tells fast_api_app.py it is mounted inside the server (no checkpointer binding).
-ENV LANGGRAPH_SERVER=1
+ENV LANGGRAPH_SERVER=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp
 
 WORKDIR /deps/{{cookiecutter.project_name}}
+
+USER 1000:1000

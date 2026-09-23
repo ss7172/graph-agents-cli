@@ -21,6 +21,10 @@ come from `tools/`. Persistence is bound elsewhere: `fast_api_app.py`
 attaches the checkpointer under the fastapi runtime and LangGraph Server owns
 it under langgraph-server. Replacing `create_agent` with an explicit
 `StateGraph` is a one-file change: keep exporting `graph`.
+
+The graph's default step limit is `RECURSION_LIMIT` (default 25 super-steps,
+about a dozen model/tool round trips), so a run that loops stops with
+`GraphRecursionError` instead of calling the model thousands of times.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import ApiCallError, ApiPolicyError
+from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
 from {{cookiecutter.agent_directory}}.tools import get_tools
 
@@ -93,4 +98,4 @@ graph: CompiledStateGraph = create_agent(
     middleware=[SurfaceApiErrors()],
     context_schema=AgentContext,
     name="{{cookiecutter.project_name}}",
-)
+).with_config({"recursion_limit": recursion_limit()})
