@@ -463,10 +463,12 @@ def test_pinned_port_does_not_silently_reuse_a_server_elsewhere(started, monkeyp
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "70000"])
-def test_invalid_port_env_is_a_clear_error(monkeypatch, raw):
+def test_invalid_port_env_is_a_config_error(monkeypatch, raw):
     monkeypatch.setenv(ls.RUN_PORT_ENV, raw)
-    with pytest.raises(click.ClickException):
+    with pytest.raises(click.ClickException) as excinfo:
         ls.requested_port()
+    assert excinfo.value.exit_code == 3
+    assert ls.RUN_PORT_ENV in str(excinfo.value)
 
 
 def test_find_free_port_skips_busy_ports(monkeypatch):

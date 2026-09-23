@@ -85,6 +85,7 @@ class LangSmithConnectionError(Exception):
         (ConnectionRefusedError(61, "Connection refused"), 2, "network error"),
         (LangSmithConnectionError("POST /datasets failed\nmore"), 2, "network error"),
         (PermissionError(13, "Permission denied"), 2, "PermissionError"),
+        (TimeoutError("judge runner"), 2, "timed out"),
         (__import__("json").JSONDecodeError("Expecting value", "x", 0), 3, "invalid JSON"),
     ],
 )

@@ -132,7 +132,7 @@ def build_serve_command(*, agent_dir: str, port: int, runtime: str) -> list[str]
 
 
 class PortUnavailableError(click.ClickException):
-    """The requested (or every candidate) local port is taken (exit 3)."""
+    """The requested local port is invalid or taken, or every candidate is (exit 3)."""
 
     exit_code = EXIT_PORT_UNAVAILABLE
 
@@ -171,13 +171,13 @@ def requested_port(explicit: int | None = None) -> int | None:
     try:
         value = int(raw)
     except ValueError:
-        raise click.ClickException(f"{RUN_PORT_ENV}={raw!r} is not a port number.") from None
+        raise PortUnavailableError(f"{RUN_PORT_ENV}={raw!r} is not a port number.") from None
     return _valid_port(value, RUN_PORT_ENV)
 
 
 def _valid_port(port: int, source: str) -> int:
     if not 1 <= port <= 65535:
-        raise click.BadParameter(f"{source} must be between 1 and 65535 (got {port}).")
+        raise PortUnavailableError(f"{source} must be between 1 and 65535 (got {port}).")
     return port
 
 

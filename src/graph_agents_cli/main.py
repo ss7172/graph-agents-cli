@@ -370,12 +370,13 @@ def _environment_error(exc: BaseException) -> tuple[str, int] | None:
     modules = {cls.__module__.split(".")[0] for cls in type(exc).__mro__}
     lowered = name.lower()
     if (
-        isinstance(exc, ConnectionError | TimeoutError)
+        isinstance(exc, ConnectionError)
         or modules & {"httpx", "httpcore", "requests", "urllib3"}
         or "connection" in lowered
-        or "timeout" in lowered
     ):
         return f"network error: {detail}", EXIT_TOOL_FAILURE
+    if isinstance(exc, TimeoutError) or "timeout" in lowered:
+        return f"timed out: {detail}", EXIT_TOOL_FAILURE
     if isinstance(exc, OSError):
         return detail, EXIT_TOOL_FAILURE
     return None

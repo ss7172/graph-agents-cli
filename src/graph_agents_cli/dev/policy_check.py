@@ -297,6 +297,9 @@ def read_api_calls(
         tree = ast.parse(tool_path.read_text(encoding="utf-8"), filename=str(tool_path))
     except SyntaxError as exc:
         return [], [f"{name}: syntax error: {exc}"]
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # Unreadable is not "declares no calls": the check cannot vouch for it.
+        return [], [f"{name}: cannot be read as UTF-8 Python source: {exc}"]
 
     calls: list[DeclaredCall] = []
     declaration: ast.stmt | None = None

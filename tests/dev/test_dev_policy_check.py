@@ -168,6 +168,13 @@ def test_subpackages_are_read_like_get_tools_imports_them(project):
     assert len(problems) == 1 and problems[0].startswith("billing/deep/bad.py:"), problems
 
 
+def test_an_unreadable_tool_module_is_a_problem_not_silence(project):
+    tools = project / "app" / "tools"
+    (tools / "latin1.py").write_bytes(b"# \xe9\nAPI_CALLS = []\n")
+    _calls, problems = pc.collect_declared_calls(tools)
+    assert any(p.startswith("latin1.py: cannot be read") for p in problems), problems
+
+
 def test_subpackage_calls_are_judged_against_the_policy(project):
     write_policy(project, incidents=api(allowed_methods=["GET"]))
     sub = project / "app" / "tools" / "sub"

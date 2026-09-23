@@ -51,7 +51,9 @@ pytestmark = [
 CLI = [sys.executable, "-m", "graph_agents_cli.main"]
 REGISTRY = "ghcr.io/e2e"
 API_KEY = "e2e"
-PLAYGROUND_PORT = 18790
+# Parallel runs on one machine pick their own ports: the playground's here, the
+# run/eval server's with GRAPH_AGENTS_CLI_RUN_PORT (read by the CLI itself).
+PLAYGROUND_PORT = int(os.environ.get("GRAPH_AGENTS_CLI_E2E_PLAYGROUND_PORT", "18790"))
 
 
 def _env(extra: dict[str, str] | None = None, *, kubeconfig: Path | None = None) -> dict[str, str]:

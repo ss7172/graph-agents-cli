@@ -63,7 +63,7 @@ from graph_agents_cli._defaults import (
     normalize_auth_policy,
 )
 from graph_agents_cli._output import Console
-from graph_agents_cli._project import find_project_root
+from graph_agents_cli._project import ManifestError, find_project_root
 from graph_agents_cli._runner import run_resolved
 from graph_agents_cli._skills_check import NO_UPDATE_CHECK_ENV
 from graph_agents_cli._tools import ToolNotFoundError, install_hint
@@ -146,9 +146,9 @@ def _read_manifest(root: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
-        raise click.ClickException(f"Could not read {path}: {e}") from e
+        raise ManifestError(f"Could not read {path}: {e}") from e
     if not isinstance(data, dict):
-        raise click.ClickException(f"malformed {MANIFEST_FILENAME}")
+        raise ManifestError(f"malformed {MANIFEST_FILENAME}")
     return data
 
 
@@ -633,7 +633,11 @@ def write_env(env_file: Path, entries: dict[str, str]) -> None:
         return
     target = env_file.resolve() if env_file.is_symlink() else env_file
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing = target.read_text(encoding="utf-8") if target.is_file() else ""
+    existing = ""
+    if target.is_file():
+        # newline="": keep CRLF files CRLF (no universal-newline translation).
+        with target.open(encoding="utf-8", newline="") as handle:
+            existing = handle.read()
     lines = existing.splitlines(keepends=True)
     pending = dict(entries)
     filled: set[str] = set()
@@ -645,7 +649,7 @@ def write_env(env_file: Path, entries: dict[str, str]) -> None:
         if value.split(" #", 1)[0].strip() not in _BLANK_VALUES:
             continue
         key = match.group("key")
-        ending = "\n" if line.endswith("\n") else ""
+        ending = line[len(line.rstrip("\r\n")) :]  # keep the file's own line ending
         lines[index] = f"{match.group('lead')}{key}={pending[key]}{ending}"
         filled.add(key)
     text = "".join(lines)
@@ -661,7 +665,7 @@ def _write_private(path: Path, text: str) -> None:
     """Replace ``path`` with ``text``, readable by the owner only (0600)."""
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
         os.chmod(tmp_name, ENV_FILE_MODE)
         os.replace(tmp_name, path)

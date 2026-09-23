@@ -506,6 +506,15 @@ def test_write_env_fills_blank_lines_in_place_and_keeps_the_file_private(runner,
     assert stat.S_IMODE((project / ".env").stat().st_mode) == 0o600
 
 
+def test_write_env_keeps_crlf_line_endings(runner, project, kubectl):
+    (project / ".env").write_bytes(b"APP_ENV=dev\r\nOPENAI_API_KEY=\r\nLAST=1\r\n")
+    result = runner.invoke(cmd_login, ["--write-env"], input="sk-typed\n")
+    assert result.exit_code == 0, result.output
+    assert (project / ".env").read_bytes() == (
+        b"APP_ENV=dev\r\nOPENAI_API_KEY=sk-typed\r\nLAST=1\r\n"
+    )
+
+
 def test_write_env_creates_a_private_file(runner, project, kubectl):
     import stat
 

@@ -192,7 +192,7 @@ def create(
     )
 
     if debug:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, force=True)
         console.print("> Debug mode enabled")
         logging.debug("Starting CLI in debug mode")
 
