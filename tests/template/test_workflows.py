@@ -796,6 +796,9 @@ def test_codeowners_covers_everything_that_shapes_production_or_the_gate(
             "graph-agents-cli-manifest.yaml",
         ):
             assert _owners(codeowners, path) == ["@CHANGE-ME/production-approvers"], (name, path)
-        # Application code is reviewed as usual (no production approver needed).
+        # Application code is reviewed as usual (no production approver needed), and so
+        # are the dev and staging values: the staging image-tag PR auto-merges.
         assert _owners(codeowners, "app/agent.py") == []
         assert _owners(codeowners, "tests/unit/test_agent.py") == []
+        assert _owners(codeowners, "deployment/helm/weather-agent/values-staging.yaml") == []
+        assert _owners(codeowners, "deployment/helm/weather-agent/values-dev.yaml") == []

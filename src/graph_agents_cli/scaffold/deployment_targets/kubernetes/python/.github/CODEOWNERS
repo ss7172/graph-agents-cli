@@ -6,8 +6,13 @@
 # Branch protection on main must require code-owner review, dismiss stale
 # approvals and prevent self-approval.
 #
-# Deployment: the chart, every environment's values and the Argo CD Applications.
+# Deployment: the chart, the shared and prod values and the Argo CD Applications.
 /deployment/ @CHANGE-ME/production-approvers
+# ...except the dev and staging values: the staging workflow's image-tag PR
+# merges automatically once pr_checks passes (a line without owners leaves
+# the file unowned, so ordinary review applies).
+/deployment/helm/*/values-dev.yaml
+/deployment/helm/*/values-staging.yaml
 # CI/CD: the workflows, their settings (.github/agent.env) and this file.
 /.github/ @CHANGE-ME/production-approvers
 # The outbound API access policy the running agent enforces.
