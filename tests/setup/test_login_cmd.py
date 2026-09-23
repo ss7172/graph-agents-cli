@@ -479,6 +479,62 @@ def test_write_env_generates_api_key_for_shared_bearer_project(runner, project, 
     assert "API_KEY set (.env)" in result.output
 
 
+def test_write_env_fills_blank_lines_in_place_and_keeps_the_file_private(runner, project, kubectl):
+    """`cp .env.example .env` then `login --write-env`: one API_KEY line, mode 0600."""
+    import stat
+
+    write_manifest(project)
+    example = (
+        "# comment\nAPP_ENV=dev\nOPENAI_API_KEY=\n"
+        "export API_KEY=''\n# API_KEY=do-not-touch-comments\nLATER=1\nAPI_KEY=\n"
+    )
+    (project / ".env").write_text(example)
+    (project / ".env").chmod(0o644)
+    result = runner.invoke(cmd_login, ["--write-env"], input="sk-typed\n")
+    assert result.exit_code == 0, result.output
+    text = (project / ".env").read_text()
+    lines = text.splitlines()
+    api_lines = [line for line in lines if line.lstrip().startswith(("API_KEY=", "export API_KEY"))]
+    # Every blank assignment got the value (a later blank one would otherwise win).
+    assert len(api_lines) == 2 and api_lines[0].startswith("export API_KEY=")
+    assert len({line.split("=", 1)[1] for line in api_lines}) == 1
+    assert "OPENAI_API_KEY=sk-typed" in lines
+    assert "# API_KEY=do-not-touch-comments" in lines
+    assert lines[:2] == ["# comment", "APP_ENV=dev"] and "LATER=1" in lines
+    assert len(lines) == len(example.splitlines())  # nothing appended
+    assert re.fullmatch(r"[0-9a-f]{64}", dotenv_values(project / ".env")["API_KEY"])
+    assert stat.S_IMODE((project / ".env").stat().st_mode) == 0o600
+
+
+def test_write_env_creates_a_private_file(runner, project, kubectl):
+    import stat
+
+    result = runner.invoke(cmd_login, ["--write-env"], input="sk-typed\n")
+    assert result.exit_code == 0, result.output
+    assert stat.S_IMODE((project / ".env").stat().st_mode) == 0o600
+
+
+def test_write_env_with_closed_stdin_still_writes_the_generated_key(runner, project, kubectl):
+    """With no input (CI, a pipe) prompting used to abort and write nothing."""
+    write_manifest(project)
+    (project / ".env").write_text("API_KEY=\n")
+    result = runner.invoke(cmd_login, ["--write-env"], input="")
+    assert "Aborted!" not in result.output
+    values = dotenv_values(project / ".env")
+    assert re.fullmatch(r"[0-9a-f]{64}", values["API_KEY"])
+    assert "No input for OPENAI_API_KEY (stdin closed)" in result.output
+
+
+def test_write_env_through_a_symlinked_env_file(runner, project, kubectl, tmp_path):
+    real = tmp_path / "shared.env"
+    real.write_text("OPENAI_API_KEY=\n")
+    (project / ".env").symlink_to(real)
+    result = runner.invoke(cmd_login, ["--write-env"], input="sk-typed\n")
+    assert result.exit_code == 0, result.output
+    assert (project / ".env").is_symlink()
+    assert real.read_text() == "OPENAI_API_KEY=sk-typed\n"
+
+
 def test_write_env_generates_api_key_even_when_provider_key_is_set(
     runner, project, kubectl, monkeypatch
 ):

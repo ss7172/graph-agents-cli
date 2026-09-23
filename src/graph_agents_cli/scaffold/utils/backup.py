@@ -12,10 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared backup utility for project directories."""
+"""Shared backup utility for project directories.
 
+A backup is the undo of ``enhance`` and ``upgrade``, so it copies the whole
+project, ``.env`` included (both commands merge it, and a generated project
+gitignores it, so the backup may hold the user's only copy). Because of that it
+is private: the backups directory and every backup are 0700 and every ``.env*``
+file in them 0600. Only the newest ``KEEP_BACKUPS`` backups of a project are
+kept, so credentials do not pile up in the home directory.
+"""
+
+import contextlib
 import datetime
+import os
 import pathlib
+import re
 import shutil
 from collections.abc import Callable
 
@@ -26,6 +37,10 @@ from graph_agents_cli._output import Console
 from .fs import standard_ignore_patterns
 
 BACKUP_BASE_DIR = pathlib.Path.home() / ".graph-agents-cli" / "backups"
+# Backups kept per project (by directory name); older ones are deleted.
+KEEP_BACKUPS = 5
+_PRIVATE_DIR = 0o700
+_PRIVATE_FILE = 0o600
 
 
 def create_project_backup(
@@ -56,13 +71,25 @@ def create_project_backup(
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = BACKUP_BASE_DIR / f"{project_dir.name}_{timestamp}"
+    suffix = 1
+    while backup_dir.exists():  # two backups within the same second
+        suffix += 1
+        backup_dir = BACKUP_BASE_DIR / f"{project_dir.name}_{timestamp}_{suffix}"
 
     console.print("📦 [blue]Creating backup before modification...[/blue]")
 
     try:
         BACKUP_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        _make_private_dir(BACKUP_BASE_DIR)
         shutil.copytree(project_dir, backup_dir, ignore=standard_ignore_patterns)
+        _make_private_tree(backup_dir)
         console.print(f"Backup created: [cyan]{backup_dir}[/cyan]")
+        pruned = prune_backups(project_dir.name, keep=KEEP_BACKUPS, current=backup_dir)
+        if pruned:
+            console.print(
+                f"[dim]Removed {len(pruned)} older backup(s) of {project_dir.name} "
+                f"(the newest {KEEP_BACKUPS} are kept).[/dim]"
+            )
         return backup_dir
     except Exception as e:
         console.print(f"⚠️  [yellow]Warning: Could not create backup: {e}[/yellow]")
@@ -70,6 +97,50 @@ def create_project_backup(
             if not click.confirm("Continue without backup?", default=True):
                 raise click.Abort() from e
         return None
+
+
+def _make_private_dir(path: pathlib.Path) -> None:
+    with contextlib.suppress(OSError):
+        os.chmod(path, _PRIVATE_DIR)
+
+
+def _make_private_tree(root: pathlib.Path) -> None:
+    """0700 on the backup and its directories, 0600 on the env files it holds."""
+    _make_private_dir(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames:
+            _make_private_dir(pathlib.Path(dirpath) / name)
+        for name in filenames:
+            if name.startswith(".env"):
+                with contextlib.suppress(OSError):
+                    os.chmod(pathlib.Path(dirpath) / name, _PRIVATE_FILE)
+
+
+def prune_backups(
+    project_name: str, *, keep: int = KEEP_BACKUPS, current: pathlib.Path | None = None
+) -> list[pathlib.Path]:
+    """Delete all but the newest ``keep`` backups of ``project_name``; return what was removed.
+
+    Only directories named exactly ``<project_name>_<YYYYmmdd>_<HHMMSS>[_n]`` are
+    considered, so another project whose name shares a prefix is never touched,
+    and ``current`` (the backup just made) is never removed.
+    """
+    if not BACKUP_BASE_DIR.is_dir():
+        return []
+    pattern = re.compile(rf"^{re.escape(project_name)}_(\d{{8}}_\d{{6}})(?:_(\d+))?$")
+    found: list[tuple[str, int, pathlib.Path]] = []
+    for entry in BACKUP_BASE_DIR.iterdir():
+        match = pattern.match(entry.name)
+        if match and entry.is_dir() and not entry.is_symlink():
+            found.append((match.group(1), int(match.group(2) or 1), entry))
+    found.sort(reverse=True)
+    removed: list[pathlib.Path] = []
+    for _stamp, _n, entry in found[max(keep, 1) :]:
+        if current is not None and entry == current:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        removed.append(entry)
+    return removed
 
 
 def make_backup_pre_apply_hook(
