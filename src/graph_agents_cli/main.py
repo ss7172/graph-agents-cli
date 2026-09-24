@@ -414,8 +414,30 @@ def _configure_logging() -> None:
     root.setLevel(logging.WARNING)
 
 
+def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    """``--version``: the build id, which tells apart builds that share a version.
+
+    A release build prints its version (``0.2.0``); any other build adds the
+    commit (``0.2.0+g1a2b3c4``, ``.dirty`` for uncommitted changes). Computed
+    only when asked: a source checkout reads git for it.
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    from graph_agents_cli._build import current_build
+
+    click.echo(f"graph-agents-cli, version {current_build().id}")
+    ctx.exit()
+
+
 @click.group(cls=_MainGroup)
-@click.version_option(version=__version__, prog_name="graph-agents-cli")
+@click.option(
+    "--version",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_print_version,
+    help="Show the version (with the commit, for a build that is not a release) and exit.",
+)
 def main():
     """Graph Agents CLI — LangGraph agents on Kubernetes.
 

@@ -25,6 +25,7 @@ import click
 
 import graph_agents_cli as _cli_pkg
 from graph_agents_cli.__init__ import __version__
+from graph_agents_cli._build import BuildInfo, current_build
 from graph_agents_cli._output import emit
 from graph_agents_cli._project import (
     ProjectConfig,
@@ -83,6 +84,16 @@ def _print_installed_skills(skills: list[dict] | None) -> None:
         click.echo(f"Installed skills:   {len(names)} ({scope})")
         for name in sorted(names):
             click.echo(f"  - {name}")
+
+
+def build_info_json(build: BuildInfo) -> dict[str, Any]:
+    """The ``cli_build`` block of ``info --json``."""
+    return {
+        "id": build.id,
+        "commit": build.commit,
+        "dirty": build.dirty,
+        "release": build.is_release,
+    }
 
 
 def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
@@ -147,8 +158,10 @@ def cmd_info(as_json: bool) -> None:
     os_info = platform.platform()
     extension_set = load_extension_set(project_root, user_config_root())
 
+    build = current_build()
     base: dict[str, Any] = {
         "cli_version": __version__,
+        "cli_build": build_info_json(build),
         "cli_install_path": _CLI_INSTALL_PATH,
         "os_info": os_info,
         "installed_skills": installed_skills,
@@ -162,6 +175,7 @@ def cmd_info(as_json: bool) -> None:
             emit({**base, "project": None})
         else:
             click.echo(f"CLI version:        {__version__}")
+            click.echo(f"CLI build:          {build.describe()}")
             click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
             click.echo(f"OS info:            {os_info}")
             _print_installed_skills(installed_skills)
@@ -180,6 +194,7 @@ def cmd_info(as_json: bool) -> None:
         return
 
     click.echo(f"CLI version:        {__version__}")
+    click.echo(f"CLI build:          {build.describe()}")
     click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
     click.echo(f"OS info:            {os_info}")
     _print_installed_skills(installed_skills)

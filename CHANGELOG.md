@@ -556,6 +556,16 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 ### Fixed
 
+- `uv tool install --from <checkout> graph-agents-cli` could silently reinstall uv's cached
+  wheel of an earlier commit: uv keyed its build cache on `pyproject.toml` alone, whose
+  version does not change between releases. `pyproject.toml` now sets `[tool.uv] cache-keys`
+  on the commit, the tags and every file under `src/`, so a moved or edited checkout is
+  rebuilt (a checkout at a commit older than this fix still needs `--reinstall`).
+  `--version` names the build: `0.2.0` for the release, `0.2.0+g<commit>` for any other
+  commit and `0.2.0+g<commit>.dirty` with uncommitted changes; `info` shows the full commit
+  (`info --json`: `cli_build`). Every wheel and sdist built from a git checkout records the
+  commit in `graph_agents_cli/_build_info.json` (`hatch_build.py`). CONTRIBUTING.md
+  describes installing a build from a checkout.
 - The `pr_checks` workflow wrote comment lines of `agent.env` into `GITHUB_ENV` and failed.
 - `deploy` created no namespace before applying the Secret on a first deploy.
 - Server runtime: "thread not found" is 404, not 503; run records are durable in Postgres.

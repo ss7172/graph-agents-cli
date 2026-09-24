@@ -32,6 +32,34 @@ uv run graph-agents-cli setup --dev  # optional: editable `uv tool install` + sk
 the lock with them. CI pins uv 0.9.2 (the version the bundled template locks are generated
 with); use the same locally when you regenerate locks.
 
+### Installing a build from a checkout
+
+To use a development build as your `graph-agents-cli` outside `uv run` (to try it on a real
+project, or to hand it to a reviewer), install it from the checkout:
+
+```bash
+uv tool install --from /path/to/graph-agents-cli graph-agents-cli   # a snapshot of the checkout
+uv run graph-agents-cli setup --dev                                 # or: editable, follows the checkout
+```
+
+`pyproject.toml` (`[tool.uv] cache-keys`) keys uv's build cache on the checkout's commit, its
+tags and every file under `src/`, so after a pull, a branch switch or an edit the same
+command rebuilds and installs the new code; no `--reinstall` is needed. (uv's default key is
+`pyproject.toml` alone, whose version does not change between releases: before these keys
+it silently reinstalled a cached wheel of an earlier commit. A checkout at a commit that
+predates them still needs `--reinstall`.) Use a separate `UV_TOOL_DIR` and
+`UV_TOOL_BIN_DIR` to keep a development build beside a released one.
+
+Builds between two releases share the version string; `graph-agents-cli --version` tells them
+apart: `0.2.0` for a clean build of the commit the release tag `v0.2.0` names,
+`0.2.0+g1a2b3c4` for any other commit, and `0.2.0+g1a2b3c4.dirty` when files under `src/`
+(or `pyproject.toml`, `hatch_build.py`) had uncommitted changes. `graph-agents-cli info`
+prints the full commit (`info --json`: `cli_build`). The facts come from
+`graph_agents_cli/_build_info.json`, which `hatch_build.py` writes into every wheel and sdist
+built from a git checkout (`src/graph_agents_cli/_build.py` computes them); an editable
+install reads git when asked, and a tree without git builds a wheel identified by its
+version only.
+
 ## Tests
 
 | Tier | Command | Needs | Runs in CI |
@@ -296,9 +324,11 @@ owner tags releases.
 7. `.github/workflows/release.yml` then checks that the tag equals the package version (and
    the plugin manifests, the skills' `metadata.version` and the changelog agree), runs ruff
    and the fast suite, builds the sdist and wheel with `uv build`, checks that the wheel
-   installs and reports the version, and creates the GitHub Release with the sdist, the
-   wheel, `SHA256SUMS` and the changelog section as notes (a version with `a`, `b`, `rc` or
-   `dev` is a prerelease).
+   installs and reports the version (exactly `version X.Y.Z`: `hatch_build.py` marks the
+   build a release only when the tag `vX.Y.Z` names the checked-out commit and the tree is
+   clean; any other build reports `X.Y.Z+g<commit>`), and creates the GitHub Release with
+   the sdist, the wheel, `SHA256SUMS` and the changelog section as notes (a version with
+   `a`, `b`, `rc` or `dev` is a prerelease).
 8. **PyPI (off by default).** The `pypi` job runs only when the variable `PUBLISH_TO_PYPI`
    is `true`. Before turning it on, the owner registers the project on PyPI with a trusted
    publisher (owner `ss7172`, repository `graph-agents-cli`, workflow `release.yml`,
