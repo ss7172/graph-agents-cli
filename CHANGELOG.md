@@ -64,9 +64,10 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `--context`; the kubeconfig's current context is used only after a confirmation prompt, or
   `--yes` when there is no terminal (exit 1 otherwise). CI jobs that deploy need `--yes` or
   `--context` (the generated workflows pass both).
-- **A live `API_KEY` is never replaced implicitly.** `secrets apply` and `deploy` keep the
-  key in the cluster unless the env file sets a different one **and** `--rotate-api-key` is
-  passed. A generated key is written to the env file (mode 0600) instead of being printed.
+- **A live `API_KEY` is never replaced implicitly.** Under `shared-bearer`, `secrets apply`
+  and `deploy` keep the key in the cluster unless the env file sets a different one **and**
+  `--rotate-api-key` is passed. A generated key is written to the env file (mode 0600)
+  instead of being printed.
 - **`helm-push` reads `DEPLOY_KUBECONFIG` from the `staging` and `production` GitHub
   environments** (was the repository secret `KUBECONFIG`), so the production reviewers gate
   it. Create the environment secrets and delete the repository secret. `deploy --env
@@ -95,6 +96,77 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - **`.github/agent.env` is data, not shell.** The workflows accept only `IMAGE_REPOSITORY`,
   `RELEASE_NAME`, `CHART_PATH`, `RUNTIME`, `CD` and `GRAPH_AGENTS_CLI_SPEC`, and refuse
   anything else.
+- **A run that reaches the step limit ends with a reply, status `step_limit`.**
+  `RECURSION_LIMIT` defaults to 50 (was 25): two steps to answer plus two per sequential tool
+  call, so 24 calls. A run that reaches it streams a final reply saying so and ends with
+  `message.end` `"status": "step_limit"` (was an `error` event `recursion_limit`, now sent only
+  when the reply cannot be written); its work stays in the thread. Clients that treat any
+  status other than `ok` as a failure should accept `step_limit`; the eval client counts it as
+  an error turn ("message.end status step_limit").
+- **Run records and statuses.** A run is recorded when it starts (`running`) and ends `ok`,
+  `step_limit`, `error`, `timeout`, `cancelled` or `interrupted` (its lease was lost, or its
+  process died: reconciled about a minute after the lease expires, `error_type`
+  `ProcessLost`). Dashboards keyed on the old statuses need the new ones.
+- **`GET /threads` lists the caller's own threads by default, read-across roles included**
+  (they got every principal's before); `?scope=all` lists every thread for a role in
+  `AUTH_READ_ACROSS_ROLES` (403 otherwise; any other scope is 422). Rows gain `owner`, the
+  hashed principal id.
+- **One message cap for every surface.** `MAX_MESSAGE_CHARS` (default 32000): a longer
+  message is 422 on `/chat` and JSON-RPC -32602 over A2A 1.0 and 0.3 (A2A accepted up to
+  `MAX_REQUEST_BYTES` before). A `/chat` 422 no longer echoes the submitted value (`input`,
+  `url`); a too-long message is `value_error` (was `string_too_long`); text with an unpaired
+  surrogate is 422 (was 500).
+- **Failed tool calls reach clients as an error id.** Outside `APP_ENV=dev` a failed call's
+  `tool.result` `result` and its message in `GET /threads/{id}/messages` read "The tool call
+  did not succeed. Reference: <error_id>." with a new `error_id` field; the error text
+  (policy rule, limit, upstream status and reason) goes to the model only. API-policy
+  refusals read "... refused by the API policy: <reason>." (no "(api-policy.yaml)").
+- **Outbound calls: stricter headers and no method override.** Tool-supplied `Host`,
+  method-override (`X-HTTP-Method-Override` and its underscore spelling), `X-Forwarded-*`,
+  `Forwarded`, `X-Original-URL`, `X-Rewrite-URL` and hop-by-hop headers are dropped with a
+  warning; a `_method` query parameter or top-level JSON body key raises `ApiPolicyError`.
+- **Eval gates can change result.** `expect.contains` and `not_contains` ignore case (add
+  `expect.case_insensitive: false` for exact matching; a `not_contains` word now also fails
+  in another case). A quality metric's pass rate is passed / scored over the cases that ran
+  it (was over every planned case), so a metric declared on only some cases can now miss its
+  gate. `eval_config.yaml` `judge:` accepts only `provider`, `model` and
+  `max_tool_result_chars`, and an unknown `prompt_template` placeholder is exit 3 at load.
+- **New projects list `API_KEY` in `secrets.keys` only under `shared-bearer`** (the one policy
+  that reads it); `secrets apply`, `deploy` and `login --write-env` generate it only there.
+  Existing manifests keep what they list.
+- **Chart: bounded shutdown and a separate metrics Secret.** The chart refuses to render when
+  `terminationGracePeriodSeconds` (30) is not above `shutdown.preStopSleepSeconds` (5) +
+  `shutdown.drainSeconds` (20); raise it with them. The ServiceMonitor's bearer token now
+  comes from the Secret `<release>-metrics` (was the app Secret).
+- **`deploy` refuses more outside `dev`**: a `CHANGE-ME` value in the chart `env` (exit 3; a
+  warning in `dev`), and `jwt` without a JWKS URL or public key, `AUTH_JWT_ISSUER` and
+  `AUTH_JWT_AUDIENCE` (exit 3). `deploy --status` and `--restart` wait at most `--timeout`
+  and exit 1 / 2 when the pods are not ready (they returned at once before).
+- **`extension add` / `update` without a terminal never prompts**: untrusted code needs `-y`
+  (exit 1 otherwise; `update` keeps the installed copy).
+
+#### Upgrading a running deployment
+
+1. **Roll out with `Recreate`, or at one replica.** Runs take a Postgres lease per thread
+   (`thread_locks`, `agent_thread_locks` under `langgraph-server`), which older builds do not
+   honour: 0.1.0 has no run lock across replicas, and pre-release 0.2.0 builds used a session
+   advisory lock. While old and new pods run side by side, one thread can run on both.
+2. The new tables, their token sequence and a partial index on the runs table (built
+   `CONCURRENTLY`) are created at startup; nothing to run by hand.
+3. With `metrics.serviceMonitor.bearerToken.enabled` and the default Secret, run
+   `graph-agents-cli secrets apply --env <env>` once after upgrading the chart, so
+   `<release>-metrics` exists (`infra check` shows the row).
+4. If you lowered `terminationGracePeriodSeconds`, keep it above
+   `shutdown.preStopSleepSeconds + shutdown.drainSeconds` (or lower those).
+5. Clients: accept `message.end` status `step_limit`; list other principals' threads with
+   `GET /threads?scope=all`; let the server generate thread ids (omit `thread_id`) or use
+   UUID4s: a thread id another principal used first is theirs.
+6. Eval datasets: review `not_contains` checks (now case-insensitive) and metrics declared
+   on only some cases (see above).
+7. Template files you have not edited take the new versions with `graph-agents-cli scaffold
+   upgrade`; in `app/agent.py` keep `middleware()` (`SurfaceApiErrors` and
+   `UntrustedToolResults`) if you rewrote it, and in tools use `ToolRuntime[Any]`.
+
 
 #### Upgrading a project created with 0.1.0
 
@@ -204,13 +276,13 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - The `approval` key is reserved on an API and on an operation entry for human approval of
   calls (planned) and refused until then ("approval gates are not supported yet (planned);
   remove the approval key"), so a policy never counts on a gate that does not exist.
-- **Endpoints**: `GET /ready` (readiness: the database answers within 2 s), `GET /metrics`
-  (Prometheus: request count and latency, runs by status, active runs, run duration, tokens;
-  optional `METRICS_TOKEN`), `GET /threads` (the caller's threads) and `DELETE
-  /threads/{thread_id}`.
+- **Endpoints**: `GET /ready` (readiness: the database is set up and answers within 2 s),
+  `GET /metrics` (Prometheus: request count and latency, runs by status, active runs, run
+  duration, tokens, database up; optional `METRICS_TOKEN`), `GET /threads` (the caller's
+  threads; `?scope=all` for read-across roles) and `DELETE /threads/{thread_id}`.
 - **Runtime guardrails**: one run per thread (409 `{"code": "thread_busy"}`, with a Postgres
-  advisory lock across replicas), `RUN_TIMEOUT_S`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`,
-  `RECURSION_LIMIT`, `MAX_REQUEST_BYTES` (413), `MAX_METADATA_KEYS` and
+  lease across replicas), `RUN_TIMEOUT_S`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`,
+  `RECURSION_LIMIT` (50), `MAX_REQUEST_BYTES` (413), `MAX_MESSAGE_CHARS`, `MAX_METADATA_KEYS` and
   `MAX_METADATA_VALUE_CHARS` (422), `SSE_HEARTBEAT_S`, a client disconnect cancels the run,
   and a stopped run answers its open tool calls so the thread stays usable.
 - `RETENTION_DAYS`: an hourly best-effort purge of threads (checkpoints and run records) idle
@@ -234,7 +306,8 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   whether `DEPLOY_KUBECONFIG` exists as an environment secret and no repository-level
   kubeconfig secret exists.
 - Chart: `metrics.serviceMonitor.bearerToken` makes the ServiceMonitor send `METRICS_TOKEN`
-  (from the app Secret by default), so a token-protected `/metrics` can be scraped.
+  (from the Secret `<release>-metrics` by default, which `secrets apply` and `deploy` write
+  with that key alone), so a token-protected `/metrics` can be scraped.
 - `run --port` and `GRAPH_AGENTS_CLI_RUN_PORT`; a port preflight for `run` and `playground`
   (exit 3 when the port is taken); `GRAPH_AGENTS_CLI_DEBUG=1` shows the traceback behind a
   one-line error.
@@ -261,6 +334,84 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   and the fast suite on every pull request and push to `main`; the end-to-end suite nightly
   and on demand) and `.github/workflows/release.yml` (a tag `vX.Y.Z` builds the sdist and
   wheel and creates a GitHub Release; PyPI trusted publishing is opt-in).
+- **`graph-agents-cli auth dev-token --sub USER [--roles R,...] [--ttl 12h]`**: a JWT for
+  local runs of a `jwt` project (`APP_ENV=dev` only), printed alone on stdout for
+  `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice)"`. The
+  first call creates a dev RSA key in `.graph-agents-cli/dev-jwt/` (0600, git ignored; safe
+  when several runs start at once) and fills blank `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`
+  and `AUTH_JWT_AUDIENCE` in `.env`. Refused (exit 3) for other policies, outside dev, or
+  with a JWKS URL or another key configured. `login` gains the checks `jwt_key`,
+  `jwt_token`, `jwt_claims` and `env_file`.
+- **History repair**: a thread left mid tool call (a timeout, a disconnect, a crash, an OOM
+  kill, a database outage) is repaired at the start of the next run on both runtimes: each
+  open call gets an error result right after it, and a result written after a later message
+  is moved back. Calls and results are paired turn by turn, so tool-call ids that repeat
+  across turns (`call_0` in every message) never make a healthy thread look damaged, and a
+  healthy thread is never rewritten.
+- **Run leases**: one run per thread across replicas is a Postgres lease with a 30 s expiry,
+  renewed every 5 s, with a fencing token checked before every checkpoint write. A frozen or
+  partitioned replica frees its threads after 30 s (a session advisory lock held them for
+  about 2 hours); a database restart or a killed session no longer lets a second replica run
+  the thread. A run that cannot renew its lease stops (`interrupted`) before it writes.
+- **Database outages**: connections default to `connect_timeout=5` and TCP keepalives (the
+  DSN wins); requests answer 503 "Database unavailable. Reference: <id>" within 5 s (2 s once
+  the app knows) with one WARNING line and no traceback, on every route; the app starts and
+  stays alive while Postgres is unreachable (`/health` 200, `/ready` 503) and becomes ready
+  once it answers. New metric `agent_database_up`. The pool checkout timeout is 5 s (was 10).
+- A startup WARNING when an API's `limits.max_calls_per_run` cannot be reached within
+  `RECURSION_LIMIT` (it names the value needed).
+- **Untrusted tool output**: `app_utils.content.UntrustedToolResults`, wired into the
+  generated agent next to `SurfaceApiErrors` (`agent.middleware()`), fences every tool
+  result the model reads in `<tool_output ... trust="untrusted">` tags on both runtimes,
+  whatever the result's text looks like (tags inside it are renamed, so it cannot close the
+  fence or forge one); the default `SYSTEM_PROMPT` says tool output is data, never
+  instructions. Helpers for tools in `app_utils.api_client`: `require_user_mentioned`,
+  `require_owner`, `current_caller`, `latest_user_message`.
+- **A2A**: `A2A_DESCRIPTION` sets the card's description (and its chat skill's) and is in the
+  chart values; `AGENT_VERSION` sets the card version. `SendMessage` returns the reply as one
+  text part; streamed replies mark the last chunk `lastChunk`, and the stored task holds one
+  part. A message with no text, an empty text part, a non-user role or over
+  `MAX_MESSAGE_CHARS` is -32602, and an A2A 0.3 request that fails the SDK's validation
+  (a JSON-escaped method name, an unpaired surrogate, a missing `messageId`) is answered
+  -32602 or -32600 naming the fields, never the values, with no traceback.
+- `/chat` without a `thread_id` starts a thread with a server-generated UUID4; `DELETE
+  /threads/{id}` and the retention purge (both runtimes) drop the thread's A2A tasks.
+- **eval**: judges of a multi-turn case see every earlier turn (user message, each tool call
+  with its result, the agent's reply) and a new `{transcript}` placeholder; a tool result is
+  cut for the judge at `judge.max_tool_result_chars` (default 50000, `null` never; was a
+  silent 2000) with a `[TRUNCATED ...]` marker, a warning and `judge_notes`;
+  `expect.case_insensitive`; `expect.scope: final_turn | all_turns`; results add
+  `quality.<m>.scored`, `passed` and `status`, `fake_model` and `warnings`; `eval grade`
+  warns when the agent or the judge ran on the fake model ("gate met ... (fake model:
+  plumbing check only, not a quality signal)"), when a `--url` run's project settings name
+  the fake model, and when `all_turns` checks had to read the final turn only; `eval
+  generate --url` / `eval run --url` warn before the first case that tools run for real
+  there, naming the write methods `api-policy.yaml` allows; trace files record `target` and
+  `model_provider`; `eval metric list` shows the check modifiers.
+- **deploy**: a failed rollout that is rolled back (or a first install that is uninstalled)
+  puts the app Secret and `<release>-metrics` back to their values from before the run, keys
+  the run removed included, or deletes a Secret the run created; a Secret changed by someone
+  else meanwhile is left alone (and the metrics Secret with it, so both keep the same
+  `METRICS_TOKEN`), and the error says what happened. `deploy --status` (default `--timeout`
+  60s) prints replicas, image, helm revision and each pod's state; failed-deploy diagnostics
+  show only this release's warning events since the run started; a redeploy of the running
+  image says what will happen and advises `--restart` when only the Secret changed;
+  `--dry-run` reads the live Secret and refuses a missing required key like the real run.
+  An external DSN without `sslmode=require|verify-ca|verify-full` is a warning outside dev.
+- Chart: a `preStop` pause (`shutdown.preStopSleepSeconds`, 5) and a bounded drain
+  (`shutdown.drainSeconds`, 20, as `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` or
+  `BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS`), so in-flight requests end before the kill (fastapi:
+  runs end `cancelled` and release their leases); the dev Postgres stops in fast mode; a
+  NetworkPolicy example (`examples/networkpolicy.yaml`, not packaged) that values-staging and
+  values-prod point to.
+- `infra check` rows: `auth: jwt settings`, `metrics token secret <name>-metrics`, `database
+  tls (<KEY>)`; a disabled gateway is one skip row.
+- `run`: after an `error` event the footer prints the run, the thread and the resume command;
+  a dropped stream says the run started and was interrupted (and whether the thread
+  survived: a stopped local server with an in-memory checkpointer loses it); `run -v`
+  prints one compact line per event.
+- README: an "External database" section (a least-privileged role, `sslmode=verify-full`,
+  the CA mount).
 
 ### Changed
 
@@ -299,6 +450,33 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - Client `/chat` metadata is kept in the run record only: never written into checkpoints,
   and exported to traces only under `TRACE_CAPTURE=full`.
 - Log warnings print as `Warning: ...` instead of `WARNING:root:...`.
+- **Logs** (both runtimes): access lines keep the path and drop the query string (under
+  `langgraph-server` the server's access lines lose their `query_string` field); `httpx`,
+  `httpcore`, `httpx2` and `httpcore2` log at WARNING only (their INFO lines carry full
+  outbound URLs), and `api_client` logs each outbound call as `api call done: <api> <METHOD>
+  <operation|template> -> <status> (<ms> ms)`; Python warnings are records (JSON under
+  fastapi) with pydantic's `input_value` redacted; a failed tool call logs one WARNING with
+  its error id, tool name and error type.
+- `.env` is applied when the app module is imported (below the process environment), so the
+  A2A card's auth scheme, `A2A_NAME`, the dev-only `/docs` and `CORS_ALLOW_ORIGINS` follow it
+  under `uvicorn` too; `PYTHON_DOTENV_DISABLED` switches it off.
+- The fake model calls whichever bound tool the request mentions (not only `get_weather`)
+  and echoes a tool's own text (without the untrusted-data fence). Generated projects' tests
+  depend on none of the project's tools, its `.env` or the developer's shell: a
+  `tests/conftest.py` strips app settings, server tests serve a graph without the project's
+  tools (`@pytest.mark.project_graph` opts out) and use test-only tools through
+  `use_test_tools`.
+- `run` and `eval` help lead with `GRAPH_AGENTS_CLI_API_KEY` for bearer credentials (argv is
+  visible to other local users); 401 hints depend on the project's policy; `eval generate`
+  prints the same hint.
+- `api show`, `api check` and `lint` tables grow to 250 columns in piped output instead of
+  cutting cells; `api add --openapi` prints the policy diff first and summarises the copied
+  spec; `api allow` of an entry that allows nothing yet says so.
+- Deploy mode labels say "local cluster" (was "dev cluster"); generated projects git-ignore
+  `deployment/helm/*/Chart.lock`.
+- `login --write-env` and `auth dev-token` never assign a key `.env` already sets, and
+  concurrent writers take turns (a lock in `.graph-agents-cli/`); `login --write-env` leaves
+  `.env` at 0600.
 
 ### Deprecated
 
@@ -325,6 +503,17 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   SIGHUP.
 - `scaffold enhance --runtime/--model-provider` left chart values, `.env.example` and
   `secrets.keys` on the old settings.
+- A thread whose tool call was cut short failed every later turn with a provider 400; the
+  langgraph-server repair now sends a remove-all update the real server accepts.
+- A database outage made requests hang for about a minute with tracebacks, and a replica
+  started during an outage exited (crash loop); `/ready` took over a minute to recover.
+- Under `langgraph-server` a run that reached the step limit ended with an error instead of
+  its reply (the server marks the run done after sending the error; the reply now waits
+  for it briefly).
+- A2A replies were split into one part per streamed token.
+- `run`'s drop and timeout messages offered to resume threads a stopped in-memory server had
+  lost, and "the answer above is incomplete" when nothing had been shown.
+- `sslmode = verify-full` (spaces around `=`, which libpq accepts) was reported as no TLS.
 
 ### Security
 
@@ -368,6 +557,17 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - `APP_ENV` counts as dev (dev-only pages, the error `detail`, an optional jwt issuer and
   audience, the chart's dev paths) only when it is exactly `dev`; 0.1.0 also accepted any
   case and surrounding whitespace.
+- **Prompt injection through tool results** is reduced: results are fenced as untrusted data
+  (see Added) and write tools have `require_user_mentioned` / `require_owner`. It is not
+  prevented; see "Known limitations" and the langgraph-code skill (section 2a).
+- Query strings (a token a client put in the URL) and outbound URLs with their values stay
+  out of the logs on both runtimes; `repr()` of `Principal` and of the run context no longer
+  shows forwarded credentials; a database URL that does not parse is reported without its
+  text (it can hold the password).
+- `eval` never prints or stores the credentials of a `--url` (`***@` in errors, traces and
+  results).
+- Thread ids are one namespace: the server generates random ids when a client names none,
+  and the docs say to use unguessable ones (an id another principal used first is theirs).
 
 ## [0.1.0] - 2026-09-23
 
