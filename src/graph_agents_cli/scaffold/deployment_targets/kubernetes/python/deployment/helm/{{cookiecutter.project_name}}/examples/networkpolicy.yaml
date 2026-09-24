@@ -1,0 +1,103 @@
+# NetworkPolicy for staging and prod: a worked example of `networkPolicy` (off
+# by default in values.yaml). Copy the block below into values-staging.yaml or
+# values-prod.yaml and replace every address marked CHANGE. It needs a CNI that
+# enforces NetworkPolicy (Calico, Cilium, Antrea, kube-router, recent kindnet
+# and most managed clusters); without one the policy is accepted and ignored.
+#
+# What the agent pods may then do, and nothing else:
+#   in:  the http port, from the Gateway's (or ingress controller's) namespace
+#        and from Prometheus (for /metrics); the kubelet's probes are not
+#        subject to NetworkPolicy
+#   out: DNS (the cluster's kube-dns / CoreDNS pods), the database, the model
+#        endpoint and the APIs in api-policy.yaml; add anything else the agent
+#        must reach, such as the jwt policy's JWKS URL (AUTH_JWT_JWKS_URL) or an
+#        OTLP collector
+#
+# NetworkPolicy matches addresses, not host names. A hosted service (a model
+# provider, an identity provider's JWKS, a SaaS API) is therefore "public
+# addresses on port 443", which excludes every private range and the cloud
+# metadata endpoint, so nothing inside your networks is reachable unless it is
+# listed. Check the result: `graph-agents-cli deploy --env <env> --dry-run`
+# renders the policy; once deployed, a pod in another namespace must not reach
+# the agent, and `/ready` must answer 200 (the database is reachable).
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    # CHANGE: the namespace of the Gateway (or ingress controller) routing to the agent.
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gateway-system
+    # CHANGE or remove: your Prometheus's namespace, for /metrics.
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  # DNS to the kube-dns pods is always allowed once egress is restricted.
+  restrictEgress: true
+  egressTo:
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+    # The database (DATABASE_URI) and Redis (REDIS_URI): CHANGE to their addresses...
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.11/32
+      ports:
+        - port: 6379
+          protocol: TCP
+{%- else %}
+    # The database (POSTGRES_DSN): CHANGE to its address...
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - port: 5432
+          protocol: TCP
+{%- endif %}
+    # ...or, for a database running in this cluster, select its pods instead:
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: databases
+    #       podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: postgresql
+    #   ports:
+    #     - port: 5432
+    #       protocol: TCP
+{%- if cookiecutter.model_provider == 'openai-compatible' %}
+    # The on-network model server (OPENAI_BASE_URL): CHANGE to its address and port.
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.20/32
+      ports:
+        - port: 11434
+          protocol: TCP
+{%- endif %}
+    # HTTPS to public addresses: the hosted model provider, the APIs in
+    # api-policy.yaml that live on the internet{% if cookiecutter.runtime == 'langgraph-server' %}, the LangGraph Server licence check{% endif %}.
+    # Never the private ranges or the metadata endpoint (169.254.169.254).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+      ports:
+        - port: 443
+          protocol: TCP
+    # An API of api-policy.yaml on your own network (its <NAME>_API_BASE_URL is a
+    # private address): one entry per API, CHANGE to its address and port.
+    # - to:
+    #     - ipBlock:
+    #         cidr: 192.0.2.30/32
+    #   ports:
+    #     - port: 8443
+    #       protocol: TCP

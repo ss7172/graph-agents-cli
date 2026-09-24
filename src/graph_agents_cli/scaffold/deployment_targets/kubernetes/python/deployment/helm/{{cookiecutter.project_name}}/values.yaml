@@ -160,10 +160,15 @@ metrics:
     labels: {}
     # With METRICS_TOKEN in the app Secret, /metrics answers only
     # `Authorization: Bearer <token>`: enable this so the ServiceMonitor sends
-    # it, read from that Secret (same namespace) or from `secretName`.
+    # it. Prometheus reads the token from a Secret of its own, <release>-metrics,
+    # which `graph-agents-cli secrets apply` (and a direct `deploy`) writes from
+    # METRICS_TOKEN (add it to secrets.keys): grant Prometheus read access to
+    # that Secret only, never to the app Secret, which also holds the provider
+    # key, the API tokens and the database DSN. `secretName` / `key` select a
+    # Secret you manage yourself (same namespace).
     bearerToken:
       enabled: false
-      secretName: ""     # default: the app Secret (existingSecret, else <release>-app)
+      secretName: ""     # default: <release>-metrics
       key: METRICS_TOKEN
 
 tls:
@@ -208,6 +213,17 @@ postgresql:
   primary:
     persistence:
       size: 8Gi
+    # A restart or rollout of the dev database shuts Postgres down in "fast"
+    # mode: open sessions (the agent's pooled connections) are closed and the
+    # data is checkpointed, so the pod stops in about a second. Without it,
+    # Kubernetes' SIGTERM asks Postgres for a "smart" shutdown, which waits for
+    # every client to disconnect, and the pod is killed after 30 s and needs
+    # crash recovery on the next start. (pg_ctl signals the server and returns;
+    # the SIGTERM that follows cannot slow a fast shutdown down.)
+    lifecycleHooks:
+      preStop:
+        exec:
+          command: ["/bin/sh", "-c", "pg_ctl -D \"$PGDATA\" -m fast --no-wait stop"]
 
 # The bundled Postgres's credentials Secret (postgresql.auth.existingSecret):
 # created by this chart when the subchart is enabled, reused on upgrade (helm
@@ -281,7 +297,22 @@ topologySpread:
   enabled: false
   topologyKey: kubernetes.io/hostname
 
-# Seconds a stopping pod gets to finish in-flight requests and streams.
+# Graceful shutdown (rollouts, `deploy --restart`, scale-down, node drains).
+# A stopping pod first keeps serving for `preStopSleepSeconds`, while the
+# Service endpoints, kube-proxy and the Gateway stop sending it new
+# connections: without that pause a rolling restart refuses connections. Then
+# it gets SIGTERM and has `drainSeconds` to finish in-flight requests and
+# streams: uvicorn's graceful-shutdown timeout under the fastapi runtime
+# (UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN), the background-run grace period under
+# langgraph-server (BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS). A /chat stream still
+# running after that is cut off. Kubernetes kills the pod
+# terminationGracePeriodSeconds after it started stopping, pause included, so
+# the chart refuses a grace period that is not longer than
+# preStopSleepSeconds + drainSeconds. For long runs (RUN_TIMEOUT_S) raise
+# drainSeconds and terminationGracePeriodSeconds together.
+shutdown:
+  preStopSleepSeconds: 5   # 0: no pause
+  drainSeconds: 20         # 0: no limit of its own (the grace period still applies)
 terminationGracePeriodSeconds: 30
 
 serviceAccount:
@@ -331,13 +362,10 @@ extraVolumeMounts: []
 # from the sources in ingressFrom (empty: from anywhere, but only that port;
 # list the Gateway's namespace and, for /metrics, your Prometheus's).
 # With restrictEgress the pods may only reach DNS (pods labelled
-# k8s-app=kube-dns; add a node-local DNS cache address yourself) plus egressTo;
-# add the model provider, the database and every API in api-policy.yaml, e.g.:
-#   egressTo:
-#     - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}}]
-#       ports: [{port: 443, protocol: TCP}]
-#     - to: [{podSelector: {matchLabels: {app.kubernetes.io/name: postgresql}}}]
-#       ports: [{port: 5432, protocol: TCP}]
+# k8s-app=kube-dns; add a node-local DNS cache address yourself) plus egressTo:
+# the database, the model endpoint and every API in api-policy.yaml.
+# examples/networkpolicy.yaml is a worked staging/prod example to copy into
+# values-<env>.yaml.
 networkPolicy:
   enabled: false
   ingressFrom: []

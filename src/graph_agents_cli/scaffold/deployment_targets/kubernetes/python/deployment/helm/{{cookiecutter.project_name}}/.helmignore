@@ -10,3 +10,5 @@
 .idea/
 *.tmproj
 .vscode/
+# Documentation, not part of the packaged chart.
+examples/

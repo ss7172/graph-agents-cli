@@ -40,3 +40,6 @@ resources:
 #   minReplicas: 2
 #   maxReplicas: 10
 #   targetCPU: 70
+# Network isolation (off): examples/networkpolicy.yaml is a worked NetworkPolicy
+# for this environment (DNS, the database, the model endpoint, the APIs in
+# api-policy.yaml); copy its networkPolicy block here and set the addresses.

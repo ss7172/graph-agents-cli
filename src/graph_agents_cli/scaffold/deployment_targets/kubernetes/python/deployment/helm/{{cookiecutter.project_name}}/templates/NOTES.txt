@@ -2,8 +2,8 @@
 Pods receive traffic once {{ .Values.probes.readiness.path }} answers (the database is reachable).
 
 App Secret {{ if .Values.secretOptional }}expected (optional here: pods start without it){{ else }}required (pods do not start without it){{ end }}: {{ include "agent.secretName" . }}
-  create or rotate it with: graph-agents-cli secrets apply --env <env> --env-file .env.<env>
-  then, after rotation:     graph-agents-cli deploy --env <env> --restart
+  create or rotate it with: graph-agents-cli secrets apply --env <env>   (reads .env.<env>)
+  then, after rotation:     graph-agents-cli deploy --env <env> --restart   (waits for the new pods)
 
 {{- $published := list }}
 {{- $everything := false }}

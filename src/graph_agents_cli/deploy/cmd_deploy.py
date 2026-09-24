@@ -18,6 +18,12 @@ env file) runs before anything touches a cluster, so a configuration error
 never leaves a half-done deploy behind. Then the kube context is printed (and
 confirmed outside ``dev``), and only then are images built and loaded or
 pushed, the Secret applied, its required keys verified, and helm run.
+
+A failed rollout leaves the environment as it was: the release is rolled
+back to its last good revision, and the app Secret this run applied is put
+back to its previous values (only while nobody else changed it since).
+``--status`` and ``--restart`` wait for the rollout for a bounded time and
+explain a rollout that does not finish.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ from typing import Any
 import click
 
 from graph_agents_cli._output import Console
-from graph_agents_cli.deploy import _image, _kube, _modes, gitops, local_load
+from graph_agents_cli.deploy import _image, _kube, _modes, _preflight, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings, load_settings
 from graph_agents_cli.deploy._kube import ConfigError, Refused, Target
 from graph_agents_cli.deploy._modes import ResolvedContext
@@ -42,15 +48,22 @@ from graph_agents_cli.secrets import _required
 
 PROTECTED_ENVS = _modes.PROTECTED_ENVS
 DEFAULT_TIMEOUT = "5m"
+# `--status` only reads: it reports within a minute unless told otherwise.
+DEFAULT_STATUS_TIMEOUT = "60s"
+# Warning events older than the start of this run (less this clock-skew
+# allowance) belong to earlier rollouts and are not printed.
+EVENT_CLOCK_SKEW_S = 30
 _DURATION = re.compile(r"^(?=\d)(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 DIAGNOSTIC_PODS = 3
 DIAGNOSTIC_LOG_LINES = 40
 DIAGNOSTIC_EVENTS = 15
 
 
-def _timeout_option(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+def _timeout_option(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:
     """A helm duration: ``300`` (seconds), ``300s``, ``10m`` or ``1h30m``; never zero."""
-    raw = (value or "").strip().lower()
+    if value is None:
+        return None
+    raw = value.strip().lower()
     if raw.isdigit():
         raw += "s"
     match = _DURATION.match(raw)
@@ -88,12 +101,18 @@ def _timeout_option(_ctx: click.Context, _param: click.Parameter, value: str) ->
     is_flag=True,
     help="Accept the kubeconfig's current context outside dev without prompting.",
 )
-@click.option("--status", "status", is_flag=True, help="Show rollout status instead of deploying.")
+@click.option(
+    "--status",
+    "status",
+    is_flag=True,
+    help="Report the rollout, pods and warning events instead of deploying (exit 1 when not "
+    "ready within --timeout, default 60s).",
+)
 @click.option(
     "--restart",
     "restart",
     is_flag=True,
-    help="Rollout-restart the Deployment (after a Secret rotation).",
+    help="Rollout-restart the Deployment (after a Secret rotation) and wait for the new pods.",
 )
 @click.option(
     "--force-direct",
@@ -117,10 +136,10 @@ def _timeout_option(_ctx: click.Context, _param: click.Parameter, value: str) ->
 @click.option(
     "--timeout",
     "timeout",
-    default=DEFAULT_TIMEOUT,
-    show_default=True,
+    default=None,
     callback=_timeout_option,
-    help="How long helm waits for the rollout (e.g. 300s, 10m).",
+    help=f"How long to wait for the rollout (e.g. 300s, 10m; default {DEFAULT_TIMEOUT}, "
+    f"{DEFAULT_STATUS_TIMEOUT} for --status).",
 )
 @click.option(
     "--atomic/--no-atomic",
@@ -146,7 +165,7 @@ def cmd_deploy(
     force_direct: bool,
     dry_run: bool,
     tag: str | None,
-    timeout: str,
+    timeout: str | None,
     atomic: bool,
     rotate_api_key: bool,
 ) -> None:
@@ -172,8 +191,16 @@ def cmd_deploy(
     if status:
         _modes.announce(env, resolved, console=console)
         _modes.require_known_context(env, resolved, dry_run=dry_run, console=console)
-        _show_status(settings, env, target, dry_run=dry_run, console=console)
+        _show_status(
+            settings,
+            env,
+            target,
+            timeout=timeout or DEFAULT_STATUS_TIMEOUT,
+            dry_run=dry_run,
+            console=console,
+        )
         return
+    timeout = timeout or DEFAULT_TIMEOUT
 
     if env in PROTECTED_ENVS and not settings.auth_policy_implemented:
         raise Refused(
@@ -186,7 +213,7 @@ def cmd_deploy(
     if restart:
         _modes.announce(env, resolved, console=console)
         _modes.confirm(env, resolved, yes=yes, dry_run=dry_run, console=console, action="restart")
-        _restart(settings, target, dry_run=dry_run, console=console)
+        _restart(settings, env, target, timeout=timeout, dry_run=dry_run, console=console)
         return
 
     console.print(f"Environment: {env}  namespace: {namespace}")
@@ -250,6 +277,8 @@ def _deploy_direct(
     plan = _image_plan(settings, opts, console=console)
     path = secrets_apply.resolve_env_file(env, opts.env_file)
     chart_values = load_chart_values(settings.chart_dir, env)
+    _check_chart_env(settings, env, chart_values, console=console)
+    _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console, warn=False)
     if path is None and not _modes.is_dev_env(env):
         raise secrets_apply.missing_env_file_error(
             env, _required.for_environment(settings, chart_values).secret_keys
@@ -283,10 +312,13 @@ def _deploy_direct(
 
     # Plan the Secret and check its required keys (read-only) before anything is
     # built, pushed or changed: an incomplete Secret stops the deploy up front.
+    # --dry-run makes the same reads, so it refuses what the real run would.
     secret_plan: secrets_apply.SecretPlan | None = None
     live: secrets_apply.LiveSecret | None = None
     if path is None:
-        _verify_secret(settings, env, target, fix_hint=None, dry_run=opts.dry_run, console=console)
+        keys = _verify_secret(
+            settings, env, target, fix_hint=None, dry_run=opts.dry_run, console=console
+        )
     else:
         secret_plan, live = secrets_apply.prepare(
             name=settings.secret_name,
@@ -297,17 +329,26 @@ def _deploy_direct(
             values=values,
             rotate_api_key=opts.rotate_api_key,
             dry_run=opts.dry_run,
+            mint_api_key=_preflight.effective_auth_policy(settings, chart_values)
+            == "shared-bearer",
+            metrics_name=settings.metrics_secret_name,
+            read_live_on_dry_run=True,
         )
-        _verify_secret(
+        keys = _verify_secret(
             settings,
             env,
             target,
             keys=set(secret_plan.data),
+            uncertain=bool(secret_plan.live_unread),
             fix_hint=f"Add them to {path} and re-run deploy",
             dry_run=opts.dry_run,
             console=console,
         )
+        _warn_dsn_without_tls(settings, env, chart_values, secret_plan.data, console=console)
+    _check_jwt(settings, env, chart_values, keys, dry_run=opts.dry_run, console=console)
     _check_release_idle(settings, target, dry_run=opts.dry_run, console=console)
+    before = _live_workload(settings, target)
+    _announce_same_image(settings, env, plan, before, console=console)
 
     if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
@@ -318,6 +359,7 @@ def _deploy_direct(
                 ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
             )
 
+    snaps: list[secrets_apply.Snapshot] = []
     if secret_plan is None:
         console.print(
             f"  No env file found (.env.{env} or .env); the Secret {settings.secret_name} is "
@@ -331,8 +373,32 @@ def _deploy_direct(
         _required.print_unreached_hs_settings(
             settings, env, chart_values, values, source=path, console=console
         )
-        secrets_apply.apply_plan(secret_plan, dry_run=opts.dry_run, console=console, live=live)
-    _helm_upgrade(settings, env, target, plan, opts, console=console)
+        if not opts.dry_run:
+            # What the Secret(s) held before, to put back if the rollout fails.
+            snaps = secrets_apply.snapshot(secret_plan, live, managed=settings.secret_keys)
+        if opts.dry_run:
+            console.print(
+                "  [dry-run] if the rollout fails and the release is rolled back, the Secret is "
+                "put back to its current values.",
+                style="cyan",
+                markup=False,
+            )
+    try:
+        if secret_plan is not None:
+            secrets_apply.apply_plan(secret_plan, dry_run=opts.dry_run, console=console, live=live)
+        _helm_upgrade(settings, env, target, plan, opts, console=console)
+    except _kube.DeployError as e:
+        # A failure while applying (the metrics Secret, say) leaves the release untouched too.
+        lines = _secret_outcome(snaps, env, e, console=console)
+        if not lines:
+            raise
+        raise type(e)("\n  ".join([str(e.message), *lines])) from None
+    except KeyboardInterrupt:
+        # Interrupted mid-rollout: the release's state is unknown, so nothing is undone.
+        for line in secrets_apply.describe_unrestored(snaps, env, "the deploy was interrupted"):
+            console.print(f"  {line}", style="yellow", markup=False)
+        raise
+    _report_rollout(settings, env, target, before, snaps, dry_run=opts.dry_run, console=console)
     _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
 
@@ -347,6 +413,9 @@ def _deploy_helm_push(
 ) -> None:
     _refuse_secrets(settings, env, opts, mode=_modes.HELM_PUSH, console=console)
     _require_chart(settings, env)
+    chart_values = load_chart_values(settings.chart_dir, env)
+    _check_chart_env(settings, env, chart_values, console=console)
+    _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console, warn=False)
     if env in PROTECTED_ENVS and not opts.force_direct and not _kube.in_ci():
         raise Refused(
             f"Refusing to deploy {env} from outside CI in helm-push mode (with or without "
@@ -362,24 +431,25 @@ def _deploy_helm_push(
         env, resolved, yes=opts.yes, dry_run=opts.dry_run, console=console, action="deploy to"
     )
     console.print(f"Mode: {_modes.describe(_modes.HELM_PUSH)}")
-    _verify_secret(
+    keys = _verify_secret(
         settings,
         env,
         target,
-        fix_hint=(
-            f"The Secret owner provisions them with `graph-agents-cli secrets apply --env {env} "
-            f"--env-file .env.{env}`"
-        ),
+        fix_hint=f"The Secret owner provisions them with `graph-agents-cli secrets apply --env {env}`",
         dry_run=opts.dry_run,
         console=console,
     )
+    _check_jwt(settings, env, chart_values, keys, dry_run=opts.dry_run, console=console)
     _check_release_idle(settings, target, dry_run=opts.dry_run, console=console)
+    before = _live_workload(settings, target)
+    _announce_same_image(settings, env, plan, before, console=console)
     if plan.build:
         _build(settings, plan, dry_run=opts.dry_run, console=console)
         _kube.run_cmd(
             ["docker", "push", plan.ref], capture=False, dry_run=opts.dry_run, console=console
         )
     _helm_upgrade(settings, env, target, plan, opts, console=console)
+    _report_rollout(settings, env, target, before, [], dry_run=opts.dry_run, console=console)
     _print_done(settings, env, plan.ref, dry_run=opts.dry_run, console=console)
 
 
@@ -402,9 +472,11 @@ def _deploy_argocd(
     values_path = settings.values_file(env)
     if not values_path.is_file():
         raise ConfigError(f"Values file not found: {values_path}")
-    chart_repository = str(
-        (load_chart_values(settings.chart_dir, env).get("image") or {}).get("repository") or ""
-    )
+    chart_values = load_chart_values(settings.chart_dir, env)
+    # Argo CD renders these values as they are: check what its pods would get.
+    _check_chart_env(settings, env, chart_values, console=console)
+    _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console)
+    chart_repository = str((chart_values.get("image") or {}).get("repository") or "")
     if _image.has_placeholder(chart_repository):
         raise ConfigError(
             f"image.repository in the chart values is still the placeholder {chart_repository!r}; "
@@ -584,47 +656,67 @@ def _refuse_secrets(
     console.print(f"  {procedure}", style="dim", markup=False)
 
 
+def _first_line(error: object) -> str:
+    return next((line.strip() for line in str(error).splitlines() if line.strip()), "")
+
+
 def _verify_secret(
     settings: DeploySettings,
     env: str,
     target: Target,
     *,
     keys: set[str] | None = None,
+    uncertain: bool = False,
     fix_hint: str | None,
     dry_run: bool,
     console: Console,
-) -> None:
+) -> set[str] | None:
     """Refuse (exit 1) before anything changes when the Secret lacks a key the pods need.
 
     ``keys`` are the keys the Secret will hold after this deploy applies it; when
-    ``None`` the live Secret is read. Nothing has been built, pushed or applied
-    when this refuses.
+    ``None`` the live Secret is read (read-only, so ``--dry-run`` reads it too and
+    refuses what the real run would). ``uncertain``: under ``--dry-run`` the live
+    Secret could not be read, so a key missing from ``keys`` may still be there.
+    Nothing has been built, pushed or applied when this refuses. Returns the keys
+    the Secret holds or will hold (``None`` when unknown).
     """
     required = _required.required_keys(settings, load_chart_values(settings.chart_dir, env))
-    if not required:
-        return
     name = settings.secret_name
-    if dry_run:
+    absent = False
+    if keys is None:
+        try:
+            found = secrets_apply.secret_keys_present(name, target, console=console)
+        except _kube.ToolFailed as e:
+            if not dry_run:
+                raise
+            console.print(
+                f"  [dry-run] could not read Secret {name} ({_first_line(e)}); the real run "
+                "refuses unless it holds: " + (", ".join(required) or "(no required key)"),
+                style="yellow",
+                markup=False,
+            )
+            return None
+        absent = found is None
+        present = found or set()
+    else:
+        present = keys
+    if not required:
+        return present
+    missing = [k for k in required if k not in present]
+    if not missing:
+        verb = "would hold" if dry_run else ("will hold" if keys is not None else "holds")
         console.print(
-            f"  [dry-run] would check that Secret {name} holds the required key(s): "
-            + ", ".join(required),
-            style="cyan",
+            f"  Secret {name} {verb} the required key(s): {', '.join(required)}.", style="dim"
+        )
+        return present
+    if uncertain:
+        console.print(
+            f"  [dry-run] Secret {name} would lack {', '.join(missing)} unless the live Secret "
+            "(not readable here) holds them: the real run refuses otherwise.",
+            style="yellow",
             markup=False,
         )
-        return
-    present = keys
-    if present is None:
-        present = secrets_apply.secret_keys_present(name, target, console=console)
-    missing = required if present is None else [k for k in required if k not in present]
-    if not missing:
-        console.print(
-            f"  Secret {name} will hold the required key(s): {', '.join(required)}."
-            if keys is not None
-            else f"  Secret {name} holds the required key(s): {', '.join(required)}.",
-            style="dim",
-        )
-        return
-    absent = " (the Secret does not exist)" if present is None else ""
+        return present
     fix = fix_hint or (
         f"Put them in .env.{env} and re-run deploy, or provision them with "
         f"`graph-agents-cli secrets apply --env {env}`"
@@ -635,14 +727,187 @@ def _verify_secret(
         if _required.JWT_SECRET_KEY in missing
         else ""
     )
+    dry = "\n  (--dry-run: the real deploy stops here the same way.)" if dry_run else ""
     raise Refused(
-        f"Secret {name} in {target.namespace} is missing required key(s): "
-        f"{', '.join(missing)}{absent}.\n"
+        f"Secret {name} in {target.namespace} {'would be' if dry_run else 'is'} missing required "
+        f"key(s): {', '.join(missing)}{' (the Secret does not exist)' if absent else ''}.\n"
         "  Without them the pods crash or answer every request with 503; nothing was built, "
         "applied or deployed.\n"
         f"  {fix}, or remove a key from secrets.keys in graph-agents-cli-manifest.yaml if "
-        f"{env} does not need it.{why_jwt}"
+        f"{env} does not need it.{why_jwt}{dry}"
     )
+
+
+def _check_chart_env(
+    settings: DeploySettings, env: str, values: dict[str, Any], *, console: Console
+) -> None:
+    """Refuse (exit 3) a scaffold placeholder in the chart env outside dev; warn in dev.
+
+    ``api add`` writes ``<API>_BASE_URL: http://CHANGE-ME`` and an
+    ``openai-compatible`` project starts with ``OPENAI_BASE_URL`` at CHANGE-ME:
+    the pods would call that address, and every tool (or the model) would fail.
+    """
+    keys = _preflight.env_placeholders(values)
+    if not keys:
+        return
+    names = ", ".join(f"env.{k}" for k in keys)
+    where = f"{settings.values_file(env)} (or {settings.chart_dir / 'values.yaml'})"
+    if _modes.is_dev_env(env):
+        console.print(
+            f"  Warning: {names} still hold(s) the placeholder CHANGE-ME: the {env} pods would "
+            f"call it, so those calls fail. Set the real value(s) in {where}.",
+            style="yellow",
+            markup=False,
+        )
+        return
+    raise ConfigError(
+        f"{names} still hold(s) the placeholder CHANGE-ME in the chart values for {env}: the "
+        f"pods would call it. Set the real value(s) in {where}."
+    )
+
+
+def _check_jwt(
+    settings: DeploySettings,
+    env: str,
+    values: dict[str, Any],
+    keys: set[str] | None,
+    *,
+    dry_run: bool,
+    console: Console,
+    warn: bool = True,
+) -> None:
+    """The ``jwt`` policy's verification settings: exit 3 outside dev, a warning in dev."""
+    findings = _preflight.jwt_findings(settings, env, values, keys)
+    error = findings.error()
+    if error:
+        raise ConfigError(
+            error + ("\n  (--dry-run: the real deploy stops here the same way.)" if dry_run else "")
+        )
+    warning = findings.warning()
+    if warning and warn:
+        console.print(f"  Warning: {warning}", style="yellow", markup=False)
+
+
+def _warn_dsn_without_tls(
+    settings: DeploySettings,
+    env: str,
+    values: dict[str, Any],
+    data: dict[str, str],
+    *,
+    console: Console,
+) -> None:
+    """Outside dev, warn when the external database's connection string does not require TLS.
+
+    The value is inspected in memory and never printed.
+    """
+    for key in _preflight.dsn_keys(settings, values):
+        dsn = data.get(key) or ""
+        if _modes.is_dev_env(env) or not dsn or dsn == secrets_apply.PENDING_PLACEHOLDER:
+            continue
+        if _preflight.dsn_without_tls(values, dsn):
+            console.print(
+                f"  Warning: {_preflight.dsn_tls_warning(key)}", style="yellow", markup=False
+            )
+
+
+@dataclass(frozen=True)
+class _Workload:
+    """The live Deployment as far as a deploy needs it (read-only)."""
+
+    image: str
+    generation: int
+
+
+def _live_workload(settings: DeploySettings, target: Target) -> _Workload | None:
+    """The release's Deployment (its agent image and generation); ``None`` when absent or unreadable."""
+    try:
+        result = _kube.kubectl(
+            ["get", "deployment", settings.release, "-o", "json"],
+            target,
+            check=False,
+            quiet=True,
+        )
+        body = json.loads(result.stdout or "null") if result.returncode == 0 else None
+    except (_kube.ToolFailed, json.JSONDecodeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    containers = ((body.get("spec") or {}).get("template") or {}).get("spec", {}).get(
+        "containers"
+    ) or []
+    agent = next((c for c in containers if c.get("name") == "agent"), None) or (
+        containers[0] if containers else {}
+    )
+    try:
+        generation = int((body.get("metadata") or {}).get("generation") or 0)
+    except (TypeError, ValueError):
+        generation = 0
+    return _Workload(image=str(agent.get("image") or ""), generation=generation)
+
+
+def _announce_same_image(
+    settings: DeploySettings,
+    env: str,
+    plan: _ImagePlan,
+    live: _Workload | None,
+    *,
+    console: Console,
+) -> None:
+    """Say up front when the release already runs this exact image reference."""
+    if live is None or live.image != plan.ref:
+        return
+    rebuilt = " The image is rebuilt and loaded under the same tag." if plan.build else ""
+    console.print(
+        f"  {settings.release} already runs {plan.ref}: the image is unchanged.{rebuilt} helm "
+        "records a new revision, but the pods are replaced only if the chart values change, "
+        f"and a changed Secret reaches them only with `graph-agents-cli deploy --env {env} "
+        "--restart` (reported after the rollout).",
+        style="yellow",
+        markup=False,
+    )
+
+
+def _secret_outcome(
+    snaps: list[secrets_apply.Snapshot], env: str, error: Exception, *, console: Console
+) -> list[str]:
+    """After a failed helm step: restore the Secret(s) when the release is as it was before."""
+    if not any(snap.changed for snap in snaps):
+        return []
+    if getattr(error, "release_unchanged", True):
+        return secrets_apply.restore(snaps, console=console)
+    return secrets_apply.describe_unrestored(
+        snaps, env, "the release was not put back to its previous revision"
+    )
+
+
+def _report_rollout(
+    settings: DeploySettings,
+    env: str,
+    target: Target,
+    before: _Workload | None,
+    snaps: list[secrets_apply.Snapshot],
+    *,
+    dry_run: bool,
+    console: Console,
+) -> None:
+    """After a successful upgrade: say when no pod was replaced, and what that leaves stale."""
+    if dry_run or before is None:
+        return
+    after = _live_workload(settings, target)
+    if after is None or after.generation != before.generation:
+        return
+    console.print(
+        "  No pods were replaced: the pod template (image and chart values) is unchanged.",
+        style="yellow",
+    )
+    changed = sorted({k for snap in snaps for k in snap.changed})
+    if changed:
+        console.print(
+            f"  The Secret changed ({', '.join(changed)}), but running pods read it only when "
+            f"they start: run `graph-agents-cli deploy --env {env} --restart`.",
+            style="yellow",
+            markup=False,
+        )
 
 
 def _helm_args(settings: DeploySettings, env: str, repository: str, tag: str) -> list[str]:
@@ -785,6 +1050,7 @@ def _helm_upgrade(
     before = _release_history(settings, target, console=console)
     _refuse_if_busy(settings, target, before, changed="the release was not touched")
     console.print(f"  helm waits up to {opts.timeout} for the rollout.", style="dim")
+    started = _now()
     # Captured (helm prints nothing until the rollout ends under --wait) so that
     # helm's own "another operation is in progress" refusal can be recognised.
     result = _kube.helm(upgrade, target, check=False, console=console)
@@ -795,14 +1061,34 @@ def _helm_upgrade(
         return
     after = _release_history(settings, target, console=console)
     if _HELM_BUSY in f"{result.stderr or ''}\n{result.stdout or ''}":
-        raise _kube.ToolFailed(
-            _busy_message(settings, target, after, changed="the release was not touched")
+        raise RolloutFailed(
+            _busy_message(settings, target, after, changed="the release was not touched"),
+            release_unchanged=True,
         )
-    outcome = _failure_outcome(settings, target, before, after, opts, console=console)
-    raise _kube.ToolFailed(
-        f"helm upgrade failed (exit code {result.returncode}) for {settings.release} in "
-        f"{target.namespace}; {outcome}."
+    outcome, unchanged = _failure_outcome(
+        settings, target, before, after, opts, since=started, console=console
     )
+    raise RolloutFailed(
+        f"helm upgrade failed (exit code {result.returncode}) for {settings.release} in "
+        f"{target.namespace}; {outcome}.",
+        release_unchanged=unchanged,
+    )
+
+
+class RolloutFailed(_kube.ToolFailed):
+    """helm failed (exit 2); ``release_unchanged``: the release is back as it was before the run.
+
+    Only then is the Secret this run applied put back: a release left on the
+    failed (or another deploy's) revision keeps the values it was rolled out with.
+    """
+
+    def __init__(self, message: str, *, release_unchanged: bool = False) -> None:
+        super().__init__(message)
+        self.release_unchanged = release_unchanged
+
+
+def _now() -> _dt.datetime:
+    return _dt.datetime.now(_dt.UTC)
 
 
 def _failure_outcome(
@@ -812,21 +1098,26 @@ def _failure_outcome(
     after: _History,
     opts: _Options,
     *,
+    since: _dt.datetime | None = None,
     console: Console,
-) -> str:
-    """Undo the failed revision this run created, if any; describe what happened to the release."""
+) -> tuple[str, bool]:
+    """Undo the failed revision this run created, if any; describe what happened to the release.
+
+    Returns the description and whether the release is back as it was before the
+    run (no new revision, rolled back, or a failed first install uninstalled).
+    """
     check = f"check `helm history {settings.release} -n {target.namespace}`"
     if not (before.readable and after.readable):
         return (
             "the release history could not be read, so the failure cannot be tied to a "
             f"revision of this run and nothing was rolled back; {check}"
-        )
+        ), False
     newer = after.newer_than(before.latest)
     if not newer:
         return (
             "helm recorded no new revision (it failed before the rollout), so the release is "
             "unchanged and there is nothing to roll back"
-        )
+        ), True
     newest = newer[-1]
     number, status = int(newest["revision"]), _status(newest)
     if status.startswith(_PENDING):
@@ -834,30 +1125,33 @@ def _failure_outcome(
             return (
                 f"another helm operation started after this one failed (revision {number} is "
                 f"{status}), so nothing was rolled back; {check}"
-            )
+            ), False
         # Either this run's helm stopped before finishing its revision (killed,
         # crashed, lost the connection) or another deploy holds the release.
         return (
             f"revision {number} is still {status} (helm stopped before finishing it, or "
             "another deploy is working on the release), so nothing was rolled back; if no "
             f"other deploy is running, {_clear_hint(settings, target, after)} clears it"
-        )
+        ), False
     if len(newer) > 1:
         return (
             f"another deploy changed the release while this one ran (revisions "
             f"{int(newer[0]['revision'])} to {number} are new), so nothing was rolled back; "
             f"{check}"
-        )
+        ), False
     if status != "failed":
-        return f"its new revision {number} is {status}, so nothing was rolled back; {check}"
+        return (
+            f"its new revision {number} is {status}, so nothing was rolled back; {check}",
+            False,
+        )
     # Exactly one new revision and it failed: the one this run created.
     # Read the diagnostics before the rollback: it removes the failed pods and their logs.
-    _print_rollout_diagnostics(settings, target, console=console)
+    _print_rollout_diagnostics(settings, target, since=since, console=console)
     if not opts.atomic:
         return (
             f"the failed revision {number} was left in place (--no-atomic); roll back with "
             f"`helm rollback {settings.release} -n {target.namespace}`"
-        )
+        ), False
     return _roll_back(
         settings,
         target,
@@ -897,6 +1191,10 @@ def _pod_ready(pod: dict[str, Any]) -> bool:
     )
 
 
+def _terminating(pod: dict[str, Any]) -> bool:
+    return bool((pod.get("metadata") or {}).get("deletionTimestamp"))
+
+
 def _container_notes(pod: dict[str, Any]) -> list[str]:
     status = pod.get("status") or {}
     notes: list[str] = []
@@ -918,16 +1216,9 @@ def _container_notes(pod: dict[str, Any]) -> list[str]:
     return notes
 
 
-def _print_rollout_diagnostics(
-    settings: DeploySettings, target: Target, *, console: Console
-) -> None:
-    """Pods, container states, warning events and recent logs of the release (best effort)."""
+def _release_pods(settings: DeploySettings, target: Target) -> list[dict[str, Any]]:
+    """The release's pods (``-l app.kubernetes.io/instance=<release>``); ``[]`` when unreadable."""
     selector = f"app.kubernetes.io/instance={settings.release}"
-    console.print(
-        f"Rollout of {settings.release} in {target.namespace} failed; diagnostics:",
-        style="yellow",
-    )
-    _diag(console, ["get", "pods", "-l", selector, "-o", "wide"], target)
     try:
         listing = _kube.run_cmd(
             _kube.kubectl_args(["get", "pods", "-l", selector, "-o", "json"], target),
@@ -936,18 +1227,166 @@ def _print_rollout_diagnostics(
         )
         pods = json.loads(listing.stdout or "{}").get("items") or []
     except (_kube.ToolFailed, json.JSONDecodeError, AttributeError):
-        pods = []
-    failing = [p for p in pods if isinstance(p, dict) and not _pod_ready(p)]
+        return []
+    return [p for p in pods if isinstance(p, dict)]
+
+
+def _release_objects(settings: DeploySettings, target: Target) -> set[tuple[str, str]]:
+    """``(kind, name)`` of the release's objects that warning events are about.
+
+    The Deployment, its ReplicaSets and pods, and the bundled database's
+    StatefulSet, pods and volume claims: everything labelled with the release.
+    """
+    selector = f"app.kubernetes.io/instance={settings.release}"
+    objects = {("Deployment", settings.release)}
+    try:
+        listing = _kube.run_cmd(
+            _kube.kubectl_args(
+                [
+                    "get",
+                    "pods,replicasets,deployments,statefulsets,persistentvolumeclaims",
+                    "-l",
+                    selector,
+                    "-o",
+                    "json",
+                ],
+                target,
+            ),
+            check=False,
+            quiet=True,
+        )
+        items = json.loads(listing.stdout or "{}").get("items") or []
+    except (_kube.ToolFailed, json.JSONDecodeError, AttributeError):
+        items = []
+    for item in items:
+        if isinstance(item, dict):
+            name = (item.get("metadata") or {}).get("name")
+            if item.get("kind") and name:
+                objects.add((str(item["kind"]), str(name)))
+    return objects
+
+
+def _parse_time(value: object) -> _dt.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=_dt.UTC)
+
+
+def _event_time(event: dict[str, Any]) -> _dt.datetime | None:
+    """When a (possibly repeated) event was last seen."""
+    series = event.get("series") or {}
+    for value in (
+        event.get("lastTimestamp"),
+        series.get("lastObservedTime") if isinstance(series, dict) else None,
+        event.get("eventTime"),
+        event.get("firstTimestamp"),
+        (event.get("metadata") or {}).get("creationTimestamp"),
+    ):
+        parsed = _parse_time(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _age(when: _dt.datetime | None) -> str:
+    if when is None:
+        return "?"
+    seconds = max(0, int((_now() - when).total_seconds()))
+    if seconds < 120:
+        return f"{seconds}s"
+    if seconds < 7200:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h"
+
+
+def _print_warning_events(
+    settings: DeploySettings,
+    target: Target,
+    *,
+    since: _dt.datetime | None,
+    console: Console,
+) -> None:
+    """Warning events about this release's objects, newer than ``since`` (less clock skew).
+
+    The namespace may hold other workloads and events from earlier rollouts
+    (events live for an hour): only this release's objects are shown, and with
+    ``since`` only what happened during this run.
+    """
+    cmd = _kube.kubectl_args(
+        ["get", "events", "--field-selector", "type=Warning", "-o", "json"], target
+    )
+    console.print(f"  $ {_kube.format_cmd(cmd)}", style="dim", markup=False, highlight=False)
+    try:
+        result = _kube.run_cmd(cmd, check=False, quiet=True)
+        events = json.loads(result.stdout or "{}").get("items") or []
+    except (_kube.ToolFailed, json.JSONDecodeError, AttributeError) as e:
+        console.print(f"    (could not list events: {_first_line(e) or 'no output'})", markup=False)
+        return
+    objects = _release_objects(settings, target)
+    cutoff = since - _dt.timedelta(seconds=EVENT_CLOCK_SKEW_S) if since else None
+    mine: list[tuple[_dt.datetime | None, dict[str, Any]]] = []
+    older = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        involved = event.get("involvedObject") or event.get("regarding") or {}
+        if (str(involved.get("kind")), str(involved.get("name"))) not in objects:
+            continue
+        when = _event_time(event)
+        if cutoff is not None and (when is None or when < cutoff):
+            older += 1
+            continue
+        mine.append((when, event))
+    mine.sort(key=lambda pair: pair[0] or _dt.datetime.min.replace(tzinfo=_dt.UTC))
+    if not mine:
+        console.print("    (no warning events for this release)", markup=False)
+    for when, event in mine[-DIAGNOSTIC_EVENTS:]:
+        involved = event.get("involvedObject") or event.get("regarding") or {}
+        count = event.get("count") or ((event.get("series") or {}).get("count"))
+        times = f" (x{count})" if isinstance(count, int) and count > 1 else ""
+        message = " ".join(str(event.get("message") or event.get("note") or "").split())
+        console.print(
+            f"    {_age(when):>4} ago  {involved.get('kind')}/{involved.get('name')}  "
+            f"{event.get('reason', '')}: {message}{times}",
+            markup=False,
+            highlight=False,
+        )
+    if older:
+        console.print(
+            f"    ({older} older warning event(s) for this release, from before this run, not "
+            "shown)",
+            style="dim",
+            markup=False,
+        )
+
+
+def _print_rollout_diagnostics(
+    settings: DeploySettings,
+    target: Target,
+    *,
+    since: _dt.datetime | None = None,
+    headline: str | None = None,
+    console: Console,
+) -> None:
+    """Pods, container states, this release's warning events and recent logs (best effort)."""
+    selector = f"app.kubernetes.io/instance={settings.release}"
+    console.print(
+        headline or f"Rollout of {settings.release} in {target.namespace} failed; diagnostics:",
+        style="yellow",
+    )
+    _diag(console, ["get", "pods", "-l", selector, "-o", "wide"], target)
+    pods = _release_pods(settings, target)
+    # A terminating pod belongs to the revision being replaced: not what failed.
+    failing = [p for p in pods if not _pod_ready(p) and not _terminating(p)]
     for pod in failing[:DIAGNOSTIC_PODS]:
         name = (pod.get("metadata") or {}).get("name", "?")
         for note in _container_notes(pod):
             console.print(f"  {name}: {note}", markup=False, highlight=False)
-    _diag(
-        console,
-        ["get", "events", "--field-selector", "type=Warning", "--sort-by=.lastTimestamp"],
-        target,
-        tail=DIAGNOSTIC_EVENTS,
-    )
+    _print_warning_events(settings, target, since=since, console=console)
     for pod in failing[:DIAGNOSTIC_PODS]:
         name = (pod.get("metadata") or {}).get("name", "?")
         logs = _diag(
@@ -1091,7 +1530,7 @@ def _roll_back(
     existed: bool,
     timeout: str,
     console: Console,
-) -> str:
+) -> tuple[str, bool]:
     """Undo this run's failed revision ``failed`` the way helm's ``--atomic`` would; describe it.
 
     Back to the newest deployed or superseded revision before it; with none, a
@@ -1111,17 +1550,17 @@ def _roll_back(
             console=console,
         )
         if result.returncode == 0:
-            return f"rolled back to revision {revision}"
+            return f"rolled back to revision {revision}", True
         return (
             f"the rollback to revision {revision} also failed (exit code {result.returncode}); "
             f"check `helm history {release} -n {target.namespace}`"
-        )
+        ), False
     if existed:
         return (
             f"there is no earlier successful revision to roll back to, so the failed revision "
             f"{failed} was left in place; fix the cause and deploy again, or remove it with "
             f"`helm uninstall {release} -n {target.namespace}`"
-        )
+        ), False
     console.print(
         f"Uninstalling {release}: the first install never succeeded (--atomic).", style="yellow"
     )
@@ -1133,11 +1572,11 @@ def _roll_back(
         console=console,
     )
     if result.returncode == 0:
-        return "the failed first install was uninstalled (there was no earlier revision)"
+        return "the failed first install was uninstalled (there was no earlier revision)", True
     return (
         f"uninstalling the failed first install also failed (exit code {result.returncode}); "
         f"check `helm status {release} -n {target.namespace}`"
-    )
+    ), False
 
 
 def _print_done(
@@ -1150,14 +1589,125 @@ def _print_done(
 # --------------------------------------------------------------------------- status / restart
 
 
+class NotReady(_kube.DeployError):
+    """``deploy --status``: the rollout is not complete within ``--timeout`` (exit 1)."""
+
+    exit_code = 1
+
+
+_ROLLOUT_OK = "ok"
+_ROLLOUT_NOT_READY = "not-ready"
+_ROLLOUT_ABSENT = "absent"
+
+
+def _rollout_status_cmd(settings: DeploySettings, target: Target, timeout: str) -> list[str]:
+    return _kube.kubectl_args(
+        ["rollout", "status", f"deployment/{settings.release}", f"--timeout={timeout}"], target
+    )
+
+
+def _wait_for_rollout(
+    settings: DeploySettings, target: Target, *, timeout: str, console: Console
+) -> tuple[str, str]:
+    """``kubectl rollout status --timeout``: ``(state, kubectl's last line)``, never unbounded.
+
+    A timeout or an exceeded progress deadline is ``not-ready`` and a missing
+    Deployment ``absent``; any other kubectl failure (cluster unreachable,
+    credentials) is a tool failure (exit 2).
+    """
+    cmd = _rollout_status_cmd(settings, target, timeout)
+    _kube.echo_cmd(cmd, console=console)
+    console.print(
+        f"  Waiting up to {timeout} for deployment/{settings.release} to roll out.", style="dim"
+    )
+    result = _kube.run_cmd(cmd, check=False, quiet=True)
+    out = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    last = next((line for line in reversed((err or out).splitlines()) if line.strip()), "")
+    if result.returncode == 0:
+        return _ROLLOUT_OK, last
+    if "(NotFound)" in err or "not found" in err.lower():
+        return _ROLLOUT_ABSENT, last
+    if "timed out" in err or "progress deadline" in err:
+        return _ROLLOUT_NOT_READY, last
+    raise _kube.ToolFailed(
+        f"Command failed (exit code {result.returncode}): {_kube.format_cmd(cmd)}"
+        + (f"\n{err or out}" if err or out else "")
+    )
+
+
+def _print_workload_summary(settings: DeploySettings, target: Target, *, console: Console) -> None:
+    """The Deployment's replicas and image, the helm revision, and every pod's readiness."""
+    release = settings.release
+    try:
+        result = _kube.kubectl(
+            ["get", "deployment", release, "-o", "json"], target, check=False, quiet=True
+        )
+        deployment = json.loads(result.stdout or "null") if result.returncode == 0 else None
+    except (_kube.ToolFailed, json.JSONDecodeError):
+        deployment = None
+    if isinstance(deployment, dict):
+        spec = deployment.get("spec") or {}
+        status = deployment.get("status") or {}
+        containers = ((spec.get("template") or {}).get("spec") or {}).get("containers") or []
+        agent = next((c for c in containers if c.get("name") == "agent"), None) or (
+            containers[0] if containers else {}
+        )
+        wanted = spec.get("replicas", 1)
+        console.print(
+            f"deployment/{release}: {status.get('readyReplicas') or 0}/{wanted} ready, "
+            f"{status.get('updatedReplicas') or 0} up to date, image {agent.get('image', '?')}",
+            markup=False,
+            highlight=False,
+        )
+        for condition in status.get("conditions") or []:
+            if str(condition.get("status")) != "True":
+                console.print(
+                    f"  {condition.get('type')}: {condition.get('reason', '')} "
+                    f"{condition.get('message', '')}".rstrip(),
+                    markup=False,
+                    highlight=False,
+                )
+    if settings.cd != _modes.ARGOCD:
+        history = _release_history(settings, target, console=console)
+        if history.readable and history.revisions:
+            newest = max(history.revisions, key=lambda r: int(r["revision"]))
+            console.print(
+                f"helm release {release}: revision {newest['revision']} ({_status(newest)})",
+                markup=False,
+            )
+    for pod in _release_pods(settings, target):
+        name = (pod.get("metadata") or {}).get("name", "?")
+        statuses = (pod.get("status") or {}).get("containerStatuses") or []
+        restarts = sum(int(c.get("restartCount") or 0) for c in statuses)
+        last = next(
+            (
+                (c.get("lastState") or {}).get("terminated")
+                for c in statuses
+                if (c.get("lastState") or {}).get("terminated")
+            ),
+            None,
+        )
+        why = f" (last exit: {last.get('reason', '')} {last.get('exitCode')})" if last else ""
+        if _terminating(pod):
+            state = "terminating"
+        else:
+            state = "ready" if _pod_ready(pod) else "NOT ready"
+        console.print(
+            f"  pod {name}: {state}, restarts {restarts}{why}", markup=False, highlight=False
+        )
+
+
 def _show_status(
     settings: DeploySettings,
     env: str,
     target: Target,
     *,
+    timeout: str,
     dry_run: bool,
     console: Console,
 ) -> None:
+    """Report the rollout within ``timeout``: exit 1 (with diagnostics) when it is not complete."""
     if settings.cd == _modes.ARGOCD and _kube.tool_available("argocd"):
         _kube.run_cmd(
             ["argocd", "app", "get", f"{settings.project_name}-{env}"],
@@ -1166,22 +1716,48 @@ def _show_status(
             console=console,
         )
         return
-    _kube.kubectl(
-        ["rollout", "status", f"deployment/{settings.release}"],
+    if dry_run:
+        _kube.echo_cmd(
+            _rollout_status_cmd(settings, target, timeout), dry_run=True, console=console
+        )
+        return
+    state, detail = _wait_for_rollout(settings, target, timeout=timeout, console=console)
+    where = f"deployment/{settings.release} in {target.namespace}"
+    if state == _ROLLOUT_ABSENT:
+        raise NotReady(f"{where} does not exist (not deployed yet?): {detail}")
+    _print_workload_summary(settings, target, console=console)
+    if state == _ROLLOUT_OK:
+        console.print(f"{where}: rollout complete.", style="green", markup=False)
+        return
+    _print_rollout_diagnostics(
+        settings,
         target,
-        capture=False,
-        dry_run=dry_run,
+        headline=f"{where} is not ready after {timeout}; diagnostics:",
         console=console,
+    )
+    raise NotReady(
+        f"The rollout of {where} did not complete within {timeout} ({detail}). Pass a longer "
+        "--timeout to wait more; the diagnostics above show why the pods are not ready."
     )
 
 
-def _restart(settings: DeploySettings, target: Target, *, dry_run: bool, console: Console) -> None:
+def _restart(
+    settings: DeploySettings,
+    env: str,
+    target: Target,
+    *,
+    timeout: str,
+    dry_run: bool,
+    console: Console,
+) -> None:
+    """``kubectl rollout restart``, then wait (bounded) until the new pods are ready."""
     if settings.cd == _modes.ARGOCD:
         console.print(
             "  Warning: this environment is reconciled by Argo CD with self-heal; the restart "
             "annotation may be reverted. Prefer an Argo resource action (restart) on the Deployment.",
             style="yellow",
         )
+    where = f"deployment/{settings.release} in {target.namespace}"
     _kube.kubectl(
         ["rollout", "restart", f"deployment/{settings.release}"],
         target,
@@ -1189,6 +1765,29 @@ def _restart(settings: DeploySettings, target: Target, *, dry_run: bool, console
         dry_run=dry_run,
         console=console,
     )
-    console.print(
-        f"{'Would restart' if dry_run else 'Restarted'} deployment/{settings.release} in {target.namespace}."
+    if dry_run:
+        _kube.echo_cmd(
+            _rollout_status_cmd(settings, target, timeout), dry_run=True, console=console
+        )
+        console.print(f"Would restart {where} and wait up to {timeout} for the new pods.")
+        return
+    started = _now()
+    state, detail = _wait_for_rollout(settings, target, timeout=timeout, console=console)
+    _print_workload_summary(settings, target, console=console)
+    if state == _ROLLOUT_OK:
+        console.print(f"Restarted {where}: the new pods are ready.", style="green", markup=False)
+        return
+    _print_rollout_diagnostics(
+        settings,
+        target,
+        since=started,
+        headline=f"The restart of {where} did not finish within {timeout}; diagnostics:",
+        console=console,
+    )
+    raise _kube.ToolFailed(
+        f"The restarted pods of {where} did not become ready within {timeout} ({detail}).\n"
+        "  The pods that were running keep serving until new ones are ready. Fix the cause "
+        f"(often a Secret value: `graph-agents-cli secrets status --env {env}`) and restart "
+        f"again, or go back to the previous pods with `kubectl rollout undo "
+        f"deployment/{settings.release} -n {target.namespace}`."
     )

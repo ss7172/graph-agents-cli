@@ -4,7 +4,8 @@
 `values-prod.yaml`, `templates/` (`deployment.yaml`, `service.yaml`, `configmap.yaml`,
 `httproute.yaml`, `ingress.yaml`, `certificate.yaml`, `hpa.yaml`, `pdb.yaml`,
 `networkpolicy.yaml`, `servicemonitor.yaml`, `postgresql-secret.yaml`, `serviceaccount.yaml`,
-`NOTES.txt`, `_helpers.tpl`), `charts/` (the Postgres and Redis subcharts once fetched). There is
+`NOTES.txt`, `_helpers.tpl`), `examples/networkpolicy.yaml` (a worked staging/prod NetworkPolicy,
+not packaged), `charts/` (the Postgres and Redis subcharts once fetched). There is
 **no template for the app Secret**. Release name = project name; namespace =
 `environments.<env>.namespace`.
 
@@ -36,9 +37,10 @@ ingress: { enabled: false, className: "", hostname: "", annotations: {} }
 route:
   publicPaths: [{path: /chat, type: Exact}, {path: /threads, type: PathPrefix}, {path: /a2a/<agent dir>, type: PathPrefix}]
   devPaths: [{path: /playground, type: Exact}, {path: /docs, type: Exact}, {path: /openapi.json, type: Exact}]
-metrics: { scrapeAnnotations: false, serviceMonitor: { enabled: false, interval: 30s, scrapeTimeout: 10s, labels: {}, bearerToken: { enabled: false, secretName: "", key: METRICS_TOKEN } } }
+metrics: { scrapeAnnotations: false, serviceMonitor: { enabled: false, interval: 30s, scrapeTimeout: 10s, labels: {}, bearerToken: { enabled: false, secretName: "", key: METRICS_TOKEN } } }   # secretName "": <release>-metrics
 tls: { existingSecret: "", certManager: { enabled: false, issuerRef: { name: "", kind: ClusterIssuer } } }
-postgresql: { enabled: false, image: {..., digest: sha256:...}, auth: { database: agent, username: agent, existingSecret: <name>-postgresql-auth }, primary: { persistence: { size: 8Gi } } }
+postgresql: { enabled: false, image: {..., digest: sha256:...}, auth: { database: agent, username: agent, existingSecret: <name>-postgresql-auth },
+              primary: { persistence: { size: 8Gi }, lifecycleHooks: { preStop: pg_ctl -m fast stop } } }
 postgresqlSecret: { create: true }   # the dev database password, created once and kept
 redis: { enabled: false, architecture: standalone, image: {..., digest: sha256:...}, auth: { enabled: false } }
 probes: { liveness: {path: /health, ...}, readiness: {path: /ready, ...}, startup: {path: /health, ...} }
@@ -46,7 +48,8 @@ resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
 hpa: { enabled: false, minReplicas: 2, maxReplicas: 5, targetCPU: 70 }
 pdb: { enabled: false, minAvailable: 1 }
 topologySpread: { enabled: false, topologyKey: kubernetes.io/hostname }
-terminationGracePeriodSeconds: 30
+shutdown: { preStopSleepSeconds: 5, drainSeconds: 20 }
+terminationGracePeriodSeconds: 30    # must exceed preStopSleepSeconds + drainSeconds
 serviceAccount: { create: true, name: "", annotations: {} }
 tracing: { enabled: false, capture: metadata, otlpEndpoint: "", langsmith: { project: "" } }
 podAnnotations: {}
@@ -66,7 +69,9 @@ defaults to `latest`), an unquoted numeric tag (`tag: 0123456` would lose digits
 `secretOptional` that is not a bool, an HPA without `resources.requests.cpu` or with
 `minReplicas > maxReplicas`, an empty or malformed `route.publicPaths` while a Gateway or Ingress
 is on (a Gateway API rule without matches publishes every path; at most 64 entries; absolute
-paths only; `PathPrefix` or `Exact`), and scraping while `env.METRICS_ENABLED` is off.
+paths only; `PathPrefix` or `Exact`), scraping while `env.METRICS_ENABLED` is off, and a
+`terminationGracePeriodSeconds` not longer than `shutdown.preStopSleepSeconds +
+shutdown.drainSeconds` (or a negative pause or drain).
 
 `gateway.parentRef.name` is `required` by the HTTPRoute whenever `gateway.enabled` (the
 staging/prod default): set it in `values-<env>.yaml`; `deploy` checks the merged values before
@@ -107,6 +112,26 @@ Liveness and startup ask `/health` (the process answers); readiness asks `/ready
 and run store answer within 2 s), so a pod that loses its database leaves the Service endpoints
 instead of being restarted. Tune `probes.<kind>.{path,periodSeconds,timeoutSeconds,failureThreshold}`.
 
+## Graceful shutdown
+
+On a rollout, `deploy --restart`, a scale-down or a node drain, a stopping pod first keeps
+serving for `shutdown.preStopSleepSeconds` (default 5; a `preStop` hook running `sleep`) while
+the Service endpoints, kube-proxy and the Gateway stop sending it new connections; without that
+pause a rolling restart refuses connections. Then it gets SIGTERM and has
+`shutdown.drainSeconds` (default 20) to finish in-flight requests and streams: the chart sets
+`UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (fastapi) or `BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS`
+(langgraph-server, whose image fixes uvicorn's own timeout) unless `env` sets it. A `/chat`
+stream still running after that is cut off. The kubelet kills the pod at
+`terminationGracePeriodSeconds` (default 30), counted from the start of the pause, so the chart
+refuses a grace period that is not longer than pause + drain. For long runs (`RUN_TIMEOUT_S`)
+raise `drainSeconds` and `terminationGracePeriodSeconds` together; `0` turns the pause (or the
+drain limit) off.
+
+The bundled dev Postgres gets a `preStop` hook too (`pg_ctl -m fast stop`): Postgres answers
+Kubernetes' SIGTERM with a smart shutdown that waits for every client, and the agent's pooled
+sessions never leave, so without it a restart of the database pod ends in a SIGKILL after 30 s
+and crash recovery. With it the pod stops in about a second and restarts cleanly.
+
 ## Traffic entry and TLS
 
 - Default: Gateway API `HTTPRoute` (`gateway.networking.k8s.io/v1`; Kubernetes 1.28+). Set
@@ -134,15 +159,28 @@ instead of being restarted. Tune `probes.<kind>.{path,periodSeconds,timeoutSecon
 `ServiceMonitor` (Prometheus Operator CRDs needed; `labels` for its selector). With
 `METRICS_TOKEN` in the Secret (add it to `secrets.keys`) the scraper must send
 `Authorization: Bearer <token>`: `metrics.serviceMonitor.bearerToken.enabled: true` makes the
-ServiceMonitor do so (its endpoint's `authorization`, read from the app Secret, or from
-`bearerToken.secretName` / `.key` in the same namespace). Pod annotations cannot carry a
-token: an annotation-discovering Prometheus needs the token in its own scrape job
+ServiceMonitor do so (its endpoint's `authorization`). The token is read from
+`<release>-metrics`, a Secret holding only `METRICS_TOKEN` that `secrets apply` and a direct
+`deploy` write alongside the app Secret, so Prometheus needs read access to that one Secret and
+never to the app Secret (provider key, API tokens, DSN); `bearerToken.secretName` / `.key` name
+a Secret you manage instead. `infra check` reports a missing token Secret. Pod annotations cannot
+carry a token: an annotation-discovering Prometheus needs the token in its own scrape job
 (`authorization.credentials_file`), or leave `METRICS_TOKEN` unset and rely on the
 NetworkPolicy.
+
 `networkPolicy.enabled: true` admits only the http port, from `networkPolicy.ingressFrom` when
 listed (list the Gateway's namespace and, if you scrape, the Prometheus namespace);
-`restrictEgress: true` also limits egress to DNS and `networkPolicy.egressTo` (the database, the
-model endpoint, the APIs in `api-policy.yaml`).
+`restrictEgress: true` also limits egress to DNS (the kube-dns pods) and
+`networkPolicy.egressTo`. It is off by default (it needs a CNI that enforces NetworkPolicy and
+addresses only you know). `examples/networkpolicy.yaml` is a worked staging/prod example: in
+from the Gateway's and Prometheus's namespaces; out to DNS, the database (Redis too under
+`langgraph-server`), an on-network model server (`openai-compatible`) and HTTPS on public
+addresses only (every private range and `169.254.169.254` excluded), with a commented entry for
+an on-network API. Copy its `networkPolicy` block into `values-<env>.yaml` and replace the
+addresses marked `CHANGE` (NetworkPolicy matches addresses, not host names; add a JWKS URL or
+an OTLP collector the agent must reach). The chart tests render and validate it; once deployed,
+`/ready` answers 200 (DNS and the database reachable) and a pod in another namespace cannot
+connect.
 
 ## Persistence toggles
 
@@ -157,6 +195,38 @@ The agent's database is agent-owned: its own credentials, migrations, backups, q
 it at another application's operational database. Postgres `max_connections` must cover
 replicas x (`DB_POOL_MAX_SIZE` + 1): the extra connection per replica holds the cross-replica run
 lock (session advisory locks, so no transaction-mode PgBouncer in front).
+
+### External database: a least-privileged role over TLS
+
+The agent needs no superuser. It creates its tables on first start (under an advisory lock) and
+then reads and writes only them, so a role that owns its own database is enough:
+
+```sql
+CREATE ROLE agent LOGIN PASSWORD '...' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+CREATE DATABASE agent OWNER agent;
+REVOKE ALL ON DATABASE agent FROM PUBLIC;
+-- A shared database instead: CREATE SCHEMA agent AUTHORIZATION agent;
+-- ALTER ROLE agent SET search_path = agent;
+```
+
+The connection string goes to psycopg (libpq) unchanged, so every libpq parameter works. Require
+TLS and check the server's certificate:
+`postgresql://agent:<password>@db.example.com:5432/agent?sslmode=verify-full&sslrootcert=/etc/db-ca/ca.crt`,
+with the CA mounted from a Secret or ConfigMap:
+
+```yaml
+extraVolumes:
+  - name: db-ca
+    secret: { secretName: db-ca }        # kubectl create secret generic db-ca --from-file=ca.crt
+extraVolumeMounts:
+  - { name: db-ca, mountPath: /etc/db-ca, readOnly: true }
+```
+
+A certificate from a public CA needs no file: `sslrootcert=system`. `PGSSLMODE` /
+`PGSSLROOTCERT` in the chart env work too. `deploy` and `secrets apply` warn outside dev when the
+DSN does not require TLS (`sslmode` `require`, `verify-ca` or `verify-full`), and `infra check`
+reports it (`database tls`); the value is never printed. On the server, `hostssl` lines in
+`pg_hba.conf` (and a `hostnossl ... reject` for the agent's role) refuse clear-text connections.
 
 ## Scaling and availability
 
@@ -220,9 +290,17 @@ helm lint deployment/helm/<name>
 ## Rollback (direct and helm-push)
 
 `deploy` rolls a failed rollout back itself (`--atomic`, the default): it prints the pods'
-states, warning events and logs, then rolls back to the newest good revision, or uninstalls a
-first install that never succeeded. It only acts on the revision this run created; if another
-helm operation holds the release it refuses and prints the command that clears a stale lock.
+states, this release's warning events since the deploy started and the logs, then rolls back to
+the newest good revision, or uninstalls a first install that never succeeded. It only acts on the
+revision this run created; if another helm operation holds the release it refuses and prints the
+command that clears a stale lock. Once the release is back where it was (rolled back, never
+changed, or uninstalled), the app Secret this deploy applied is put back too (a Secret it created
+is deleted), unless someone changed it in the meantime; when the release stays on the failed
+revision (`--no-atomic`, another deploy, an unreadable history) the Secret keeps the new values
+and the error says how to put the old ones back. `deploy --status` reports the rollout within
+`--timeout` (default 60 s: replicas, image, helm revision, each pod's readiness and restarts;
+diagnostics and exit 1 when not ready), and `deploy --restart` waits for the new pods (default
+5 m; diagnostics and exit 2 when they do not become ready, while the old pods keep serving).
 A manual rollback of a release that deployed fine:
 
 ```bash

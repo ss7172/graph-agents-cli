@@ -88,6 +88,16 @@ pull a missing image or an autoscaler that cannot compute utilisation.
 {{- if or .Values.gateway.enabled .Values.ingress.enabled -}}
 {{- $_ := include "agent.publicPaths" . -}}
 {{- end -}}
+{{- $shutdown := .Values.shutdown | default dict -}}
+{{- $pause := int ($shutdown.preStopSleepSeconds | default 0) -}}
+{{- $drain := int ($shutdown.drainSeconds | default 0) -}}
+{{- $grace := int .Values.terminationGracePeriodSeconds -}}
+{{- if or (lt $pause 0) (lt $drain 0) -}}
+{{- fail "shutdown.preStopSleepSeconds and shutdown.drainSeconds must be 0 or more." -}}
+{{- end -}}
+{{- if le $grace (add $pause $drain) -}}
+{{- fail (printf "terminationGracePeriodSeconds (%d) must be greater than shutdown.preStopSleepSeconds + shutdown.drainSeconds (%d + %d): Kubernetes kills the pod at the grace period, counted from the start of the preStop pause." $grace $pause $drain) -}}
+{{- end -}}
 {{- if not (or (kindIs "bool" .Values.secretOptional) (kindIs "invalid" .Values.secretOptional)) -}}
 {{- fail (printf "secretOptional must be true or false, got %v." .Values.secretOptional) -}}
 {{- end -}}
