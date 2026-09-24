@@ -49,7 +49,7 @@ from graph_agents_cli._project import (
 from graph_agents_cli._runner import run_resolved
 from graph_agents_cli._tools import ToolNotFoundError, require_tool
 
-from ..utils import remote_template
+from ..utils import build_record, remote_template
 from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.cli_options import shared_template_options
 from ..utils.generation_metadata import metadata_to_cli_args
@@ -758,6 +758,46 @@ def _run_smart_merge(
         interactive=interactive,
     )
 
+    current_build = build_record.running_build()
+    try:
+        recorded_build = build_record.recorded_build_for(project_config)
+    except build_record.MalformedRecordError as e:
+        console.print(f"[yellow]⚠️  {e}; it is ignored.[/yellow]")
+        recorded_build = None
+    digests: dict[str, str] = {}
+
+    def _check_snapshots(old_dir: pathlib.Path, new_dir: pathlib.Path) -> None:
+        # Both snapshots are this build's. The project is at this build's
+        # templates when it was rendered by this very build, or by one that
+        # renders its settings identically; otherwise files the template changed
+        # since its build look like the developer's edits here.
+        digests["old"] = build_record.template_digest(old_dir)
+        digests["new"] = build_record.template_digest(new_dir)
+        if recorded_build is not None and not _at_this_build(recorded_build, digests["old"]):
+            console.print(
+                f"[yellow]⚠️  This project was rendered by build {recorded_build.id}, whose "
+                f"templates differ from this build's ({current_build.id}): enhance compares "
+                "your files with this build's templates, so a file the template changed since "
+                "then counts as your edit (kept, or listed as a conflict). Run "
+                "`graph-agents-cli scaffold upgrade` to bring those changes in.[/yellow]"
+            )
+
+    def _at_this_build(record: build_record.BuildRecord, old_digest: str) -> bool:
+        if record.same_build_as(current_build):
+            return True
+        return record.template_digest is not None and record.template_digest == old_digest
+
+    def _record_build(proj_dir: pathlib.Path) -> None:
+        """The new settings' snapshot is this build's; the project is at it only if it was before."""
+        if recorded_build is None or "new" not in digests:
+            return  # a manifest without cli_build stays compared by version only
+        if _at_this_build(recorded_build, digests["old"]):
+            record = build_record.BuildRecord.of(current_build, digests["new"])
+        else:
+            # Still the recorded build's files; its digest described the old settings.
+            record = build_record.BuildRecord(recorded_build.id, recorded_build.commit, None)
+        build_record.write_build_record(proj_dir, record)
+
     def _update_metadata(proj_dir: pathlib.Path, lang: str) -> list[str | Followup] | None:
         if not cli_overrides:
             return None
@@ -778,6 +818,7 @@ def _run_smart_merge(
             extra["agent_guidance_filename"] = cli_overrides["agent_guidance_filename"]
         if extra:
             update_cli_metadata(proj_dir, extra)
+        _record_build(proj_dir)
         return [
             *_settings_followups(proj_dir, previous, current, added, removed),
             *_chart_followups(proj_dir, previous, current),
@@ -798,6 +839,7 @@ def _run_smart_merge(
         pre_apply_hook=backup_hook,
         post_apply_hook=_update_metadata,
         merge_config=True,
+        snapshot_check=_check_snapshots,
     )
 
 

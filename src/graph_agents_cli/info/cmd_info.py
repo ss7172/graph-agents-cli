@@ -102,6 +102,7 @@ def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
         "project_root": str(project_root),
         "project_name": cfg.project_name,
         "cli_version": cfg.cli_version,
+        "cli_build": cfg.cli_build if isinstance(cfg.cli_build, dict) else None,
         "language": cfg.language,
         "base_template": cfg.base_template,
         "agent_directory": cfg.agent_directory,
@@ -122,11 +123,20 @@ def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
     }
 
 
+def _scaffolded_with(cfg: ProjectConfig) -> str:
+    """The version and, when the manifest records it, the build that rendered the project."""
+    version = cfg.cli_version or "(unknown)"
+    build = cfg.cli_build.get("id") if isinstance(cfg.cli_build, dict) else None
+    if not build:
+        return f"{version} (no build recorded)" if cfg.cli_version else version
+    return version if build == cfg.cli_version else f"{version} (build {build})"
+
+
 def _print_project(project_root: Path, cfg: ProjectConfig) -> None:
     click.echo()
     click.echo(f"Project root:       {project_root}")
     click.echo(f"Project name:       {cfg.project_name or '(not set)'}")
-    click.echo(f"Scaffolded with:    {cfg.cli_version or '(unknown)'}")
+    click.echo(f"Scaffolded with:    {_scaffolded_with(cfg)}")
     click.echo(f"Base template:      {cfg.base_template}")
     click.echo(f"Agent directory:    {cfg.agent_directory}")
     click.echo(f"Runtime:            {cfg.runtime}")

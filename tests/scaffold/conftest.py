@@ -155,6 +155,20 @@ def no_subprocesses(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return uv_calls
 
 
+# The build every scaffold test runs as, unless it pins another: a clean commit
+# that is not a release, so results do not depend on the checkout's own state.
+TEST_BUILD_COMMIT = "c0ffee1" + "0" * 33
+
+
+@pytest.fixture(autouse=True)
+def pinned_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    from graph_agents_cli import _build
+
+    monkeypatch.setattr(
+        _build, "current_build", lambda: _build.BuildInfo("0.0.0", TEST_BUILD_COMMIT)
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
     """Backups and stamps go under a temp home, never the developer's."""

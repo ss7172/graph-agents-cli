@@ -91,6 +91,9 @@ class ProjectConfig:
 
     project_name: str = ""
     cli_version: str = ""
+    # The ``cli_build`` block as written (``scaffold.utils.build_record`` parses
+    # and validates it): the build that rendered the project. None when absent.
+    cli_build: Any = None
     agent_directory: str = "app"
     base_template: str = "langgraph"
     generated_at: str = ""
@@ -214,6 +217,7 @@ class ProjectConfig:
         cfg = cls()
         cfg.project_name = str(data.get("name") or cfg.project_name)
         cfg.cli_version = str(data.get("cli_version") or cfg.cli_version)
+        cfg.cli_build = data.get("cli_build")
         cfg.agent_directory = str(data.get("agent_directory") or cfg.agent_directory)
         cfg.base_template = str(data.get("base_template") or cfg.base_template)
         cfg.generated_at = str(data.get("generated_at") or cfg.generated_at)

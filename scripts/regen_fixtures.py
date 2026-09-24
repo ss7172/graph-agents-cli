@@ -22,7 +22,10 @@ installed, no network) and two files are written under
 
 * ``files.json``   the sorted list of relative file paths the project contains;
 * ``manifest.yaml`` the rendered ``graph-agents-cli-manifest.yaml`` with the
-  ``generated_at`` timestamp replaced by ``<generated_at>``.
+  ``generated_at`` timestamp replaced by ``<generated_at>`` and without the
+  ``cli_build`` block (the commit and digest of the build that rendered it,
+  which change with every commit; ``test_render_snapshots.py`` checks the
+  block on its own).
 
 ``tests/integration/test_render_snapshots.py`` renders the same combinations
 and compares them to these files, so a template or engine change that alters
@@ -49,6 +52,12 @@ SAMPLE_POLICY = INPUTS_DIR / "api-policy.yaml"
 MANIFEST_FILENAME = "graph-agents-cli-manifest.yaml"
 GENERATED_AT_PLACEHOLDER = "<generated_at>"
 _GENERATED_AT_RE = re.compile(r"^(generated_at:\s*).*$", re.MULTILINE)
+# The build record `create` inserts after cli_version: its comment line, the
+# `cli_build:` key and its indented entries.
+_CLI_BUILD_RE = re.compile(
+    r"^(?:# The build that rendered this project[^\n]*\n)?cli_build:[^\n]*\n(?:[ \t]+[^\n]*\n)*",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -302,8 +311,9 @@ def list_files(project: Path) -> list[str]:
 
 
 def normalized_manifest(project: Path) -> str:
-    """The rendered manifest with ``generated_at`` replaced by a placeholder."""
+    """The rendered manifest: ``generated_at`` a placeholder, the ``cli_build`` block removed."""
     text = (project / MANIFEST_FILENAME).read_text(encoding="utf-8")
+    text = _CLI_BUILD_RE.sub("", text, count=1)
     return _GENERATED_AT_RE.sub(rf"\g<1>{GENERATED_AT_PLACEHOLDER}", text, count=1)
 
 

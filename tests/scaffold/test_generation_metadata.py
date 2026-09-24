@@ -143,7 +143,8 @@ def test_round_trip_create_manifest_create(run_create: CreateRunner) -> None:
     assert args[:2] == ["--agent", "mini_agent"]
 
     # Re-create from the recorded flags: the manifest must come out identical
-    # except for the timestamp.
+    # except for the timestamp, the name and the digest of the files (which
+    # carry the name).
     result, second = run_create(*args[2:], name="round-trip")
     assert result.exit_code == 0, result.output
     a = read_manifest(first)
@@ -152,6 +153,7 @@ def test_round_trip_create_manifest_create(run_create: CreateRunner) -> None:
         manifest.pop("generated_at")
         manifest.pop("name")
         manifest.pop("environments", None)
+        assert manifest["cli_build"].pop("template_digest").startswith("sha256:")
     assert a == b
     assert sorted((first / "bot").iterdir(), key=str) != []
     assert (second / "bot" / "agent.py").is_file()

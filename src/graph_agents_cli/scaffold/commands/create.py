@@ -46,7 +46,7 @@ from graph_agents_cli._output import Console
 from graph_agents_cli._project import MANIFEST_FILENAME, read_project_config
 from graph_agents_cli.dev import policy_check
 
-from ..utils import cli_options, openapi_seed, remote_template, template
+from ..utils import build_record, cli_options, openapi_seed, remote_template, template
 from ..utils.fs import standard_ignore_patterns
 from ..utils.logging import display_welcome_banner
 from ..utils.manifest import (
@@ -284,8 +284,10 @@ def create(
     # and the API policy from the template before finalize_manifest runs, so
     # the developer's recorded state has to be captured here and re-applied.
     existing_policy: bytes | None = None
+    carried_build: object = _NO_MANIFEST
     if in_folder:
         params = _carry_recorded_state(destination_dir, params)
+        carried_build = _recorded_build_block(destination_dir)
         policy_path = destination_dir / API_POLICY_FILENAME
         if api_policy is None and policy_path.is_file():
             existing_policy = policy_path.read_bytes()
@@ -366,6 +368,19 @@ def create(
             project_name=project_name,
             params=params,
             cli_version=get_current_version(),
+        )
+        _record_build(
+            rendered_path,
+            carried=carried_build,
+            # The digest describes the snapshot `scaffold upgrade` renders from the
+            # manifest's settings, which is this render only when nothing else
+            # (a seed policy, a local or remote template) went into it.
+            render_is_snapshot=(
+                not in_folder
+                and api_policy is None
+                and template_source_path is None
+                and remote_config is None
+            ),
         )
 
         # Remote templates inherit base-template files that import packages the
@@ -1067,6 +1082,42 @@ def _rendered_agent_directory(project_dir: pathlib.Path) -> str:
         return read_project_config(str(project_dir)).agent_directory or "app"
     except click.ClickException:
         return "app"
+
+
+# ``carried`` value of a project that had no manifest before an in-folder render.
+_NO_MANIFEST = object()
+
+
+def _recorded_build_block(project_dir: pathlib.Path) -> object:
+    """The ``cli_build`` value an existing manifest holds (``_NO_MANIFEST`` without one)."""
+    if not (project_dir / MANIFEST_FILENAME).is_file():
+        return _NO_MANIFEST
+    return build_record.read_manifest_data(project_dir).get(build_record.MANIFEST_KEY)
+
+
+def _record_build(
+    rendered_path: pathlib.Path, *, carried: object, render_is_snapshot: bool
+) -> None:
+    """Write ``cli_build``: the running build, or the one an in-folder render must keep.
+
+    An in-folder re-render of a project keeps the project's files, so they are
+    still those of the build its manifest records: that record (or its absence)
+    is carried over. A new project, or a folder adopted without a manifest,
+    records the running build, with the digest of this render when it is the
+    snapshot `scaffold upgrade` compares against.
+    """
+    if carried is not _NO_MANIFEST:
+        try:
+            record = build_record.parse_build_record(carried)
+        except build_record.MalformedRecordError as e:
+            logging.warning("Leaving %s as it is: %s", build_record.MANIFEST_KEY, e)
+            return
+        build_record.write_build_record(rendered_path, record)
+        return
+    digest = build_record.template_digest(rendered_path) if render_is_snapshot else None
+    build_record.write_build_record(
+        rendered_path, build_record.BuildRecord.of(build_record.running_build(), digest)
+    )
 
 
 def _carry_recorded_state(project_dir: pathlib.Path, params: CreateParams) -> CreateParams:

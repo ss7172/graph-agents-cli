@@ -108,6 +108,44 @@ def test_layout_follows_contracts(rendered: dict[str, Path], name: str) -> None:
     assert f'name = "{combo.project_name}"' in lock_head
 
 
+@pytest.mark.parametrize("name", list(rf.COMBINATIONS))
+def test_the_manifest_records_the_build_and_the_snapshot_digest(
+    rendered: dict[str, Path], name: str, tmp_path: Path
+) -> None:
+    """``cli_build`` names this build; its digest is what `scaffold upgrade` re-renders.
+
+    The fixture manifests leave the block out (it changes with every commit),
+    so it is checked here: the digest of a fresh render from the manifest's
+    settings (the snapshot `scaffold upgrade` compares) equals the recorded one,
+    except for a project seeded with --api-policy, whose render is more than
+    that snapshot and records no digest.
+    """
+    from graph_agents_cli._project import read_project_config
+    from graph_agents_cli.scaffold.utils import build_record
+    from graph_agents_cli.scaffold.utils.generation_metadata import metadata_to_cli_args
+    from graph_agents_cli.scaffold.utils.merge import run_create_command
+
+    project = rendered[name]
+    text = (project / rf.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    manifest = yaml.safe_load(text)
+    running = build_record.running_build()
+    assert manifest["cli_build"]["id"] == running.id
+    assert manifest["cli_build"]["commit"] == running.commit
+    # Right after cli_version, with its comment, and the other comments kept.
+    assert "cli_version: '" in text and "\n# The build that rendered this project" in text
+    assert text.index("cli_version:") < text.index("cli_build:") < text.index("agent_directory:")
+    assert text.startswith("# Project manifest written by `graph-agents-cli create`.")
+
+    config = read_project_config(str(project))
+    assert run_create_command(metadata_to_cli_args(config), tmp_path, config.project_name)
+    replayed = build_record.template_digest(tmp_path / config.project_name)
+    if "--api-policy" in rf.COMBINATIONS[name].args:
+        assert manifest["cli_build"]["template_digest"] is None
+    else:
+        assert manifest["cli_build"]["template_digest"] == replayed
+        assert build_record.template_digest(project) == replayed
+
+
 def test_fixture_directories_are_complete() -> None:
     present = {p.name for p in rf.FIXTURES_DIR.iterdir() if p.is_dir() and p.name != "_inputs"}
     assert present == set(rf.COMBINATIONS), (

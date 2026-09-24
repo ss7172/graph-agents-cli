@@ -383,6 +383,10 @@ apis:
 ```yaml
 name: my-agent
 cli_version: 0.2.0
+cli_build:                          # the build that rendered the project (scaffold upgrade reads it)
+  id: 0.2.0+g1a2b3c4                # `graph-agents-cli --version`; 0.2.0 for the release
+  commit: 1a2b3c4d...               # full commit; null when not built from git
+  template_digest: sha256:...       # what that build renders for these settings; null after a seed policy
 agent_directory: app
 base_template: langgraph
 generated_at: 2026-09-22T00:00:00+00:00

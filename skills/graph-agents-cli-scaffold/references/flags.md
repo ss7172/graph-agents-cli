@@ -107,16 +107,26 @@ id>_<timestamp>` (0700; the newest 5 per project are kept).
 | `--dry-run` / `--dryrun` | | off | Show what would change |
 | `--auto-approve` / `--yes` | `-y` | off | Apply non-conflicting changes without prompting |
 | `--interactive` | `-i` | off | Resolve conflicts interactively |
-| `--baseline authentic\|current` | | `authentic` | `authentic` runs the exact prior CLI version through `uvx` and stops if it cannot; `current` compares against the current templates instead (explicit, logged, result labelled) |
+| `--baseline authentic\|current` | | `authentic` | `authentic` runs the exact build that created the project through `uvx` and stops if it cannot; `current` compares against the current templates instead (explicit, logged, result labelled) |
+| `--baseline-ref REF` | | none | The build that created the project, when the manifest cannot name it: a commit or tag of the repository, `<clone>@<commit>` for a local clone, a path to a checkout or wheel, or a full install spec. Also upgrades a project of the running version. Not with `--baseline current` |
 | `--debug` | | off | Debug logging |
 
-Behaviour: requires `uvx`; runs `uvx --from <install spec of the manifest cli_version> graph-agents-cli scaffold create`
-(`git+https://github.com/ss7172/graph-agents-cli@v<version>`, or `GRAPH_AGENTS_CLI_INSTALL_SPEC`
-with `{version}` filled in) to regenerate the old baseline; stops with no changes when that
+Behaviour: requires `uvx`; runs `uvx --from <spec> graph-agents-cli scaffold create` to
+regenerate the old baseline. The spec is `--baseline-ref`'s; else, for a manifest whose
+`cli_build` names a build between releases (id `X.Y.Z+g<commit>`), that commit
+(`git+https://github.com/ss7172/graph-agents-cli@<commit>`); else the `cli_version` release
+(`git+https://github.com/ss7172/graph-agents-cli@v<version>`, or
+`GRAPH_AGENTS_CLI_INSTALL_SPEC` with `{version}` filled in; `{version}` names releases only).
+A local path is rebuilt (`uvx --refresh-package graph-agents-cli`). At the running version,
+a project is "already at version" when `cli_build` names this build or one with the same
+`template_digest`, and a manifest without `cli_build` is compared by version only (the message
+says how to name its build with `--baseline-ref`). Stops with no changes when the baseline
 fails (exit 2: `uvx` missing or the fetch failed; exit 3: `cli_version` missing or not a
-release, or an override without `{version}`), unless `--baseline current`, which cannot tell
+release, an override without `{version}`, a recorded build with uncommitted changes, a build
+between releases recorded while an override is set, a `--baseline-ref` that names no build, or
+a baseline that renders another `cli_version`), unless `--baseline current`, which cannot tell
 your edits from template changes since the old version (unedited files it preserves keep
 their old content; dependency changes are not merged). Backup first to
-`~/.graph-agents-cli/backups/`. Updates `cli_version` in the manifest on success. Outside a
-project: exit 3. A project still on the retired `product-policy.yaml` stops with migration steps
-(exit 3).
+`~/.graph-agents-cli/backups/`. Updates `cli_version` (when it changes) and `cli_build` in the
+manifest on success. Outside a project: exit 3. A project still on the retired
+`product-policy.yaml` stops with migration steps (exit 3).
