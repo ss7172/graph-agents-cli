@@ -11,7 +11,7 @@ The agent never names a provider in code. `app/app_utils/model.py` reads the env
 | `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` | | |
 | `gemini` | `google_genai` | `GOOGLE_API_KEY` | | the AI Studio API-key path only |
 | `openai-compatible` | `openai` with `base_url` | `MODEL_API_KEY` (sent as the OpenAI key) | `OPENAI_BASE_URL` | Ollama, vLLM, TGI, OpenRouter, any OpenAI-compatible server |
-| `fake` | the template's deterministic `FakeChatModel` (`app/app_utils/model.py`) | none | | tests and CI only; never offered by `create`; replies depend only on the input (greeting, weather -> `get_weather` tool call, judge prompt -> JSON verdict) |
+| `fake` | the template's deterministic `FakeChatModel` (`app/app_utils/model.py`) | none | | tests and CI only; never offered by `create`; replies depend only on the input (greeting, a request mentioning a bound tool -> a call of it, judge prompt -> JSON verdict) |
 
 Default model names per provider are recorded by `create` in `.env` and the manifest
 (`create_params.model`). They are placeholders to verify at release time; do not replace them

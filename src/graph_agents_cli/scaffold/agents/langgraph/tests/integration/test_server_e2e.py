@@ -17,7 +17,9 @@
 
 The app is started through its lifespan with `MODEL_PROVIDER=fake` and
 `CHECKPOINTER=memory`, so no model key, database or network is needed, and
-driven through `httpx.AsyncClient` over `ASGITransport`.
+driven through `httpx.AsyncClient` over `ASGITransport`. Tool events are
+exercised with the test-only `probe` tool (`use_test_tools`, see
+`tests/conftest.py`), so these tests hold whatever tools the project has.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ os.environ.update(
 
 import httpx
 import pytest
+from langchain_core.tools import tool
 
 from {{cookiecutter.agent_directory}} import agent as agent_module
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, reset_policy_cache
@@ -51,6 +54,13 @@ from {{cookiecutter.agent_directory}}.fast_api_app import app
 
 AUTH = {"Authorization": "Bearer test-key"}
 A2A_PATH = "/a2a/{{cookiecutter.agent_directory}}"
+PROBE_PROMPT = "Run the probe for San Francisco"
+
+
+@tool
+def probe(query: str) -> str:
+    """Test-only tool: reports what it was asked about."""
+    return f"probe reading for {query}: 42"
 
 
 @pytest.fixture
@@ -102,8 +112,11 @@ async def test_chat_requires_the_bearer_key(client: httpx.AsyncClient) -> None:
     assert r.status_code == 401
 
 
-async def test_chat_sse_event_sequence_with_a_tool_call(client: httpx.AsyncClient) -> None:
-    events = await _chat(client, "What's the weather in San Francisco?")
+async def test_chat_sse_event_sequence_with_a_tool_call(
+    client: httpx.AsyncClient, use_test_tools
+) -> None:
+    use_test_tools(probe)
+    events = await _chat(client, PROBE_PROMPT)
     names = [e for e, _ in events]
     assert names[0] == "message.start"
     assert names[-1] == "message.end"
@@ -112,14 +125,26 @@ async def test_chat_sse_event_sequence_with_a_tool_call(client: httpx.AsyncClien
     start, end = events[0][1], events[-1][1]
     assert start["thread_id"] and start["run_id"] == end["run_id"]
     call = next(d for e, d in events if e == "tool.call")
-    assert call["name"] == "get_weather" and call["args"] == {"query": "San Francisco"}
+    assert call["name"] == "probe" and call["args"] == {"query": "San Francisco"}
     result = next(d for e, d in events if e == "tool.result")
-    assert (
-        result["id"] == call["id"] and result["is_error"] is False and "foggy" in result["result"]
-    )
+    assert result["id"] == call["id"] and result["is_error"] is False
+    assert result["result"] == "probe reading for San Francisco: 42"
     text = "".join(d["text"] for e, d in events if e == "message.delta")
-    assert "foggy" in text
+    assert "probe reading for San Francisco: 42" in text
     assert end["status"] == "ok" and end["usage"]["output_tokens"] > 0 and end["latency_ms"] >= 0
+
+
+async def test_the_project_tools_do_not_matter_to_a_plain_chat(
+    client: httpx.AsyncClient, use_test_tools
+) -> None:
+    """With no tool bound at all the agent still answers (tools are the project's to change)."""
+    use_test_tools()
+    events = await _chat(client, PROBE_PROMPT)
+    names = [e for e, _ in events]
+    assert names[0] == "message.start" and names[-1] == "message.end"
+    assert "tool.call" not in names
+    text = "".join(d["text"] for e, d in events if e == "message.delta")
+    assert PROBE_PROMPT in text
 
 
 async def test_thread_continuity_and_messages_endpoint(client: httpx.AsyncClient) -> None:
@@ -229,11 +254,12 @@ async def test_stub_policies_answer_503_on_every_surface(
 
 
 async def test_thread_ownership_and_tool_args_redaction(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools
 ) -> None:
     """Non-owners are refused; a read-across role reads without tool args under metadata capture."""
+    use_test_tools(probe)
     thread_id = str(uuid.uuid4())
-    await _chat(client, "What's the weather in San Francisco?", thread_id)
+    await _chat(client, PROBE_PROMPT, thread_id)
     owner = Principal(id="shared", roles=["shared"])
     messages = await RUNTIME.messages(owner, thread_id)
     assistant = next(m for m in messages if m.get("tool_calls"))
@@ -253,7 +279,7 @@ async def test_thread_ownership_and_tool_args_redaction(
     auditor = Principal(id="auditor", roles=["auditor"])
     messages = await RUNTIME.messages(auditor, thread_id)
     assistant = next(m for m in messages if m.get("tool_calls"))
-    assert assistant["tool_calls"][0]["name"] == "get_weather"
+    assert assistant["tool_calls"][0]["name"] == "probe"
     assert "args" not in assistant["tool_calls"][0]
     monkeypatch.setenv("TRACE_CAPTURE", "full")
     messages = await RUNTIME.messages(auditor, thread_id)

@@ -87,7 +87,7 @@ def cmd_build(
 
     if not (project_root / DOCKERFILE).is_file():
         click.secho(
-            f"No {DOCKERFILE} at the project root ({project_root}).\n"
+            f"Error: No {DOCKERFILE} at the project root ({project_root}).\n"
             "  Add deployment support with: graph-agents-cli scaffold enhance",
             fg="red",
             err=True,
@@ -102,7 +102,8 @@ def cmd_build(
     # parser error that does not name the setting to change.
     problem = image_reference_problem(image, tag, registry=effective_registry)
     if problem:
-        click.secho(problem, fg="red", err=True)
+        # "Error:" like every other command's configuration error.
+        click.secho(f"Error: {problem}", fg="red", err=True)
         ctx.exit(EXIT_CONFIG_ERROR)
     commands = build_commands(image=image, tag=tag, push=push)
 
@@ -120,7 +121,7 @@ def cmd_build(
         result = run(cmd, check=False)
         if result.returncode != 0:
             click.secho(
-                f"{shlex.join(cmd[:2])} failed (exit code {result.returncode}).",
+                f"Error: {shlex.join(cmd[:2])} failed (exit code {result.returncode}).",
                 fg="red",
                 err=True,
             )

@@ -66,11 +66,16 @@ VALUES_COMMENT = "Base URLs of the APIs in api-policy.yaml (tokens come from the
 
 @dataclass
 class FileChange:
-    """One file's text before and after (None: the file does not exist)."""
+    """One file's text before and after (None: the file does not exist).
+
+    ``summary`` replaces the file's diff in the output (a copied spec is
+    hundreds of lines nobody needs to review line by line here).
+    """
 
     path: str  # relative to the project root
     before: str | None
     after: str | None
+    summary: str | None = None
 
 
 @dataclass
@@ -81,21 +86,31 @@ class Plan:
     changes: list[FileChange] = field(default_factory=list)
     left_for_you: list[str] = field(default_factory=list)
 
-    def set_text(self, path: str, before: str | None, after: str | None) -> None:
+    def set_text(
+        self, path: str, before: str | None, after: str | None, *, summary: str | None = None
+    ) -> None:
         for change in self.changes:
             if change.path == path:
                 change.after = after
+                change.summary = summary or change.summary
                 return
         if before != after:
-            self.changes.append(FileChange(path, before, after))
+            self.changes.append(FileChange(path, before, after, summary))
 
     @property
     def effective(self) -> list[FileChange]:
         return [c for c in self.changes if c.before != c.after]
 
+    def summaries(self) -> list[str]:
+        """One line per summarised change (shown after the diff of the others)."""
+        return [f"{c.path}: {c.summary}" for c in self.effective if c.summary]
+
     def diff(self) -> str:
+        """The unified diff of every change that is not summarised."""
         chunks = []
         for change in self.effective:
+            if change.summary:
+                continue
             before = (change.before or "").splitlines(keepends=True)
             after = (change.after or "").splitlines(keepends=True)
             chunks.extend(

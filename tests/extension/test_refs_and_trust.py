@@ -119,12 +119,32 @@ def test_first_party_is_trusted_without_a_prompt() -> None:
 def test_third_party_needs_consent(monkeypatch) -> None:
     import click
 
+    from graph_agents_cli.extension import _trust
+
+    monkeypatch.setattr(_trust, "stdin_is_interactive", lambda: True)
     answers = iter([False, True])
     monkeypatch.setattr(click, "confirm", lambda *a, **k: next(answers))
     ref = parse_ref("acme/tools")
     assert confirm_trust(ref, auto_approve=False) is False
     assert confirm_trust(ref, auto_approve=False) is True
     assert confirm_trust(ref, auto_approve=True) is True
+
+
+def test_without_a_terminal_it_never_prompts_and_says_to_pass_y(monkeypatch) -> None:
+    """A prompt with no terminal aborts on EOF or blocks forever on an open pipe."""
+    import click
+
+    from graph_agents_cli.extension import _trust
+
+    monkeypatch.setattr(_trust, "stdin_is_interactive", lambda: False)
+
+    def no_prompt(*args, **kwargs):
+        raise AssertionError("prompted without a terminal")
+
+    monkeypatch.setattr(click, "confirm", no_prompt)
+    assert confirm_trust(parse_ref("acme/tools"), auto_approve=False) is False
+    assert confirm_trust(parse_ref("acme/tools"), auto_approve=True) is True
+    assert confirm_trust(parse_ref("soc2"), auto_approve=False) is True
 
 
 def test_trust_prompt_names_the_source() -> None:

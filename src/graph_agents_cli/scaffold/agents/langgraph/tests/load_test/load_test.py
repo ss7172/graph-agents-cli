@@ -15,8 +15,9 @@
 
 """Load test against `POST /chat`, the SSE endpoint every client uses.
 
-Sends the bearer key from `GRAPH_AGENTS_CLI_API_KEY` (or `API_KEY`) and counts
-a request as successful once the first `message.delta` arrives.
+Sends the bearer credential from `GRAPH_AGENTS_CLI_API_KEY` (or `API_KEY`) and
+counts a request as successful once the first `message.delta` arrives. Every
+user sends `LOAD_TEST_PROMPT`: set it to a request that exercises your tools.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ import uuid
 from locust import HttpUser, between, task
 
 ENDPOINT = "/chat"
-PROMPT = os.environ.get("LOAD_TEST_PROMPT", "What's the weather in San Francisco?")
+PROMPT = os.environ.get("LOAD_TEST_PROMPT", "Hello! What can you help me with?")
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"

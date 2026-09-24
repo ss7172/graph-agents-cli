@@ -53,7 +53,7 @@ from graph_agents_cli._api_policy import (
     summarize,
 )
 from graph_agents_cli._click import LazyGroup
-from graph_agents_cli._output import Console
+from graph_agents_cli._output import Console, print_table
 from graph_agents_cli._project import ProjectConfig, chdir_project_root, read_project_config
 from graph_agents_cli.api import _changes as ch
 from graph_agents_cli.api._files import (
@@ -277,16 +277,18 @@ def _finish(
     api: str,
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
-    widens: bool,
+    widens: bool | None,
     notes: list[str] | None = None,
     next_steps: bool = True,
 ) -> None:
+    """Show the change and write it. ``widens=None``: the change allows nothing yet."""
     console = Console()
-    diff = plan.diff()
-    if not diff:
+    if not plan.effective:
         console.print("Nothing to change.")
         return
-    print_diff(diff)
+    print_diff(plan.diff())
+    for line in plan.summaries():
+        console.print(escape(line), style="bold", highlight=False)
     click.echo()
     for note in notes or []:
         console.print(f"Note: {escape(note)}", style="yellow", highlight=False)
@@ -296,7 +298,13 @@ def _finish(
         for line in effects:
             style = "red" if line.startswith("now refused") else "green"
             console.print(f"  {escape(line)}", style=style, highlight=False)
-    if widens:
+    if widens is None:
+        console.print(
+            f"No effect on access to {api} yet (see the notes above); what would make it "
+            f"take effect widens access. {REVIEW_NOTE}",
+            style="yellow",
+        )
+    elif widens:
         console.print(f"This widens access to {api}. {REVIEW_NOTE}", style="yellow")
     else:
         console.print(f"This narrows or keeps access to {api} (always safe).", style="dim")
@@ -362,7 +370,13 @@ def _openapi_reference(
             f"{target} already exists with other content; move it, or pass a spec inside "
             "the project"
         )
-    plan.set_text(target, existing, text)
+    lines = len(text.splitlines())
+    plan.set_text(
+        target,
+        existing,
+        text,
+        summary=f"new file, a copy of {source} ({lines} lines; not shown)",
+    )
     return target, spec
 
 
@@ -701,6 +715,7 @@ def cmd_allow(
         )
     entry_methods = [str(m).upper() for m in entry.get("methods") or []] or allowed
     outside = [m for m in entry_methods if m not in allowed]
+    denied_for: set[str] = set()
     if outside:
         wanted = ",".join(m for m in HTTP_METHODS if m in {*allowed, *outside})
         notes.append(
@@ -708,10 +723,13 @@ def cmd_allow(
             f"for it until `graph-agents-cli api access {name} custom --methods {wanted}`"
         )
     for denial in api.get(ch.DENIED) or []:
-        if any(
-            denial_match(denial, m, entry.get("operationId"), entry.get("path")) == ""
+        refused = {
+            m
             for m in entry_methods
-        ):
+            if denial_match(denial, m, entry.get("operationId"), entry.get("path")) == ""
+        }
+        if refused:
+            denied_for |= refused
             notes.append(
                 f"denied_operations entry {ch.describe_entry(denial)} still refuses it "
                 "(denials win)"
@@ -724,6 +742,8 @@ def cmd_allow(
             f"path with {', '.join(entry_methods)}; to allow exactly one call, pin its endpoint "
             f"too (graph-agents-cli api allow {name} {entry['operationId']} --method M --path P)"
         )
+    # The entry allows a call only with a method the API allows that no denial refuses.
+    effective = [m for m in entry_methods if m in allowed and m not in denied_for]
     _finish(
         project,
         plan,
@@ -731,7 +751,7 @@ def cmd_allow(
         api=name,
         before=project.document,
         after=document,
-        widens=not creating,
+        widens=False if creating else (True if effective else None),
         notes=notes,
     )
 
@@ -1074,11 +1094,11 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
             ("pagination", f"{pagination['page_size_param']} <= {pagination['max_page_size']}")
         )
     table = Table(title=f"API {api['name']}", show_header=False, title_justify="left")
-    table.add_column(style="bold")
-    table.add_column()
+    table.add_column(style="bold", no_wrap=True)
+    table.add_column(overflow="fold")
     for label, value in rows:
         table.add_row(label, escape(str(value)))
-    console.print(table)
+    print_table(console, table)
 
 
 @api_group.command("check")

@@ -146,9 +146,10 @@ class _TransportFailure(click.ClickException):
 class AgentError(Exception):
     """The server sent an ``error`` event."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, run_id: str | None = None) -> None:
         self.code = code
         self.message = message
+        self.run_id = run_id
         super().__init__(f"[{code}] {message}")
 
 
@@ -192,8 +193,17 @@ def _json_preview(value: Any, limit: int | None) -> str:
     return text
 
 
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str, separators=(", ", ": "))
+
+
 class _ChatRenderer:
-    """Prints the chat API's events to the terminal as they stream."""
+    """Prints the chat API's events to the terminal as they stream.
+
+    With ``verbose`` every event also gets one compact line (``event: <name>
+    <json>``); a run of text deltas, whose text is already on screen, is
+    summarised as one ``message.delta`` line with its count.
+    """
 
     def __init__(self, *, verbose: bool = False) -> None:
         self.verbose = verbose
@@ -205,6 +215,11 @@ class _ChatRenderer:
         self.usage: dict[str, Any] | None = None
         self.latency_ms: int | None = None
         self.status: str | None = None
+        # Events received so far: tells a connection that failed before the run
+        # started from one that dropped while it streamed.
+        self.events = 0
+        self._pending_deltas = 0
+        self._pending_chars = 0
 
     def _newline_if_needed(self) -> None:
         if not self.at_line_start:
@@ -217,18 +232,51 @@ class _ChatRenderer:
             self.tagged = True
             self.at_line_start = False
 
+    def _flush_deltas(self) -> None:
+        if not self._pending_deltas:
+            return
+        self._newline_if_needed()
+        count, chars = self._pending_deltas, self._pending_chars
+        self._pending_deltas = self._pending_chars = 0
+        plural = "s" if chars != 1 else ""
+        click.secho(f"event: {EVENT_MESSAGE_DELTA} x{count} ({chars} character{plural})", dim=True)
+
+    def _trace(self, ev: SseEvent) -> None:
+        """The ``-v`` line of one event."""
+        if ev.event == EVENT_MESSAGE_DELTA:
+            text = ev.data.get("text") if isinstance(ev.data, dict) else ev.data
+            self._pending_deltas += 1
+            self._pending_chars += len(text) if isinstance(text, str) else 0
+            return
+        self._flush_deltas()
+        self._newline_if_needed()
+        click.secho(f"event: {ev.event} {_compact_json(ev.data)}", dim=True)
+
+    def write_text(self, text: Any) -> None:
+        """Print answer text inline (after the ``[agent]:`` tag)."""
+        if text:
+            text = str(text)
+            self._tag()
+            click.echo(text, nl=False)
+            self.at_line_start = text.endswith("\n")
+            self.rendered = True
+
+    def finish(self) -> None:
+        """End the output: pending ``-v`` summary, then a final newline."""
+        self._flush_deltas()
+        self._newline_if_needed()
+
     def handle(self, ev: SseEvent) -> None:
+        self.events += 1
         data = ev.data if isinstance(ev.data, dict) else {}
+        if self.verbose and ev.event != EVENT_MESSAGE_DELTA:
+            self._trace(ev)
         if ev.event == EVENT_MESSAGE_START:
             self.thread_id = data.get("thread_id") or self.thread_id
             self.run_id = data.get("run_id") or self.run_id
         elif ev.event == EVENT_MESSAGE_DELTA:
             text = data.get("text") if data else (ev.data if isinstance(ev.data, str) else "")
-            if text:
-                self._tag()
-                click.echo(text, nl=False)
-                self.at_line_start = text.endswith("\n")
-                self.rendered = True
+            self.write_text(text)
         elif ev.event == EVENT_TOOL_CALL:
             self._newline_if_needed()
             name = data.get("name", "")
@@ -254,12 +302,12 @@ class _ChatRenderer:
             self._newline_if_needed()
             code = str(data.get("code", "error")) if data else "error"
             message = str(data.get("message", ev.raw)) if data else str(ev.raw)
-            raise AgentError(code, message)
+            self.run_id = data.get("run_id") or self.run_id
+            self.thread_id = data.get("thread_id") or self.thread_id
+            raise AgentError(code, message, run_id=self.run_id)
 
-        if self.verbose:
-            self._newline_if_needed()
-            payload = {"event": ev.event, "data": ev.data}
-            click.secho(json.dumps(payload, indent=2, ensure_ascii=False, default=str), dim=True)
+        if self.verbose and ev.event == EVENT_MESSAGE_DELTA:
+            self._trace(ev)
 
     def outcome(self) -> RunOutcome:
         return RunOutcome(
@@ -272,14 +320,23 @@ class _ChatRenderer:
         )
 
 
-def render_chat_events(events: Iterable[SseEvent], *, verbose: bool = False) -> RunOutcome:
-    """Render a stream of chat events; raises :class:`AgentError` on ``error``."""
-    renderer = _ChatRenderer(verbose=verbose)
+def render_chat_events(
+    events: Iterable[SseEvent],
+    *,
+    verbose: bool = False,
+    renderer: _ChatRenderer | None = None,
+) -> RunOutcome:
+    """Render a stream of chat events; raises :class:`AgentError` on ``error``.
+
+    Pass ``renderer`` to keep what the stream announced (the thread id, how
+    many events arrived) when it ends with an exception.
+    """
+    renderer = renderer or _ChatRenderer(verbose=verbose)
     try:
         for ev in events:
             renderer.handle(ev)
     finally:
-        renderer._newline_if_needed()
+        renderer.finish()
     return renderer.outcome()
 
 
@@ -405,14 +462,37 @@ def _build_resume_flags(
     return (" " + " ".join(flags)) if flags else ""
 
 
+def _thread_lines(thread_id: str, *, resume_flags: str, resumable: bool) -> list[str]:
+    """The thread id and how to continue it (or why it cannot be continued)."""
+    lines = [f"Thread: {thread_id}"]
+    if resumable:
+        hint = "  (re-supply the redacted credential values)" if REDACTED in resume_flags else ""
+        lines.append(
+            f'  Resume with: graph-agents-cli run "<message>"{resume_flags}'
+            f" --thread-id {thread_id}{hint}"
+        )
+    else:
+        lines.append(
+            "  One-off server with an in-memory checkpointer: add --start-server to "
+            "keep the server (and its threads) alive so you can resume with --thread-id."
+        )
+    return lines
+
+
 def _print_footer(
     outcome: RunOutcome,
     *,
     resume_flags: str,
     keep_server: bool,
     checkpointer: str,
+    after_error: bool = False,
 ) -> None:
-    if not outcome.rendered:
+    """Usage, then the thread and the command that continues it.
+
+    Printed after an ``error`` event as well (without the "no response"
+    note): the thread keeps every turn that finished and can be continued.
+    """
+    if not outcome.rendered and not after_error:
         click.secho("(no response content)", fg="yellow")
     if outcome.usage or outcome.latency_ms is not None:
         bits = []
@@ -424,23 +504,14 @@ def _print_footer(
         if outcome.latency_ms is not None:
             bits.append(f"{outcome.latency_ms} ms")
         click.secho("  ".join(bits), dim=True)
+    if after_error and outcome.run_id:
+        click.secho(f"Run: {outcome.run_id}", dim=True)
     if not outcome.thread_id:
         return
     click.echo()
-    click.secho(f"Thread: {outcome.thread_id}", dim=True)
-    if keep_server or checkpointer == "postgres":
-        hint = "  (re-supply the redacted credential values)" if REDACTED in resume_flags else ""
-        click.secho(
-            f'  Resume with: graph-agents-cli run "<message>"{resume_flags}'
-            f" --thread-id {outcome.thread_id}{hint}",
-            dim=True,
-        )
-    else:
-        click.secho(
-            "  One-off server with an in-memory checkpointer: add --start-server to "
-            "keep the server (and its threads) alive so you can resume with --thread-id.",
-            dim=True,
-        )
+    resumable = keep_server or checkpointer == "postgres"
+    for line in _thread_lines(outcome.thread_id, resume_flags=resume_flags, resumable=resumable):
+        click.secho(line, dim=True)
 
 
 # ---------------------------------------------------------------------------
@@ -453,12 +524,22 @@ def _query_chat(
     prompt: str,
     *,
     thread_id: str | None,
-    verbose: bool,
+    renderer: _ChatRenderer,
     display_message: str,
 ) -> RunOutcome:
     click.echo(f"[user]: {display_message}")
     events = post_chat(target.base_url, prompt, thread_id=thread_id, headers=target.headers)
-    return render_chat_events(events, verbose=verbose)
+    return render_chat_events(events, renderer=renderer)
+
+
+def _one_line(chunk: Any) -> str:
+    """An A2A stream response on one line (protobuf text format, else ``str``)."""
+    try:
+        from google.protobuf import text_format
+
+        return text_format.MessageToString(chunk, as_one_line=True)
+    except Exception:
+        return " ".join(str(chunk).split())
 
 
 def _query_a2a(
@@ -466,7 +547,7 @@ def _query_a2a(
     prompt: str,
     *,
     thread_id: str | None,
-    verbose: bool,
+    renderer: _ChatRenderer,
     display_message: str,
 ) -> RunOutcome:
     try:
@@ -482,21 +563,20 @@ def _query_a2a(
 
     click.echo(f"[user]: {display_message}")
 
+    verbose = renderer.verbose
+
     async def _go() -> RunOutcome:
         req_headers = dict(target.headers)
         req_headers.setdefault(VERSION_HEADER, PROTOCOL_VERSION_1_0)
-        renderer = _ChatRenderer(verbose=verbose)
         context_id: str | None = None
 
         def _render_parts(parts: Iterable[Any]) -> None:
             for part in parts:
                 text = getattr(part, "text", "")
                 if text:
-                    renderer.handle(SseEvent(EVENT_MESSAGE_DELTA, {"text": text}, text))
+                    renderer.write_text(text)
                 elif getattr(part, "url", ""):
-                    renderer.handle(
-                        SseEvent(EVENT_MESSAGE_DELTA, {"text": f"\n[file: {part.url}]"}, "")
-                    )
+                    renderer.write_text(f"\n[file: {part.url}]")
 
         async with httpx.AsyncClient(
             headers=req_headers, timeout=_chat_client.STREAM_TIMEOUT
@@ -525,6 +605,7 @@ def _query_a2a(
             )
             try:
                 async for chunk in client.send_message(SendMessageRequest(message=msg)):
+                    renderer.events += 1
                     if chunk.HasField("artifact_update"):
                         context_id = context_id or chunk.artifact_update.context_id or None
                         _render_parts(chunk.artifact_update.artifact.parts)
@@ -535,11 +616,13 @@ def _query_a2a(
                     elif chunk.HasField("message"):
                         context_id = context_id or chunk.message.context_id or None
                         _render_parts(chunk.message.parts)
+                    # Kept on the renderer so a failure mid-stream can still name the thread.
+                    renderer.thread_id = context_id or thread_id
                     if verbose:
                         renderer._newline_if_needed()
-                        click.secho(str(chunk), dim=True)
+                        click.secho(f"a2a: {_one_line(chunk)}", dim=True)
             finally:
-                renderer._newline_if_needed()
+                renderer.finish()
         outcome = renderer.outcome()
         return outcome._replace(thread_id=context_id or thread_id)
 
@@ -561,25 +644,167 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
     raise click.ClickException("No local server is running.")
 
 
-def _read_timeout_message(thread_id: str | None, resume_flags: str) -> str:
+def _read_timeout_message(
+    thread_id: str | None, resume_flags: str, *, local_server_kept: bool | None = True
+) -> str:
+    """``local_server_kept``: None for a remote agent, else whether the local server keeps running."""
     seconds = _chat_client.STREAM_TIMEOUT.read
     text = (
         f"No event from the agent for {seconds:.0f} s; the run may still be in progress "
-        "on the server (a long tool call or a non-streaming model phase).\n"
-        "  The server was left running."
+        "on the server (a long tool call or a non-streaming model phase)."
     )
+    if local_server_kept is True:
+        text += "\n  The server was left running."
+    elif local_server_kept is False:
+        text += "\n  The one-off local server was stopped."
     if thread_id:
         text += f'\n  Check the thread later with: graph-agents-cli run "<message>"{resume_flags} --thread-id {thread_id}'
     return text
 
 
-def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None) -> str:
-    if exc.status_code in (401, 403):
+def _transport_failure_message(
+    exc: httpx.TransportError,
+    *,
+    url: str | None,
+    renderer: _ChatRenderer,
+    resume_flags: str,
+    resumable: bool,
+) -> str:
+    """Tell "never reached" from "dropped after the run started", with the thread to continue."""
+    where = f"the remote agent at {url}" if url else "the local server"
+    if renderer.events == 0:
+        if url is None:
+            return (
+                f"Could not reach the local server: {exc}\n"
+                "  It has been stopped; retry to start a fresh one."
+            )
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return (
+                f"Could not reach remote agent at: {url}\n"
+                f"  {exc}\n"
+                "  Check that the URL is correct and the service is running."
+            )
         return (
-            "\n  Authentication failed. For shared-bearer set "
-            f"{API_KEY_ENV} or pass --header 'Authorization: Bearer <API_KEY>';"
-            "\n  for jwt pass --header 'Authorization: Bearer <token>'; for a custom policy"
-            "\n  pass whatever it reads with --header 'Name: value' or --cookie name=value."
+            f"The connection to {where} failed before the run started: {exc}\n"
+            "  Nothing was answered; retry, and check the service (and any proxy in between)."
+        )
+    lines = [
+        f"The connection to {where} dropped after the run started: {exc}",
+        "  The answer above is incomplete. The run was interrupted (the server stopped, or the "
+        "connection was cut); the thread keeps every turn that finished.",
+    ]
+    if url is None:
+        lines.append(
+            "  The local server has been stopped (its log: .graph-agents-cli/run_server.log)."
+        )
+    if renderer.thread_id:
+        thread = _thread_lines(renderer.thread_id, resume_flags=resume_flags, resumable=resumable)
+        lines.extend(f"  {line}" for line in thread)
+    return "\n".join(lines)
+
+
+def _project_auth_policy(*, remote: bool) -> str | None:
+    """The auth policy of the project in the current directory, if any (for hints only).
+
+    For the local server, ``AUTH_POLICY`` from the environment or the project's
+    ``.env`` (what that server reads) wins over the manifest. A deployed agent
+    runs the manifest's policy (the chart's ``AUTH_POLICY``), so ``remote``
+    reads the manifest alone.
+    """
+    import os
+
+    root = find_project_root(Path.cwd())
+    if root is None:
+        return None
+    from graph_agents_cli._defaults import normalize_auth_policy
+
+    policy = "" if remote else (os.environ.get("AUTH_POLICY") or "").strip()
+    env_path = root / ".env"
+    if not policy and not remote and env_path.is_file():
+        from dotenv import dotenv_values
+
+        try:
+            policy = (dotenv_values(env_path).get("AUTH_POLICY") or "").strip()
+        except Exception:
+            policy = ""
+    if not policy:
+        try:
+            policy = read_project_config(str(root)).auth_policy
+        except click.ClickException:
+            return None
+    return normalize_auth_policy(policy, warn=False)
+
+
+_TOKEN_IN_ENV = (
+    f"export {API_KEY_ENV}=<credential>: sent as 'Authorization: Bearer <credential>', and kept "
+    "out of argv and shell history (unlike --header)"
+)
+
+
+def _auth_hint(policy: str | None, *, remote: bool) -> str:
+    """How to send the credential the project's policy expects (bearer credentials via env)."""
+    shared = f"shared-bearer: export {API_KEY_ENV}=<API_KEY>" + (
+        "" if remote else " (a local run otherwise sends the API_KEY in .env)"
+    )
+    jwt = f"jwt: export {API_KEY_ENV}=<token>" + (
+        ""
+        if remote
+        else "; for a local token: "
+        f'export {API_KEY_ENV}="$(graph-agents-cli auth dev-token --sub <user>)"'
+    )
+    custom = "custom: pass what the policy reads with --header 'Name: value' or --cookie name=value"
+    by_policy = {"shared-bearer": shared, "jwt": jwt, "custom": custom}
+    if policy in by_policy:
+        return f"\n  Authentication failed. {by_policy[policy]}."
+    return (
+        f"\n  Authentication failed. Send a bearer credential with {_TOKEN_IN_ENV}."
+        f"\n    {shared}\n    {jwt}\n    {custom}"
+    )
+
+
+def _unavailable_hint(body: str, *, remote: bool) -> str:
+    """A 503: which setting the server says it is missing (the body names the policy)."""
+    if "AUTH_POLICY=jwt" in body:
+        if remote:
+            return (
+                "\n  The server has no usable JWT settings: set AUTH_JWT_JWKS_URL (or "
+                "AUTH_JWT_PUBLIC_KEY), AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE in the "
+                "environment's chart values (the server log names the problem)."
+            )
+        return (
+            "\n  The local server has no usable JWT settings. For local runs, "
+            "`graph-agents-cli auth dev-token --sub <user>` writes a dev key, issuer and "
+            "audience to .env and prints a token; then restart a kept server with "
+            "`graph-agents-cli run --stop-server`. Or set AUTH_JWT_JWKS_URL to your issuer's keys."
+        )
+    if "API_KEY" in body:
+        if remote:
+            return (
+                "\n  The server has no API_KEY: `graph-agents-cli secrets apply --env <env>` "
+                "puts one in the app Secret."
+            )
+        return (
+            "\n  API_KEY is not set: `graph-agents-cli login --write-env` generates one into .env."
+        )
+    if "AUTH_POLICY=custom" in body:
+        return (
+            "\n  The custom auth policy is still the fail-closed stub: implement "
+            "CustomPolicy in <agent_directory>/policies/custom.py."
+        )
+    if "signing keys" in body:
+        return "\n  The token issuer's keys (AUTH_JWT_JWKS_URL) are unreachable from the server."
+    return "\n  The server refused the request (see its log)."
+
+
+def _http_error_hint(
+    exc: ChatHTTPError, *, remote: bool, thread_id: str | None, policy: str | None = None
+) -> str:
+    if exc.status_code == 401:
+        return _auth_hint(policy, remote=remote)
+    if exc.status_code == 403:
+        return (
+            "\n  The agent knows who you are but refused the request (another principal's "
+            "thread, or an action your roles do not allow)."
         )
     if exc.status_code == 404 and thread_id:
         return f"\n  Thread {thread_id} was not found." + (
@@ -591,7 +816,7 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     if exc.status_code in (404, 405):
         return "\n  Check that --url points at the app base URL (the chat API is at <url>/chat)."
     if exc.status_code == 503:
-        return "\n  The server refused the request (is the auth policy implemented?)."
+        return _unavailable_hint(exc.body or "", remote=remote)
     return ""
 
 
@@ -619,7 +844,11 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     "-H",
     "header",
     multiple=True,
-    help="Custom HTTP header ('Key: Value'). Repeatable. Overrides the API-key default.",
+    help=(
+        "Custom HTTP header ('Key: Value'). Repeatable. An Authorization header overrides "
+        "GRAPH_AGENTS_CLI_API_KEY; prefer the variable for bearer credentials (argv is visible "
+        "to other local users)."
+    ),
 )
 @click.option(
     "--cookie",
@@ -676,7 +905,7 @@ def _http_error_hint(exc: ChatHTTPError, *, remote: bool, thread_id: str | None)
     "-v",
     is_flag=True,
     default=False,
-    help="Print every event payload as JSON.",
+    help="Also print each event on one compact line (text deltas are counted, not repeated).",
 )
 def cmd_run(
     message: str,
@@ -707,15 +936,18 @@ def cmd_run(
 
     \b
     Use --url to query a deployed agent instead. --mode selects the protocol
-    (default chat). Credentials follow the project's auth policy:
-      shared-bearer     --header 'Authorization: Bearer ...' or GRAPH_AGENTS_CLI_API_KEY
-      jwt               --header 'Authorization: Bearer <token>'
+    (default chat). Credentials follow the project's auth policy, locally and
+    with --url. Put a bearer credential in GRAPH_AGENTS_CLI_API_KEY (sent as
+    'Authorization: Bearer <value>'): unlike --header, it stays out of the
+    process list and your shell history.
+      shared-bearer     GRAPH_AGENTS_CLI_API_KEY=<API_KEY> (locally: the API_KEY in .env)
+      jwt               GRAPH_AGENTS_CLI_API_KEY=<token> (locally: auth dev-token)
       custom            --header 'Name: value' or --cookie name=value
 
     \b
-    --thread-id continues a conversation; the footer of every run prints the
-    thread id and the command to resume it. --file attaches UTF-8 text files
-    as extra context.
+    --thread-id continues a conversation; the footer of every run, one that
+    ends with an error included, prints the thread id and the command to
+    resume it. --file attaches UTF-8 text files as extra context.
 
     \b
     Exit codes:
@@ -760,20 +992,28 @@ def cmd_run(
         keep_server = bool(url) or not should_stop_server
 
         handler = _query_a2a if target.mode == "a2a" else _query_chat
+        renderer = _ChatRenderer(verbose=verbose)
+        failed: AgentError | None = None
         try:
             try:
                 outcome = handler(
                     target,
                     prompt,
                     thread_id=thread_id,
-                    verbose=verbose,
+                    renderer=renderer,
                     display_message=message,
                 )
             except AgentError as exc:
                 click.secho(f"[error: {exc.code}]: {exc.message}", fg="red")
-                raise click.exceptions.Exit(1) from exc
+                failed = exc
+                outcome = renderer.outcome()._replace(thread_id=renderer.thread_id or thread_id)
             except ChatHTTPError as exc:
-                hint = _http_error_hint(exc, remote=bool(url), thread_id=thread_id)
+                hint = _http_error_hint(
+                    exc,
+                    remote=bool(url),
+                    thread_id=thread_id,
+                    policy=_project_auth_policy(remote=bool(url)),
+                )
                 raise click.ClickException(
                     f"Agent request failed (HTTP {exc.status_code}):\n  {exc.body}{hint}"
                 ) from exc
@@ -782,29 +1022,40 @@ def cmd_run(
                 # non-streaming model phase): it is neither unreachable nor wedged,
                 # so a reused/persistent server is left alone and the message
                 # says what happened. ReadTimeout is a TransportError: keep this first.
-                raise _TransportFailure(_read_timeout_message(thread_id, resume_flags)) from exc
+                raise _TransportFailure(
+                    _read_timeout_message(
+                        renderer.thread_id or thread_id,
+                        resume_flags,
+                        local_server_kept=None if url else not should_stop_server,
+                    )
+                ) from exc
             except httpx.TransportError as exc:
                 if not url:
-                    # The local server is unreachable or wedged: stop it (even one we
-                    # reused) so a later retry starts a fresh one.
+                    # The local server is unreachable, wedged or gone: stop it (even
+                    # one we reused) so a later retry starts a fresh one.
                     should_stop_server = True
-                    raise _TransportFailure(
-                        f"Could not reach the local server: {exc}\n"
-                        "  It has been stopped; retry to start a fresh one."
-                    ) from exc
                 raise _TransportFailure(
-                    f"Could not reach remote agent at: {url}\n"
-                    f"  {exc}\n"
-                    "  Check that the URL is correct and the service is running."
+                    _transport_failure_message(
+                        exc,
+                        url=url,
+                        renderer=renderer,
+                        resume_flags=resume_flags,
+                        # A stopped local server keeps only postgres threads.
+                        resumable=bool(url) or target.checkpointer == "postgres",
+                    )
                 ) from exc
         finally:
             if should_stop_server:
                 # cwd is the project root here (set by _resolve_target).
                 stop_server(Path.cwd(), pid=target.server_pid)
 
+        # After an error event too: the thread keeps every turn that finished.
         _print_footer(
             outcome,
             resume_flags=resume_flags,
             keep_server=keep_server,
             checkpointer=target.checkpointer,
+            after_error=failed is not None,
         )
+        if failed is not None:
+            raise click.exceptions.Exit(1) from failed

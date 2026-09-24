@@ -93,12 +93,12 @@ async def test_read_across_roles_default_to_none(monkeypatch: pytest.MonkeyPatch
 def test_serialize_message_omits_tool_args_when_asked() -> None:
     message = AIMessage(
         content="",
-        tool_calls=[{"id": "c1", "name": "get_weather", "args": {"query": "SF"}}],
+        tool_calls=[{"id": "c1", "name": "probe", "args": {"query": "SF"}}],
     )
     with_args = serialize_message(message)
-    assert with_args["tool_calls"] == [{"id": "c1", "name": "get_weather", "args": {"query": "SF"}}]
+    assert with_args["tool_calls"] == [{"id": "c1", "name": "probe", "args": {"query": "SF"}}]
     without = serialize_message(message, include_tool_args=False)
-    assert without["tool_calls"] == [{"id": "c1", "name": "get_weather"}]
+    assert without["tool_calls"] == [{"id": "c1", "name": "probe"}]
     assert "args" not in without["tool_calls"][0]
 
 

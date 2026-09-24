@@ -457,3 +457,19 @@ def test_next_steps_banner(run_create: CreateRunner) -> None:
     result, _ = run_create("--deployment-target", "none", name="local-only")
     assert "deploy --env dev" not in result.output
     assert "scaffold enhance --deployment-target kubernetes" in result.output
+
+
+def test_a_jwt_project_gets_the_local_token_step(run_create: CreateRunner) -> None:
+    result, _ = run_create("--auth-policy", "jwt", name="jwt-agent")
+    assert result.exit_code == 0, result.output
+    step = 'export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice)"'
+    assert step in result.output
+    # After install (it signs with the project's environment), before anything sends a request.
+    assert (
+        result.output.index("graph-agents-cli install")
+        < result.output.index(step)
+        < result.output.index("graph-agents-cli playground")
+    )
+    assert "auth dev-token --sub <user>" in result.output  # the jwt info line
+    result, _ = run_create(name="bearer-agent")
+    assert "auth dev-token" not in result.output

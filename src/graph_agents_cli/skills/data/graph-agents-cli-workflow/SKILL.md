@@ -180,7 +180,13 @@ combinations, prototype semantics, and what `upgrade` never touches.
 3. **Smoke test:** `graph-agents-cli run "your prompt"` starts the local server for the project's
    runtime, sends one chat message over the same `/chat` SSE API your client application will call, and prints
    the reply. Use `--start-server` when iterating on several prompts, and `--thread-id` to continue
-   a thread. `-v` prints every SSE event (tool calls, results, usage).
+   a thread (the footer prints the thread id and the resume command, also after an error).
+   `-v` adds one line per SSE event (tool calls, results, usage). Under the `jwt` policy the
+   server needs a token: `graph-agents-cli auth dev-token --sub <user> [--roles r1,r2]` writes a
+   dev key to `.env` (`APP_ENV=dev` only) and prints a token; put it in
+   `GRAPH_AGENTS_CLI_API_KEY` (`export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token
+   --sub alice)"`), which `run` and `eval` send as the bearer. Never pass a token with `--header`:
+   argv is visible to other users and lands in shell history.
 4. Interactive testing: `graph-agents-cli playground` (the selected application with reload and
    the `/playground` dev page). `playground --graph` opens LangGraph Studio through `langgraph dev`;
    it bypasses the auth policy and the chat API, so use it for graph debugging only.
@@ -231,7 +237,8 @@ the expect checks, the judge metrics, the gate rule, and the exit codes.
 **NEVER write unit tests that assert on model response content.** Put those checks in an eval case
 (`expect.contains`, `expect.tool_calls`, a judge metric) instead.
 
-1. Start small: 1-2 cases in `tests/eval/datasets/`.
+1. Start small: 1-2 cases in `tests/eval/datasets/`. Under `jwt`, export the dev token first
+   (Phase 2, step 3): `eval run` sends `GRAPH_AGENTS_CLI_API_KEY` like `run` does.
 2. `graph-agents-cli eval run` (chains `generate` and `grade`). For debugging use `eval generate`
    then `eval grade` on the traces file.
 3. Discuss results with the user; paste the per-status counts and the exit code.

@@ -32,6 +32,11 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 2. Try it: `cp .env.example .env` and `graph-agents-cli login --write-env` once, then
    `graph-agents-cli playground` (the app with `/playground`), or `graph-agents-cli run "prompt"`. `graph-agents-cli playground --graph` opens
    LangGraph Studio against the graph directly (bypasses the auth policy).
+{%- if cookiecutter.auth_policy == 'jwt' %}
+   This project's policy is `jwt`: before `run` or `eval run`, put a local token in the variable
+   they send, `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user> --roles <roles>)"`
+   (dev key, `APP_ENV=dev` only). Never put a token on the command line (`--header`).
+{%- endif %}
 3. Write eval cases by hand in `tests/eval/datasets/`, then `graph-agents-cli eval run`
    until the gate passes. `eval compare` shows regressions; `eval analyze` clusters failures.
 4. `uv run pytest` and `graph-agents-cli lint` before deploying.
@@ -58,7 +63,10 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 |---|---|
 | `graph-agents-cli playground` | Run the app with reload and open the dev chat page |
 | `graph-agents-cli run "prompt"` | One-shot chat (`--mode a2a` for the A2A path, `--url` for a deployed agent) |
-| `uv run pytest` | Unit and integration tests (fake model, in-memory checkpointer) |
+| `uv run pytest` | Unit and integration tests (fake model, in-memory checkpointer; they read neither `.env` nor your tools) |
+{%- if cookiecutter.auth_policy == 'jwt' %}
+| `graph-agents-cli auth dev-token --sub <user>` | A JWT for local runs, printed for `GRAPH_AGENTS_CLI_API_KEY` |
+{%- endif %}
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool |
 | `graph-agents-cli api show` / `api check` | The outbound API policy and each tool's declared calls / the policy check alone |
@@ -79,6 +87,8 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
   and never pass `--yes` (accepting the kubeconfig's current context) or `--rotate-api-key` on your own.
 - **Run Python through uv**: `uv run python script.py`, after `uv sync`.
 - **Three strikes.** The same error three times means fix the cause, not retry.
+- **The example tool is yours to replace.** `tools/weather.py` (and its eval case) only show the
+  pattern; the tests under `tests/` use their own test tool, so removing it breaks no test.
 - **Tools declare their API calls.** Add an `API_CALLS` entry (`api`, `method`,
   `operation_id` and/or `path`) for every external API call a tool makes;
   `graph-agents-cli lint` refuses undeclared or disallowed calls. Use the

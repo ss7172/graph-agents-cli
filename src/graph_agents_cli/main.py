@@ -458,6 +458,12 @@ main.add_lazy_command(
     "Check model provider keys, LangSmith, and kubeconfig; optionally write .env.",
 )
 
+main.add_lazy_command(
+    "auth",
+    "graph_agents_cli.setup.cmd_dev_token:auth_group",
+    "Local credentials for the project's auth policy (dev-only JWTs).",
+)
+
 # Scaffold command group + top-level `create` alias
 main.add_lazy_command(
     "scaffold",

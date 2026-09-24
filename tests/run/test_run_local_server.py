@@ -632,3 +632,25 @@ def test_find_free_port_skips_busy_ports(monkeypatch):
     busy.update(range(18080, 18090))
     with pytest.raises(ls.PortUnavailableError, match="--port or GRAPH_AGENTS_CLI_RUN_PORT"):
         ls._find_free_port()
+
+
+def test_the_server_gets_env_settings_from_its_start_below_the_shell(started, monkeypatch):
+    """Settings read while the app is assembled (auth startup check, A2A card) see .env."""
+    (started.root / ".env").write_text(
+        "AUTH_POLICY=jwt\nAPP_ENV=dev\nAUTH_JWT_AUDIENCE=from-dotenv\nPORT=1\nEMPTY\n"
+        "AUTH_JWT_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----\\nAAA\\n-----END PUBLIC KEY-----'\n"
+    )
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "from-shell")
+    ls.ensure_server(started.root, "app", runtime="fastapi")
+    env = started.popen_calls[0]["env"]
+    assert env["AUTH_POLICY"] == "jwt" and env["APP_ENV"] == "dev"
+    assert env["AUTH_JWT_AUDIENCE"] == "from-shell"  # the environment wins, as with load_dotenv
+    assert env["PORT"] == "18080"  # the port this run chose
+    assert "EMPTY" not in env
+    assert env["AUTH_JWT_PUBLIC_KEY"].startswith("-----BEGIN PUBLIC KEY-----\\nAAA")
+
+
+def test_dotenv_settings_tolerates_a_missing_or_broken_file(tmp_path: Path):
+    assert ls.dotenv_settings(tmp_path / ".env") == {}
+    (tmp_path / ".env").write_bytes(b"\xff\xfe not text")
+    assert isinstance(ls.dotenv_settings(tmp_path / ".env"), dict)

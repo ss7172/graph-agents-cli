@@ -85,6 +85,7 @@ def test_build_placeholder_registry_is_a_config_error(fake_project, recorded_run
     fake_project.cfg.registry = "ghcr.io/CHANGE-ME"
     result = CliRunner().invoke(cmd_build, args)
     assert result.exit_code == 3, result.output
+    assert result.output.startswith("Error: ")  # like every other configuration error
     assert "still the placeholder 'ghcr.io/CHANGE-ME'" in result.output
     assert "create_params.registry" in result.output and "--registry" in result.output
     assert recorded_runs.commands == []

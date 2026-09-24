@@ -201,8 +201,10 @@ def test_example_follows_a_restrictive_seed_policy(
     # The runtime's shared rules allow it (the project's own test asserts the same).
     api = load_policy_document(project / "api-policy.yaml")["apis"][expected["api"]]
     assert refusal_reason(api, method, expected["operation_id"], expected["path"]) is None
+    # The README points at `api show` instead of copying policy state that `api` commands change.
     readme = (project / "README.md").read_text(encoding="utf-8")
-    assert f"`{method} {expected['path']}` on `{expected['api']}`" in readme
+    assert "graph-agents-cli api show" in readme
+    assert f"`{method} {expected['path']}` on `{expected['api']}`" not in readme
     _assert_lint_clean(project)
 
 
@@ -237,7 +239,7 @@ def test_no_example_when_the_first_api_allows_nothing_it_can_make(tmp_path: Path
     assert not (project / "app" / "tools" / "example_api.py").exists()
     assert (project / "api-policy.yaml").is_file()
     readme = (project / "README.md").read_text(encoding="utf-8")
-    assert "No example tool was generated" in readme
+    assert "graph-agents-cli api show" in readme and "No policy is declared" not in readme
     _assert_lint_clean(project)
 
 

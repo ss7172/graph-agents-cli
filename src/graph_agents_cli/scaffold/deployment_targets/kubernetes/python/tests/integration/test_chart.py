@@ -17,9 +17,14 @@
 The chart declares optional subcharts; `helm dependency build` needs the
 chart registry, so it is attempted once and the test skips when it cannot run.
 
-These tests hold whatever image tags the values files carry: in argocd mode CI
-and `graph-agents-cli deploy` commit the tag to values-<env>.yaml, and the pull
-request that does so runs them too.
+The values files are yours: every expectation below is read from them
+(values.yaml overlaid with values-<env>.yaml, as helm merges them), so turning
+the gateway off, an ingress on or the bundled Postgres off keeps these tests
+green as long as the chart renders what the values ask for. They also hold
+whatever image tags the values files carry: in argocd mode CI and
+`graph-agents-cli deploy` commit the tag to values-<env>.yaml, and the pull
+request that does so runs them too. What stays fixed is the security posture:
+probes and metrics are never published, pods are hardened.
 """
 
 from __future__ import annotations
@@ -77,6 +82,52 @@ def _committed_tag(env: str) -> str:
     return str((values.get("image") or {}).get("tag") or "")
 
 
+def _merge(base: dict, override: dict) -> dict:
+    """Helm's values merge: maps merge key by key, anything else is replaced."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _values(env: str) -> dict:
+    """The values `helm template -f values-<env>.yaml` renders with."""
+    base = yaml.safe_load((CHART / "values.yaml").read_text()) or {}
+    return _merge(base, yaml.safe_load((CHART / f"values-{env}.yaml").read_text()) or {})
+
+
+def _enabled(values: dict, key: str) -> bool:
+    return bool((values.get(key) or {}).get("enabled"))
+
+
+def _published_paths(manifests: str) -> dict[str, str]:
+    """Every path the HTTPRoute and the Ingress publish: path -> match type."""
+    paths: dict[str, str] = {}
+    for doc in _docs(manifests):
+        if doc["kind"] == "HTTPRoute":
+            for rule in doc["spec"]["rules"]:
+                for match in rule["matches"]:
+                    paths[match["path"]["value"]] = match["path"]["type"]
+        elif doc["kind"] == "Ingress":
+            for rule in doc["spec"]["rules"]:
+                for entry in rule["http"]["paths"]:
+                    kind = "Exact" if entry["pathType"] == "Exact" else "PathPrefix"
+                    paths[entry["path"]] = kind
+    return paths
+
+
+def _configured_paths(values: dict) -> dict[str, str]:
+    """route.publicPaths, plus route.devPaths while env.APP_ENV is exactly dev (as the chart does)."""
+    route = values.get("route") or {}
+    entries = list(route.get("publicPaths") or [])
+    if str((values.get("env") or {}).get("APP_ENV", "")) == "dev":
+        entries += list(route.get("devPaths") or [])
+    return {str(e["path"]): str(e["type"]) for e in entries}
+
+
 @pytest.fixture(scope="module")
 def chart_with_dependencies() -> Path:
     if not (CHART / "charts").exists():
@@ -102,38 +153,41 @@ def test_helm_lint(chart_with_dependencies: Path) -> None:
 
 def test_helm_template_renders_every_environment(chart_with_dependencies: Path) -> None:
     for env in ENVIRONMENTS:
+        values = _values(env)
         result = _render(env, *DEPLOY_ARGS)
         assert result.returncode == 0, f"{env}: {result.stderr}"
         out = result.stdout
         assert "kind: Deployment" in out and "kind: Service" in out and "kind: ConfigMap" in out
+        kinds = {doc["kind"] for doc in _docs(out)}
         container = _agent_deployment(out)["spec"]["template"]["spec"]["containers"][0]
         secret_ref = container["envFrom"][0]["secretRef"]
         assert secret_ref["name"] == f"{PROJECT_NAME}-app"
-        # Outside dev a missing Secret keeps the pods from starting without keys.
-        assert secret_ref["optional"] is (env == "dev")
-        if env == "dev":
-            assert "kind: HTTPRoute" not in out
-            assert f"$(POSTGRES_PASSWORD)@{PROJECT_NAME}-postgresql" in out
-        else:
-            assert "kind: HTTPRoute" in out
-            assert "POSTGRES_PASSWORD" not in out
+        # secretOptional: false (the default) keeps pods without their keys from starting.
+        assert secret_ref["optional"] is bool(values.get("secretOptional", False)), env
+        assert ("HTTPRoute" in kinds) is _enabled(values, "gateway"), env
+        assert ("Ingress" in kinds) is _enabled(values, "ingress"), env
+        bundled = f"$(POSTGRES_PASSWORD)@{PROJECT_NAME}-postgresql" in out
+        assert bundled is _enabled(values, "postgresql"), env
 
 
 def test_the_route_publishes_the_api_but_not_probes_or_metrics(
     chart_with_dependencies: Path,
 ) -> None:
-    for env in ("staging", "prod"):
+    routed = [
+        env
+        for env in ENVIRONMENTS
+        if _enabled(_values(env), "gateway") or _enabled(_values(env), "ingress")
+    ]
+    if not routed:
+        pytest.skip("no environment enables gateway or ingress")
+    for env in routed:
+        values = _values(env)
         result = _render(env, *DEPLOY_ARGS)
         assert result.returncode == 0, f"{env}: {result.stderr}"
-        route = next(d for d in _docs(result.stdout) if d["kind"] == "HTTPRoute")
-        paths = {
-            m["path"]["value"]: m["path"]["type"]
-            for rule in route["spec"]["rules"]
-            for m in rule["matches"]
-        }
-        assert paths["/chat"] == "Exact" and paths["/threads"] == "PathPrefix"
-        assert any(p.startswith("/a2a/") for p in paths)
-        for private in ("/", "/health", "/ready", "/metrics", "/playground"):
+        paths = _published_paths(result.stdout)
+        # Exactly what the values list: nothing else reaches the Gateway or Ingress.
+        assert paths == _configured_paths(values), env
+        for private in ("/", "/health", "/ready", "/metrics"):
             assert private not in paths, (env, private)
 
 

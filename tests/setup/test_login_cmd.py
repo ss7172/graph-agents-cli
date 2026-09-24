@@ -625,3 +625,93 @@ def test_human_report_mentions_nothing_stored(runner, project, kubectl, monkeypa
     assert "Nothing is stored by the CLI." in result.output
     assert "provider_key: OPENAI_API_KEY set (environment)" in result.output
     assert not list(project.iterdir())  # login writes nothing on its own
+
+
+# ── jwt projects and the .env file mode ──────────────────────────────────────
+
+
+def test_a_jwt_project_without_a_key_warns_and_points_to_dev_token(runner, project, kubectl):
+    write_manifest(project, auth_policy="jwt")
+    (project / ".env").write_text("APP_ENV=dev\nAUTH_POLICY=jwt\nMODEL_PROVIDER=fake\n")
+    result, report = _login(runner)
+    assert result.exit_code == 0, result.output
+    key = _check(report, "jwt_key")
+    assert key["status"] == "warn" and "answers 503" in key["detail"]
+    assert "graph-agents-cli auth dev-token --sub <user>" in key["hint"]
+    token = _check(report, "jwt_token")
+    assert token["status"] == "warn" and "GRAPH_AGENTS_CLI_API_KEY is not set" in token["detail"]
+    assert 'export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token' in token["hint"]
+    assert "api_key" not in _statuses(report)  # no shared-bearer advice for a jwt project
+
+
+def test_a_jwt_project_with_a_key_and_a_token_is_ok(runner, project, kubectl, monkeypatch):
+    write_manifest(project, auth_policy="jwt")
+    (project / ".env").write_text(
+        "APP_ENV=dev\nMODEL_PROVIDER=fake\nAUTH_JWT_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----\\nx'\n"
+    )
+    monkeypatch.setenv("GRAPH_AGENTS_CLI_API_KEY", "a.b.c")
+    result, report = _login(runner)
+    assert _statuses(report)["jwt_key"] == "ok"
+    assert "AUTH_JWT_PUBLIC_KEY (.env)" in _check(report, "jwt_key")["detail"]
+    assert _statuses(report)["jwt_token"] == "ok"
+    assert "a.b.c" not in result.output  # the token is never printed
+
+
+def test_a_jwt_project_outside_dev_needs_issuer_and_audience(runner, project, kubectl):
+    write_manifest(project, auth_policy="jwt")
+    (project / ".env").write_text(
+        "APP_ENV=staging\nMODEL_PROVIDER=fake\nAUTH_JWT_JWKS_URL=https://idp/jwks\n"
+    )
+    result, report = _login(runner)
+    assert result.exit_code == 1
+    claims = _check(report, "jwt_claims")
+    assert claims["status"] == "fail"
+    assert "AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE" in claims["detail"]
+
+
+def test_the_env_policy_decides_whether_jwt_rows_appear(runner, project, kubectl):
+    write_manifest(project, auth_policy="jwt")
+    (project / ".env").write_text("AUTH_POLICY=shared-bearer\nAPI_KEY=k\nMODEL_PROVIDER=fake\n")
+    _result, report = _login(runner)
+    assert "jwt_key" not in _statuses(report) and "jwt_token" not in _statuses(report)
+
+
+def test_an_env_file_other_users_can_read_is_a_warning(runner, project, kubectl):
+    write_manifest(project)
+    env = project / ".env"
+    env.write_text("API_KEY=k\nMODEL_PROVIDER=fake\n")
+    env.chmod(0o644)
+    _result, report = _login(runner)
+    check = _check(report, "env_file")
+    assert check["status"] == "warn" and "mode 0644" in check["detail"]
+    env.chmod(0o600)
+    _result, report = _login(runner)
+    assert "env_file" not in _statuses(report)
+
+
+def test_write_env_with_nothing_missing_still_makes_env_private(runner, project, kubectl):
+    """A hand-edited .env holding keys ends 0600 even when login has nothing to add."""
+    write_manifest(project)
+    env = project / ".env"
+    env.write_text("API_KEY=k\nOPENAI_API_KEY=sk-test\n")
+    env.chmod(0o644)
+    result = runner.invoke(cmd_login, ["--write-env"], input="")
+    assert result.exit_code == 0, result.output
+    assert "Nothing to write" in result.output
+    assert "now 0600" in result.output
+    assert env.stat().st_mode & 0o777 == 0o600
+    assert env.read_text() == "API_KEY=k\nOPENAI_API_KEY=sk-test\n"
+    again = runner.invoke(cmd_login, ["--write-env"], input="")
+    assert "now 0600" not in again.output
+
+
+def test_write_env_makes_a_symlinked_env_files_target_private(runner, project, kubectl, tmp_path):
+    write_manifest(project)
+    target = tmp_path / "shared.env"
+    target.write_text("API_KEY=k\nOPENAI_API_KEY=sk-test\n")
+    target.chmod(0o640)
+    (project / ".env").symlink_to(target)
+    result = runner.invoke(cmd_login, ["--write-env"], input="")
+    assert result.exit_code == 0, result.output
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert (project / ".env").is_symlink()
