@@ -486,6 +486,56 @@ async def test_two_decisions_race_and_one_wins(client) -> None:
     assert len(SENT) == (1 if record.status == "approved" else 0)
 
 
+async def test_an_approval_the_run_no_longer_waits_for_cannot_be_decided(client) -> None:
+    end = await _pause(client)
+    # The paused call gets a result some other way (as a history repair would).
+    from {{cookiecutter.agent_directory}}.app_utils.chat import ChatRequest
+
+    lease = await RUNTIME.acquire_thread(end["thread_id"])  # writes need the run lock
+    try:
+        await RUNTIME._repair_history(ChatRequest(message=""), end["thread_id"], "closed")
+    finally:
+        await lease.release()
+    r = await _decide(client, end, "approve")
+    assert r.status_code == 409 and r.json() == {
+        "code": "approval_not_pending",
+        "detail": "The run no longer waits for this approval.",
+        "status": "expired",
+    }
+    listed = await client.get(f"/threads/{end['thread_id']}/approvals", headers=_as("alice"))
+    assert listed.json()[0]["status"] == "expired"
+    # Not pending any more: the thread takes messages again.
+    r = await client.post(
+        "/chat", json={"message": "hello", "thread_id": end["thread_id"]}, headers=_as("alice")
+    )
+    assert r.status_code == 200
+    assert SENT == []
+
+
+@tool
+async def ask_a_person(question: str) -> str:
+    """Ask a person something (pauses the graph with a plain interrupt)."""
+    from langgraph.types import interrupt
+
+    return str(interrupt({"question": question}))
+
+
+async def test_a_pause_that_is_not_an_approval_ends_the_run_cleanly(client, use_test_tools) -> None:
+    use_test_tools(ask_a_person)
+    r = await client.post(
+        "/chat", json={"message": "Ask a person about the weather"}, headers=_as("alice")
+    )
+    events = parse_sse(r.text)
+    assert events[-1][0] == "error" and events[-1][1]["code"] == "unsupported_interrupt"
+    thread = events[0][1]["thread_id"]
+    assert (await client.get(f"/threads/{thread}/approvals", headers=_as("alice"))).json() == []
+    # The paused call was answered: the thread goes on.
+    r = await client.post(
+        "/chat", json={"message": "hello", "thread_id": thread}, headers=_as("alice")
+    )
+    assert parse_sse(r.text)[-1][1]["status"] == "ok"
+
+
 async def test_deleting_the_thread_deletes_its_approvals(client) -> None:
     end = await _pause(client)
     approval_id = end["approval"]["approval_id"]
