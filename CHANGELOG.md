@@ -514,6 +514,9 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - `run`'s drop and timeout messages offered to resume threads a stopped in-memory server had
   lost, and "the answer above is incomplete" when nothing had been shown.
 - `sslmode = verify-full` (spaces around `=`, which libpq accepts) was reported as no TLS.
+- Under `langgraph dev` (local runs of a `langgraph-server` project) every tool call through
+  `api_client` failed with `BlockingError` (the policy cache asked for the working directory
+  inside the event loop).
 
 ### Security
 

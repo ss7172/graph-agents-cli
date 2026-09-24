@@ -714,6 +714,17 @@ class ApiPolicy:
             )
 
 
+def _beside_pyproject() -> Path | None:
+    """The policy path beside the project's `pyproject.toml` (found once, at import)."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent / POLICY_FILENAME
+    return None
+
+
+_PROJECT_POLICY_PATH = _beside_pyproject()
+
+
 def resolve_policy_path() -> Path:
     """`API_POLICY_PATH` when set; else `./api-policy.yaml`, else the one beside `pyproject.toml`."""
     configured = os.environ.get(POLICY_PATH_ENV, "").strip()
@@ -722,22 +733,25 @@ def resolve_policy_path() -> Path:
     local = Path(POLICY_FILENAME)
     if local.is_file():
         return local
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").is_file():
-            return parent / POLICY_FILENAME
-    return local
+    return _PROJECT_POLICY_PATH or local
 
 
-_cache: dict[tuple[str, int], ApiPolicy] = {}
+_cache: dict[tuple[int, int, int, int], ApiPolicy] = {}
 
 
 def load_policy() -> ApiPolicy:
-    """The project's policy (cached until the file changes); `ApiPolicyError` when absent or invalid."""
+    """The project's policy (cached until the file changes); `ApiPolicyError` when absent or invalid.
+
+    Tools call this inside the server's event loop: it never resolves the
+    working directory (LangGraph's dev server refuses `os.getcwd()` there as
+    a blocking call). The cache is keyed by the file's identity and mtime.
+    """
     path = resolve_policy_path()
     try:
-        key = (str(path.resolve()), path.stat().st_mtime_ns)
+        stat = path.stat()
     except OSError:
         return ApiPolicy.load(path)  # raises the not-found error
+    key = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_size)
     policy = _cache.get(key)
     if policy is None:
         policy = ApiPolicy.load(path)

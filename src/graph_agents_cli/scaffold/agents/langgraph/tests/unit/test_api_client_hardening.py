@@ -98,6 +98,40 @@ class _Context:
     attributes: dict[str, Any] = field(default_factory=dict)
 
 
+# --- the policy file ---------------------------------------------------------------------
+
+
+async def test_loading_the_policy_never_asks_for_the_working_directory(
+    policy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tools load the policy inside the server's event loop, where LangGraph's dev server
+    refuses `os.getcwd()` as a blocking call: `./api-policy.yaml` must load without it."""
+    import os
+
+    from {{cookiecutter.agent_directory}}.app_utils import api_client
+
+    monkeypatch.chdir(policy.parent)
+    monkeypatch.delenv("API_POLICY_PATH")
+    api_client.reset_policy_cache()
+
+    real_getcwd, asked = os.getcwd, []
+
+    def recording_getcwd() -> str:
+        asked.append(True)
+        return real_getcwd()
+
+    monkeypatch.setattr(os, "getcwd", recording_getcwd)
+    first = api_client.load_policy()
+    again = api_client.load_policy()
+    client = get_client("orders")
+    policy.write_text(POLICY.replace("PATCH]", "PATCH, PUT]"), encoding="utf-8")
+    changed = api_client.load_policy()
+    monkeypatch.setattr(os, "getcwd", real_getcwd)
+    assert asked == []
+    assert again is first and client.name == "orders"  # cached by the file's identity
+    assert changed is not first  # a changed file is read again
+
+
 # --- headers and method overrides ----------------------------------------------------
 
 
