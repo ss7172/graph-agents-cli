@@ -42,8 +42,24 @@ memory does not grow across runs.
 
 An API's optional `approval` block names the calls a human must approve before
 they are sent (`gated`, `ApiPolicy.gate`). Approval never widens access: a
-gated call must pass the policy first. This client refuses a gated call
-before sending it (fail closed), since it cannot pause the run for a decision.
+gated call must pass the policy first, and denials still win. A gated call
+pauses the agent run before anything is sent: the client describes the exact
+request (`canonical_call`: API, method, URL with the rendered path, query,
+JSON body, operation id and the tool's own headers), hashes it (`call_hash`)
+and calls LangGraph's `interrupt()` with the approval payload (the call, with
+the fields named in `redact=` masked, the tool and the model's stated purpose,
+the approvers). The chat runtime records the approval and ends the stream
+awaiting a decision (see `approvals.py`). When the run resumes, the tool runs
+again from its start and this client rebuilds the request: it is sent only
+when the decision approves exactly this request (the same hash) and the
+approvals ledger marks that approval used (`set_approval_ledger`), so an
+approval is sent once, never replayed. A rejected or expired approval, a
+request that changed after it was approved, a used approval, or a gated call
+made outside an agent run (nothing can pause it) raises `ApiPolicyError` and
+sends nothing. After an approved call was sent, a second gated call in the
+same tool call is refused (on its resume the tool would run again and meet the
+first, already used, approval): make it in a new tool call. Code before a
+gated call runs again on resume, so keep other side effects after it.
 
 Every tool module declares `API_CALLS`, a module-level list of
 `{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
@@ -52,16 +68,20 @@ Every tool module declares `API_CALLS`, a module-level list of
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import logging
 import os
 import re
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote, unquote
 
 import httpx
@@ -1121,6 +1141,229 @@ def current_run_id() -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Human approval (`approval` in api-policy.yaml)
+# ---------------------------------------------------------------------------
+
+# The `type` of the interrupt value a gated call raises, and of the resume value
+# the chat runtime answers it with.
+APPROVAL_INTERRUPT = "api_approval"
+APPROVAL_DECISION = "api_approval_decision"
+DECISION_APPROVE = "approve"
+DECISION_REJECT = "reject"
+DECISION_EXPIRED = "expired"
+# What a field named in `redact=` shows the approver instead of its value.
+REDACTED = "<redacted>"
+# How much of the model's text before a tool call the approval shows as its purpose.
+PURPOSE_MAX_CHARS = 500
+COMMENT_MAX_CHARS = 300
+_UNPRINTABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+class ApprovalLedger(Protocol):
+    """Where approvals are recorded (the chat runtime's approvals table)."""
+
+    async def consume(
+        self, approval_id: str, call_hash: str, thread_id: str | None = None
+    ) -> str | None:
+        """Mark the approval used for the request `call_hash` (of thread `thread_id`):
+        None when it may be sent now (approved, for exactly this request on this
+        thread, never used before), else why not."""
+        ...
+
+
+_ledger: ApprovalLedger | None = None
+
+
+def set_approval_ledger(ledger: ApprovalLedger | None) -> None:
+    """Install the process's approvals ledger (the chat runtime does it when it starts).
+
+    Without one, an approved call is refused (nothing sent): no approval can be
+    checked for single use.
+    """
+    global _ledger
+    _ledger = ledger
+
+
+def approval_ledger() -> ApprovalLedger | None:
+    return _ledger
+
+
+def _run_thread_id() -> str | None:
+    """The thread of the current graph run (its `configurable.thread_id`), if any."""
+    try:
+        from langgraph.config import get_config
+
+        thread_id = (get_config().get("configurable") or {}).get("thread_id")
+    except Exception:  # outside a graph run
+        return None
+    return str(thread_id) if thread_id else None
+
+
+@dataclass
+class ToolCallScope:
+    """The tool call a gated request is made for (set by the agent's middleware)."""
+
+    name: str
+    call_id: str | None = None
+    # The text the model wrote with the tool call: its stated purpose, when any.
+    purpose: str | None = None
+    # An approved call was sent in this tool call (a second gated call is refused).
+    gated_sent: bool = False
+
+
+_TOOL_CALL: ContextVar[ToolCallScope | None] = ContextVar("api_tool_call", default=None)
+# `gated_sent` for a tool run without the middleware's scope.
+_GATED_SENT: ContextVar[bool] = ContextVar("api_gated_sent", default=False)
+
+
+def _plain(text: Any, limit: int) -> str | None:
+    """`text` as one printable line of at most `limit` characters, or None when empty."""
+    if isinstance(text, list):
+        text = "".join(
+            str(block.get("text", "")) if isinstance(block, Mapping) else str(block)
+            for block in text
+        )
+    if not isinstance(text, str):
+        return None
+    cleaned = " ".join(_UNPRINTABLE.sub("", text).split())
+    if not cleaned:
+        return None
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3].rstrip() + "..."
+
+
+def stated_purpose(messages: Iterable[Any], call_id: str | None) -> str | None:
+    """The text of the assistant message that made tool call `call_id`, when it wrote any.
+
+    This is the model's own account of why it makes the call (the default
+    system prompt asks for one before an action that needs approval). It is
+    shown to the approver as the model's statement, beside the exact request.
+    """
+    if not call_id:
+        return None
+    for message in reversed(list(messages or [])):
+        calls = (
+            message.get("tool_calls")
+            if isinstance(message, Mapping)
+            else getattr(message, "tool_calls", None)
+        )
+        if any(
+            (c.get("id") if isinstance(c, Mapping) else getattr(c, "id", None)) == call_id
+            for c in calls or []
+        ):
+            content = (
+                message.get("content")
+                if isinstance(message, Mapping)
+                else getattr(message, "content", None)
+            )
+            return _plain(content, PURPOSE_MAX_CHARS)
+    return None
+
+
+@contextlib.contextmanager
+def tool_call_scope(request: Any) -> Iterator[ToolCallScope]:
+    """Name the tool call a middleware is about to run (`request` is its ToolCallRequest).
+
+    A gated request made inside names that tool, and the model's stated
+    purpose, in its approval.
+    """
+    call = getattr(request, "tool_call", None) or {}
+    state = getattr(request, "state", None)
+    messages = state.get("messages") if isinstance(state, Mapping) else None
+    call_id = call.get("id") if isinstance(call, Mapping) else None
+    scope = ToolCallScope(
+        name=str((call.get("name") if isinstance(call, Mapping) else "") or ""),
+        call_id=str(call_id) if call_id else None,
+        purpose=stated_purpose(messages or [], call_id),
+    )
+    token = _TOOL_CALL.set(scope)
+    try:
+        yield scope
+    finally:
+        _TOOL_CALL.reset(token)
+
+
+def redact_fields(value: Any, names: frozenset[str]) -> Any:
+    """`value` with the value of every key in `names` (any depth, any letter case) masked."""
+    if not names:
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key: REDACTED if str(key).casefold() in names else redact_fields(item, names)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [redact_fields(item, names) for item in value]
+    return value
+
+
+def _query_view(query: httpx.QueryParams | None, names: frozenset[str]) -> dict[str, Any]:
+    """The query as the approver sees it: a repeated key lists its values."""
+    view: dict[str, Any] = {}
+    for key, value in query.multi_items() if query is not None else ():
+        shown = REDACTED if key.casefold() in names else value
+        if key not in view:
+            view[key] = shown
+        elif isinstance(view[key], list):
+            view[key].append(shown)
+        else:
+            view[key] = [view[key], shown]
+    return view
+
+
+def canonical_call(
+    api: str,
+    method: str,
+    url: httpx.URL | str,
+    query: httpx.QueryParams | None,
+    json_body: Any,
+    operation_id: str | None,
+    headers: Iterable[tuple[str, str]] = (),
+) -> dict[str, Any]:
+    """Everything that decides what a request does, in one comparable form.
+
+    The URL carries the rendered path under the API's base URL; the query keeps
+    the order it is sent in; `headers` are the tool's own (the policy's
+    credential is not part of the call: it may be renewed between the approval
+    and the send).
+    """
+    return {
+        "api": api,
+        "method": method.upper(),
+        "url": str(url),
+        "query": [[key, value] for key, value in (query.multi_items() if query else ())],
+        "body": json_body,
+        "operation_id": operation_id or None,
+        "headers": sorted([name.lower(), value] for name, value in headers),
+    }
+
+
+def call_hash(call: Mapping[str, Any]) -> str:
+    """SHA-256 of `canonical_call`: equal exactly when the requests are the same.
+
+    Raises `TypeError` or `ValueError` for a body that is not plain JSON (a NaN,
+    an object JSON has no form for).
+    """
+    text = json.dumps(
+        call, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class PreparedRequest:
+    """A request that passed every policy check (`ApiClient._prepare`)."""
+
+    wire_path: str
+    url: httpx.URL
+    query: httpx.QueryParams | None
+    headers: httpx.Headers
+    # The tool's own headers (without the policy's credential), bound by an approval.
+    tool_headers: list[tuple[str, str]]
+    secrets: tuple[str, ...]
+    gate: ApprovalGate | None
+
+
+# ---------------------------------------------------------------------------
 # The client
 # ---------------------------------------------------------------------------
 
@@ -1252,6 +1495,7 @@ class ApiClient:
         params: Any = None,
         json_body: Any = None,
         headers: Mapping[str, str] | None = None,
+        redact: Iterable[str] = (),
     ) -> Any:
         """Send `method` on `path` after the policy check; return the JSON body or the text.
 
@@ -1284,6 +1528,12 @@ class ApiClient:
         JSON body key is refused. Each call is logged by API, method,
         operation id and path template (never the query, the concrete path
         or the body).
+
+        A call the API's `approval` gates pauses the run for a human decision
+        before it is sent (see the module docstring); `redact` names body and
+        query fields (any depth, any letter case) the approver sees masked,
+        for values they need not read (a card number, say). The approval is
+        bound to the request as sent, masked fields included.
         """
         method = method.upper()
         label = operation_id or (path if path_params is not None else "<concrete path>")
@@ -1294,9 +1544,20 @@ class ApiClient:
             "path_template": path if path_params is not None else None,
         }
         try:
-            wire_path, url, query, request_headers, secrets = self._prepare(
+            prepared = self._prepare(
                 method, path, operation_id, path_params, params, json_body, headers
             )
+            approved = None
+            if prepared.gate is not None:
+                approved = self._await_approval(
+                    prepared, method, operation_id, label, json_body, redact, log_fields
+                )
+            # Counted just before sending: a call held for approval counts once, when sent.
+            self.take_limits(method, operation_id or path)
+            if approved is not None:
+                await self._use_approval(approved, method, operation_id or label, log_fields)
+            wire_path, url, query = prepared.wire_path, prepared.url, prepared.query
+            request_headers, secrets = prepared.headers, prepared.secrets
         except ApiPolicyError as exc:
             logger.warning(
                 "api call refused: %s %s %s: %s",
@@ -1354,8 +1615,9 @@ class ApiClient:
         params: Any,
         json_body: Any,
         headers: Mapping[str, str] | None,
-    ) -> tuple[str, httpx.URL, httpx.QueryParams | None, httpx.Headers, tuple[str, ...]]:
-        """Every check before sending: the path, URL, query, headers and the credential sent."""
+    ) -> PreparedRequest:
+        """Every policy check before sending: the path, URL, query, headers, the credential
+        sent, and the approval the call needs (`gate`, None when none)."""
         if method not in HTTP_METHODS:
             raise ApiPolicyError(f"{self.name}: unknown HTTP method {method!r}.")
         if path_params is not None:
@@ -1399,41 +1661,201 @@ class ApiClient:
                 extra={"api": self.name},
             )
         credentials = self.auth_headers()
+        tool_headers = [
+            (name, value)
+            for name, value in request_headers.multi_items()
+            if name.lower() not in {c.lower() for c in credentials}
+        ]
         for name, value in credentials.items():
             request_headers[name] = value  # the policy's credential always wins
         secrets = tuple(credentials.values()) + tuple(
             value.split(" ", 1)[1] for value in credentials.values() if " " in value
         )
-        self.refuse_gated(method, operation_id, path, wire_path, path_params is not None)
-        self.take_limits(method, operation_id or path)
-        return wire_path, url, query, request_headers, secrets
+        return PreparedRequest(
+            wire_path=wire_path,
+            url=url,
+            query=query,
+            headers=request_headers,
+            tool_headers=tool_headers,
+            secrets=secrets,
+            gate=self.gate_for(method, operation_id, path, wire_path, path_params is not None),
+        )
 
-    def refuse_gated(
+    def gate_for(
         self,
         method: str,
         operation_id: str | None,
         path: str,
         wire_path: str,
         templated: bool,
-    ) -> None:
-        """Refuse (`ApiPolicyError`, nothing sent) a call the API's `approval` gates.
+    ) -> ApprovalGate | None:
+        """The approval the API's `approval` requires before this call, or None.
 
         Gated when the sent path is, or the template it was rendered from.
-        This client cannot yet pause the run for a human decision, and a
-        policy must never count on an approval step that is skipped, so a
-        gated call fails closed.
+        Asked only once the policy allowed the call: approval never widens access.
         """
         gate = self.policy.gate(self.name, method, operation_id, wire_path)
         if gate is None and templated:
             gate = self.policy.gate(self.name, method, operation_id, path)
-        if gate is None:
-            return
-        raise ApiPolicyError(
-            f"{self.name}: {method} {operation_id or path} needs human approval "
-            f"({', '.join(gate.approvers)}) before it is sent, which this agent cannot request: "
-            "refused, nothing was sent.",
-            reason=f"approval required by {gate.rule}",
+        return gate
+
+    def _await_approval(
+        self,
+        prepared: PreparedRequest,
+        method: str,
+        operation_id: str | None,
+        label: str,
+        json_body: Any,
+        redact: Iterable[str],
+        log_fields: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        """Hold a gated call for a human decision (see the module doc).
+
+        The first time, `interrupt()` pauses the run with the approval payload
+        (raising LangGraph's `GraphInterrupt`, which ends the tool call). On
+        resume it returns the decision: this returns `(approval_id, call_hash)`
+        only for an approval of exactly this request (`_use_approval` then
+        marks it used); anything else raises `ApiPolicyError`, nothing sent.
+        """
+        gate = prepared.gate
+        assert gate is not None
+        what = operation_id or label
+        rule_reason = f"approval required by {gate.rule}"
+
+        def refuse(why: str, reason: str = rule_reason) -> ApiPolicyError:
+            return ApiPolicyError(
+                f"{self.name}: {method} {what} {why}; nothing was sent.", reason=reason
+            )
+
+        call = canonical_call(
+            self.name,
+            method,
+            prepared.url,
+            prepared.query,
+            json_body,
+            operation_id,
+            prepared.tool_headers,
         )
+        try:
+            digest = call_hash(call)
+        except (TypeError, ValueError):
+            raise refuse(
+                "needs human approval, but its JSON body is not plain JSON, so it cannot be "
+                "shown for approval (refused)"
+            ) from None
+        scope = _TOOL_CALL.get()
+        if scope.gated_sent if scope is not None else _GATED_SENT.get():
+            raise refuse(
+                "needs human approval, and this tool call already sent an approved call: a tool "
+                "call sends at most one (refused). Make this call in a new tool call"
+            )
+        names = frozenset(str(n).casefold() for n in redact or ())
+        tool = scope.name if scope is not None and scope.name else None
+        purpose = scope.purpose if scope is not None else None
+        payload = {
+            "type": APPROVAL_INTERRUPT,
+            "api": self.name,
+            "method": method,
+            "path": prepared.wire_path,
+            "query": _query_view(prepared.query, names),
+            "body": redact_fields(json_body, names),
+            "operation_id": operation_id or None,
+            "tool": tool,
+            "tool_call_id": scope.call_id if scope is not None else None,
+            "reason": f"{tool}: {purpose}" if tool and purpose else (tool or purpose or None),
+            "approvers": list(gate.approvers),
+            "timeout_s": gate.timeout_s,
+            "rule": gate.rule,
+            "call_hash": digest,
+        }
+        outside_run = refuse(
+            f"needs human approval ({', '.join(gate.approvers)}) before it is sent, which "
+            "is possible only inside an agent run: refused"
+        )
+        try:
+            from langgraph.errors import GraphBubbleUp
+            from langgraph.types import interrupt
+        except ImportError:  # loaded where LangGraph is not installed: nothing can pause
+            raise outside_run from None
+        try:
+            decision = interrupt(payload)
+        except GraphBubbleUp:
+            logger.info(
+                "api call held for approval: %s %s %s (%s)",
+                self.name,
+                method,
+                label,
+                ", ".join(gate.approvers),
+                extra=dict(log_fields),
+            )
+            raise
+        except (RuntimeError, KeyError):
+            # Outside an agent run (`get_config` fails): nothing can pause and ask.
+            raise outside_run from None
+        return self._check_decision(decision, digest, refuse), digest
+
+    async def _use_approval(
+        self, approved: tuple[str, str], method: str, what: str, log_fields: Mapping[str, Any]
+    ) -> None:
+        """Mark the approval used in the ledger, once, just before the call is sent."""
+        approval_id, digest = approved
+        ledger = _ledger
+        problem = (
+            "this process has no approvals ledger to mark the approval used"
+            if ledger is None
+            else await ledger.consume(approval_id, digest, _run_thread_id())
+        )
+        if problem:
+            raise ApiPolicyError(
+                f"{self.name}: {method} {what} was approved, but the approval cannot be used: "
+                f"{problem}; nothing was sent.",
+                reason=f"approval not usable: {problem}",
+            )
+        scope = _TOOL_CALL.get()
+        if scope is not None:
+            scope.gated_sent = True
+        else:
+            _GATED_SENT.set(True)
+        logger.info(
+            "api call approved: %s %s %s (approval %s)",
+            self.name,
+            method,
+            what,
+            approval_id,
+            extra=dict(log_fields),
+        )
+
+    @staticmethod
+    def _check_decision(decision: Any, digest: str, refuse: Callable[..., ApiPolicyError]) -> str:
+        """The approval id of a decision that approves the request `digest`; else raise."""
+        if not isinstance(decision, Mapping) or decision.get("type") != APPROVAL_DECISION:
+            raise refuse(
+                "needs human approval, and the run was resumed without an approval decision",
+                reason="resumed without a decision",
+            )
+        verdict = decision.get("decision")
+        if verdict == DECISION_REJECT:
+            comment = _plain(decision.get("comment"), COMMENT_MAX_CHARS)
+            raise refuse(
+                "was not approved: an approver rejected it"
+                + (f" (their comment: {comment})" if comment else ""),
+                reason="approval rejected",
+            )
+        if verdict == DECISION_EXPIRED:
+            raise refuse(
+                "was not approved: the approval request expired before anyone decided",
+                reason="approval expired",
+            )
+        approval_id = decision.get("approval_id")
+        if verdict != DECISION_APPROVE or not isinstance(approval_id, str) or not approval_id:
+            raise refuse("was not approved (an unknown decision)", reason="unknown decision")
+        if decision.get("call_hash") != digest:
+            raise refuse(
+                "differs from the request that was approved (it changed after the approval), "
+                "so the approval does not cover it",
+                reason="request differs from the approved one",
+            )
+        return approval_id
 
     def _log_call(
         self,

@@ -57,7 +57,7 @@ and its eval case when you write your own; the tests under `tests/` do not depen
 {{cookiecutter.agent_directory}}/
 ├── agent.py                 # exports `graph` (compiled LangGraph agent, no checkpointer bound)
 ├── fast_api_app.py          # exports `app`: the HTTP API below
-├── app_utils/               # auth, api_client, chat, threads, db, limits, metrics, middleware, model, telemetry, a2a
+├── app_utils/               # auth, api_client, approvals, chat, threads, db, limits, metrics, middleware, model, telemetry, a2a
 ├── policies/                # AuthPolicy implementations (custom.py is a fail-closed stub)
 └── tools/                   # every module declares API_CALLS and TOOLS
 tests/{unit,integration,eval,load_test}
@@ -101,10 +101,13 @@ graph-agents-cli-manifest.yaml
 
 | Route | Behaviour |
 |---|---|
-| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id); send it to continue one |
+| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id); send it to continue one. A run that pauses for approval ends with `message.end` status `awaiting_approval` and `approval`; while it waits, a new message gets 409 `{"code": "approval_pending"}` |
 | `GET /threads` | The caller's threads, most recent first (`?limit=1..100&offset=`), each with its `owner` hashed; `?scope=all` lists every principal's, for a role in `AUTH_READ_ACROSS_ROLES` only |
 | `GET /threads/{id}/messages` | A thread's messages (owner, or a role in `AUTH_READ_ACROSS_ROLES`) |
-| `DELETE /threads/{id}` | Delete a thread, its checkpoints, run records and A2A tasks (owner only; 409 while a run is in progress) |
+| `GET /threads/{id}/approvals` | The thread's approvals of gated API calls (owner and read-across roles: all; an approver: the ones it may decide) |
+| `POST /threads/{id}/approvals/{approval_id}` | `{"decision": "approve" \| "reject", "comment": "..."}` by an approver; streams the resumed run with the `/chat` events. 403 not an approver, 409 decided already, 410 expired |
+| `GET /approvals` | Approvals across threads: the caller's own and the ones a role of theirs may decide (`?status=pending\|approved\|rejected\|expired&limit=&offset=`) |
+| `DELETE /threads/{id}` | Delete a thread, its checkpoints, run records, approvals and A2A tasks (owner only; 409 while a run is in progress) |
 | `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
 | `GET /ready` | Readiness: 200 when the database is set up and answers within 2 s, else 503 (no auth) |
 | `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
@@ -137,8 +140,8 @@ at startup):
   valid JSON (some OpenAI-compatible models return them) runs no tool: the agent answers it
   with an error result and asks the model again, at most twice (`AnswerInvalidToolCalls`).
 - **Run records:** written as `running` when a run starts and updated when it ends (`ok`,
-  `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); runs of a process that died
-  are marked `interrupted` within about a minute.
+  `awaiting_approval`, `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); runs of a
+  process that died are marked `interrupted` within about a minute.
 - **Limits:** bodies over `MAX_REQUEST_BYTES` get 413; a message over `MAX_MESSAGE_CHARS`
   (32 000) gets 422 on `/chat` and an invalid-params error over A2A; metadata beyond
   `MAX_METADATA_KEYS` / `MAX_METADATA_VALUE_CHARS` gets 422. A 422 never echoes the submitted
@@ -180,7 +183,9 @@ forbids following instructions found there; write tools should also call
 `require_user_mentioned(record_id, runtime)` and, under a per-user auth policy,
 `require_owner(owner_id, context=runtime.context)` (from `app_utils.api_client`), and
 write-capable APIs should authorize the user themselves (`auth: forward`). This lowers the risk
-without removing it; human approval of writes is planned.
+without removing it. The control that holds is a person's approval of each write before it is
+sent: gate write methods or operations with `approval` in `api-policy.yaml` (see Human approval of
+calls below).
 
 ## Model and judge
 
@@ -205,8 +210,8 @@ under langgraph-server, which would persist it), the required `allowed_methods`,
 both to match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the
 parameter) and `limits`: `max_calls_per_run` (calls to that API within one agent run) and
 `rate_per_minute` (a token bucket per process, so per replica). A call over a limit is refused before it is
-sent, with a reason the model can read. `approval` is reserved for human approval of calls, which is planned:
-the key is refused until then. Unknown and repeated keys are errors, so a typo never widens access. Denials
+sent, with a reason the model can read. `approval` names the calls a person must approve before they are
+sent (see Human approval of calls). Unknown and repeated keys are errors, so a typo never widens access. Denials
 win and hold on the endpoint: a denial pinning a path refuses every call to it whatever `operation_id` the
 call gives, and a call that leaves out what a denial knows the operation by is refused by it, so a denial by
 `operationId` alone refuses every call without `operation_id` (name it on the call and in `API_CALLS`), but
@@ -224,6 +229,68 @@ module-level literal list; `graph-agents-cli lint` fails on an undeclared or dis
 `graph-agents-cli api` command that would allow it), and on `API_CALLS` changed anywhere else (`+=`,
 `.append()`, a conditional assignment), because it cannot read those calls.
 
+### Human approval of calls
+
+An API's `approval` block holds the calls it names until a person approves them. It is the control for
+write actions and for instructions planted in data the agent reads: whatever the model was talked into, the
+request waits for someone who sees exactly what it does.
+
+```yaml
+    approval:
+      required_for:              # at least one of:
+        methods: [POST, PATCH, PUT, DELETE]      # these methods ("*": every one), and/or
+        operations:                              # entries shaped like allowed_operations
+          - operationId: cancelOrder
+            path: /orders/{order_id}/cancel
+      approvers: [requester]     # "requester" and/or "role:<name>"
+      timeout_s: 900             # 30..86400 (default 900); unanswered in time = rejected
+```
+
+- **What it gates.** A call is gated when its method is in `required_for.methods` or an entry of
+  `required_for.operations` covers it (a `path` gates every call to that path whatever `operation_id` it
+  names). Approval never widens access: a gated call must still pass `allowed_methods`, the allowed and
+  denied operations and the limits, and a denial still wins. Gate the writes that matter (every write
+  method, or the operations that act on other people's records); reads usually need no gate.
+- **Who approves.** `requester` lets the principal who started the run (the thread's owner) confirm it;
+  `role:<name>` lets any principal holding that role decide, never the requester itself (four eyes), unless
+  `requester` is listed too. For example `approvers: [requester]` asks the user to confirm each order
+  change; `approvers: ["role:support-lead"]` makes a second person approve every refund. Deciding also needs
+  the auth policy's `approval.decide` action. With `shared-bearer` every caller is the one principal
+  `shared` (the requester of every run), so `role:` approvers need a per-user policy (`jwt` or `custom`).
+- **How it runs.** The run pauses before anything is sent and ends its stream with `message.end` status
+  `awaiting_approval` and `approval`: `approval_id`, `api`, `method`, `path`, `query`, `body`,
+  `operation_id`, `tool`, `reason` (the tool and the text the model wrote with the call), `approvers`,
+  `expires_at` (`approvals` lists every one when parallel calls wait). The thread takes no new message
+  meanwhile (409 `approval_pending`). An approver lists it (`GET /threads/{id}/approvals`, or
+  `GET /approvals?status=pending` across threads) and decides it
+  (`POST /threads/{id}/approvals/{approval_id}`); the run resumes, acting as the requester, and streams
+  as `/chat` does. A2A clients see the task move to `input-required` with the approval in a data part and
+  answer on the same task with a data part `{"approval_id": "...", "decision": "approve"}`. The
+  playground (`APP_ENV=dev`) shows Approve and Reject buttons. `graph-agents-cli run` and
+  `graph-agents-cli approvals list|approve|reject` do the same from the command line.
+- **Bound and single use.** The approval covers the exact request: API, method, URL with the rendered path,
+  query, JSON body, operation id and the tool's own headers (a SHA-256 of them). On resume the tool runs
+  again and the client sends the request only when it is the same one, then marks the approval used, so it is
+  sent once and never replayed. A rejected or expired approval, or a request that changed, sends nothing
+  and the tool gets an error saying why, which the model relays. A pending approval that expires is
+  closed on the next decision or message on the thread.
+- **Writing a tool that makes a gated call.** Make at most one gated call per tool call: on resume the tool
+  runs again from its start, so a second gated call in the same tool call is refused after the first was
+  sent, and anything the tool does before the gated call runs again (keep other side effects after it).
+  `client.request(..., redact=["card_number"])` masks fields the approver need not read (the request is
+  bound as sent). An `auth: forward` call approved by someone other than the requester is not sent: the
+  requester's credential is never stored.
+- **Records.** Approvals live in the app's database (table `approvals`{% if cookiecutter.runtime == 'langgraph-server' %}; `agent_approvals` in the server's `DATABASE_URI` database{% endif %}): the call,
+  the requester and decider hashed, the decision, its comment and time, and when it was used. Once decided
+  or expired, the query and body are dropped unless `TRACE_CAPTURE=full`. Deleting a thread deletes its
+  approvals. `/metrics` counts `agent_approvals_total{event="requested|approved|rejected|expired"}`.
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+- **LangGraph Server.** The run pauses and resumes through the server's own interrupt and resume. The
+  server's auth handler refuses a run that carries a `command` (a resume) from outside the app, and the
+  client sends only an approval the app recorded as approved, so the native API cannot skip the decision.
+  Resuming needs the in-process loopback (`LANGGRAPH_SERVER_URL` unset, the default).
+{%- endif %}
+
 ### Changing the policy
 
 `api-policy.yaml` belongs to this project and evolves with the agent; `scaffold upgrade` and `enhance` never
@@ -237,12 +304,14 @@ touch it. There is no default access level: every API lists its methods explicit
 | `graph-agents-cli api deny NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add a `denied_operations` entry (pin the path: it then holds whatever `operation_id` a call gives) |
 | `graph-agents-cli api revoke NAME OPERATION_ID [--from allowed\|denied]` | Remove matching entries |
 | `graph-agents-cli api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none]` | Set or clear limits |
+| `graph-agents-cli api approval NAME [--methods M,...] [--operations OP,...] --approvers requester,role:R [--timeout-s N] [--remove]` | Set or remove the API's `approval` gate |
 | `graph-agents-cli api remove NAME` | Remove an API |
 
 Each command validates the result with the rules the agent enforces, prints a diff (comments and key order
 are kept), keeps the manifest (`secrets.keys`), `.env.example` and the chart's `values.yaml` in step, and
 writes atomically; `--dry-run` shows the diff only. Widening access (more methods or operations, a lifted
-denial, a raised limit) is a reviewed change: `.github/CODEOWNERS` covers `api-policy.yaml`. Narrowing is
+denial, a raised limit, a removed or loosened `approval` gate) is a reviewed change: `.github/CODEOWNERS`
+covers `api-policy.yaml`. Narrowing is
 always safe, and the runtime keeps refusing anything outside the policy even if a tool declares otherwise.
 
 Adding functionality to a working agent, for example letting it update orders:
@@ -286,8 +355,10 @@ requests get 503 and the problem is logged).
   the manifest (`deploy --env staging|prod` refuses until then).
 
 Thread and A2A task ownership is enforced per principal. Roles in `AUTH_READ_ACROSS_ROLES` may read, never
-continue or delete, other principals' threads; roles in `AUTH_ADMIN_ROLES` manage assistants, crons and the
-store under langgraph-server (both empty by default). Secrets a principal carries live only in
+continue or delete, other principals' threads (and list their approvals, never decide them); roles in
+`AUTH_ADMIN_ROLES` manage assistants, crons and the store under langgraph-server (both empty by default).
+Listing and deciding approvals are the actions `approval.read` and `approval.decide`; who may decide a
+given call is then its API's `approvers`. Secrets a principal carries live only in
 `attributes["credentials"]` and are never persisted, logged or traced.
 
 ## Tracing

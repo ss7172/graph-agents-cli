@@ -35,6 +35,10 @@ Per process (scrape every replica):
   `agent_run_duration_seconds`; `agent_tokens_total{kind}` (input/output).
 * `agent_database_up`: 1 while the database answered at last contact, 0 while
   it is known to be unreachable (always 1 without a database).
+* `agent_approvals_total{event}`: human approvals of gated API calls:
+  `requested` (a run paused for one), `approved`, `rejected`, `expired` (a
+  pending approval that reached its `timeout_s`, or was superseded). A run
+  that pauses ends with status `awaiting_approval` in `agent_runs_total`.
 
 Metrics live in a registry of their own, so nothing else in the process
 (libraries, a reloaded module) can add or duplicate series. Labels never carry
@@ -74,10 +78,20 @@ HTTP_LATENCY = Histogram(
 )
 RUNS = Counter(
     "agent_runs_total",
-    "Finished agent runs by status (ok, step_limit, error, timeout, cancelled, interrupted).",
+    "Finished agent runs by status (ok, awaiting_approval, step_limit, error, timeout, "
+    "cancelled, interrupted).",
     ["status"],
     registry=REGISTRY,
 )
+APPROVAL_EVENTS = ("requested", "approved", "rejected", "expired")
+APPROVALS = Counter(
+    "agent_approvals_total",
+    "Human approvals of gated API calls by event (requested, approved, rejected, expired).",
+    ["event"],
+    registry=REGISTRY,
+)
+for _event in APPROVAL_EVENTS:
+    APPROVALS.labels(_event)  # every series exists from the start, at 0
 ACTIVE_RUNS = Gauge("agent_active_runs", "Agent runs in progress.", registry=REGISTRY)
 DATABASE_UP = Gauge(
     "agent_database_up",
@@ -167,3 +181,9 @@ def observe_interrupted_runs(count: int) -> None:
 
 def observe_database(up: bool) -> None:
     DATABASE_UP.set(1 if up else 0)
+
+
+def observe_approvals(event: str, count: int = 1) -> None:
+    """`count` approvals `requested`, `approved`, `rejected` or `expired`."""
+    if count and event in APPROVAL_EVENTS:
+        APPROVALS.labels(event).inc(count)

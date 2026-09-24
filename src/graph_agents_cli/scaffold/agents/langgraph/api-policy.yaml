@@ -45,4 +45,10 @@ apis:
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}  # enforced at runtime
     limits: {max_calls_per_run: 20, rate_per_minute: 120}      # optional; per run / per replica
-    # approval: reserved for human approval of calls (planned; refused until then)
+    # approval:                             # optional: a person approves these calls before
+    #   required_for:                       # they are sent (README "Human approval of calls");
+    #     methods: [POST, PATCH]            # a gated call must still be allowed above
+    #     operations:                       # and/or entries shaped like allowed_operations
+    #       - operationId: updateOrder
+    #   approvers: [requester]              # "requester" and/or "role:<name>" (four eyes)
+    #   timeout_s: 900                      # 30..86400; unanswered in time = rejected

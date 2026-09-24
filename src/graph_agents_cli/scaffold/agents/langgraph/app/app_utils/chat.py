@@ -66,6 +66,19 @@ Both runtimes apply the same rules:
 * Startup does not wait for the database: the app starts, `/ready` answers
   503 and the schema setup is retried in the background until the database
   answers; requests meanwhile get 503.
+* Human approval of gated API calls (`approvals.py`): a run whose tool made a
+  gated call pauses (a LangGraph interrupt, kept in the checkpoint); the run
+  records one pending approval per interrupt and ends with `message.end`
+  status `awaiting_approval` carrying `approval` (and `approvals`, all of
+  them). While one is pending, a new message on the thread is refused
+  (`ApprovalPending`, HTTP 409 `{"code": "approval_pending"}`). `decide()`
+  checks the decider and the approval, decides it atomically under the
+  thread's run lock, and `stream(..., resume=...)` resumes the paused run with
+  the decision (under langgraph-server through the server's native resume),
+  acting as the requester. A pending approval that expires is closed by the
+  next resume (the tool gets "expired") or, when a new message comes instead,
+  by the history repair (the call's result says the approval expired).
+  Deleting a thread deletes its approvals.
 """
 
 from __future__ import annotations
@@ -87,7 +100,35 @@ from typing import Any
 from fastapi import HTTPException
 
 from {{cookiecutter.agent_directory}}.app_utils import metrics
+from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    DECISION_APPROVE,
+    DECISION_EXPIRED,
+    DECISION_REJECT,
+    approval_ledger,
+    set_approval_ledger,
+)
 from {{cookiecutter.agent_directory}}.app_utils.api_client import end_run as end_api_run
+from {{cookiecutter.agent_directory}}.app_utils.approvals import (
+    APPROVE,
+    APPROVED,
+    CODE_APPROVAL_PENDING,
+    CODE_EXPIRED,
+    CODE_NOT_PENDING,
+    DECISIONS,
+    EXPIRED,
+    PENDING,
+    REJECTED,
+    SWEEP_INTERVAL_S,
+    ApprovalRecord,
+    ApprovalStore,
+    decision_value,
+    is_approval_interrupt,
+    may_decide,
+    may_view,
+    record_from_interrupt,
+    resume_principal,
+    sees_call,
+)
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
     checkpointer_kind,
@@ -152,6 +193,8 @@ EVENT_HEARTBEAT = "heartbeat"
 
 # Run statuses in run records and metrics (`running` while a run is in progress).
 STATUS_OK = "ok"
+# The run paused before a gated API call: it waits for a human decision.
+STATUS_AWAITING_APPROVAL = "awaiting_approval"
 STATUS_STEP_LIMIT = "step_limit"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
@@ -164,6 +207,9 @@ CODE_TIMEOUT = "timeout"
 CODE_RECURSION = "recursion_limit"
 CODE_UNAVAILABLE = "unavailable"
 CODE_FORBIDDEN = "forbidden"
+# The graph paused for input this server cannot collect (an interrupt that is
+# not a gated API call's).
+CODE_UNSUPPORTED_INTERRUPT = "unsupported_interrupt"
 
 # Request headers passed on to the LangGraph Server under langgraph-server.
 # They matter when LANGGRAPH_SERVER_URL points at a real HTTP endpoint (its
@@ -194,6 +240,20 @@ OPEN_CALL_INTERRUPTED = (
     "The tool call did not finish: the run was interrupted before its result was saved."
 )
 OPEN_CALL_STEP_LIMIT = "The tool call did not run: the run reached its step limit."
+# Results for a tool call left open by a run that paused for approval, when a
+# new message comes instead of a resume, by the approval's status.
+OPEN_CALL_BY_APPROVAL = {
+    EXPIRED: "The call was not approved: the approval request expired before anyone decided, "
+    "so nothing was sent.",
+    REJECTED: "The call was not approved: an approver rejected it, so nothing was sent.",
+    APPROVED: "The call was approved, but the run did not continue, so nothing was sent.",
+}
+OPEN_CALL_SENT_UNSAVED = (
+    "The call was approved and sent, but the run stopped before its result was saved."
+)
+UNSUPPORTED_INTERRUPT_MESSAGE = (
+    "The agent paused for input this server cannot collect. Send a new message to continue."
+)
 STEP_LIMIT_MESSAGE = (
     "I had to stop before finishing: this request needs more steps than one run may take "
     "({limit}). What I did so far is kept in this conversation, so you can ask me to "
@@ -346,6 +406,50 @@ class _RunState:
     output_tokens: int = 0
     seen_ai_ids: set[str] = field(default_factory=set)
     server_run_id: str | None = None
+    # The graph's interrupts (`{"id", "value"}`) when the run paused.
+    interrupts: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class Resume:
+    """A paused run to resume (`ChatRuntime.decide`): the resume value per interrupt id."""
+
+    values: dict[str, Any]
+    approval: ApprovalRecord
+    decision: str
+
+
+class ApprovalPending(Exception):
+    """The thread has a pending approval: no new message until it is decided or expires.
+
+    HTTP 409 `{"code": "approval_pending"}` on `/chat`.
+    """
+
+    def __init__(self, thread_id: str, approvals: list[dict[str, Any]]) -> None:
+        super().__init__(
+            "This thread is waiting for the approval of an action; decide it "
+            "(POST /threads/{thread_id}/approvals/{approval_id}) or wait until it expires."
+        )
+        self.thread_id = thread_id
+        self.approvals = approvals
+
+
+class ApprovalError(Exception):
+    """A decision that cannot be taken: `status_code` 404, 403, 409 or 410 with a `code`.
+
+    The app answers `{"code", "detail", ...extra}` (`status`: the approval's
+    status for 409 and 410).
+    """
+
+    def __init__(self, status_code: int, code: str, detail: str, **extra: Any) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
+        self.extra = extra
+
+    def body(self) -> dict[str, Any]:
+        return {"code": self.code, "detail": self.detail, **self.extra}
 
 
 class RunTimeout(Exception):
@@ -444,8 +548,27 @@ def _accumulate_usage(state: _RunState, m: Any) -> None:
         state.output_tokens += int(usage.get("output_tokens") or 0)
 
 
+# The key of an `updates` stream item that carries the graph's interrupts.
+INTERRUPT_KEY = "__interrupt__"
+
+
+def interrupts_of(value: Any) -> list[dict[str, Any]]:
+    """Interrupts as `{"id", "value"}`, from LangGraph `Interrupt` objects or the server's JSON."""
+    items = value if isinstance(value, list | tuple) else [value]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        interrupt_id = _get(item, "id")
+        if interrupt_id:
+            out.append({"id": str(interrupt_id), "value": _get(item, "value")})
+    return out
+
+
 def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Map one LangGraph stream item (`messages` or `updates` mode) to chat events."""
+    """Map one LangGraph stream item (`messages` or `updates` mode) to chat events.
+
+    The graph's interrupts (an `updates` item under `__interrupt__`) are
+    collected in `state.interrupts`, not sent: the run's end reports them.
+    """
     if mode == "messages":
         chunk = data[0] if isinstance(data, list | tuple) and data else data
         if _is_ai(chunk) and not (
@@ -460,7 +583,10 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
         return
     if mode != "updates" or not isinstance(data, Mapping):
         return
-    for update in data.values():
+    for key, update in data.items():
+        if key == INTERRUPT_KEY:
+            state.interrupts.extend(interrupts_of(update))
+            continue
         for m in _iter_messages(update):
             if _is_ai(m):
                 msg_id = str(_get(m, "id") or "")
@@ -811,11 +937,13 @@ class ChatRuntime:
         self.db: Database | None = None
         self.runs: RunStore | None = None
         self.threads: ThreadStore | None = None
+        self.approvals: ApprovalStore | None = None
         self.locks: ThreadLocks = ThreadLocks()
         self._exit: AsyncExitStack | None = None
         self._retention_task: asyncio.Task[None] | None = None
         self._init_task: asyncio.Task[None] | None = None
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._approvals_task: asyncio.Task[None] | None = None
         self._saver: Any = None
         # Final run records whose write failed, retried by the maintenance loop.
         self._unrecorded: deque[RunRecord] = deque(maxlen=MAX_UNRECORDED_RUNS)
@@ -864,6 +992,10 @@ class ChatRuntime:
                 graph.checkpointer = self._saver
             self.runs = RunStore(self.db)
             self.threads = ThreadStore(self.db)
+            self.approvals = ApprovalStore(self.db)
+            # The ledger the API client marks approvals used in, once, before a
+            # gated call is sent (the graph runs in this process under both runtimes).
+            set_approval_ledger(self.approvals)
         except BaseException:
             await self._exit.aclose()
             self._exit = None
@@ -920,14 +1052,23 @@ class ChatRuntime:
             self._retention_task = asyncio.create_task(self._retention_loop(days))
         if self.db is not None and self.db.is_postgres:
             self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+        self._approvals_task = asyncio.create_task(self._approvals_loop())
 
     async def stop(self) -> None:
-        tasks = [self._init_task, self._maintenance_task, self._retention_task]
+        tasks = [
+            self._init_task,
+            self._maintenance_task,
+            self._retention_task,
+            self._approvals_task,
+        ]
         self._init_task = self._maintenance_task = self._retention_task = None
+        self._approvals_task = None
         for task in tasks:
             if task is not None:
                 task.cancel()
         await asyncio.gather(*(t for t in tasks if t is not None), return_exceptions=True)
+        if self.approvals is not None and approval_ledger() is self.approvals:
+            set_approval_ledger(None)
         if self._exit is not None:
             await self._exit.aclose()
             self._exit = None
@@ -1011,6 +1152,35 @@ class ChatRuntime:
                         RECONCILE_INTERVAL_S,
                     )
             await asyncio.sleep(RECONCILE_INTERVAL_S)
+
+    async def _approvals_loop(self) -> None:
+        """Every `SWEEP_INTERVAL_S`: mark pending approvals past their expiry `expired`."""
+        failing = False
+        while True:
+            try:
+                await self.sweep_approvals()
+                failing = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not failing:
+                    failing = True
+                    logger.warning(
+                        "approval expiry sweep failed (%s); retrying every %g s",
+                        type(exc).__name__,
+                        SWEEP_INTERVAL_S,
+                    )
+            await asyncio.sleep(SWEEP_INTERVAL_S)
+
+    async def sweep_approvals(self) -> list[ApprovalRecord]:
+        """Mark pending approvals past their expiry `expired` (= rejected); return them."""
+        if self.approvals is None:
+            return []
+        expired = await self.approvals.expire_due()
+        if expired:
+            metrics.observe_approvals("expired", len(expired))
+            logger.info("%d pending approvals expired", len(expired))
+        return expired
 
     async def reconcile_runs(self, grace_s: float | None = None) -> list[str]:
         """Write run records that failed earlier, then mark runs of dead processes `interrupted`."""
@@ -1176,19 +1346,252 @@ class ChatRuntime:
                 await graph.checkpointer.adelete_thread(thread_id)
         if self.runs is not None:
             await self.runs.delete_for_thread(thread_id)
+        if self.approvals is not None:
+            await self.approvals.delete_for_thread(thread_id)
         if self.threads is not None and self.runtime == FASTAPI:
             await self.threads.delete(thread_id)
 
     async def forget_thread_runs(self, thread_id: str) -> None:
-        """Drop a deleted thread's run records (after the server's own DELETE succeeded)."""
-        if self.runs is None:
+        """Drop a deleted thread's run records and approvals (after the server's own
+        DELETE succeeded)."""
+        if self.runs is None and self.approvals is None:
             return
         try:
             thread_id = str(uuid.UUID(thread_id))  # run records use the canonical form
         except ValueError:
             return
-        await self.runs.delete_for_thread(thread_id)
-        logger.info("run records of a deleted thread removed", extra={"thread_id": thread_id})
+        if self.runs is not None:
+            await self.runs.delete_for_thread(thread_id)
+        if self.approvals is not None:
+            await self.approvals.delete_for_thread(thread_id)
+        logger.info(
+            "run records and approvals of a deleted thread removed", extra={"thread_id": thread_id}
+        )
+
+    # -- approvals -------------------------------------------------------------
+
+    async def pending_approvals(self, thread_id: str) -> list[dict[str, Any]]:
+        """The thread's pending approvals as its owner sees them (oldest first)."""
+        if self.approvals is None:
+            return []
+        with database_errors():
+            return [r.public() for r in await self.approvals.pending_for_thread(thread_id)]
+
+    async def assert_no_pending_approval(self, thread_id: str) -> None:
+        """`ApprovalPending` (409) while the thread waits for an approval decision."""
+        pending = await self.pending_approvals(thread_id)
+        if pending:
+            raise ApprovalPending(thread_id, pending)
+
+    async def thread_approvals(
+        self,
+        principal: Principal,
+        thread_id: str,
+        forward_headers: Mapping[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """A thread's approvals the caller may see, newest first.
+
+        The owner and read-across roles see every one; a decider the ones it
+        may decide. Anyone else gets 403, an unknown thread 404.
+        """
+        thread_id = validate_thread_id(thread_id, self.runtime)
+        self._require_storage()
+        assert self.approvals is not None
+        with database_errors():
+            await self.sweep_approvals()
+            thread = await self._thread_record(thread_id, forward_headers or {})
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Unknown thread.")
+        with database_errors():
+            records = await self.approvals.for_thread(thread_id)
+        owner = thread.principal_id
+        visible = [r for r in records if may_view(principal, owner, r.approvers)]
+        if not visible and not (is_owner(principal, thread) or reads_across(principal)):
+            raise HTTPException(status_code=403, detail="This thread belongs to another principal.")
+        return [r.public(include_call=sees_call(principal, owner, r.approvers)) for r in visible]
+
+    async def visible_approvals(
+        self, principal: Principal, *, status: str | None, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """Approvals across threads the caller requested, may decide, or reads across."""
+        self._require_storage()
+        assert self.approvals is not None
+        with database_errors():
+            await self.sweep_approvals()
+            records = await self.approvals.visible(
+                principal, status=status, limit=limit, offset=offset
+            )
+        # The requester and the deciders see the call; read-across roles only
+        # under TRACE_CAPTURE=full (as `sees_call`).
+        own = principal.hashed_id()
+        roles = {f"role:{r}" for r in principal.roles}
+        return [
+            r.public(
+                include_call=r.requester_hash == own
+                or bool(roles & set(r.approvers))
+                or capture_full()
+            )
+            for r in records
+        ]
+
+    async def decide(
+        self,
+        principal: Principal,
+        thread_id: str,
+        approval_id: str,
+        decision: str,
+        comment: str | None = None,
+        forward_headers: Mapping[str, str] | None = None,
+    ) -> tuple[ThreadLease, Resume, Principal]:
+        """Approve or reject a pending approval; the thread's run lock and what to resume.
+
+        `ApprovalError` 404 (no such approval on this thread), 403 (the caller
+        may not decide it), 410 (expired), 409 (decided already, or the run no
+        longer waits for it); `ThreadBusy` while a run is in progress on the
+        thread. The decision is one atomic change under the thread's run lock,
+        so of two concurrent decisions one wins. Returns the held lease (the
+        caller streams the resumed run with it), the resume values and the
+        principal the resumed run acts as (the requester, never the decider).
+        """
+        thread_id = validate_thread_id(thread_id, self.runtime)
+        self._require_storage()
+        assert self.approvals is not None
+        verdict = DECISIONS.get(decision)
+        if verdict is None:
+            raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'.")
+        headers = forward_headers or {}
+        with database_errors():
+            await self.sweep_approvals()
+            record = await self.approvals.get(approval_id)
+        if record is None or record.thread_id != thread_id:
+            raise ApprovalError(404, "approval_not_found", "Unknown approval.")
+        with database_errors():
+            thread = await self._thread_record(thread_id, headers)
+        if thread is None:
+            raise ApprovalError(404, "approval_not_found", "Unknown approval.")
+        if not may_decide(principal, thread.principal_id, record.approvers):
+            raise ApprovalError(
+                403, "not_an_approver", "You may not decide this approval (see its approvers)."
+            )
+        self._check_decidable(record)
+        lease = await self.acquire_thread(thread_id)
+        try:
+            with database_errors():
+                paused = await self._paused_interrupts(thread_id, headers)
+                if record.interrupt_id not in paused:
+                    # The thread went on without this approval (nothing waits for it).
+                    if await self.approvals.expire(approval_id) is not None:
+                        metrics.observe_approvals("expired")
+                    raise ApprovalError(
+                        409,
+                        CODE_NOT_PENDING,
+                        "The run no longer waits for this approval.",
+                        status=EXPIRED,
+                    )
+                decided = await self.approvals.decide(
+                    approval_id, verdict, principal.hashed_id(), comment
+                )
+                if decided is None:
+                    current = await self.approvals.get(approval_id)
+                    if current is None:
+                        raise ApprovalError(404, "approval_not_found", "Unknown approval.")
+                    self._check_decidable(current)
+                    raise ApprovalError(
+                        409, CODE_NOT_PENDING, "The approval is decided already.", status=PENDING
+                    )
+                metrics.observe_approvals(verdict)
+                resume_as = DECISION_APPROVE if decision == APPROVE else DECISION_REJECT
+                values = {decided.interrupt_id: decision_value(decided, resume_as)}
+                # The paused run's other interrupts whose approval expired get
+                # their answer too, so their tools end instead of asking again.
+                latest: dict[str, ApprovalRecord] = {}
+                for other in await self.approvals.for_thread(thread_id):  # newest first
+                    latest.setdefault(other.interrupt_id, other)
+                for interrupt_id in paused:
+                    other = latest.get(interrupt_id)
+                    if interrupt_id not in values and other is not None:
+                        if other.effective_status(self.approvals.now()) == EXPIRED:
+                            values[interrupt_id] = decision_value(other, DECISION_EXPIRED)
+        except BaseException:
+            await lease.release()
+            raise
+        logger.info(
+            "approval decided: %s",
+            verdict,
+            extra={"thread_id": thread_id, "approval_id": approval_id},
+        )
+        acting = resume_principal(decided, thread.principal_id, principal)
+        return lease, Resume(values=values, approval=decided, decision=decision), acting
+
+    @staticmethod
+    def _check_decidable(record: ApprovalRecord) -> None:
+        status = record.effective_status()
+        if status == EXPIRED:
+            raise ApprovalError(410, CODE_EXPIRED, "The approval expired.", status=status)
+        if status != PENDING:
+            raise ApprovalError(
+                409, CODE_NOT_PENDING, f"The approval is {status} already.", status=status
+            )
+
+    async def _paused_interrupts(
+        self, thread_id: str, forward_headers: Mapping[str, str]
+    ) -> dict[str, Any]:
+        """The interrupts the thread's paused run waits on: id -> value."""
+        if self.runtime == LANGGRAPH_SERVER:
+            client = self._sdk_client(forward_headers)
+            try:
+                state = await client.threads.get_state(thread_id)
+            except Exception as exc:
+                if http_status(exc) == 404:
+                    return {}
+                raise unavailable("LangGraph Server", exc) from exc
+            items = state.get("interrupts") if isinstance(state, Mapping) else None
+            return {i["id"]: i["value"] for i in interrupts_of(items or [])}
+        from {{cookiecutter.agent_directory}}.agent import graph
+
+        snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        found = list(getattr(snapshot, "interrupts", None) or ())
+        return {i["id"]: i["value"] for i in interrupts_of(found)}
+
+    async def _record_approvals(
+        self, principal: Principal, thread_id: str, run_id: str, interrupts: list[dict[str, Any]]
+    ) -> list[ApprovalRecord]:
+        """A pending approval per interrupt of a paused run (one already pending is kept)."""
+        assert self.approvals is not None
+        records: list[ApprovalRecord] = []
+        for item in interrupts:
+            record, created, superseded = await self.approvals.add(
+                record_from_interrupt(
+                    item["value"],
+                    interrupt_id=item["id"],
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    requester=principal,
+                    now=self.approvals.now(),
+                )
+            )
+            if created:
+                metrics.observe_approvals("requested")
+            metrics.observe_approvals("expired", superseded)
+            if all(r.approval_id != record.approval_id for r in records):
+                records.append(record)
+        logger.info("run paused for %d approval(s)", len(records), extra={"thread_id": thread_id})
+        return records
+
+    async def _approval_results(self, thread_id: str) -> dict[str, str]:
+        """Error results, by tool call id, for calls a paused run left open (see the repair)."""
+        if self.approvals is None:
+            return {}
+        texts: dict[str, str] = {}
+        for record in await self.approvals.for_thread(thread_id):  # newest first
+            text = (
+                OPEN_CALL_SENT_UNSAVED
+                if record.used_at is not None
+                else OPEN_CALL_BY_APPROVAL.get(record.effective_status())
+            )
+            if record.tool_call_id and text and record.tool_call_id not in texts:
+                texts[record.tool_call_id] = text
+        return texts
 
     # -- retention -----------------------------------------------------------
 
@@ -1293,6 +1696,8 @@ class ChatRuntime:
             for thread_id in thread_ids:
                 if await self._server_thread_record(client, thread_id) is None:
                     await self.runs.delete_for_thread(thread_id)
+                    if self.approvals is not None:
+                        await self.approvals.delete_for_thread(thread_id)
                     removed += 1
             if len(thread_ids) < batch:
                 break
@@ -1307,6 +1712,7 @@ class ChatRuntime:
         req: ChatRequest,
         thread_id: str,
         lease: ThreadLease | None = None,
+        resume: Resume | None = None,
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """Run the graph once on `thread_id` and yield the chat events.
 
@@ -1316,7 +1722,12 @@ class ChatRuntime:
         lock is released when the run ends, however it ends.
 
         The run is recorded (`running`) before it starts: a run that cannot be
-        recorded does not start (an `unavailable` error event).
+        recorded does not start (an `unavailable` error event). A new message
+        on a thread with a pending approval does not start either (an
+        `approval_pending` error event). With `resume` (from `decide()`) the
+        paused run continues with the decision instead of a new message, and
+        `principal` is the requester it acts as. A run that pauses for approval
+        ends with `message.end` status `awaiting_approval` and the approvals.
         """
         if lease is None:
             try:
@@ -1328,6 +1739,26 @@ class ChatRuntime:
                 code = CODE_FORBIDDEN if exc.status_code == 403 else CODE_UNAVAILABLE
                 yield EVENT_ERROR, {"code": code, "message": str(exc.detail)}
                 return
+        if resume is None:
+            try:
+                await self.assert_no_pending_approval(thread_id)
+            except (ApprovalPending, HTTPException) as exc:
+                await lease.release()
+                if isinstance(exc, ApprovalPending):
+                    yield (
+                        EVENT_ERROR,
+                        {
+                            "code": CODE_APPROVAL_PENDING,
+                            "message": str(exc),
+                            "approvals": exc.approvals,
+                        },
+                    )
+                else:
+                    yield EVENT_ERROR, {"code": CODE_UNAVAILABLE, "message": str(exc.detail)}
+                return
+            except BaseException:
+                await lease.release()
+                raise
         run_id = str(uuid.uuid4())
         bind_log_context(run_id=run_id, thread_id=thread_id, principal_hash=principal.hashed_id())
         record = RunRecord(
@@ -1375,14 +1806,18 @@ class ChatRuntime:
         error_event: dict[str, Any] | None = None
         final_text: str | None = None
         pump: _Pump | None = None
+        paused: list[ApprovalRecord] = []
         metrics.ACTIVE_RUNS.inc()
         try:
-            yield EVENT_START, {"thread_id": thread_id, "run_id": run_id}
+            start: dict[str, Any] = {"thread_id": thread_id, "run_id": run_id}
+            if resume is not None:
+                start.update(approval_id=resume.approval.approval_id, decision=resume.decision)
+            yield EVENT_START, start
             lease.check()
             if self.runtime == LANGGRAPH_SERVER:
-                source = self._server_events(principal, req, thread_id, run_id, state)
+                source = self._server_events(principal, req, thread_id, run_id, state, resume)
             else:
-                source = self._local_events(principal, req, thread_id, run_id)
+                source = self._local_events(principal, req, thread_id, run_id, resume)
             pump = _Pump(source)
             # A lease lost mid-run (this replica cannot confirm it still owns
             # the thread) stops the run now, not at its next write.
@@ -1404,6 +1839,24 @@ class ChatRuntime:
                 mode, data = payload
                 for event in map_stream_item(mode, data, state):
                     yield event
+            if state.interrupts:
+                # The graph paused. A gated API call's interrupt waits for a
+                # decision (recorded before the lock is released, so no new
+                # message can slip in first); any other kind cannot be answered here.
+                lease.check()
+                if all(is_approval_interrupt(i["value"]) for i in state.interrupts):
+                    paused = await self._record_approvals(
+                        principal, thread_id, run_id, state.interrupts
+                    )
+                    status = STATUS_AWAITING_APPROVAL
+                else:
+                    status = STATUS_ERROR
+                    error_event = {
+                        "code": CODE_UNSUPPORTED_INTERRUPT,
+                        "message": UNSUPPORTED_INTERRUPT_MESSAGE,
+                        "run_id": run_id,
+                    }
+                    logger.warning("run paused for input this server cannot collect")
         except RunTimeout:
             status = STATUS_TIMEOUT
             error_id = new_error_id()
@@ -1453,19 +1906,21 @@ class ChatRuntime:
             return
         if final_text is not None:
             yield EVENT_DELTA, {"text": final_text}
-        yield (
-            EVENT_END,
-            {
-                "thread_id": thread_id,
-                "run_id": run_id,
-                "usage": {
-                    "input_tokens": state.input_tokens,
-                    "output_tokens": state.output_tokens,
-                },
-                "latency_ms": latency_ms,
-                "status": status,
+        end: dict[str, Any] = {
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "usage": {
+                "input_tokens": state.input_tokens,
+                "output_tokens": state.output_tokens,
             },
-        )
+            "latency_ms": latency_ms,
+            "status": status,
+        }
+        if paused:
+            # The requester sees what it is asked to approve (it asked for it).
+            end["approval"] = paused[0].public()
+            end["approvals"] = [record.public() for record in paused]
+        yield EVENT_END, end
 
     def _error_event(self, exc: BaseException, run_id: str) -> dict[str, Any]:
         """The client-facing error: a code and a generic message; the detail is logged."""
@@ -1554,11 +2009,15 @@ class ChatRuntime:
     def _repairs_after(self, status: str, error: BaseException | None, lease: ThreadLease) -> bool:
         """Whether a stopped run should answer the tool calls it left open.
 
-        Not after a clean end, not when the run never started (the thread was
-        busy: the open calls belong to the run in progress) and not when this
-        process no longer owns the thread.
+        Not after a clean end, not after a pause for approval (the open call
+        waits for its decision), not when the run never started (the thread
+        was busy: the open calls belong to the run in progress) and not when
+        this process no longer owns the thread.
         """
-        if status in (STATUS_OK, STATUS_STEP_LIMIT, STATUS_INTERRUPTED) or lease.lost:
+        if (
+            status in (STATUS_OK, STATUS_AWAITING_APPROVAL, STATUS_STEP_LIMIT, STATUS_INTERRUPTED)
+            or lease.lost
+        ):
             return False
         if error is None:
             return True
@@ -1591,21 +2050,26 @@ class ChatRuntime:
             logger.info("closed %d tool calls left open by a stopped run", closed)
 
     async def _repair_history(
-        self, req: ChatRequest, thread_id: str, reason: str, final_text: str | None = None
+        self,
+        req: ChatRequest,
+        thread_id: str,
+        reason: str,
+        final_text: str | None = None,
+        texts: Mapping[str, str] | None = None,
     ) -> int:
         """Put the thread's tool-call history right, then add `final_text` as the last reply.
 
         Every tool call gets its result right after it (an error result saying
-        `reason` when it has none, or that the arguments were not valid JSON
-        for a call whose arguments did not parse) and results that answer no
-        call go; see
+        `reason` when it has none, `texts[call id]` for a call named there,
+        or that the arguments were not valid JSON for a call whose arguments
+        did not parse) and results that answer no call go; see
         `repair_tool_history`. Only the owner of the thread's run lease writes
         (fastapi: the checkpointer's fence). Returns how many open calls got a
         result. Under langgraph-server a thread with a run in progress (started
         through the server's own API) is left alone.
         """
         if self.runtime == LANGGRAPH_SERVER:
-            return await self._server_repair_history(req, thread_id, reason, final_text)
+            return await self._server_repair_history(req, thread_id, reason, final_text, texts)
         from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
         from langgraph.constants import END
 
@@ -1613,7 +2077,7 @@ class ChatRuntime:
 
         def error_result(call: Any) -> Any:
             return ToolMessage(
-                content=open_call_result_text(call, reason),
+                content=open_call_result_text(call, (texts or {}).get(_call_id(call), reason)),
                 tool_call_id=str(_get(call, "id") or ""),
                 name=str(_get(call, "name") or ""),
                 status="error",
@@ -1652,7 +2116,12 @@ class ChatRuntime:
         return len(repair.added) if repair is not None else 0
 
     async def _server_repair_history(
-        self, req: ChatRequest, thread_id: str, reason: str, final_text: str | None
+        self,
+        req: ChatRequest,
+        thread_id: str,
+        reason: str,
+        final_text: str | None,
+        texts: Mapping[str, str] | None = None,
     ) -> int:
         client = self._sdk_client(req.forward_headers)
         thread = await client.threads.get(thread_id)
@@ -1678,7 +2147,7 @@ class ChatRuntime:
         def error_result(call: Any) -> dict[str, Any]:
             return {
                 "type": "tool",
-                "content": open_call_result_text(call, reason),
+                "content": open_call_result_text(call, (texts or {}).get(_call_id(call), reason)),
                 "tool_call_id": str(_get(call, "id") or ""),
                 "name": str(_get(call, "name") or ""),
                 "status": "error",
@@ -1739,13 +2208,22 @@ class ChatRuntime:
         return text
 
     async def _local_events(
-        self, principal: Principal, req: ChatRequest, thread_id: str, run_id: str
+        self,
+        principal: Principal,
+        req: ChatRequest,
+        thread_id: str,
+        run_id: str,
+        resume: Resume | None = None,
     ) -> AsyncIterator[tuple[str, Any]]:
+        from langgraph.types import Command
+
         from {{cookiecutter.agent_directory}}.agent import AgentContext, graph
 
-        # A run cut short earlier (a crash, an outage) may have left tool calls
-        # without results: answer them before this run appends its turn.
-        await self._repair_before_run(req, thread_id)
+        if resume is None:
+            # A run cut short earlier (a crash, an outage) may have left tool calls
+            # without results: answer them before this run appends its turn.
+            # (A resume continues the paused step: its open call is the one decided.)
+            await self._repair_before_run(req, thread_id)
         config = {
             "configurable": {"thread_id": thread_id},
             "run_id": uuid.UUID(run_id),
@@ -1759,8 +2237,13 @@ class ChatRuntime:
             roles=list(principal.roles),
             attributes=dict(principal.attributes),
         )
+        graph_input: Any = (
+            Command(resume=resume.values)
+            if resume is not None
+            else {"messages": [{"role": "user", "content": req.message}]}
+        )
         async for mode, data in graph.astream(
-            {"messages": [{"role": "user", "content": req.message}]},
+            graph_input,
             config=config,
             context=context,
             stream_mode=["messages", "updates"],
@@ -1775,7 +2258,10 @@ class ChatRuntime:
         reached through a client that cannot read the state.
         """
         try:
-            closed = await self._repair_history(req, thread_id, OPEN_CALL_INTERRUPTED)
+            # A call a paused run left waiting for an approval that expired (or
+            # was decided but never resumed) says so in its result.
+            texts = await self._approval_results(thread_id)
+            closed = await self._repair_history(req, thread_id, OPEN_CALL_INTERRUPTED, texts=texts)
         except Exception as exc:
             if self.runtime == FASTAPI:
                 raise
@@ -1933,10 +2419,19 @@ class ChatRuntime:
         thread_id: str,
         run_id: str,
         state: _RunState,
+        resume: Resume | None = None,
     ) -> AsyncIterator[tuple[str, Any]]:
-        # As under fastapi: answer tool calls an interrupted run left open first.
-        await self._repair_before_run(req, thread_id)
+        if resume is None:
+            # As under fastapi: answer tool calls an interrupted run left open first.
+            await self._repair_before_run(req, thread_id)
         client = self._sdk_client(req.forward_headers)
+        # A resume continues the paused run through the server's native resume
+        # (the server's auth handler refuses a `command` from outside the app).
+        run_input: dict[str, Any] = (
+            {"command": {"resume": resume.values}}
+            if resume is not None
+            else {"input": {"messages": [{"role": "user", "content": req.message}]}}
+        )
         metadata = {
             **trace_metadata(thread_id, run_id, principal, req.metadata),
             # The server merges the thread's metadata, whose `principal_id` is
@@ -1949,7 +2444,7 @@ class ChatRuntime:
         async for part in client.runs.stream(
             thread_id,
             GRAPH_ID,
-            input={"messages": [{"role": "user", "content": req.message}]},
+            **run_input,
             stream_mode=["messages-tuple", "updates"],
             metadata=metadata,
             config={"recursion_limit": recursion_limit()},

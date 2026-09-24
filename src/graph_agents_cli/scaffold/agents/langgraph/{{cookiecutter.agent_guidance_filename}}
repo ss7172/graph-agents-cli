@@ -6,8 +6,9 @@ This is a LangGraph project scaffolded by graph-agents-cli. `{{cookiecutter.agen
 exports `graph`, a compiled LangGraph agent with no checkpointer bound;
 `{{cookiecutter.agent_directory}}/fast_api_app.py` exports `app`, the FastAPI application that serves
 `POST /chat` (SSE), `GET /threads`, `GET /threads/{id}/messages`, `DELETE /threads/{id}`,
-`GET /health` (liveness), `GET /ready` (readiness), `GET /metrics`, `GET /playground`
-(dev only) and the A2A protocol under `/a2a/{{cookiecutter.agent_directory}}`.
+the approvals of gated API calls (`GET /threads/{id}/approvals`, `GET /approvals`,
+`POST /threads/{id}/approvals/{approval_id}`), `GET /health` (liveness), `GET /ready` (readiness),
+`GET /metrics`, `GET /playground` (dev only) and the A2A protocol under `/a2a/{{cookiecutter.agent_directory}}`.
 Runtime: `{{cookiecutter.runtime}}`. Model provider: `{{cookiecutter.model_provider}}` (`MODEL_PROVIDER` in `.env`).
 Auth policy: `{{cookiecutter.auth_policy}}` (`AUTH_POLICY`). Every setting and its default is in
 `.env.example`; `README.md` explains the API, the auth policies and the deploy rules.
@@ -72,6 +73,7 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool |
 | `graph-agents-cli api show` / `api check` | The outbound API policy and each tool's declared calls / the policy check alone |
+| `graph-agents-cli approvals list` | Gated API calls waiting for a person's approval (deciding one is the user's, not yours) |
 | `graph-agents-cli build` | Build the container image from the runtime's Dockerfile |
 | `graph-agents-cli deploy --env <env>` | Deploy (direct modes) or open the desired-state PR (argocd) |
 | `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from `.env.<env>` |
@@ -98,12 +100,20 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
   call; never relabel a call to get it past `lint` (a denial holds on the path
   anyway). Never bypass `api_client.py` with a raw HTTP client.
 - **Change `api-policy.yaml` only when the user asks**, with `graph-agents-cli api`
-  (`add`, `access`, `allow`, `deny`, `revoke`, `limits`, `remove`; show the user the
-  printed diff, use `--dry-run` first). The policy is a security boundary: never
-  widen access (more methods or operations, a lifted denial, a raised limit) on your
-  own, and never add an `approval` key (not supported yet). When a tool needs a call
-  the policy refuses, `lint` prints the command that would allow it: propose it,
-  do not run it unasked. Widening goes through a pull request reviewed by the code owners.
+  (`add`, `access`, `allow`, `deny`, `revoke`, `limits`, `approval`, `remove`; show the
+  user the printed diff, use `--dry-run` first). The policy is a security boundary: never
+  widen access (more methods or operations, a lifted denial, a raised limit, a removed
+  or loosened `approval` gate, `requester` added to a four-eyes gate) on your own. When
+  a tool needs a call the policy refuses, `lint` prints the command that would allow it:
+  propose it, do not run it unasked. Widening goes through a pull request reviewed by the
+  code owners. Proposing an `approval` gate for write calls is welcome; adding one is
+  still the user's decision.
+- **Gated calls pause for a person.** A call the policy's `approval` gates waits for an
+  approver: never approve or reject one yourself (the approvals routes,
+  `graph-agents-cli approvals`), unless the user explicitly tells you to decide that one.
+  A tool makes at most one gated call per tool call, and code before it runs again on
+  resume, so keep other side effects after it; pass `redact=[...]` for fields an approver
+  need not read. Tests of gated tools run inside a graph (see `tests/unit/test_approval_ledger.py`).
 - **Never edit `graph-agents-cli-manifest.yaml` or `values-prod.yaml`** unless the
   user asks: production desired state changes only through a pull request reviewed
   by the code owners.
