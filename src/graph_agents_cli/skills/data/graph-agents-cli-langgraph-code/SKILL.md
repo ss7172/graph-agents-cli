@@ -226,7 +226,8 @@ when the project declares an API policy):
   leaves out what a denial knows the operation by is refused by it, so when the API has a
   denial by `operationId` alone, pass `operation_id=` on every call and declare it in
   `API_CALLS`. Paths match after decoding percent-encoded unreserved characters and
-  ignoring one trailing slash; denials also ignore letter case. Pass `path` as the declared
+  ignoring one trailing slash; denials and approval gates also ignore letter case and cover a
+  literal segment's dot-suffixed spellings (`cancel.json`, `cancel.`). Pass `path` as the declared
   template and the values in `path_params`; a concrete path is validated (no dot segments,
   encoded slashes, empty segments, query or fragment). A base URL with a path prefix works (the
   path is joined under it), `pagination.max_page_size` is enforced (every value of the
@@ -263,7 +264,9 @@ when the project declares an API policy):
   the run resumes by running the tool again from its start, keep a gated tool idempotent up
   to the call (no other write before it) and build the request deterministically (no
   timestamp or random id in the body or path): the approved request is hashed, and a resumed
-  call that differs from it is refused, never sent.
+  call that differs from it is refused, never sent. A decision stays bound to its call even if
+  the policy changes while it waits: a rejected or expired call is never sent, and an approved
+  one is refused when the policy no longer allows it or no longer gates it the same way.
 - No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS`; `lint`
   then prints the `graph-agents-cli api` command that would allow it (`api allow` with the
   call's method and path, or `api access` for a new method). Propose it to the user: widening access is their decision and a

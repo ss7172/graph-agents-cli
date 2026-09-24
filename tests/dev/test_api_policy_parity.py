@@ -569,6 +569,15 @@ DENIAL_CALLS = [
     ("POST", None, "/carts/1", False, None),
     ("GET", "getOrder", "/orders/1", False, None),
     ("GET", "deleteOrder", "/orders/1", False, None),
+    # A literal segment covers its dot-suffixed spellings, which servers that route
+    # format suffixes or drop a trailing dot send to the same endpoint.
+    ("POST", "other", "/items/1/purge.json", True, None),
+    ("POST", "other", "/items/1/purge.", True, None),
+    ("POST", "other", "/items/1/purge%2e", True, None),
+    ("POST", "other", "/items/1/PURGE.JSON", True, None),
+    ("GET", "x", "/admin.json/1", True, None),
+    ("POST", "other", "/items/1/purged", False, None),
+    ("POST", "other", "/items/1/purge/x", False, None),
 ]
 
 
@@ -614,6 +623,31 @@ def test_paths_are_compared_normalised_by_both(
     assert runtime.path_matches(template, path, ignore_case=ignore_case) is expected
 
 
+@pytest.mark.parametrize(
+    ("template", "path", "expected"),
+    [
+        ("/orders/{id}/cancel", "/orders/7/cancel.json", True),
+        ("/orders/{id}/cancel", "/orders/7/cancel.", True),
+        ("/orders/{id}/cancel", "/orders/7/cancel%2e", True),
+        ("/orders/{id}/cancel", "/orders/7/cancel%2E.xml", True),
+        ("/orders/{id}/cancel", "/Orders.json/7/CANCEL", True),
+        ("/files/{name}.pdf", "/files/a.pdf.bak", True),
+        ("/orders/{id}/cancel", "/orders/7/cancelled", False),
+        ("/orders/{id}/cancel", "/orders/7/cancel/x", False),
+        ("/orders/{id}/cancel", "/orders/7/xcancel.json", False),
+        ("/", "/.json", False),
+    ],
+)
+def test_covering_matches_take_dot_suffixes_the_same_way(
+    runtime: ModuleType, template: str, path: str, expected: bool
+) -> None:
+    """Denials and gates cover a literal segment's `.json` and trailing-dot spellings."""
+    for side in (cli, runtime):
+        assert side.path_matches(template, path, ignore_case=True, suffixes=True) is expected
+        # A plain (allow) match never does, beyond the path itself.
+        assert side.path_matches(template, path) is (path == template)
+
+
 def test_allows_still_need_the_named_fields(runtime: ModuleType) -> None:
     """The fail-closed rule is for denials: an allow must be shown, so an unnamed field fails it."""
     api = {
@@ -625,6 +659,12 @@ def test_allows_still_need_the_named_fields(runtime: ModuleType) -> None:
         assert side.refusal_reason(api, "GET", "getItem", "/other") is None
         assert side.refusal_reason(api, "GET", None, "/items/1/") is None
         assert side.refusal_reason(api, "GET", None, "/ITEMS/1") == "not in allowed_operations"
+        # Nor does an allow cover a dot-suffixed spelling of a literal segment.
+        suffixed = {"allowed_methods": ["GET"], "allowed_operations": [{"path": "/items/all"}]}
+        assert side.refusal_reason(suffixed, "GET", None, "/items/all") is None
+        assert side.refusal_reason(suffixed, "GET", None, "/items/all.json") == (
+            "not in allowed_operations"
+        )
 
 
 # --- approval gates: the same calls wait for a human on both sides ----------------------
@@ -685,6 +725,13 @@ GATE_CALLS = [
     ("GET", "x", "/Admin/users/", True, "path=/admin/{section}"),
     ("GET", "x", "/administrator/users", False, None),
     ("GET", "x", "/admin", False, None),
+    # A concrete path with a dot suffix on the gated segment is the same endpoint on
+    # servers that route format suffixes or drop a trailing dot: gated, as a denial.
+    ("POST", "x", "/orders/1/cancel.json", True, "operationId=cancelOrder"),
+    ("POST", "x", "/orders/1/cancel.", True, "operationId=cancelOrder"),
+    ("POST", "x", "/orders/1/cancel%2e", True, "operationId=cancelOrder"),
+    ("POST", "x", "/orders/1/CANCEL.JSON/", True, "operationId=cancelOrder"),
+    ("GET", "x", "/admin.json/users", True, "path=/admin/{section}"),
 ]
 
 

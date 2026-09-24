@@ -149,6 +149,40 @@ def _write_policy(path: Path, approvers: str) -> None:
     reset_policy_cache()
 
 
+# What a new image's policy may say by the time a paused call's decision comes
+# (the fixture's policy gates cancelOrder for [requester, "role:ops"]).
+_GATED = POLICY.replace("APPROVERS", '[requester, "role:ops"]')
+POLICY_CHANGES = {
+    "gate removed": _GATED.split("    approval:")[0],
+    "gate narrowed": _GATED.replace("cancelOrder", "refundOrder").replace(
+        "/orders/{order_id}/cancel", "/orders/{order_id}/refund"
+    ),
+    "call denied": _GATED.replace(
+        "    approval:",
+        "    denied_operations:\n      - operationId: cancelOrder\n        path: "
+        "/orders/{order_id}/cancel\n    approval:",
+    ),
+    "allowed_methods narrowed": _GATED.replace(
+        "allowed_methods: [GET, POST]", "allowed_methods: [GET]"
+    ),
+}
+# The policy refuses before any decision is read; else the decision (or the gate) does.
+REFUSED_BY = {
+    "call denied": "denied by denied_operations",
+    "allowed_methods narrowed": "is not in allowed_methods",
+}
+DECIDED_BY = {
+    "reject": "was not approved: an approver rejected it",
+    "expired": "was not approved: the approval request expired",
+    "approve": "approved under an approval gate the policy no longer has",
+}
+
+
+def _change_policy(tmp_path: Path, change: str) -> None:
+    (tmp_path / "api-policy.yaml").write_text(POLICY_CHANGES[change], encoding="utf-8")
+    reset_policy_cache()
+
+
 ADMIN_DSN = os.environ.get("TEST_POSTGRES_DSN", "")
 
 
@@ -385,6 +419,32 @@ async def test_an_approval_asked_of_other_approvers_than_the_policy_names_now_se
     state = await graph.aget_state({"configurable": {"thread_id": end["thread_id"]}})
     tool_message = next(m for m in state.values["messages"] if m.type == "tool")
     assert "approval gate that has changed" in tool_message.content
+
+
+@pytest.mark.parametrize("change", list(POLICY_CHANGES))
+@pytest.mark.parametrize("decision", ["reject", "approve"])
+async def test_a_decision_binds_its_call_whatever_the_policy_says_by_then(
+    client, tmp_path, change: str, decision: str
+) -> None:
+    """Reject never sends, approve never outruns a later denial or narrowing."""
+    end = await _pause(client)
+    _change_policy(tmp_path, change)  # a new image while the call waits
+    r = await _decide(client, end, decision)
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    result = next(d for e, d in events if e == "tool.result")
+    assert result["is_error"] is True
+    assert REFUSED_BY.get(change, DECIDED_BY[decision]) in result["result"], result
+    assert events[-1][1]["status"] == "ok"
+    assert SENT == []
+    record = await RUNTIME.approvals.get(end["approval"]["approval_id"])
+    assert record is not None and record.used_at is None
+    # The thread goes on, and nothing is sent later either.
+    r = await client.post(
+        "/chat", json={"message": "hello", "thread_id": end["thread_id"]}, headers=_as("alice")
+    )
+    assert r.status_code == 200 and parse_sse(r.text)[-1][1]["status"] == "ok"
+    assert SENT == []
 
 
 async def test_approvals_a_failed_run_recorded_do_not_block_the_thread(client, monkeypatch) -> None:
@@ -726,6 +786,53 @@ async def test_a_decision_also_closes_the_calls_whose_approval_expired(client, t
         "/orders/7/cancel": "approved",
         "/orders/8/cancel": "expired",
     }
+
+
+@pytest.mark.parametrize("change", list(POLICY_CHANGES))
+async def test_an_expired_approval_stops_its_call_whatever_the_policy_says_by_then(
+    client, two_calls, tmp_path, change: str
+) -> None:
+    end = await _pause(client)
+    by_path = {a["path"]: a for a in end["approvals"]}
+    await _expire_now(by_path["/orders/8/cancel"]["approval_id"])
+    _change_policy(tmp_path, change)
+    # Deciding the other call resumes the run: the expired one gets "expired".
+    r = await _decide(client, {**end, "approval": by_path["/orders/7/cancel"]}, "reject")
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    results = {d["id"]: d for e, d in events if e == "tool.result"}
+    assert results["c8"]["is_error"] is True
+    assert REFUSED_BY.get(change, DECIDED_BY["expired"]) in results["c8"]["result"]
+    assert results["c7"]["is_error"] is True
+    assert events[-1][1]["status"] == "ok"
+    assert SENT == []
+
+
+async def test_a_call_still_waiting_waits_on_when_its_gate_is_removed(
+    client, two_calls, tmp_path
+) -> None:
+    end = await _pause(client)
+    by_path = {a["path"]: a for a in end["approvals"]}
+    _change_policy(tmp_path, "gate removed")
+    r = await _decide(client, {**end, "approval": by_path["/orders/7/cancel"]}, "approve")
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    results = {d["id"]: d for e, d in events if e == "tool.result"}
+    assert DECIDED_BY["approve"] in results["c7"]["result"]
+    # The other call was not sent on its own: it still waits, for the same approval.
+    again = events[-1][1]
+    assert again["status"] == "awaiting_approval"
+    waiting = by_path["/orders/8/cancel"]
+    assert [a["approval_id"] for a in again["approvals"]] == [waiting["approval_id"]]
+    assert again["approvals"][0]["approvers"] == ["requester", "role:ops"]
+    assert SENT == []
+    r = await _decide(client, {**end, "approval": waiting}, "reject")
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    results = {d["id"]: d for e, d in events if e == "tool.result"}
+    assert DECIDED_BY["reject"] in results["c8"]["result"]
+    assert events[-1][1]["status"] == "ok"
+    assert SENT == []
 
 
 # --- A2A: input-required and back ----------------------------------------------------

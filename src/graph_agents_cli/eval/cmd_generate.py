@@ -519,7 +519,10 @@ def cmd_generate(
     decided as the case's "approvals" instructions say ({"decision":
     "approve"|"reject", "match": {...}}) and the run continues. A gate no
     instruction matches makes the case an error: generate never approves on
-    its own. A gate that lists requester is decided as the eval identity (it
+    its own, and rejects such a gate (as it does one whose decision was
+    refused) so that no approval is left pending; the trace records it
+    (approvals[].cleanup), and a gate it may not reject either is named in the
+    case error. A gate that lists requester is decided as the eval identity (it
     started the run); any other with GRAPH_AGENTS_CLI_APPROVER_API_KEY as a
     bearer credential when it is set (a principal holding the gate's role).
 

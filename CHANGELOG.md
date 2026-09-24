@@ -289,8 +289,10 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   410 once expired) and streams the resumed run; a new `/chat` message on a paused thread gets
   409 `approval_pending`; an A2A task goes `input-required` and resumes with a data part
   carrying the decision. `requester` is the principal who started the run, `role:<name>` any
-  other principal holding the role. An approved call is sent exactly as shown, once; a rejected
-  or expired one never, nor one whose gate names other approvers by the time it is sent.
+  other principal holding the role. An approved call is sent exactly as shown, once, and only
+  while the policy still allows it and gates it with the same approvers; a rejected or expired
+  one never, whatever the policy says about gating it by then (a decision is bound to its
+  call), and a call still waiting when another decision resumes the run waits on for its own.
   Approvals are kept in an `approvals` table beside the checkpoints (`agent_approvals` under
   `langgraph-server`); deleting a thread deletes them.
 - **`graph-agents-cli api approval NAME`** `[--methods M,...|none] [--operations OP,...|none]
@@ -312,7 +314,8 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   reaches (`"approvals": [{"decision": "approve"|"reject", "match": {"operation_id": ...} |
   {"method": ..., "path": ...}}]`, optionally with `api`); `eval generate` decides each gate
   per the first matching instruction and continues the run (a gate no instruction matches is a
-  case error), traces record every gate, and `expect.approvals` (`gated`, `approved`,
+  case error, and is rejected, as is one whose decision the server refused, so no approval is
+  left pending: `approvals[].cleanup` in the trace), traces record every gate, and `expect.approvals` (`gated`, `approved`,
   `rejected`) and `expect.no_approvals` check them. A gate that lists `requester` is decided
   as the eval identity, any other as `GRAPH_AGENTS_CLI_APPROVER_API_KEY` when set.
 - `infra check` reports where pending approvals are kept (the `approvals` table of the app
@@ -609,7 +612,15 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   whose approval is pending is refused (409), as `/chat` is; approvals a run left behind when
   it failed or was cancelled are expired rather than blocking the thread. The API client
   refuses a `;` in a request path (also percent-encoded): servers that strip path parameters
-  would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial.
+  would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial. Denials and
+  gates also cover a literal segment's dot-suffixed spellings (`/orders/7/cancel.json`,
+  `cancel.`, `cancel%2e`), which servers that route format suffixes or drop a trailing dot
+  send to the gated or denied endpoint; `lint` and the runtime share the rule. A decision is
+  bound to the call it was taken for: a policy that changes while a call waits (a new image,
+  or a typo that un-gates it) can no longer turn a rejected or expired approval into a send,
+  nor let an approval outrun a later denial, narrower `allowed_methods` or
+  `allowed_operations`, or a removed or changed gate. `eval generate` rejects the gates it
+  does not decide, so an unattended run leaves no approval behind for someone to approve.
 - `run --mode a2a` no longer follows an agent card to another origin: A2A clients dial the URL
   the card advertises, and a stale `APP_URL` or `PORT` (the template's `.env` sets `PORT=8000`,
   which `langgraph dev` loads over the port it was given) sent the message and its bearer

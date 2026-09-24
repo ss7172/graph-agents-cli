@@ -111,7 +111,10 @@ graph-agents-cli eval metric list [--json]
   generate` decides it as the case's `approvals` instructions say (`[{"decision":
   "approve"|"reject", "match": {"operation_id": ...}}]`, or `match` by `method` and
   `path`), then folds the resumed run into the same turn. A gate no instruction matches makes
-  the case `error`: generate never approves on its own. A gate that lists `requester` is
+  the case `error`: generate never approves on its own, and rejects it (as it does a gate
+  whose decision was refused) so no approval is left pending; the trace's
+  `approvals[].cleanup` says how, and the case error names a gate it could not reject. A gate
+  that lists `requester` is
   decided as the eval identity (the requester); any other with
   `GRAPH_AGENTS_CLI_APPROVER_API_KEY` as the bearer when it is set (a principal holding the
   gate's role), so one dataset can mix both. With `--url` an approved call is sent there for

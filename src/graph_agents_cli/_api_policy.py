@@ -475,23 +475,38 @@ def normalize_path(path: str) -> str:
     return path[:-1] if len(path) > 1 and path.endswith("/") else path
 
 
-def path_matches(template: str, path: str, *, ignore_case: bool = False) -> bool:
+def path_matches(
+    template: str, path: str, *, ignore_case: bool = False, suffixes: bool = False
+) -> bool:
     """Whether ``path`` is covered by ``template``.
 
     A ``{name}`` placeholder matches exactly one non-empty segment, so
     ``/items/{item_id}`` covers ``/items/42``, ``/items/{id}`` and itself.
     Both sides are compared normalised (``normalize_path``). Letter case
     counts unless ``ignore_case``: denials ignore it, so ``/ADMIN/1`` cannot
-    slip past a denial of ``/admin/{x}`` on a case-insensitive server.
+    slip past a denial of ``/admin/{x}`` on a case-insensitive server. With
+    ``suffixes`` (denials and approval gates, which fail closed), a segment
+    that ends in literal text also covers that segment with a dot suffix:
+    ``/orders/{id}/cancel`` covers ``/orders/7/cancel.json`` and
+    ``/orders/7/cancel.`` (also spelled ``cancel%2e``), which servers that
+    route format suffixes (``.json``) or drop a trailing dot send to the
+    same endpoint. An allow never matches that way: it must be shown.
     """
     template, path = normalize_path(template), normalize_path(path)
     if template == path or (ignore_case and template.casefold() == path.casefold()):
         return True
-    pattern = "".join(
-        "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
-        for part in _PLACEHOLDER_SPLIT_RE.split(template)
-    )
-    return re.fullmatch(pattern, path, re.IGNORECASE if ignore_case else 0) is not None
+    segments = []
+    for segment in template.split("/"):
+        parts = _PLACEHOLDER_SPLIT_RE.split(segment)
+        pattern = "".join(
+            "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
+            for part in parts
+        )
+        if suffixes and parts[-1] and not parts[-1].endswith("}"):
+            pattern += r"(?:\.[^/]*)?"
+        segments.append(pattern)
+    flags = re.IGNORECASE if ignore_case else 0
+    return re.fullmatch("/".join(segments), path, flags) is not None
 
 
 def _methods_match(entry: Mapping[str, Any], method: str) -> bool:
@@ -534,7 +549,9 @@ def denial_match(
     ``path`` (returns ``"path"``), no operation id when it pins
     ``operationId`` alone (returns ``"operation_id"``). A denial by
     ``operationId`` alone knows only that label: pin ``path`` too so it holds
-    on the wire. Operation ids and paths are compared ignoring letter case.
+    on the wire. Operation ids and paths are compared ignoring letter case,
+    and a path's literal segments also cover their dot-suffixed spellings
+    (``cancel.json``, ``cancel.``: ``path_matches`` with ``suffixes``).
     """
     if not _methods_match(entry, method):
         return None
@@ -543,7 +560,7 @@ def denial_match(
     if (
         pinned_path is not None
         and path is not None
-        and path_matches(pinned_path, path, ignore_case=True)
+        and path_matches(pinned_path, path, ignore_case=True, suffixes=True)
     ):
         return ""
     if (
@@ -648,8 +665,10 @@ def gated(
     every call to that path whatever operation id the call names, its
     ``operationId`` gates the calls that name it, and a call that leaves out
     what the entry knows the operation by is gated too. Paths are compared
-    normalised and ignoring letter case. At runtime, ask with the path that is
-    sent (and with the template too, when there is one: gated if either is).
+    normalised and ignoring letter case, and a literal segment also covers its
+    dot-suffixed spellings (``cancel.json``, ``cancel.``), as for a denial. At
+    runtime, ask with the path that is sent (and with the template too, when
+    there is one: gated if either is).
     """
     approval = api.get(APPROVAL_KEY)
     if approval is None:

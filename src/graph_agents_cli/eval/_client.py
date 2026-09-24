@@ -28,6 +28,13 @@ awaiting_approval``) is decided as the case's ``approvals`` instructions say
 folded into the same turn. Every gate is recorded under ``approvals`` in the
 turn (and the trace); a gate no instruction matches ends the case with
 ``status: error``: an unattended eval never approves anything on its own.
+Nor does it leave an approval pending (which would keep the eval's thread
+blocked, and leave a write an approver could still approve later): a gate the
+case does not decide (no instruction, too many gates, a refused decision) is
+rejected, as whoever may decide it, and the record's ``cleanup`` says how
+that ended (``rejected``; ``not_pending`` when the server says it no longer
+waits; ``left_pending`` with its id in the case error when the eval may not
+reject it either).
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from typing import Any
 from graph_agents_cli._approvals import Approval, call_matches, describe_match
 from graph_agents_cli._chat_client import (
     DECISION_APPROVE,
+    DECISION_REJECT,
     STATUS_AWAITING_APPROVAL,
     ChatHTTPError,
     redact_credentials,
@@ -62,6 +70,12 @@ APPROVAL_REJECTED = "rejected"
 APPROVAL_UNEXPECTED = "unexpected"  # no instruction matched: the case errors
 # The server refused the decision: HTTP status -> recorded status.
 _REFUSED_STATUS = {403: "forbidden", 404: "not_found", 409: "not_pending", 410: "expired"}
+# How a gate the case did not decide was closed (trace `approvals[].cleanup`).
+CLEANUP_REJECTED = "rejected"  # the eval rejected it: nothing waits, nothing is sent
+CLEANUP_NOT_PENDING = "not_pending"  # the server says it no longer waits (decided, expired, gone)
+CLEANUP_LEFT_PENDING = "left_pending"  # the eval may not reject it: it waits until it expires
+# The 409 code of a decision on an approval that is decided already.
+_NOT_PENDING_CODE = "approval_not_pending"
 
 
 def build_case_headers(
@@ -124,6 +138,8 @@ def approval_record(approval: Approval) -> dict[str, Any]:
         "decision": None,
         "status": None,
         "error": None,
+        # How a gate the case did not decide was closed; None when the case decided it.
+        "cleanup": None,
     }
 
 
@@ -283,10 +299,17 @@ def _resolve_gate(
         return None
     record = approval_record(approval)
     turn["approvals"].append(record)
+    cleanup = {
+        "headers": headers,
+        "approver_headers": approver_headers,
+        "timeout": timeout,
+        "case_id": case_id,
+    }
     if len(turn["approvals"]) > MAX_APPROVALS_PER_TURN:
         record["status"] = APPROVAL_UNEXPECTED
         turn["status"] = STATUS_ERROR
         turn["error"] = f"the run paused on more than {MAX_APPROVALS_PER_TURN} gated calls"
+        _close_undecided(base_url, approval, record, turn, why="too many gated calls", **cleanup)
         return None
     instruction = find_instruction(approvals, approval)
     if instruction is None:
@@ -297,13 +320,14 @@ def _resolve_gate(
             "approvals instruction matching it; add one, e.g. "
             '{"decision": "reject", "match": {...}}, saying what a human would decide'
         )
+        _close_undecided(
+            base_url, approval, record, turn, why="no approvals instruction matches it", **cleanup
+        )
         return None
     decision = str(instruction["decision"])
     record["decision"] = decision
     record["match"] = describe_match(instruction["match"])
     as_approver = approver_headers is not None and not approval.requester_may_decide
-    if as_approver:
-        headers = approver_headers
     try:
         events = _opened(
             _decide(
@@ -312,7 +336,7 @@ def _resolve_gate(
                 approval.approval_id,
                 decision,
                 comment=f"eval case {case_id}" if case_id else "eval",
-                headers=dict(headers),
+                headers=dict(_decider_headers(approval, headers, approver_headers)),
                 timeout=timeout,
             )
         )
@@ -333,9 +357,133 @@ def _resolve_gate(
                 "GRAPH_AGENTS_CLI_APPROVER_API_KEY to the credential of a principal holding a "
                 "role it lists)"
             )
+        if _may_still_wait(exc):
+            _close_undecided(
+                base_url,
+                approval,
+                record,
+                turn,
+                why=f"its {decision} decision was refused",
+                # The same principal decides either way: a refused approve is a refused reject.
+                refused=exc if exc.status_code == 403 else None,
+                **cleanup,
+            )
+        else:
+            record["cleanup"] = CLEANUP_NOT_PENDING
         return None
     record["status"] = APPROVAL_APPROVED if decision == DECISION_APPROVE else APPROVAL_REJECTED
     return events
+
+
+def _decider_headers(
+    approval: Approval,
+    headers: Mapping[str, str],
+    approver_headers: Mapping[str, str] | None,
+) -> Mapping[str, str]:
+    """Who decides a gate: the eval identity when it lists ``requester`` (the eval
+    identity started the run), else the approver's credential when one is set."""
+    if approver_headers is not None and not approval.requester_may_decide:
+        return approver_headers
+    return headers
+
+
+def _may_still_wait(exc: ChatHTTPError) -> bool:
+    """Whether a refused decision can have left the approval pending."""
+    if exc.status_code in (404, 410):  # gone, or expired (= rejected)
+        return False
+    return not (exc.status_code == 409 and _NOT_PENDING_CODE in (exc.body or ""))
+
+
+def _close_undecided(
+    base_url: str,
+    approval: Approval,
+    record: dict[str, Any],
+    turn: dict[str, Any],
+    *,
+    why: str,
+    headers: Mapping[str, str],
+    approver_headers: Mapping[str, str] | None,
+    timeout: float,
+    case_id: str | None,
+    refused: ChatHTTPError | None = None,
+) -> None:
+    """Reject a gate the case does not decide, so the eval leaves no approval pending.
+
+    As whoever may decide it (``_decider_headers``). The resumed run is read
+    to its end, not folded into the turn: the case is an error already. A
+    gate that run pauses on in turn is rejected the same way (and recorded).
+    ``refused``: the decision was refused as not allowed (403), so a reject
+    is too. The outcome goes to each record's ``cleanup`` and, when the eval
+    could not reject, the approval's id to the case error.
+    """
+    comment = f"eval case {case_id}: {why}" if case_id else f"eval: {why}"
+    current, current_record = approval, record
+    for _ in range(MAX_APPROVALS_PER_TURN):
+        events: Iterable[Any] = ()
+        if refused is None:
+            try:
+                events = _opened(
+                    _decide(
+                        base_url,
+                        current.thread_id,
+                        current.approval_id,
+                        DECISION_REJECT,
+                        comment=comment,
+                        headers=dict(_decider_headers(current, headers, approver_headers)),
+                        timeout=timeout,
+                    )
+                )
+            except ChatHTTPError as exc:
+                refused = exc
+            except Exception as exc:  # transport or protocol failure: it may still wait
+                current_record["cleanup"] = CLEANUP_LEFT_PENDING
+                _note_left_pending(turn, current, type(exc).__name__)
+                return
+        if refused is not None:
+            if _may_still_wait(refused):
+                current_record["cleanup"] = CLEANUP_LEFT_PENDING
+                _note_left_pending(turn, current, f"HTTP {refused.status_code}")
+            else:
+                current_record["cleanup"] = CLEANUP_NOT_PENDING
+            return
+        current_record["cleanup"] = CLEANUP_REJECTED
+        try:
+            end = _drain(events)
+        except Exception:  # the rejection holds; how its run ended is not the case's
+            return
+        following = (
+            Approval.from_payload(end.get("approval"), thread_id=current.thread_id)
+            if end is not None and end.get("status") == STATUS_AWAITING_APPROVAL
+            else None
+        )
+        if following is None:
+            return
+        # The rejected call's run paused on another gated call: close that one too.
+        current = replace(following, thread_id=current.thread_id)
+        current_record = approval_record(current)
+        current_record["status"] = APPROVAL_UNEXPECTED
+        turn["approvals"].append(current_record)
+
+
+def _drain(events: Iterable[Any]) -> dict[str, Any] | None:
+    """Read a resumed run to its end; its ``message.end`` data, or None."""
+    end = None
+    for event in events:
+        name = getattr(event, "event", None)
+        data = getattr(event, "data", None)
+        if name is None and isinstance(event, tuple):
+            name, data = event[0], event[1]
+        if name == "message.end" and isinstance(data, dict):
+            end = data
+    return end
+
+
+def _note_left_pending(turn: dict[str, Any], approval: Approval, why: str) -> None:
+    turn["error"] = (turn["error"] or "") + (
+        f"; approval {approval.approval_id} on thread {approval.thread_id} is left pending "
+        f"(the eval could not reject it: {why}): it expires on its own, or an approver "
+        "rejects it"
+    )
 
 
 def _fold(

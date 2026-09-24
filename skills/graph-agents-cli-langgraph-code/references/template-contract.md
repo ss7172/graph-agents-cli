@@ -318,8 +318,11 @@ apis:
   call leaving out what the entry knows it by) pauses the run in the client before sending
   (LangGraph `interrupt()` with the approval; the canonical request is hashed). Approved: the client re-hashes the request it is about to send, refuses
   it (nothing sent) when it differs, and sends it once. Rejected or expired: nothing is sent and
-  the tool gets a "not approved" error. Only calls the policy allows are gated (approval never
-  widens access). An `approval` key on an operation entry is refused ("not valid on an
+  the tool gets a "not approved" error. A decision is bound to its call (API, method, path) on
+  resume, whatever the policy says about gating it by then: a rejected or expired call is never
+  sent, an approved one only while the policy still allows it and gates it with the same
+  approvers, and a call still pending when another decision resumes the run pauses again for
+  its own approval. Only calls the policy allows are gated (approval never widens access). An `approval` key on an operation entry is refused ("not valid on an
   operation entry; gate the operation with apis.<name>.approval.required_for.operations").
   The tool re-runs from its start on resume: keep it idempotent up to the call and the request
   deterministic. Approvals are stored in an `approvals` table beside the checkpoints.
@@ -331,7 +334,9 @@ apis:
   `API_CALLS` against a denial pinning a path). With `openapi:`, `lint` refuses a declared
   `operation_id` the spec does not give that method and path. Paths are compared after
   decoding percent-encoded unreserved characters and ignoring one trailing slash; allows are
-  case-sensitive, denials are not. `pagination.max_page_size` applies to every value of the
+  case-sensitive, denials and gates are not, and a denial or gate also covers a literal
+  segment's dot-suffixed spellings (`cancel.json`, `cancel.`), which servers that route format
+  suffixes or drop a trailing dot send to the same endpoint; allows never match that way. `pagination.max_page_size` applies to every value of the
   parameter, in any letter case. Repeated YAML keys are errors, like unknown keys.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from

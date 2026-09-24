@@ -240,6 +240,7 @@ def test_an_approve_instruction_approves_and_the_continuation_is_one_turn(
             "decision": "approve",
             "status": "approved",
             "error": None,
+            "cleanup": None,
         }
     ]
 
@@ -258,17 +259,86 @@ def test_a_reject_instruction_rejects_and_the_first_match_wins(fake_chat, fake_d
     assert trace["tool_calls"][0]["is_error"] is True
 
 
-def test_an_unexpected_gate_is_a_case_error_and_nothing_is_decided(fake_chat, fake_decide) -> None:
+def test_an_unexpected_gate_is_a_case_error_and_is_rejected_not_left_pending(
+    fake_chat, fake_decide
+) -> None:
     fake_chat({"cancel it": paused()})
     decide = fake_decide()
     other = [{"decision": "approve", "match": {"operation_id": "refundOrder"}}]
     for instructions in (None, other):
-        trace = run_case("http://x", case(instructions), headers={})
+        trace = run_case(
+            "http://x", case(instructions), headers={"Authorization": "Bearer eval-key"}
+        )
         assert trace["status"] == "error"
         assert "unexpected approval gate on POST /orders/ORD-1/cancel" in trace["error"]
-        assert "add one" in trace["error"]
-        assert trace["approvals"][0]["status"] == "unexpected"
-    assert decide.calls == []
+        assert "add one" in trace["error"] and "left pending" not in trace["error"]
+        (gate,) = trace["approvals"]
+        assert gate["status"] == "unexpected" and gate["decision"] is None
+        assert gate["cleanup"] == "rejected"
+        # The rejected call's continuation is not the case's reply.
+        assert trace["response"] == "Cancelling. " and trace["tool_calls"][0]["result"] is None
+    # Never approved: each was rejected, by the eval identity (the gate lists requester).
+    assert [c["decision"] for c in decide.calls] == ["reject", "reject"]
+    assert decide.calls[0]["comment"] == "eval case cancel: no approvals instruction matches it"
+    assert decide.calls[0]["headers"] == {"Authorization": "Bearer eval-key"}
+
+
+def test_an_unexpected_role_gate_is_rejected_as_the_approver(fake_chat, fake_decide) -> None:
+    fake_chat({"cancel it": paused(dict(CANCEL, approvers=["role:ops"]))})
+    decide = fake_decide()
+    trace = run_case(
+        "http://x",
+        case(),
+        headers={"Authorization": "Bearer eval-key"},
+        decision_headers={"Authorization": "Bearer ops-key"},
+    )
+    assert trace["approvals"][0]["cleanup"] == "rejected"
+    assert decide.calls[0]["decision"] == "reject"
+    assert decide.calls[0]["headers"] == {"Authorization": "Bearer ops-key"}
+
+
+def test_a_gate_the_rejected_run_pauses_on_is_rejected_too(fake_chat, fake_decide) -> None:
+    fake_chat({"cancel it": paused()})
+    second = dict(CANCEL, approval_id="a-2", path="/orders/ORD-2/cancel")
+    decide = fake_decide(then=lambda n, d: paused(second) if n == 1 else resumed(False))
+    trace = run_case("http://x", case(), headers={})
+    assert [(c["approval_id"], c["decision"]) for c in decide.calls] == [
+        ("a-1", "reject"),
+        ("a-2", "reject"),
+    ]
+    assert [(a["approval_id"], a["status"], a["cleanup"]) for a in trace["approvals"]] == [
+        ("a-1", "unexpected", "rejected"),
+        ("a-2", "unexpected", "rejected"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "body", "cleanup"),
+    [
+        (403, '{"code": "not_an_approver"}', "left_pending"),
+        (409, '{"code": "thread_busy"}', "left_pending"),
+        (409, '{"code": "approval_not_pending"}', "not_pending"),
+        (410, '{"code": "approval_expired"}', "not_pending"),
+        (404, '{"code": "approval_not_found"}', "not_pending"),
+    ],
+)
+def test_a_gate_the_eval_cannot_reject_is_reported_left_pending(
+    fake_chat, monkeypatch, code: int, body: str, cleanup: str
+) -> None:
+    fake_chat({"cancel it": paused(dict(CANCEL, approvers=["role:ops"]))})
+    calls: list[str] = []
+
+    def refuse(base_url, thread_id, approval_id, decision, **kwargs):
+        calls.append(decision)
+        raise ChatHTTPError(code, body, "http://x")
+        yield  # a generator, as decide_approval is
+
+    monkeypatch.setattr("graph_agents_cli._chat_client.decide_approval", refuse)
+    trace = run_case("http://x", case(), headers={})
+    assert calls == ["reject"]
+    assert trace["status"] == "error" and trace["approvals"][0]["cleanup"] == cleanup
+    left = "approval a-1 on thread t-1 is left pending" in trace["error"]
+    assert left is (cleanup == "left_pending"), trace["error"]
 
 
 def test_an_api_in_the_match_narrows_it(fake_chat, fake_decide) -> None:
@@ -279,16 +349,29 @@ def test_an_api_in_the_match_narrows_it(fake_chat, fake_decide) -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "status"),
-    [(403, "forbidden"), (404, "not_found"), (409, "not_pending"), (410, "expired")],
+    ("code", "status", "cleanup", "rejects"),
+    [
+        # Refused as not allowed: a reject would be too, so the gate stays pending.
+        (403, "forbidden", "left_pending", []),
+        (404, "not_found", "not_pending", []),
+        # FakeDecide's 409 body is not approval_not_pending: it may still wait.
+        (409, "not_pending", "left_pending", ["reject"]),
+        (410, "expired", "not_pending", []),
+        (500, "error", "left_pending", ["reject"]),
+    ],
 )
-def test_a_refused_decision_is_a_case_error(fake_chat, fake_decide, code, status) -> None:
+def test_a_refused_decision_is_a_case_error(
+    fake_chat, fake_decide, code, status, cleanup, rejects
+) -> None:
     fake_chat({"cancel it": paused()})
-    fake_decide(refuse=code)
+    decide = fake_decide(refuse=code)
     trace = run_case("http://x", case(APPROVE_CANCEL), headers={})
     assert trace["status"] == "error"
     assert f"was refused (HTTP {code}" in trace["error"]
     assert trace["approvals"][0]["status"] == status
+    assert trace["approvals"][0]["cleanup"] == cleanup
+    assert [c["decision"] for c in decide.calls] == ["approve", *rejects]
+    assert ("is left pending" in trace["error"]) is (cleanup == "left_pending")
     if code == 403:
         assert "GRAPH_AGENTS_CLI_APPROVER_API_KEY" in trace["error"]
 
@@ -385,7 +468,10 @@ def test_generate_records_approvals_and_uses_the_approver_credential(
     assert traces["cancel"]["status"] == "ok" and traces["confirm"]["status"] == "ok"
     assert traces["cancel"]["approvals"][0]["status"] == "approved"
     assert traces["surprise"]["approvals"][0]["status"] == "unexpected"
-    calls = {c["approval_id"]: c["headers"] for c in decide.calls}
+    assert traces["surprise"]["approvals"][0]["cleanup"] == "rejected"
+    surprise = [c for c in decide.calls if c["thread_id"] == "t-2"]
+    assert [c["decision"] for c in surprise] == ["reject"]
+    calls = {c["approval_id"]: c["headers"] for c in decide.calls if c["thread_id"] != "t-2"}
     # A role: gate is decided as the approver, without the eval identity's cookie ...
     assert calls["a-ops"]["Authorization"] == "Bearer ops-key"
     assert not any(k.lower() == "cookie" for k in calls["a-ops"])
@@ -462,4 +548,5 @@ def test_a_concrete_path_approves_only_that_record(fake_chat, fake_decide) -> No
     ]
     trace = run_case("http://x", case(only_one), headers={})
     assert trace["status"] == "error" and "unexpected approval gate" in trace["error"]
-    assert decide.calls == []
+    # Not approved: rejected, so it does not stay pending.
+    assert [c["decision"] for c in decide.calls] == ["reject"]

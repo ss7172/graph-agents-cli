@@ -559,6 +559,30 @@ async def test_a_gated_call_is_refused_before_sending(gated_policy: Path) -> Non
     assert [(r.method, r.url.path) for r in calls] == [("GET", "/orders/7"), ("POST", "/orders")]
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Format suffixes and a trailing dot on the gated (or denied) segment: servers
+        # that route `.json` or drop a trailing dot send these to the same endpoint.
+        "/orders/7/cancel.json",
+        "/orders/7/cancel.",
+        "/orders/7/cancel%2e",
+        "/orders/7/Cancel.JSON",
+    ],
+)
+async def test_a_dot_suffixed_spelling_of_a_gated_or_denied_path_is_covered(
+    gated_policy: Path, path: str
+) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("shop", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError, match="needs human approval"):
+        await client.post(path, operation_id="closeOrder")
+    denied = path.replace("cancel", "purge").replace("Cancel", "Purge")
+    with pytest.raises(ApiPolicyError, match="denied by denied_operations"):
+        await client.post(denied, operation_id="purgeOrder")
+    assert calls == []
+
+
 async def test_approval_never_widens_access(gated_policy: Path) -> None:
     """A gated call outside the policy is refused by the policy, not held for approval."""
     calls: list[httpx.Request] = []

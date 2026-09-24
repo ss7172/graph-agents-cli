@@ -61,6 +61,19 @@ same tool call is refused (on its resume the tool would run again and meet the
 first, already used, approval): make it in a new tool call. Code before a
 gated call runs again on resume, so keep other side effects after it.
 
+A decision is bound to the call it was taken for, not to the policy of the
+moment: when the resumed tool rebuilds a request to the same API, method and
+path as the paused call, the decision applies whatever the policy now says
+about gating it (`_decision_waiting`). A rejected or expired call is never
+sent, even when the policy no longer gates it (a new image while the call
+waited, or a typo that un-gates it); a call whose approval is still pending
+pauses again for that same approval. An approved call is sent only when the
+current policy still allows it (a later denial, or narrower
+`allowed_methods`/`allowed_operations`, refuses it first), still gates it with
+the same approvers, and the request is exactly the approved one; otherwise
+nothing is sent and the model is told to ask again. A call a decision stopped
+stays stopped for the rest of that tool call.
+
 Every tool module declares `API_CALLS`, a module-level list of
 `{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
 `graph-agents-cli lint` checks those declarations against the same rules.
@@ -79,7 +92,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, unquote
@@ -519,23 +532,38 @@ def normalize_path(path: str) -> str:
     return path[:-1] if len(path) > 1 and path.endswith("/") else path
 
 
-def path_matches(template: str, path: str, *, ignore_case: bool = False) -> bool:
+def path_matches(
+    template: str, path: str, *, ignore_case: bool = False, suffixes: bool = False
+) -> bool:
     """Whether ``path`` is covered by ``template``.
 
     A ``{name}`` placeholder matches exactly one non-empty segment, so
     ``/items/{item_id}`` covers ``/items/42``, ``/items/{id}`` and itself.
     Both sides are compared normalised (``normalize_path``). Letter case
     counts unless ``ignore_case``: denials ignore it, so ``/ADMIN/1`` cannot
-    slip past a denial of ``/admin/{x}`` on a case-insensitive server.
+    slip past a denial of ``/admin/{x}`` on a case-insensitive server. With
+    ``suffixes`` (denials and approval gates, which fail closed), a segment
+    that ends in literal text also covers that segment with a dot suffix:
+    ``/orders/{id}/cancel`` covers ``/orders/7/cancel.json`` and
+    ``/orders/7/cancel.`` (also spelled ``cancel%2e``), which servers that
+    route format suffixes (``.json``) or drop a trailing dot send to the
+    same endpoint. An allow never matches that way: it must be shown.
     """
     template, path = normalize_path(template), normalize_path(path)
     if template == path or (ignore_case and template.casefold() == path.casefold()):
         return True
-    pattern = "".join(
-        "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
-        for part in _PLACEHOLDER_SPLIT_RE.split(template)
-    )
-    return re.fullmatch(pattern, path, re.IGNORECASE if ignore_case else 0) is not None
+    segments = []
+    for segment in template.split("/"):
+        parts = _PLACEHOLDER_SPLIT_RE.split(segment)
+        pattern = "".join(
+            "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
+            for part in parts
+        )
+        if suffixes and parts[-1] and not parts[-1].endswith("}"):
+            pattern += r"(?:\.[^/]*)?"
+        segments.append(pattern)
+    flags = re.IGNORECASE if ignore_case else 0
+    return re.fullmatch("/".join(segments), path, flags) is not None
 
 
 def _methods_match(entry: Mapping[str, Any], method: str) -> bool:
@@ -578,7 +606,9 @@ def denial_match(
     ``path`` (returns ``"path"``), no operation id when it pins
     ``operationId`` alone (returns ``"operation_id"``). A denial by
     ``operationId`` alone knows only that label: pin ``path`` too so it holds
-    on the wire. Operation ids and paths are compared ignoring letter case.
+    on the wire. Operation ids and paths are compared ignoring letter case,
+    and a path's literal segments also cover their dot-suffixed spellings
+    (``cancel.json``, ``cancel.``: ``path_matches`` with ``suffixes``).
     """
     if not _methods_match(entry, method):
         return None
@@ -587,7 +617,7 @@ def denial_match(
     if (
         pinned_path is not None
         and path is not None
-        and path_matches(pinned_path, path, ignore_case=True)
+        and path_matches(pinned_path, path, ignore_case=True, suffixes=True)
     ):
         return ""
     if (
@@ -692,8 +722,10 @@ def gated(
     every call to that path whatever operation id the call names, its
     ``operationId`` gates the calls that name it, and a call that leaves out
     what the entry knows the operation by is gated too. Paths are compared
-    normalised and ignoring letter case. At runtime, ask with the path that is
-    sent (and with the template too, when there is one: gated if either is).
+    normalised and ignoring letter case, and a literal segment also covers its
+    dot-suffixed spellings (``cancel.json``, ``cancel.``), as for a denial. At
+    runtime, ask with the path that is sent (and with the template too, when
+    there is one: gated if either is).
     """
     approval = api.get(APPROVAL_KEY)
     if approval is None:
@@ -1158,6 +1190,10 @@ APPROVAL_DECISION = "api_approval_decision"
 DECISION_APPROVE = "approve"
 DECISION_REJECT = "reject"
 DECISION_EXPIRED = "expired"
+# Not a decision: the answer a resume gives a paused call whose approval is still
+# pending (another call's decision resumed the run), so that call pauses again
+# for its own approval instead of being rebuilt under a policy that changed.
+DECISION_PENDING = "pending"
 # What a field named in `redact=` shows the approver instead of its value.
 REDACTED = "<redacted>"
 # How much of the model's text before a tool call the approval shows as its purpose.
@@ -1216,11 +1252,124 @@ class ToolCallScope:
     purpose: str | None = None
     # An approved call was sent in this tool call (a second gated call is refused).
     gated_sent: bool = False
+    # How many of the task's resume values this tool call took (`interrupt()` calls).
+    resumes_taken: int = 0
+    # The calls (`call_identity`) a decision stopped in this tool call.
+    stopped: set[tuple[str, str, str]] = field(default_factory=set)
 
 
 _TOOL_CALL: ContextVar[ToolCallScope | None] = ContextVar("api_tool_call", default=None)
-# `gated_sent` for a tool run without the middleware's scope.
+# The same, for a tool run without the middleware's scope (in its own context).
 _GATED_SENT: ContextVar[bool] = ContextVar("api_gated_sent", default=False)
+_RESUMES_TAKEN: ContextVar[int] = ContextVar("api_resumes_taken", default=0)
+_STOPPED: ContextVar[frozenset[tuple[str, str, str]]] = ContextVar(
+    "api_stopped_calls", default=frozenset()
+)
+
+
+def call_identity(api: str, method: str, path: str) -> tuple[str, str, str]:
+    """Which call a decision is bound to: the API, the method and the path sent.
+
+    The path is compared normalised and ignoring letter case, as a gate
+    compares it, so a rebuilt request that differs only in spelling is the
+    same call (a body or query that changed is caught by the call hash).
+    """
+    return (str(api), str(method).upper(), normalize_path(str(path)).casefold())
+
+
+def _is_decision(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get("type") == APPROVAL_DECISION
+
+
+def _decision_identity(decision: Mapping[str, Any]) -> tuple[str, str, str] | None:
+    api, method, path = decision.get("api"), decision.get("method"), decision.get("path")
+    if not (isinstance(api, str) and isinstance(method, str) and isinstance(path, str)):
+        return None
+    return call_identity(api, method, path)
+
+
+# Where LangGraph keeps a task's resume values in the run config (its interrupt()
+# reads them there); the constant's module is internal, so it is looked up lazily.
+_SCRATCHPAD_KEY_FALLBACK = "__pregel_scratchpad"
+
+
+def _scratchpad_key() -> str:
+    try:
+        from langgraph._internal._constants import CONFIG_KEY_SCRATCHPAD
+    except ImportError:  # moved in another LangGraph version: the name it has always had
+        return _SCRATCHPAD_KEY_FALLBACK
+    return str(CONFIG_KEY_SCRATCHPAD)
+
+
+def _next_resume_value(taken: int) -> Any:
+    """What the task's next `interrupt()` returns, without taking it; None when nothing.
+
+    The resume values of the current LangGraph task (the decisions a resumed
+    run brought for its paused calls) in the order `interrupt()` hands them
+    out; `taken` is how many this tool call took already. Outside a LangGraph
+    task (no run, or a tool invoked directly) there are none. A task whose
+    resume values cannot be read (another LangGraph version) is refused: a
+    decision waiting there could not be honoured.
+    """
+    try:
+        from langgraph.config import get_config
+
+        configurable = get_config().get("configurable") or {}
+    except Exception:  # outside a graph run
+        return None
+    scratchpad = configurable.get(_scratchpad_key()) if isinstance(configurable, Mapping) else None
+    if scratchpad is None:
+        return None
+    try:
+        resumed = list(scratchpad.resume)
+        if taken < len(resumed):
+            return resumed[taken]
+        return scratchpad.get_null_resume(False) if taken == len(resumed) else None
+    except (AttributeError, TypeError) as exc:
+        raise ApiPolicyError(
+            "cannot read the run's approval decisions (an unsupported LangGraph version): "
+            "refused, nothing was sent.",
+            reason="approval decisions unreadable",
+        ) from exc
+
+
+def _resumes_taken() -> int:
+    scope = _TOOL_CALL.get()
+    return scope.resumes_taken if scope is not None else _RESUMES_TAKEN.get()
+
+
+def _took_resume() -> None:
+    scope = _TOOL_CALL.get()
+    if scope is not None:
+        scope.resumes_taken += 1
+    else:
+        _RESUMES_TAKEN.set(_RESUMES_TAKEN.get() + 1)
+
+
+def _stopped_calls() -> frozenset[tuple[str, str, str]] | set[tuple[str, str, str]]:
+    scope = _TOOL_CALL.get()
+    return scope.stopped if scope is not None else _STOPPED.get()
+
+
+def _stop_call(identity: tuple[str, str, str]) -> None:
+    scope = _TOOL_CALL.get()
+    if scope is not None:
+        scope.stopped.add(identity)
+    else:
+        _STOPPED.set(_STOPPED.get() | {identity})
+
+
+def _decision_waiting(identity: tuple[str, str, str]) -> Mapping[str, Any] | None:
+    """The decision the resumed run brought for this call, when the next resume value is one.
+
+    A request the tool rebuilds on resume is the paused call when it has the
+    paused call's API, method and path (`call_identity`); the decision then
+    applies to it whatever the policy now says about gating it.
+    """
+    waiting = _next_resume_value(_resumes_taken())
+    if _is_decision(waiting) and _decision_identity(waiting) == identity:
+        return waiting
+    return None
 
 
 def _plain(text: Any, limit: int) -> str | None:
@@ -1540,7 +1689,9 @@ class ApiClient:
         before it is sent (see the module docstring); `redact` names body and
         query fields (any depth, any letter case) the approver sees masked,
         for values they need not read (a card number, say). The approval is
-        bound to the request as sent, masked fields included.
+        bound to the request as sent, masked fields included, and a decision
+        to the call it was taken for: on resume it applies to that call even
+        when the policy no longer gates it (a rejected call is never sent).
         """
         method = method.upper()
         label = operation_id or (path if path_params is not None else "<concrete path>")
@@ -1554,11 +1705,9 @@ class ApiClient:
             prepared = self._prepare(
                 method, path, operation_id, path_params, params, json_body, headers
             )
-            approved = None
-            if prepared.gate is not None:
-                approved = self._await_approval(
-                    prepared, method, operation_id, label, json_body, redact, log_fields
-                )
+            approved = self._await_approval(
+                prepared, method, operation_id, label, json_body, redact, log_fields
+            )
             # Counted just before sending: a call held for approval counts once, when sent.
             self.take_limits(method, operation_id or path)
             if approved is not None:
@@ -1715,19 +1864,41 @@ class ApiClient:
         json_body: Any,
         redact: Iterable[str],
         log_fields: Mapping[str, Any],
-    ) -> tuple[str, str]:
-        """Hold a gated call for a human decision (see the module doc).
+    ) -> tuple[str, str] | None:
+        """Hold a gated call for a human decision (see the module doc); None when not gated.
 
         The first time, `interrupt()` pauses the run with the approval payload
         (raising LangGraph's `GraphInterrupt`, which ends the tool call). On
         resume it returns the decision: this returns `(approval_id, call_hash)`
         only for an approval of exactly this request (`_use_approval` then
         marks it used); anything else raises `ApiPolicyError`, nothing sent.
+        The decision is taken for the call it was made for even when the
+        policy no longer gates it (`_decision_waiting`), and a call a decision
+        stopped is refused again for the rest of the tool call.
         """
-        gate = prepared.gate
-        assert gate is not None
+        identity = call_identity(self.name, method, prepared.wire_path)
         what = operation_id or label
-        rule_reason = f"approval required by {gate.rule}"
+        gate = prepared.gate
+        if identity in _stopped_calls():
+            raise ApiPolicyError(
+                f"{self.name}: {method} {what} was stopped by its approval decision earlier "
+                "in this tool call; nothing was sent.",
+                reason="stopped by an approval decision",
+            )
+        waiting = _decision_waiting(identity)
+        if gate is None and waiting is None:
+            return None
+        if gate is not None:
+            approvers: tuple[str, ...] = gate.approvers
+            timeout_s, rule = gate.timeout_s, gate.rule
+        else:
+            # The paused call's gate is gone from the policy: its decision still binds it.
+            assert waiting is not None
+            asked = waiting.get("approvers")
+            approvers = tuple(str(a) for a in asked) if isinstance(asked, list | tuple) else ()
+            timeout_s = DEFAULT_APPROVAL_TIMEOUT_S
+            rule = "the approval this call was paused for (the policy no longer gates it)"
+        rule_reason = f"approval required by {rule}"
 
         def refuse(why: str, reason: str = rule_reason) -> ApiPolicyError:
             return ApiPolicyError(
@@ -1770,13 +1941,13 @@ class ApiClient:
             "tool": tool,
             "tool_call_id": scope.call_id if scope is not None else None,
             "reason": f"{tool}: {purpose}" if tool and purpose else (tool or purpose or None),
-            "approvers": list(gate.approvers),
-            "timeout_s": gate.timeout_s,
-            "rule": gate.rule,
+            "approvers": list(approvers),
+            "timeout_s": timeout_s,
+            "rule": rule,
             "call_hash": digest,
         }
         outside_run = refuse(
-            f"needs human approval ({', '.join(gate.approvers)}) before it is sent, which "
+            f"needs human approval ({', '.join(approvers)}) before it is sent, which "
             "is possible only inside an agent run: refused"
         )
         try:
@@ -1786,20 +1957,31 @@ class ApiClient:
             raise outside_run from None
         try:
             decision = interrupt(payload)
+            _took_resume()
+            # Another call's decision resumed the run while this one still waits:
+            # pause again, for the same approval.
+            while _is_decision(decision) and decision.get("decision") == DECISION_PENDING:
+                decision = interrupt(payload)
+                _took_resume()
         except GraphBubbleUp:
             logger.info(
                 "api call held for approval: %s %s %s (%s)",
                 self.name,
                 method,
                 label,
-                ", ".join(gate.approvers),
+                ", ".join(approvers),
                 extra=dict(log_fields),
             )
             raise
         except (RuntimeError, KeyError):
             # Outside an agent run (`get_config` fails): nothing can pause and ask.
             raise outside_run from None
-        return self._check_decision(decision, digest, gate.approvers, refuse), digest
+        try:
+            approval_id = self._check_decision(decision, digest, gate, refuse)
+        except ApiPolicyError:
+            _stop_call(identity)
+            raise
+        return approval_id, digest
 
     async def _use_approval(
         self, approved: tuple[str, str], method: str, what: str, log_fields: Mapping[str, Any]
@@ -1836,15 +2018,17 @@ class ApiClient:
     def _check_decision(
         decision: Any,
         digest: str,
-        approvers: Iterable[str],
+        gate: ApprovalGate | None,
         refuse: Callable[..., ApiPolicyError],
     ) -> str:
         """The approval id of a decision that approves the request `digest`; else raise.
 
-        The approval must also have been asked of the approvers the policy's
+        `gate` is what the policy requires of the call now (None: it no longer
+        gates it). A rejection or an expiry refuses whatever the policy says.
+        An approval must also have been asked of the approvers the policy's
         gate names now: a policy that changed while the call waited (a new
-        image with other approvers) is not satisfied by a decision taken
-        under the old one.
+        image with other approvers, or one that no longer gates the call) is
+        not satisfied by a decision taken under the old one.
         """
         if not isinstance(decision, Mapping) or decision.get("type") != APPROVAL_DECISION:
             raise refuse(
@@ -1874,7 +2058,13 @@ class ApiClient:
                 reason="request differs from the approved one",
             )
         asked = decision.get("approvers")
-        if not isinstance(asked, list | tuple) or {str(a) for a in asked} != set(approvers):
+        if gate is None:
+            raise refuse(
+                "was approved under an approval gate the policy no longer has (it changed "
+                "while the call waited), so the approval does not cover it; ask again",
+                reason="approval gate changed",
+            )
+        if not isinstance(asked, list | tuple) or {str(a) for a in asked} != set(gate.approvers):
             raise refuse(
                 "was approved under an approval gate that has changed since (its approvers "
                 "differ from the policy's now), so the approval does not cover it; ask again",

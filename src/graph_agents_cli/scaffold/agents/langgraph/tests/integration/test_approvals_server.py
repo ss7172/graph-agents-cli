@@ -130,6 +130,7 @@ class Server:
     upstream: Upstream
     body_file: Path
     log: Path
+    policy: Path
     expiring: dict[str, Any] = field(default_factory=dict)
 
 
@@ -260,7 +261,7 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
             if time.monotonic() > deadline:
                 pytest.fail(f"langgraph dev did not start:\n{log.read_text()[-4000:]}")
             time.sleep(0.5)
-        running = Server(url=url, upstream=upstream, body_file=body_file, log=log)
+        running = Server(url=url, upstream=upstream, body_file=body_file, log=log, policy=policy)
         # Paused first, so it has expired by the time the last test decides it.
         running.expiring = pause(running, "90")
         yield running
@@ -368,6 +369,28 @@ def test_the_server_refuses_a_request_changed_after_approval(server: Server) -> 
     assert result["is_error"] is True
     assert "differs from the request that was approved" in result["result"]
     assert server.upstream.sent_to("/orders/14/cancel") == []
+
+
+def test_the_server_binds_a_decision_to_its_call_when_the_gate_is_removed(
+    server: Server,
+) -> None:
+    """A new policy without the gate while two calls wait: neither decision sends."""
+    rejected, approved = pause(server, "17"), pause(server, "18")
+    server.policy.write_text(POLICY.split("    approval:")[0], encoding="utf-8")
+    try:
+        r = decide(server, rejected, "reject", token("alice"))
+        assert r.status_code == 200, r.text
+        result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
+        assert result["is_error"] is True and "an approver rejected it" in result["result"]
+        r = decide(server, approved, "approve", token("carol", "ops"))
+        assert r.status_code == 200, r.text
+        result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
+        assert result["is_error"] is True
+        assert "approval gate the policy no longer has" in result["result"]
+    finally:
+        server.policy.write_text(POLICY, encoding="utf-8")
+    assert server.upstream.sent_to("/orders/17/cancel") == []
+    assert server.upstream.sent_to("/orders/18/cancel") == []
 
 
 def test_deleting_the_thread_on_the_server_deletes_its_approvals(server: Server) -> None:

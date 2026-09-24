@@ -376,6 +376,8 @@ def test_the_stated_purpose_is_the_text_the_model_wrote_with_the_call() -> None:
 SENT: list[httpx.Request] = []
 BODY: dict[str, Any] = {}
 SECOND_CALL: list[bool] = []
+# The tool catches a refusal and tries the same call once more.
+RETRY: list[bool] = []
 
 
 def _upstream(request: httpx.Request) -> httpx.Response:
@@ -387,12 +389,21 @@ def _upstream(request: httpx.Request) -> httpx.Response:
 async def cancel_order(order_id: str, runtime: ToolRuntime[Any]) -> str:
     """Cancel an order by its id."""
     client = get_client("shop", transport=httpx.MockTransport(_upstream))
-    data = await client.post(
-        "/orders/{order_id}/cancel",
-        operation_id="cancelOrder",
-        path_params={"order_id": order_id},
-        json_body=dict(BODY),
-    )
+
+    async def cancel() -> Any:
+        return await client.post(
+            "/orders/{order_id}/cancel",
+            operation_id="cancelOrder",
+            path_params={"order_id": order_id},
+            json_body=dict(BODY),
+        )
+
+    try:
+        data = await cancel()
+    except ApiPolicyError:
+        if not RETRY:
+            raise
+        data = await cancel()
     if SECOND_CALL:
         await client.post("/orders", operation_id="createOrder", json_body={"sku": "a"})
     return json.dumps(data)
@@ -410,6 +421,7 @@ def graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: ApprovalStore)
     reset_policy_cache()
     SENT.clear()
     SECOND_CALL.clear()
+    RETRY.clear()
     BODY.clear()
     BODY.update({"reason": "asked"})
     set_approval_ledger(store)
@@ -545,6 +557,118 @@ async def test_a_resume_without_a_decision_sends_nothing(graph, store) -> None:
     await _run(graph, "t1", Command(resume={interrupt.id: {"decision": "approve"}}))
     assert "resumed without an approval decision" in await _last_tool_result(graph, "t1")
     await _pause(graph, "t2", store)
+    assert SENT == []
+
+
+# --- a decision binds its call, whatever the policy says when the run resumes -----------
+
+# The policy as a new image may bring it while a call waits (POLICY gates POST).
+POLICY_CHANGES = {
+    "gate removed": POLICY.split("    approval:")[0],
+    "gate narrowed": POLICY.replace("methods: [POST]", "methods: [DELETE]"),
+    "call denied": POLICY.replace(
+        "    approval:",
+        "    denied_operations:\n      - path: /orders/{order_id}/cancel\n    approval:",
+    ),
+    "allowed_methods narrowed": POLICY.replace(
+        "allowed_methods: [GET, POST]", "allowed_methods: [GET]"
+    ),
+}
+# The policy refuses before any decision is read; else the decision (or the gate) does.
+REFUSED_BY = {
+    "call denied": "denied by denied_operations",
+    "allowed_methods narrowed": "is not in allowed_methods",
+}
+DECIDED_BY = {
+    "reject": "was not approved: an approver rejected it",
+    "expired": "was not approved: the approval request expired",
+    "approve": "approved under an approval gate the policy no longer has",
+}
+
+
+def _change_policy(tmp_path: Path, text: str) -> None:
+    (tmp_path / "api-policy.yaml").write_text(text, encoding="utf-8")
+    reset_policy_cache()
+
+
+async def _decided(store: ApprovalStore, record: ApprovalRecord, decision: str) -> ApprovalRecord:
+    if decision == "expired":
+        closed = await store.expire(record.approval_id)
+    else:
+        status = APPROVED if decision == "approve" else REJECTED
+        closed = await store.decide(record.approval_id, status, "x", None)
+    assert closed is not None
+    return closed
+
+
+@pytest.mark.parametrize("change", list(POLICY_CHANGES))
+@pytest.mark.parametrize("decision", ["reject", "expired", "approve"])
+async def test_a_decision_binds_its_call_whatever_the_policy_says_by_then(
+    graph, store, tmp_path, change: str, decision: str
+) -> None:
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, decision)
+    _change_policy(tmp_path, POLICY_CHANGES[change])
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, decision)}))
+    result = await _last_tool_result(graph, "t1")
+    assert REFUSED_BY.get(change, DECIDED_BY[decision]) in result, result
+    assert SENT == []
+    assert (await store.get(record.approval_id)).used_at is None
+    state = await graph.aget_state({"configurable": {"thread_id": "t1"}})
+    assert not state.interrupts
+
+
+async def test_an_approval_still_covers_its_call_under_a_gate_with_the_same_approvers(
+    graph, store, tmp_path
+) -> None:
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, "approve")
+    # Rewritten, still gating the call and asking the same approvers.
+    still_gated = POLICY.replace(
+        "        methods: [POST]", "        operations:\n          - path: /orders/{x}/cancel"
+    )
+    _change_policy(tmp_path, still_gated)
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert [(r.method, r.url.path) for r in SENT] == [("POST", "/orders/7/cancel")]
+    assert (await store.get(record.approval_id)).used_at is not None
+
+
+async def test_a_call_a_decision_stopped_stays_stopped_in_its_tool_call(
+    graph, store, tmp_path
+) -> None:
+    RETRY.append(True)  # the tool tries the call again once it is refused
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, "reject")
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "reject")}))
+    result = await _last_tool_result(graph, "t1")
+    assert "stopped by its approval decision earlier in this tool call" in result
+    assert SENT == []
+
+
+async def test_a_call_still_waiting_pauses_again_for_its_own_approval(
+    graph, store, tmp_path
+) -> None:
+    """Another call's decision resumed the run: this one waits on, even un-gated meanwhile."""
+    interrupt, record = await _pause(graph, "t1", store)
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(record, "pending")}))
+    assert SENT == []
+    state = await graph.aget_state({"configurable": {"thread_id": "t1"}})
+    [again] = state.interrupts
+    assert again.id == interrupt.id
+    assert again.value["call_hash"] == record.call_hash
+    assert again.value["approvers"] == ["requester", "role:ops"]  # asked of the same approvers
+    kept, created, _ = await store.add(
+        record_from_interrupt(
+            again.value, interrupt_id=again.id, thread_id="t1", run_id="r2", requester=ALICE
+        )
+    )
+    assert not created and kept.approval_id == record.approval_id
+    # Its own decision then applies to it: approved, it is still not sent (no gate now).
+    decided = await _decided(store, record, "approve")
+    await _run(graph, "t1", Command(resume={again.id: decision_value(decided, "approve")}))
+    assert "approval gate the policy no longer has" in await _last_tool_result(graph, "t1")
     assert SENT == []
 
 

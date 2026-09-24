@@ -959,6 +959,29 @@ def test_the_check_reports_which_allowed_calls_are_gated_and_by_whom(tmp_path):
     assert "approval never widens access" in out
 
 
+def test_a_dot_suffixed_path_is_gated_and_denied_as_at_runtime(tmp_path):
+    """`cancel.json` or `cancel.` reach the gated endpoint on suffix-routing servers."""
+    write_policy(tmp_path, orders=GATED_POLICY)
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "orders.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "orders", "method": "POST", "operation_id": "closeOrder",\n'
+        '     "path": "/orders/{order_id}/cancel.json"},\n'
+        '    {"api": "orders", "method": "POST", "operation_id": "stopOrder",\n'
+        '     "path": "/orders/{order_id}/cancel."},\n'
+        '    {"api": "orders", "method": "PUT", "operation_id": "putCancel",\n'
+        '     "path": "/orders/{order_id}/Cancel.JSON"},\n'
+        "]\n"
+    )
+    by_id = {r.call.operation_id: r for r in pc.build_report(tmp_path, "app").results}
+    for op in ("closeOrder", "stopOrder"):
+        assert by_id[op].status == pc.STATUS_ALLOWED
+        assert "path=/orders/{order_id}/cancel" in by_id[op].gate.rule
+    assert by_id["putCancel"].status == pc.STATUS_DENIED
+    assert "denied by denied_operations" in by_id["putCancel"].reason
+
+
 def test_no_approval_column_without_a_gated_call(tmp_path):
     write_policy(tmp_path, orders=api(allowed_methods=["GET"]))
     tools = tmp_path / "app" / "tools"

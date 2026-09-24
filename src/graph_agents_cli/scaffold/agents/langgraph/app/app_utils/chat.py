@@ -75,7 +75,9 @@ Both runtimes apply the same rules:
   checks the decider and the approval, decides it atomically under the
   thread's run lock, and `stream(..., resume=...)` resumes the paused run with
   the decision (under langgraph-server through the server's native resume),
-  acting as the requester. A pending approval that expires is closed by the
+  acting as the requester; the run's other paused calls get their own
+  approval's state with it (a decision binds its call whatever the policy says
+  about gating it by then, see `api_client`). A pending approval that expires is closed by the
   next resume (the tool gets "expired") or, when a new message comes instead,
   by the history repair (the call's result says the approval expired).
   Deleting a thread deletes its approvals.
@@ -103,6 +105,7 @@ from {{cookiecutter.agent_directory}}.app_utils import metrics
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     DECISION_APPROVE,
     DECISION_EXPIRED,
+    DECISION_PENDING,
     DECISION_REJECT,
     approval_ledger,
     set_approval_ledger,
@@ -251,6 +254,13 @@ OPEN_CALL_BY_APPROVAL = {
 OPEN_CALL_SENT_UNSAVED = (
     "The call was approved and sent, but the run stopped before its result was saved."
 )
+# The resume value a paused call gets for its approval's state (see `decide`).
+RESUME_AS = {
+    PENDING: DECISION_PENDING,
+    APPROVED: DECISION_APPROVE,
+    REJECTED: DECISION_REJECT,
+    EXPIRED: DECISION_EXPIRED,
+}
 UNSUPPORTED_INTERRUPT_MESSAGE = (
     "The agent paused for input this server cannot collect. Send a new message to continue."
 )
@@ -1502,16 +1512,20 @@ class ChatRuntime:
                 metrics.observe_approvals(verdict)
                 resume_as = DECISION_APPROVE if decision == APPROVE else DECISION_REJECT
                 values = {decided.interrupt_id: decision_value(decided, resume_as)}
-                # The paused run's other interrupts whose approval expired get
-                # their answer too, so their tools end instead of asking again.
+                # The paused run's other interrupts get their own approval's state
+                # too: their tools run again on this resume, and each decision is
+                # bound to its call whatever the policy now says about gating it.
+                # An expired (or rejected) one ends its tool, a pending one pauses
+                # again for the same approval, and an approved one whose run never
+                # continued is sent only as an approval allows.
                 latest: dict[str, ApprovalRecord] = {}
                 for other in await self.approvals.for_thread(thread_id):  # newest first
                     latest.setdefault(other.interrupt_id, other)
                 for interrupt_id in paused:
                     other = latest.get(interrupt_id)
                     if interrupt_id not in values and other is not None:
-                        if other.effective_status(self.approvals.now()) == EXPIRED:
-                            values[interrupt_id] = decision_value(other, DECISION_EXPIRED)
+                        state = other.effective_status(self.approvals.now())
+                        values[interrupt_id] = decision_value(other, RESUME_AS[state])
         except BaseException:
             await lease.release()
             raise

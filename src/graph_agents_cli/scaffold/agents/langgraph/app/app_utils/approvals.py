@@ -251,8 +251,12 @@ def record_from_interrupt(
 
 
 def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
-    """The resume value for the interrupt of `record`: `approve`, `reject` or `expired`.
+    """The resume value for the interrupt of `record`: `approve`, `reject` or `expired`,
+    or `pending` for a call whose approval still waits (another one was decided).
 
+    It names the call it was taken for (API, method, path): the client applies
+    it to that call whatever the policy says about gating it by then, so a
+    rejected or expired call is never sent and a pending one pauses again.
     `approvers` are the ones the approval was asked of: the client refuses an
     approval whose approvers differ from what the policy's gate names when
     the call is about to be sent.
@@ -261,6 +265,9 @@ def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
         "type": APPROVAL_DECISION,
         "approval_id": record.approval_id,
         "decision": decision,
+        "api": record.api,
+        "method": record.method,
+        "path": record.path,
         "call_hash": record.call_hash,
         "approvers": list(record.approvers),
         "comment": record.comment,

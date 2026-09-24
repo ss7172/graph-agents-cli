@@ -218,8 +218,10 @@ call gives, and a call that leaves out what a denial knows the operation by is r
 only knows that label: pin the denial's `path` too. With `openapi`, `lint` also refuses a declared
 `operation_id` the spec does not give that method and path. Paths match after decoding percent-encoded
 unreserved characters and ignoring one trailing slash; letter case counts for allows and is ignored for
-denials. Pass model input as `path_params`
-of a declared template, never as part of a concrete path.
+denials and approval gates, which also cover a literal segment's dot-suffixed spellings (a denial of
+`/orders/{order_id}/cancel` refuses `/orders/7/cancel.json` and `cancel.`, which servers that route format
+suffixes or drop a trailing dot send to the same endpoint). A `;` in a request path is refused. Pass model
+input as `path_params` of a declared template, never as part of a concrete path.
 `graph-agents-cli api show` lists the APIs `api-policy.yaml` declares now, what each allows, and every
 tool's declared calls; without the file, declare the first API with `graph-agents-cli api add` (below). When
 `{{cookiecutter.agent_directory}}/tools/example_api.py` exists (a project created with a policy), it shows
@@ -272,10 +274,14 @@ request waits for someone who sees exactly what it does.
 - **Bound and single use.** The approval covers the exact request: API, method, URL with the rendered path,
   query, JSON body, operation id and the tool's own headers (a SHA-256 of them). On resume the tool runs
   again and the client sends the request only when it is the same one, then marks the approval used, so it is
-  sent once and never replayed. A rejected or expired approval, a request that changed, or a gate whose
-  approvers changed while the call waited (a new image) sends nothing and the tool gets an error saying
-  why, which the model relays. A pending approval that expires is closed on the next decision or message
-  on the thread; one a failed or cancelled run leaves behind is expired when that run ends.
+  sent once and never replayed. A decision is bound to the call it was taken for (its API, method and
+  path), not to the policy of the moment: a rejected or expired call is never sent, even if a new policy no
+  longer gates it; an approved one is sent only while the policy still allows it (a later denial or a
+  narrower `allowed_methods`/`allowed_operations` refuses it) and still gates it with the same approvers;
+  and a call still waiting when another call's decision resumes the run waits on for its own approval.
+  Anything else sends nothing and the tool gets an error saying why, which the model relays. A pending
+  approval that expires is closed on the next decision or message on the thread; one a failed or
+  cancelled run leaves behind is expired when that run ends.
 - **Writing a tool that makes a gated call.** Make at most one gated call per tool call: on resume the tool
   runs again from its start, so a second gated call in the same tool call is refused after the first was
   sent, and anything the tool does before the gated call runs again (keep other side effects after it).

@@ -516,9 +516,14 @@ shared byte-for-byte and a test keeps the copies in sync):
   (`api deny NAME OPERATION_ID --method M --path P`, or record the API's `openapi:`, from
   which `api deny` fills them in).
 - Paths match after decoding percent-encoded unreserved characters and ignoring one trailing
-  slash; denials also ignore letter case. Pass model input as `path_params` of a declared
-  template (each value is encoded as one segment; `.`, `..` and `/` are refused), never as
-  part of a concrete path.
+  slash. Denials and approval gates fail closed: they also ignore letter case, and a literal
+  segment they name also covers its dot-suffixed spellings (a denial or gate on
+  `/orders/{order_id}/cancel` covers `/orders/7/cancel.json`, `cancel.` and `cancel%2e`,
+  which servers that route format suffixes or drop a trailing dot send to the same endpoint);
+  an allow never matches that way. A `;` in a concrete path is refused (servers that strip
+  path parameters would route around a denial or a gate). Pass model input as `path_params`
+  of a declared template (each value is encoded as one segment; `.`, `..` and `/` are
+  refused), never as part of a concrete path.
 - The page-size parameter is capped in every spelling and shape of the query; redirects are
   not followed.
 
@@ -581,12 +586,20 @@ apis:
   `reject`, or the prompt of `run`); the run resumes and streams the rest.
 - **Binding and single-use.** An approval covers exactly the call shown: the agent hashes the
   request it recorded and refuses to send one that differs (another body, another path), and
-  it sends the approved call once. The approval also holds only under the gate it was asked
-  under: if the policy's approvers for the call changed while it waited (a new image), the
-  call is refused and the agent asks again. A rejected or expired call is never sent; the tool gets a
-  "not approved" error that the model relays. An approval is decided once (409 after that,
-  410 once expired), and while one is pending the thread takes no new message (409
-  `approval_pending`).
+  it sends the approved call once. A decision is bound to the call it was taken for, not to
+  the policy of the moment, so a policy that changed while the call waited (a new image, or a
+  typo that un-gates it) cannot turn a decision into a send:
+  - A rejected or expired call is never sent, whatever the policy now says about gating it;
+    the tool gets a "not approved" error that the model relays.
+  - An approved call is sent only if the current policy still allows it (a later denial, or
+    narrower `allowed_methods` or `allowed_operations`, refuses it first) and still gates it
+    with the same approvers; if the gate was removed, no longer covers the call, or names
+    other approvers, nothing is sent and the agent asks again.
+  - A call whose approval is still pending when another call's decision resumes the run
+    waits on for its own approval, even if the policy no longer gates it.
+
+  An approval is decided once (409 after that, 410 once expired), and while one is pending
+  the thread takes no new message (409 `approval_pending`).
 - **Who decides.** `requester` is the principal who started the run; `role:<name>` is any
   other principal holding that role. A requester decides their own call only when
   `requester` is listed; anyone else gets 403. The decision is recorded with the decider's
@@ -733,7 +746,10 @@ that metric (a case that does not declare it is not counted as a pass). The
   [{"decision": "approve", "match": {"operation_id": "cancelOrder"}}]` (or `match`
   `{"method": "POST", "path": "/orders/{order_id}/cancel"}`, optionally with `api`); the
   first matching instruction decides each gate and the run continues. A gate no instruction
-  matches makes the case an error: generate never approves on its own. Traces record every
+  matches makes the case an error: generate never approves on its own, and it rejects that
+  gate (and one whose decision the server refused) so an eval run leaves no approval pending
+  to block its thread or be approved later; the trace records how (`approvals[].cleanup`),
+  and a gate it may not reject either is named in the case error. Traces record every
   gate (`approvals`), and `expect.approvals: [{"match": {...}, "status":
   "gated"|"approved"|"rejected"}]` and `expect.no_approvals: true` check them (an injection
   case can assert that the planted write never even reached a gate). A gate that lists
