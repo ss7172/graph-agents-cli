@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS {approvals} (
 CREATE INDEX IF NOT EXISTS {approvals}_thread_id_idx ON {approvals} (thread_id);
 CREATE INDEX IF NOT EXISTS {approvals}_pending_idx ON {approvals} (expires_at)
     WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS {approvals}_requester_idx ON {approvals} (requester_hash);
+CREATE INDEX IF NOT EXISTS {approvals}_approvers_idx ON {approvals} USING gin (approvers);
 """
 
 THREADS_DDL = """

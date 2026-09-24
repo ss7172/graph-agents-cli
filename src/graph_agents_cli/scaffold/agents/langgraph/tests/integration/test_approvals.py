@@ -653,9 +653,11 @@ def _parts_data(message: dict[str, Any]) -> dict[str, Any]:
 
 
 async def test_a2a_input_required_round_trip(client) -> None:
+    # A user of its own: the A2A task store lives as long as the app.
+    user = f"ann-{uuid.uuid4().hex[:8]}"
     sent = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {"message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": PROMPT}]}},
     )
@@ -670,7 +672,7 @@ async def test_a2a_input_required_round_trip(client) -> None:
     # A text message meanwhile: still waiting for the decision.
     waiting = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {
             "message": {
@@ -688,7 +690,7 @@ async def test_a2a_input_required_round_trip(client) -> None:
     # A malformed decision is invalid params.
     bad = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {
             "message": {
@@ -704,7 +706,7 @@ async def test_a2a_input_required_round_trip(client) -> None:
 
     done = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {
             "message": {
@@ -728,10 +730,11 @@ async def test_a2a_input_required_round_trip(client) -> None:
 async def test_a2a_decision_by_a_requester_the_policy_does_not_list_is_refused(
     client, tmp_path
 ) -> None:
+    user = f"ann-{uuid.uuid4().hex[:8]}"
     _write_policy(tmp_path / "api-policy.yaml", '["role:ops"]')
     sent = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {"message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": PROMPT}]}},
     )
@@ -739,7 +742,7 @@ async def test_a2a_decision_by_a_requester_the_policy_does_not_list_is_refused(
     approval = _parts_data(task["status"]["message"])["approval"]
     refused = await _rpc(
         client,
-        "alice",
+        user,
         "SendMessage",
         {
             "message": {

@@ -224,6 +224,7 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
         "TEST_APPROVAL_BODY_FILE": str(body_file),
         "TRACING_ENABLED": "false",
         "LANGSMITH_TRACING": "false",
+        "LANGGRAPH_CLI_NO_ANALYTICS": "1",
         "PYTHON_DOTENV_DISABLED": "1",
     }
     log = work / "server.log"

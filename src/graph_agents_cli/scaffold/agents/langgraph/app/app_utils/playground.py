@@ -166,7 +166,7 @@ PLAYGROUND_HTML = """<!doctype html>
         var detail = null;
         try { detail = JSON.parse(text); } catch (e) {}
         reply.className = 'msg error';
-        reply.textContent = 'HTTP ' + res.status + ': ' + text;
+        reply.textContent = 'HTTP ' + res.status + ': ' + (detail && detail.code ? detail.code + ': ' + detail.detail : text);
         if (detail && detail.code === 'approval_pending') { (detail.approvals || []).forEach(showApproval); }
         return false;
       }
@@ -184,7 +184,7 @@ PLAYGROUND_HTML = """<!doctype html>
           else if (event === 'tool.result') { add('tool', 'tool.result ' + data.name + (data.is_error ? ' [error]' : '') + ': ' + data.result); }
           else if (event === 'message.end') {
             add('meta', 'run ' + data.run_id + ' | ' + data.status + ' | ' + data.latency_ms + ' ms | tokens in ' + data.usage.input_tokens + ' out ' + data.usage.output_tokens);
-            if (data.status === 'awaiting_approval') { (data.approvals || [data.approval]).forEach(showApproval); }
+            if (data.status === 'awaiting_approval') { (data.approvals || [data.approval]).filter(Boolean).forEach(showApproval); }
           }
           else if (event === 'error') {
             add('error', data.code + ': ' + data.message + (data.detail ? '\\n' + data.detail : ''));
@@ -192,6 +192,7 @@ PLAYGROUND_HTML = """<!doctype html>
           }
         });
       }
+      if (!reply.textContent) reply.remove();  // a run that only paused wrote no text
       return true;
     } catch (e) {
       add('error', String(e));
