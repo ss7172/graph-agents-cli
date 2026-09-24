@@ -29,7 +29,6 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
     ThreadBusy,
     ThreadLocks,
     ThreadStore,
-    advisory_key,
     assert_access,
     assert_owner,
     can_access,
@@ -146,7 +145,17 @@ async def test_one_run_per_thread() -> None:
     assert locks.held == frozenset()
 
 
-def test_advisory_keys_are_stable_signed_64_bit() -> None:
-    key = advisory_key("11111111-1111-1111-1111-111111111111")
-    assert key == advisory_key("11111111-1111-1111-1111-111111111111")
-    assert -(2**63) <= key < 2**63 and key != advisory_key("other")
+async def test_the_fence_admits_only_held_threads() -> None:
+    """In-process leases never expire; writes to a thread nobody here holds are refused."""
+    from {{cookiecutter.agent_directory}}.app_utils.threads import LeaseLost
+
+    locks = ThreadLocks()
+    lease = await locks.acquire("t1")
+    locks.fence("t1")
+    with pytest.raises(LeaseLost):
+        locks.fence("t2")
+    await lease.release()
+    with pytest.raises(LeaseLost):
+        locks.fence("t1")
+    with pytest.raises(LeaseLost):
+        lease.check()

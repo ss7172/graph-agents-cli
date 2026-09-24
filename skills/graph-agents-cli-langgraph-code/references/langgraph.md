@@ -135,8 +135,8 @@ not `print` or log prompt text; the telemetry layer handles capture.
 ## Human-in-the-loop (interrupts): not implemented in this milestone
 
 The LangGraph pattern is below for reference. **The scaffolded chat API does not expose it:**
-`message.end` always carries `status: "ok"`, there is no `interrupted` status and no
-`metadata.resume` request convention, so a graph that calls `interrupt()` stalls the `/chat`
+`message.end` carries `status: "ok"` (or `"step_limit"`), there is no status for a paused graph
+and no `metadata.resume` request convention, so a graph that calls `interrupt()` stalls the `/chat`
 stream. Use interrupts only under `playground --graph` (LangGraph Studio) until the template adds
 the convention; keep approval steps out of the served graph.
 
@@ -155,7 +155,7 @@ def confirm_action(state: State):
 
 - Requires a checkpointer (any); the thread pauses at the interrupt and is resumed with
   `graph.invoke(Command(resume="approve"), config)` on the same `thread_id`.
-- Not wired to `/chat`: the app does not emit an `interrupted` status and does not translate a
+- Not wired to `/chat`: the app does not report a paused graph and does not translate a
   request `metadata.resume` into `Command(resume=...)`. Adding that is a scaffolding change to
   `app/app_utils/chat.py` and `fast_api_app.py`, which `upgrade` 3-way merges; ask before doing it.
 - `interrupt_before=["tools"]` at compile time pauses before every tool call; same caveat.

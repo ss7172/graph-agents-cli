@@ -223,9 +223,7 @@ async def test_idle_streams_get_heartbeat_comments(
     assert parse_sse(text)[-1][0] == "message.end"
 
 
-async def test_recursion_limit_stops_a_looping_run(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools
-) -> None:
+def _probe_tool() -> Any:
     from langchain_core.tools import tool
 
     @tool
@@ -233,8 +231,53 @@ async def test_recursion_limit_stops_a_looping_run(
         """Test-only tool."""
         return "ok"
 
+    return probe
+
+
+@pytest.mark.parametrize("limit", ["1", "2"])
+async def test_recursion_limit_ends_the_run_with_a_reply_and_keeps_its_work(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools, limit: str
+) -> None:
+    """1: stopped between the tool call and the tool; 2: after the tool, before the answer."""
+    monkeypatch.setenv("RECURSION_LIMIT", limit)
+    use_test_tools(_probe_tool())
+    thread_id = str(uuid.uuid4())
+    events = parse_sse((await chat(client, "Run the probe for San Francisco", thread_id)).text)
+    names = [e for e, _ in events]
+    assert names[:2] == ["message.start", "tool.call"] and names[-2:] == [
+        "message.delta",
+        "message.end",
+    ]
+    assert "error" not in names
+    reply = events[-2][1]["text"]
+    assert reply.startswith("I had to stop before finishing") and f"({limit})" in reply
+    assert events[-1][1]["status"] == "step_limit"
+    assert RUNTIME.runs is not None
+    record = await RUNTIME.runs.get(events[0][1]["run_id"])
+    assert record is not None and record.status == "step_limit"
+    # The thread keeps the call, its result (an error when the tool never ran) and the reply.
+    messages = (await client.get(f"/threads/{thread_id}/messages", headers=AUTH)).json()
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]
+    assert messages[2]["tool_call_id"] == messages[1]["tool_calls"][0]["id"]
+    assert messages[2]["is_error"] is (limit == "1")
+    assert messages[3]["content"] == reply
+    # "continue" works with a fresh step budget.
+    monkeypatch.delenv("RECURSION_LIMIT")
+    events = parse_sse((await chat(client, "hello", thread_id)).text)
+    assert events[-1][0] == "message.end" and events[-1][1]["status"] == "ok"
+
+
+async def test_recursion_limit_is_an_error_when_the_reply_cannot_be_written(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools
+) -> None:
     monkeypatch.setenv("RECURSION_LIMIT", "1")
-    use_test_tools(probe)
+    use_test_tools(_probe_tool())
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("database unreachable")
+
+    monkeypatch.setattr(RUNTIME, "_repair_history", broken)
+    monkeypatch.setattr(RUNTIME, "_repair_before_run", lambda *a, **k: asyncio.sleep(0))
     events = parse_sse((await chat(client, "Run the probe for San Francisco")).text)
     assert events[-1][0] == "error"
     assert events[-1][1]["code"] == "recursion_limit" and "(1 steps)" in events[-1][1]["message"]
@@ -252,8 +295,8 @@ async def test_the_run_uses_the_configured_recursion_limit(
 
     monkeypatch.setattr(agent_module.graph, "astream", capture)
     await chat(client, "hello")
-    assert seen["recursion_limit"] == 25
-    assert agent_module.graph.config["recursion_limit"] == 25  # native default too
+    assert seen["recursion_limit"] == 50
+    assert agent_module.graph.config["recursion_limit"] == 50  # native default too
 
 
 async def test_a_disconnected_client_cancels_the_run(monkeypatch: pytest.MonkeyPatch) -> None:

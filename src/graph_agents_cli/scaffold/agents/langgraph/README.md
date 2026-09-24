@@ -106,7 +106,7 @@ graph-agents-cli-manifest.yaml
 | `GET /threads/{id}/messages` | A thread's messages (owner, or a role in `AUTH_READ_ACROSS_ROLES`) |
 | `DELETE /threads/{id}` | Delete a thread, its checkpoints and run records (owner only; 409 while a run is in progress) |
 | `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
-| `GET /ready` | Readiness: 200 when the database answers within 2 s, else 503 (no auth) |
+| `GET /ready` | Readiness: 200 when the database is set up and answers within 2 s, else 503 (no auth) |
 | `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
 | `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json`; tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S` |
 | `/playground`, `/docs`, `/openapi.json` | Only under `APP_ENV=dev` |
@@ -124,21 +124,34 @@ Behaviour and its settings (defaults in `.env.example`; a value that does not pa
 at startup):
 
 - **One run per thread:** a second `/chat` on a busy thread gets 409 `{"code": "thread_busy"}`.
+  Under postgres the lock is a lease every replica honours: a replica that dies frees its
+  threads 30 s later, and a run that can no longer renew its lease stops before it writes.
 - **Guardrails:** a run is cancelled after `RUN_TIMEOUT_S` (300); each model request has
-  `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2); `RECURSION_LIMIT` (25) caps graph steps.
-  A client disconnect cancels the run. Idle streams get a keep-alive comment every
-  `SSE_HEARTBEAT_S` (15).
+  `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2). `RECURSION_LIMIT` (50, room for 24
+  sequential tool calls) caps graph steps: a run that reaches it ends with a reply saying so
+  (`message.end` status `step_limit`) and keeps its work in the thread. A client disconnect
+  cancels the run. Idle streams get a keep-alive comment every `SSE_HEARTBEAT_S` (15).
+- **Valid history:** a run stopped mid tool call (a timeout, a crash, an outage) leaves a call
+  without a result; the next run answers it with an error result right after the call before
+  adding its turn, so model providers accept the thread.
+- **Run records:** written as `running` when a run starts and updated when it ends (`ok`,
+  `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); runs of a process that died
+  are marked `interrupted` within about a minute.
 - **Limits:** bodies over `MAX_REQUEST_BYTES` get 413; metadata beyond `MAX_METADATA_KEYS` /
   `MAX_METADATA_VALUE_CHARS` gets 422.
 - **Errors:** the `error` event is `{"code", "message", "error_id", "run_id"}`; an unhandled error
   answers 500 with an `error_id`. Details are only in the server log under that id. Every
-  response carries `X-Request-ID`.
+  response carries `X-Request-ID`. An unreachable database answers 503 within a few seconds
+  and logs one line.
 - **Retention:** `RETENTION_DAYS=N` deletes threads idle for more than N days (hourly; 0 keeps
   everything).
 - **Logging:** JSON lines outside `APP_ENV=dev` (`LOG_FORMAT`, `LOG_LEVEL`) with request id, run
   id, thread id and a hashed principal (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set).
 - **CORS:** off unless `CORS_ALLOW_ORIGINS` lists origins.
-- **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`).
+- **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`);
+  connections get `connect_timeout=5` and TCP keepalives unless the DSN sets them. The app
+  starts even while Postgres is unreachable (`/ready` 503 until it answers) and is ready again
+  seconds after Postgres is.
 
 No inbound rate limiting is built in: configure it at the gateway or ingress (outbound calls
 can be limited per API, see below).

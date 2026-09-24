@@ -89,7 +89,7 @@ graph: CompiledStateGraph = create_agent(
     middleware=[SurfaceApiErrors()],
     context_schema=AgentContext,
     name="my-agent",
-).with_config({"recursion_limit": recursion_limit()})  # RECURSION_LIMIT, default 25
+).with_config({"recursion_limit": recursion_limit()})  # RECURSION_LIMIT, default 50
 ```
 
 Rules:
@@ -235,14 +235,19 @@ when the project declares an API policy):
   live in the process and vanish on restart. No database for local development.
 - `CHECKPOINTER=postgres` with `POSTGRES_DSN`: `langgraph-checkpoint-postgres` on one
   health-checked connection pool per process (`DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE`); the app
-  runs the schema setup at startup under a Postgres advisory lock (replicas may start together)
-  and writes run records to its own `runs` table. This is the deployed default on Kubernetes; the
-  chart sets it. `GET /ready` answers 503 while the database does not.
+  runs the schema setup under a Postgres advisory lock (replicas may start together) and writes
+  run records to its own `runs` table. This is the deployed default on Kubernetes; the chart sets
+  it. The app starts even while the database is unreachable: `GET /ready` answers 503 (and
+  requests 503) until the schema is set up and the database answers.
 - Under `langgraph-server` the server owns persistence from `DATABASE_URI` and `REDIS_URI`;
   `CHECKPOINTER` is ignored; the app keeps its run records in an `agent_runs` table there.
 - **One run per thread:** a second `/chat` on a thread whose run is still in progress gets 409
-  `{"code": "thread_busy"}` (a Postgres advisory lock across replicas; it needs session-level
-  locks, so no transaction-mode PgBouncer). Clients retry after the run ends.
+  `{"code": "thread_busy"}` (a lease row in Postgres across replicas, renewed every 5 s; a
+  replica that dies frees its threads 30 s later, and a run that cannot renew its lease stops
+  before it writes). Clients retry after the run ends.
+- Run records are written as `running` when a run starts and updated when it ends (`ok`,
+  `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); records a dead process left
+  `running` are marked `interrupted` within about a minute.
 - `GET /threads` lists the caller's threads; `DELETE /threads/{thread_id}` deletes a thread with
   its checkpoints and run records (owner only). `RETENTION_DAYS=N` purges threads idle for more
   than N days, hourly (0 keeps everything).
@@ -269,6 +274,8 @@ A failed run ends with an `error` event `{code, message, error_id, run_id}` (`co
 `run_failed`, `timeout`, `recursion_limit`, `thread_busy`, `unavailable`, `forbidden`); the
 detail is only in the server log under `error_id` (and in `detail` under `APP_ENV=dev`). Idle
 streams get `: keep-alive` comments every `SSE_HEARTBEAT_S`; a client disconnect cancels the run.
+A run that reaches `RECURSION_LIMIT` is not an error: it ends with a `message.delta` saying so
+and `message.end` with `"status": "step_limit"`.
 
 `graph-agents-cli run "prompt" -v` prints every event; use it to confirm a new node or tool emits
 what you expect.
@@ -277,17 +284,23 @@ what you expect.
 
 The app enforces limits you should design for rather than work around: `RUN_TIMEOUT_S` (300; the
 run is cancelled with status `timeout`), `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2) per
-model request, `RECURSION_LIMIT` (25 graph steps), `MAX_REQUEST_BYTES` (413) and the `/chat`
-metadata caps (422). A stopped run (timeout, disconnect, error) answers its open tool calls with
-an error result, so the thread's next turn is valid. Long tools must finish well inside
-`RUN_TIMEOUT_S`, or raise it deliberately in `.env` and the chart values.
+model request, `RECURSION_LIMIT` (50 graph steps: two to answer plus two per sequential tool
+call, so 24 calls; the run then ends with a reply and status `step_limit`), `MAX_REQUEST_BYTES`
+(413) and the `/chat` metadata caps (422). Raise `RECURSION_LIMIT` to at least `2 * N + 2` when
+an API's `limits.max_calls_per_run` is N (the app warns at startup otherwise). A run stopped
+mid tool call (timeout, disconnect, error, crash, database outage) leaves a call without a
+result; the next run answers it with an error result right after the call, so the thread stays
+valid for the model provider. Long tools must finish well inside `RUN_TIMEOUT_S`, or raise it
+deliberately in `.env` and the chart values.
 
 ## 5. Human-in-the-loop with interrupts (not implemented in this milestone)
 
 LangGraph's `interrupt()` (or `interrupt_before=[...]` at compile time) pauses a thread until it
 is resumed with `Command(resume=...)`. **The scaffolded chat API does not expose this yet:**
-`message.end` always carries `"status": "ok"` (an `error` event replaces it on failure), there is
-no `interrupted` status and no `metadata.resume` request convention, so a graph that interrupts
+`message.end` carries `"status": "ok"` (or `"step_limit"`; an `error` event replaces it on
+failure), there is no status for a paused graph (the run record status `interrupted` means the
+run was stopped by a lost lease or a dead process, not a LangGraph interrupt) and no
+`metadata.resume` request convention, so a graph that interrupts
 stalls the `/chat` stream instead of pausing cleanly. Until the template wires it, keep approval
 steps out of the served graph (ask before acting via a tool that returns a question, or gate the
 action in the client application) and use interrupts only in `playground --graph` (LangGraph Studio) for

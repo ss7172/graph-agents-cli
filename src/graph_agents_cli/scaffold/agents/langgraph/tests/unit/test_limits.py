@@ -48,7 +48,9 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_defaults_are_finite() -> None:
     assert limits.run_timeout_s() == 300
-    assert limits.recursion_limit() == 25
+    assert limits.recursion_limit() == 50
+    # Room for 24 tool calls one after another (two steps each) plus the answer.
+    assert limits.sequential_tool_calls(limits.recursion_limit()) == 24
     assert limits.max_request_bytes() == 1_048_576
     assert limits.max_metadata_keys() == 16
     assert limits.max_metadata_value_chars() == 256

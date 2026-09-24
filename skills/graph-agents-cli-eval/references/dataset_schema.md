@@ -115,8 +115,9 @@ A multi-turn example (two user messages on one thread; the checks read both turn
 }
 ```
 
-`status` is `ok`, `error` (generation raised or the stream ended with an `error` event), or
-`missing` (no events at all). A completed run with an empty reply is `ok` with `response: ""` and
+`status` is `ok`, `error` (generation raised, the stream ended with an `error` event, or
+`message.end` carried a status other than `ok`, such as `step_limit` when the run reached
+`RECURSION_LIMIT`), or `missing` (no events at all). A completed run with an empty reply is `ok` with `response: ""` and
 is graded. Values are derived from the SSE events `message.delta`, `tool.call`, `tool.result`,
 `message.end`, `error`; `model` is `<provider>/<model>` as the app labels it.
 
