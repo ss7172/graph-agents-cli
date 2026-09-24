@@ -29,9 +29,12 @@ or the API client. Each declared call must name an API declared in
 with the same strict schema, and calls are matched with the same rules, as the
 runtime client of the scaffolded project (``graph_agents_cli._api_policy``
 holds the shared copy). When an API sets ``openapi:``, every call must also
-exist in that spec by ``operationId`` or by ``path`` + ``method``, and a call
-declared by ``operation_id`` alone is judged with the path the spec gives it
-(the client always sends one), so path denials apply to it.
+exist in that spec by ``operationId`` or by ``path`` + ``method``; a declared
+``operation_id`` must be the one the spec gives that method and path (the id is
+a label the tool chooses, so a typo or a relabelled call must not pass as
+another operation), and a call declared by ``operation_id`` alone is judged
+with the path the spec gives it (the client always sends one), so path denials
+apply to it.
 
 Fail closed: without a policy file every declared call is refused, as the
 runtime would refuse it. A module that still declares the retired
@@ -71,7 +74,7 @@ from graph_agents_cli._api_policy import (
     POLICY_FILENAME,
     ApiPolicyFileError,
     ExampleCall,
-    denial_matches,
+    denial_match,
     forward_runtime_problem,
     load_policy_document,
     operation_matches,
@@ -450,6 +453,17 @@ def _index_openapi(spec: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], se
     return by_id, pairs
 
 
+def _spec_ids(call: DeclaredCall, by_id: Mapping[str, tuple[str, str]]) -> list[str]:
+    """The operation ids the spec gives the call's method and path (none without a path)."""
+    if not call.path:
+        return []
+    return sorted(
+        op_id
+        for op_id, (spec_path, spec_method) in by_id.items()
+        if spec_method == call.method and path_matches(spec_path, call.path)
+    )
+
+
 def _spec_operation_hint(call: DeclaredCall, by_id: Mapping[str, tuple[str, str]]) -> str:
     """For a refused call declared without an operation id: the spec's id(s) for its path.
 
@@ -457,16 +471,61 @@ def _spec_operation_hint(call: DeclaredCall, by_id: Mapping[str, tuple[str, str]
     judges a call by the ``operation_id`` the tool passes, so a check that
     assumed the spec's id would pass calls the client refuses.
     """
-    if call.operation_id or not call.path:
-        return ""
-    ids = sorted(
-        op_id
-        for op_id, (spec_path, spec_method) in by_id.items()
-        if spec_method == call.method and path_matches(spec_path, call.path)
-    )
+    ids = [] if call.operation_id else _spec_ids(call, by_id)
     if not ids:
         return ""
     return f" (the OpenAPI spec names this operation {' or '.join(ids)})"
+
+
+def _spec_mismatch(
+    call: DeclaredCall,
+    by_id: Mapping[str, tuple[str, str]],
+    pairs: set[tuple[str, str]],
+) -> str | None:
+    """Why the API's OpenAPI spec does not define the call as declared, or None.
+
+    A declared ``operation_id`` must be one the spec defines, for the call's
+    method and path. It is a label the tool chooses, and the allow-list can
+    match on it: a typo, or a relabelled call, must not reach an endpoint
+    under a name the spec gives another operation.
+    """
+    if call.operation_id:
+        if call.operation_id not in by_id:
+            ids = _spec_ids(call, by_id)
+            named = f"; the spec names {call.method} {call.path} {' or '.join(ids)}" if ids else ""
+            return f"operationId {call.operation_id} is not in the OpenAPI spec{named}"
+        spec_path, spec_method = by_id[call.operation_id]
+        if spec_method != call.method:
+            return (
+                f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
+                f"not {call.method}"
+            )
+        if call.path and not path_matches(spec_path, call.path):
+            return (
+                f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
+                f"not {call.path}"
+            )
+        return None
+    if call.path and any(
+        spec_method == call.method and path_matches(spec_path, call.path)
+        for spec_path, spec_method in pairs
+    ):
+        return None
+    return "not found in the OpenAPI spec"
+
+
+def _spec_fix_hint(call: DeclaredCall, by_id: Mapping[str, tuple[str, str]]) -> str:
+    """What to change in the tool when its declared operation id disagrees with the spec."""
+    ids = _spec_ids(call, by_id)
+    if len(ids) == 1:
+        return (
+            f'declare the call as the OpenAPI spec does: "operation_id": "{ids[0]}" for '
+            f"{call.method} {call.path}, in {CALLS_NAME} and on the call"
+        )
+    return (
+        f"declare an operation_id and path the OpenAPI spec defines, in {CALLS_NAME} and on "
+        "the call"
+    )
 
 
 def check_call(
@@ -476,7 +535,14 @@ def check_call(
     *,
     policy_file: str = POLICY_FILENAME,
 ) -> CheckResult:
-    """Evaluate one declared call against the policy and (optionally) the API's spec."""
+    """Evaluate one declared call against the policy and (optionally) the API's spec.
+
+    A call the policy refuses is ``denied`` (with the ``graph-agents-cli api``
+    command that would allow it). With a spec, a call it does not define as
+    declared is ``unknown`` (a declared ``operation_id`` must be the spec's
+    one for that method and path); a call that is both says so, and its hint
+    fixes the declaration first.
+    """
     if document is None:
         return CheckResult(
             call,
@@ -501,38 +567,30 @@ def check_call(
         # so path denials apply to a call declared by operation_id alone.
         path = by_id[call.operation_id][0]
     reason = refusal_reason(api, call.method, call.operation_id, path)
+    mismatch = _spec_mismatch(call, by_id, pairs) if spec is not None else None
+    # A declared operation_id the spec does not give this call: fix the declaration first.
+    id_mismatch = mismatch is not None and call.operation_id is not None
     if reason:
         return CheckResult(
             call,
             STATUS_DENIED,
-            reason + _spec_operation_hint(call, by_id),
-            refusal_hint(call, api, path),
+            reason
+            + _spec_operation_hint(call, by_id)
+            + (f"; also, {mismatch}" if id_mismatch else ""),
+            _spec_fix_hint(call, by_id) if id_mismatch else refusal_hint(call, api, path),
         )
-
+    if mismatch is not None:
+        return CheckResult(
+            call, STATUS_UNKNOWN, mismatch, _spec_fix_hint(call, by_id) if id_mismatch else ""
+        )
     if spec is not None:
-        if call.operation_id and call.operation_id in by_id:
+        if call.operation_id:
             spec_path, spec_method = by_id[call.operation_id]
-            if spec_method != call.method:
-                return CheckResult(
-                    call,
-                    STATUS_UNKNOWN,
-                    f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
-                    f"not {call.method}",
-                )
-            if call.path and not path_matches(spec_path, call.path):
-                return CheckResult(
-                    call,
-                    STATUS_UNKNOWN,
-                    f"operationId {call.operation_id} is {spec_method} {spec_path} in the spec, "
-                    f"not {call.path}",
-                )
             return CheckResult(call, STATUS_ALLOWED, f"spec: {spec_method} {spec_path}")
-        if call.path:
-            for spec_path, spec_method in sorted(pairs):
-                if spec_method == call.method and path_matches(spec_path, call.path):
-                    return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}")
-        return CheckResult(call, STATUS_UNKNOWN, "not found in the OpenAPI spec")
-
+        spec_path = next(
+            p for p, m in sorted(pairs) if m == call.method and path_matches(p, str(call.path))
+        )
+        return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}")
     return CheckResult(call, STATUS_ALLOWED, "")
 
 
@@ -551,9 +609,16 @@ def add_hint(api_name: str) -> str:
     )
 
 
-def _operation_args(call: DeclaredCall) -> str:
+def _allow_args(call: DeclaredCall) -> str:
+    """``api allow`` arguments for an entry that covers exactly the declared call.
+
+    The method is always pinned, and the path whenever the call names one, so
+    the entry never allows the label on another method or path.
+    """
+    if call.operation_id and call.path:
+        return f"{call.operation_id} --method {call.method} --path {call.path}"
     if call.operation_id:
-        return call.operation_id
+        return f"{call.operation_id} --methods {call.method}"
     return f"--method {call.method} --path {call.path}"
 
 
@@ -567,8 +632,9 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
 
     Each is a reviewed change to api-policy.yaml (CODEOWNERS covers it), and
     together they are every change the call needs: the method, the denial and
-    the allow-list. A call refused only because it names no operation id is
-    fixed in the tool instead.
+    the allow-list (an entry pinning the call's method, and its path when it
+    names one). A call refused only because it leaves out what a denial knows
+    the operation by is fixed in the tool instead.
     """
     steps: list[str] = []
     allowed = _allowed_methods(api)
@@ -576,13 +642,18 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
         methods = ",".join(m for m in HTTP_METHODS if m in {*allowed, call.method})
         steps.append(f"{API_COMMAND} access {call.api} custom --methods {methods}")
     for entry in api.get("denied_operations") or []:
-        if denial_matches(entry, call.method, call.operation_id, path):
-            unnamed = entry.get("operationId") is not None and not call.operation_id
-            if unnamed:
-                return (
-                    f"name the operation: add operation_id to the call and to {CALLS_NAME} "
-                    "(a denial by operationId refuses calls that name none)"
-                )
+        unnamed = denial_match(entry, call.method, call.operation_id, path)
+        if unnamed == "operation_id":
+            return (
+                f"name the operation: add operation_id to the call and to {CALLS_NAME} "
+                "(a denial by operationId alone refuses calls that name none)"
+            )
+        if unnamed == "path":
+            return (
+                f'name the path: add "path" to the call\'s {CALLS_NAME} entry (a denial by path '
+                "refuses declared calls that name none; the client always sends one)"
+            )
+        if unnamed is not None:
             revoke = (
                 f"--method {call.method} --path {entry['path']}"
                 if entry.get("operationId") is None and entry.get("path") is not None
@@ -600,7 +671,7 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
         for entry in allowed_operations
     ):
         if call.operation_id or call.path:
-            steps.append(f"{API_COMMAND} allow {call.api} {_operation_args(call)}")
+            steps.append(f"{API_COMMAND} allow {call.api} {_allow_args(call)}")
     return "; then ".join(steps)
 
 
@@ -865,8 +936,8 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
     hints = list(dict.fromkeys(r.hint for r in report.results if r.is_violation and r.hint))
     if hints:
         console.print(
-            "To allow a refused call, change api-policy.yaml in a reviewed pull request "
-            "(CODEOWNERS covers it), for example:"
+            "To fix a refused call, change the tool as shown, or change api-policy.yaml in a "
+            "reviewed pull request (CODEOWNERS covers it), for example:"
         )
         for hint in hints:
             console.print(f"  {escape(hint)}", style="cyan", highlight=False)

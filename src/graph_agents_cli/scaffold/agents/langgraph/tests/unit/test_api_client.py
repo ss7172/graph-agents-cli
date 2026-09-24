@@ -88,6 +88,9 @@ apis:
       - operationId: deleteRecord
         methods: [DELETE]
       - path: /admin/{section}
+      - operationId: dropTable
+        path: /tables/{table}
+        methods: [DELETE]
     pagination: {page_size_param: limit, max_page_size: 50}
   orders:
     base_url_env: ORDERS_API_BASE_URL
@@ -353,6 +356,24 @@ async def test_an_operation_id_denial_refuses_calls_that_do_not_name_one(policy_
         ("DELETE", "/records/1"),
         ("GET", "/records/1"),
     ]
+
+
+@pytest.mark.parametrize("label", ["dropTable", "archiveTable", "dropTabel", None])
+async def test_a_denial_pinning_a_path_refuses_the_call_whatever_its_label(
+    policy_file: Path, label: str | None
+) -> None:
+    """The operation id is the tool's label: a relabelled call to a denied endpoint is refused."""
+    calls: list[httpx.Request] = []
+    client = get_client("records", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError, match="denied"):
+        await client.request(
+            "DELETE", "/tables/{table}", operation_id=label, path_params={"table": "t1"}
+        )
+    with pytest.raises(ApiPolicyError, match="denied"):
+        await client.delete("/TABLES/t1/", operation_id=label)
+    assert calls == []
+    await client.get("/tables/t1", operation_id=label)  # the denial pins DELETE
+    assert [(c.method, c.url.path) for c in calls] == [("GET", "/tables/t1")]
 
 
 @pytest.mark.parametrize("path", ["/admin/1", "/admin/1/", "/ADMIN/1", "/%61dmin/1", "/Admin/%31"])

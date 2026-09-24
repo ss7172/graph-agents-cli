@@ -183,21 +183,24 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `api add NAME --base-url-env ENV --auth none|bearer|forward --access
   read-only|read-write|custom` (`--access` is required: read-only = GET, HEAD; read-write =
   GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods`), `api access`, `api allow` /
-  `api deny` (by operationId, filled in from the API's OpenAPI spec when it has one, or by
-  `--method`/`--path`), `api revoke`, `api limits`, `api remove`, `api show [--json]` and `api
-  check` (same as `lint --policy-only`). Every change validates the result, keeps comments
-  and key order, prints a unified diff of each file it touches (the policy, the manifest's
-  `api_policy` and `secrets.keys`, `.env.example`, the chart's `values.yaml`), writes
-  atomically, says whether it widens or narrows access and how the tools' declared calls are
-  affected; `--dry-run` prints the diff only; exit 3 on an invalid result or outside a
-  project. `lint` prints every `graph-agents-cli api` command a refused call needs (the
-  method, a denial, the allow-list), and `lint` and `api check` exit 3 on an invalid
-  `api-policy.yaml` (a configuration error, not a refused call).
+  `api deny` (by operationId, filled in from the API's OpenAPI spec when it has one; by
+  `--method`/`--path`; or by both, pinning all three), `api revoke`, `api limits`, `api
+  remove`, `api show [--json]` and `api check` (same as `lint --policy-only`). Every change
+  validates the result, keeps comments and key order, prints a unified diff of each file it
+  touches (the policy, the manifest's `api_policy` and `secrets.keys`, `.env.example`, the
+  chart's `values.yaml`), writes atomically, says whether it widens or narrows access and how
+  the tools' declared calls are affected; `--dry-run` prints the diff only; exit 3 on an
+  invalid result, outside a project, or when the edit would also change another API that
+  repeats the edited one through a YAML alias. `lint` prints every `graph-agents-cli api`
+  command a refused call needs (the method, a denial, an allow-list entry pinning the call's
+  method and path), and `lint` and `api check` exit 3 on an invalid `api-policy.yaml` (a
+  configuration error, not a refused call).
 - **Outbound call limits**: optional per-API `limits: {max_calls_per_run, rate_per_minute}`.
   `max_calls_per_run` counts the calls to that API within one agent run (the LangGraph run
   id, else the request's); `rate_per_minute` is a token bucket per process (per replica).
   A call over a limit is refused before it is sent, with a reason the model can read;
-  a run's counters are dropped when a `/chat` run ends, or after an hour without a call.
+  a run's counters are dropped when a `/chat` or A2A run ends, and otherwise (LangGraph
+  Server runs included) after an hour without a call.
 - The `approval` key is reserved on an API and on an operation entry for human approval of
   calls (planned) and refused until then ("approval gates are not supported yet (planned);
   remove the approval key"), so a policy never counts on a gate that does not exist.
@@ -330,10 +333,14 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   would have had their code run on users' machines. Everything installs from a pinned git tag
   of this repository.
 - The outbound API policy cannot be widened by accident: without a policy every call is
-  refused; unknown and repeated YAML keys are errors; a denial applies to a call that does not
-  name the field it pins; `/admin/1/`, `/ADMIN/1` and `/%61dmin/1` no longer get past a denial of
-  `/admin/{x}`; the page-size cap holds for every spelling of the parameter; `lint` reads tool
-  subpackages and reports `API_CALLS` it cannot read instead of trusting it.
+  refused; unknown and repeated YAML keys are errors; a denial pinning a path refuses every
+  call to it whatever `operation_id` the call gives (a relabelled or misspelt call no longer
+  reaches a denied endpoint), and a call that leaves out what a denial knows the operation by
+  is refused by it; with an OpenAPI spec, `lint` refuses a declared `operation_id` the spec
+  does not give that method and path; `/admin/1/`, `/ADMIN/1` and `/%61dmin/1` no longer get
+  past a denial of `/admin/{x}`; the page-size cap holds for every spelling of the
+  parameter; `lint` reads tool subpackages and reports `API_CALLS` it cannot read instead of
+  trusting it.
 - A2A tasks are private to the principal that created them (another principal's task reads
   as not found); the in-memory task store evicts tasks after `A2A_TASK_TTL_S`.
 - LangGraph Server native API: assistants, crons and store writes need `AUTH_ADMIN_ROLES`;

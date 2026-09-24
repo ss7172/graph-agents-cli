@@ -421,33 +421,51 @@ def operation_matches(
     return pinned_id is not None or pinned_path is not None
 
 
-def denial_matches(
+def denial_match(
     entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
-) -> bool:
-    """Whether a ``denied_operations`` entry may cover the call (fail closed).
+) -> str | None:
+    """How a ``denied_operations`` entry covers the call: None when it does not.
 
-    Every field the entry pins must match, as for an allow, but a pinned field
-    the call does not name counts as matching: a call without an operation id
-    cannot be told apart from a denied ``operationId``, so it is refused.
-    Operation ids and paths are compared ignoring letter case.
+    A denial names an endpoint and must hold whatever label a call gives it,
+    so, unlike an allow, the fields it pins are alternatives, not
+    requirements. With its ``methods`` (when pinned) covering the call's
+    method, it covers a call whose path its ``path`` covers, whatever
+    operation id the call names, and a call that names its ``operationId``
+    (both return ``""``). Failing closed, it also covers a call that leaves
+    out what the denial knows the operation by: no path when it pins
+    ``path`` (returns ``"path"``), no operation id when it pins
+    ``operationId`` alone (returns ``"operation_id"``). A denial by
+    ``operationId`` alone knows only that label: pin ``path`` too so it holds
+    on the wire. Operation ids and paths are compared ignoring letter case.
     """
     if not _methods_match(entry, method):
-        return False
+        return None
     pinned_id = entry.get("operationId")
-    if (
-        pinned_id is not None
-        and operation_id is not None
-        and str(operation_id).casefold() != str(pinned_id).casefold()
-    ):
-        return False
     pinned_path = entry.get("path")
     if (
         pinned_path is not None
         and path is not None
-        and not path_matches(pinned_path, path, ignore_case=True)
+        and path_matches(pinned_path, path, ignore_case=True)
     ):
-        return False
-    return pinned_id is not None or pinned_path is not None
+        return ""
+    if (
+        pinned_id is not None
+        and operation_id is not None
+        and str(operation_id).casefold() == str(pinned_id).casefold()
+    ):
+        return ""
+    if pinned_path is not None and path is None:
+        return "path"
+    if pinned_id is not None and pinned_path is None and operation_id is None:
+        return "operation_id"
+    return None
+
+
+def denial_matches(
+    entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+) -> bool:
+    """Whether a ``denied_operations`` entry covers the call (see ``denial_match``)."""
+    return denial_match(entry, method, operation_id, path) is not None
 
 
 def describe_operation(entry: Mapping[str, Any]) -> str:
@@ -472,9 +490,11 @@ def refusal_reason(
 
     Every rule must pass: the method is in ``allowed_methods`` (``["*"]``
     allows every method); no ``denied_operations`` entry may cover the call
-    (denials win, and a call that does not name a field a denial pins is
-    refused by it: ``denial_matches``); and, when ``allowed_operations`` is
-    present, one of its entries matches (``operation_matches``).
+    (denials win: a denial pinning a path refuses every call to that path,
+    whatever operation id it names, and a call that leaves out what a denial
+    knows the operation by is refused by it: ``denial_match``); and, when
+    ``allowed_operations`` is present, one of its entries matches
+    (``operation_matches``: every field it pins).
     """
     method = method.upper()
     operation_id = operation_id or None
@@ -483,20 +503,13 @@ def refusal_reason(
     if ANY_METHOD not in allowed and method not in allowed:
         return f"method {method} is not in allowed_methods {allowed}"
     for entry in api.get("denied_operations") or []:
-        if denial_matches(entry, method, operation_id, path):
+        unnamed = denial_match(entry, method, operation_id, path)
+        if unnamed is not None:
             reason = f"denied by denied_operations ({describe_operation(entry)})"
-            unnamed = [
-                name
-                for name, pinned, given in (
-                    ("operation_id", "operationId", operation_id),
-                    ("path", "path", path),
-                )
-                if entry.get(pinned) is not None and given is None
-            ]
             if unnamed:
                 reason += (
-                    f": the call names no {' and no '.join(unnamed)}, so it cannot be ruled "
-                    "out; name it on the call and in API_CALLS"
+                    f": the call names no {unnamed}, so it cannot be ruled out; name it on "
+                    "the call and in API_CALLS"
                 )
             return reason
     allowed_operations = api.get("allowed_operations")

@@ -132,7 +132,7 @@ line naming the file that implements it.
 | `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it; a refused call comes with the `api` command that would allow it) |
 | `api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] [--forward-header H] --access read-only\|read-write\|custom [--methods M,...] [--openapi PATH] [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]` | Declare an outbound API (creates `api-policy.yaml` when absent); `--access` is required, there is no default |
 | `api access NAME read-only\|read-write\|custom [--methods M,...] [--dry-run]` | Set the methods an API allows |
-| `api allow\|deny NAME (OPERATION_ID \| --method M --path P) [--methods M,...] [--dry-run]` | Add an `allowed_operations` / `denied_operations` entry (`--methods` for `allow` only) |
+| `api allow\|deny NAME (OPERATION_ID [--method M --path P] \| --method M --path P) [--methods M,...] [--dry-run]` | Add an `allowed_operations` / `denied_operations` entry pinning every field given (`--methods` for `allow` only) |
 | `api revoke NAME (OPERATION_ID \| --method M --path P) [--from allowed\|denied] [--dry-run]` | Remove the matching entries (with `--method`, only that method of each) |
 | `api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none] [--dry-run]` / `api remove NAME [--dry-run]` | Set or clear call limits / remove an API |
 | `api show [NAME] [--json]` / `api check` | The effective policy and each tool's declared calls / the policy check (`lint --policy-only`) |
@@ -359,7 +359,7 @@ apis:
     allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]  # required, explicit; ["*"] = every method
     allowed_operations:                    # optional; omitted = every operation within allowed_methods
       - operationId: listOrders            # an entry may pin operationId and/or path (+ methods);
-        path: /orders                      # pinning both requires both to match
+        path: /orders                      # an allow needs every field it pins to match
         methods: [GET]
       - operationId: createOrder
         path: /orders
@@ -367,9 +367,9 @@ apis:
       - operationId: updateOrder
         path: /orders/{order_id}
         methods: [PATCH]
-    denied_operations:                     # same entry shape; denials win
-      - operationId: deleteOrder
-        path: /orders/{order_id}
+    denied_operations:                     # same entry shape; denials win and hold on the path:
+      - operationId: deleteOrder           # DELETE /orders/{order_id} is refused whatever
+        path: /orders/{order_id}           # operation_id a call gives it
         methods: [DELETE]
     openapi: specs/orders.yaml             # optional: lint checks declared calls against it
     timeouts_ms: {connect: 2000, read: 5000}
@@ -394,8 +394,9 @@ which would persist it. The policy's credential always overrides a header the to
 Limits (optional, per API): `max_calls_per_run` caps the calls to that API within one agent
 run (the LangGraph run id, else the request's); `rate_per_minute` is a token bucket per
 process, so N replicas allow N times the rate. A call over a limit is refused before it is
-sent, with a reason the model can read; a run's counters are dropped when it ends or after an
-hour without a call. The key `approval` (on an API or an operation entry) is reserved for
+sent, with a reason the model can read; a run's counters are dropped when a `/chat` or A2A
+run ends, and otherwise (LangGraph Server runs included) after an hour without a call, at
+most 10 000 runs being tracked. The key `approval` (on an API or an operation entry) is reserved for
 human approval of calls, which is planned: until then it is refused ("approval gates are not
 supported yet (planned); remove the approval key"), so a policy never counts on a gate that
 does not exist.
@@ -404,9 +405,15 @@ Fail-closed rules, identical in `create`, `lint`, `api` and the runtime (one blo
 shared byte-for-byte and a test keeps the copies in sync):
 
 - Unknown keys and repeated keys are errors at every level, so a typo never widens access.
-- A denial covers a call that does not name a field the denial pins: a denial by
-  `operationId` alone refuses every call without `operation_id`. Pin `path` in denials, or
-  name `operation_id` on every call.
+- An allow needs every field it pins to match. A denial names an endpoint and holds whatever
+  a call calls it: it refuses every call to a path its `path` covers (with its `methods`),
+  whatever `operation_id` the call gives, and every call that names its `operationId`. It
+  also refuses a call that leaves out what it knows the operation by: no `path` in
+  `API_CALLS` against a denial pinning a path, no `operation_id` against a denial by
+  `operationId` alone. A denial by `operationId` alone knows only that label, so a call to
+  the same endpoint under another `operation_id` gets past it: pin `path` in denials
+  (`api deny NAME OPERATION_ID --method M --path P`, or record the API's `openapi:`, from
+  which `api deny` fills them in).
 - Paths match after decoding percent-encoded unreserved characters and ignoring one trailing
   slash; denials also ignore letter case. Pass model input as `path_params` of a declared
   template (each value is encoded as one segment; `.`, `..` and `/` are refused), never as
@@ -428,8 +435,11 @@ order = await client.post("/orders", operation_id="createOrder", json_body={"sku
 ```
 
 `API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional assignment) is a lint
-error because lint cannot read it. A refused call is printed with the `graph-agents-cli api`
-command that would allow it.
+error because lint cannot read it. With `openapi:` recorded, a declared `operation_id` must
+be the one the spec gives that method and path: a typo or a relabelled call is refused, not
+trusted. A refused call is printed with the `graph-agents-cli api` command that would allow
+it: an entry pinning the call's method, and its path when it names one, so the change allows
+exactly that call.
 
 ### The policy's lifecycle
 
@@ -447,7 +457,9 @@ nothing written. It also says whether the change widens or narrows access and wh
 tools' declared calls become allowed or refused. `api allow` on an API without
 `allowed_operations` creates the list, which narrows access from "every operation within
 `allowed_methods`" to the listed ones: the command says so. With `openapi:` recorded, `allow`
-and `deny` by operation id check that the id exists and fill in its method and path.
+and `deny` by operation id check that the id exists and fill in its method and path; without
+one, give them yourself (`api allow orders updateOrder --method PATCH --path
+/orders/{order_id}`), since an entry by operation id alone pins only the tool's label.
 
 1. `graph-agents-cli create my-agent`, then `graph-agents-cli api add orders --base-url-env
    ORDERS_API_BASE_URL --auth bearer --token-env ORDERS_API_TOKEN --access read-only`
@@ -468,10 +480,10 @@ Adding functionality to a working agent, for example letting the agent of step 1
 read-only, no `allowed_operations`, a tool calling `listOrders`) update orders:
 
 ```bash
-graph-agents-cli api show orders                                # the calls your tools declare, each allowed or not
-graph-agents-cli api allow orders listOrders --methods GET      # first, what the agent already calls (see below)
-graph-agents-cli api allow orders updateOrder --methods PATCH   # --dry-run first to review the diff
-graph-agents-cli api access orders custom --methods GET,HEAD,PATCH   # PATCH reaches the listed operations only
+graph-agents-cli api show orders                                             # the calls your tools declare, each allowed or not
+graph-agents-cli api allow orders listOrders --method GET --path /orders     # first, what the agent already calls (see below)
+graph-agents-cli api allow orders updateOrder --method PATCH --path /orders/{order_id}   # --dry-run first to review the diff
+graph-agents-cli api access orders custom --methods GET,HEAD,PATCH           # PATCH reaches the listed operations only
 # write app/tools/update_order.py with {"api": "orders", "method": "PATCH", "operation_id": "updateOrder", ...}
 graph-agents-cli api check
 graph-agents-cli eval run                                       # with new cases for the change

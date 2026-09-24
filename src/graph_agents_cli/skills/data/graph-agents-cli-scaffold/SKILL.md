@@ -309,7 +309,8 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --agent-guidance-filename CLAUDE.md -y`
 3. `graph-agents-cli api add incidents --base-url-env INCIDENTS_API_BASE_URL --auth bearer --token-env INCIDENTS_API_TOKEN --access custom --methods GET,POST`,
    then `api allow incidents listIncidents`, `api allow incidents getIncident`,
-   `api allow incidents acknowledgeIncident` (each with `--method`/`--path` without a spec).
+   `api allow incidents acknowledgeIncident` (without a spec, add each one's
+   `--method M --path P` so the entry pins the endpoint, not only the label).
 4. Implement tools, smoke test, eval.
 5. Later: `graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme --cd argocd`.
 

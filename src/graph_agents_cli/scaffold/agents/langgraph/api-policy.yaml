@@ -25,8 +25,8 @@ apis:
     #                                       # attributes["credentials"]["orders"]
     allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]  # required, explicit; ["*"] = every method
     allowed_operations:                     # optional; omit = every operation within
-      - operationId: listOrders             # allowed_methods. An entry pinning both
-        path: /orders                       # operationId and path needs both to match.
+      - operationId: listOrders             # allowed_methods. An allowed entry needs every
+        path: /orders                       # field it pins (operationId, path, methods).
         methods: [GET]
       - operationId: getOrder
         path: /orders/{order_id}
@@ -37,10 +37,10 @@ apis:
       - operationId: updateOrder
         path: /orders/{order_id}
         methods: [PATCH]
-    denied_operations:                      # same entry shape; denials win and fail closed:
-      - operationId: deleteOrder            # a call that does not name a field a denial
-        path: /orders/{order_id}            # pins is refused by it (name operation_id on
-        methods: [DELETE]                   # every call, or pin `path` in the denial).
+    denied_operations:                      # same entry shape; denials win and hold on the
+      - operationId: deleteOrder            # path: DELETE /orders/{order_id} is refused
+        path: /orders/{order_id}            # whatever operation_id a call gives it (a denial
+        methods: [DELETE]                   # by operationId alone knows only that label).
     # openapi: docs/orders-openapi.yaml     # optional; lint validates declared calls against it
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}  # enforced at runtime

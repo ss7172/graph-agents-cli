@@ -81,8 +81,10 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 - **Three strikes.** The same error three times means fix the cause, not retry.
 - **Tools declare their API calls.** Add an `API_CALLS` entry (`api`, `method`,
   `operation_id` and/or `path`) for every external API call a tool makes;
-  `graph-agents-cli lint` refuses undeclared or disallowed calls. Never bypass
-  `api_client.py` with a raw HTTP client.
+  `graph-agents-cli lint` refuses undeclared or disallowed calls. Use the
+  `operation_id` the API's spec gives the call, the same in `API_CALLS` and on the
+  call; never relabel a call to get it past `lint` (a denial holds on the path
+  anyway). Never bypass `api_client.py` with a raw HTTP client.
 - **Change `api-policy.yaml` only when the user asks**, with `graph-agents-cli api`
   (`add`, `access`, `allow`, `deny`, `revoke`, `limits`, `remove`; show the user the
   printed diff, use `--dry-run` first). The policy is a security boundary: never

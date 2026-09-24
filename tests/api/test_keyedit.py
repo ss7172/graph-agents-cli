@@ -173,6 +173,54 @@ def test_unsafe_shapes_are_refused_and_nothing_changes() -> None:
         YamlText("a:\n  b: 1\n").delete(("a", "b"))  # the only key of its mapping
 
 
+ALIASED = """\
+apis:
+  orders: &o
+    base_url_env: X
+    auth: none
+    allowed_methods: [GET]
+  billing: *o
+"""
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        # The auditor's case: widening orders would widen billing, which repeats it.
+        lambda t: t.set(("apis", "orders", "allowed_methods"), ["GET", "DELETE"]),
+        lambda t: t.set(("apis", "billing", "allowed_methods"), ["GET", "DELETE"]),
+        lambda t: t.set(("apis", "orders", "limits"), {"max_calls_per_run": 5}),
+        lambda t: t.append(("apis", "billing", "denied_operations"), {"path": "/x"}),
+        lambda t: t.delete(("apis", "orders", "auth")),
+    ],
+)
+def test_an_edit_that_reaches_an_aliased_mapping_is_refused(edit) -> None:
+    """Checked against an unshared copy: the change must land at its one key only."""
+    text = YamlText(ALIASED)
+    with pytest.raises(EditError, match="through a YAML alias"):
+        edit(text)
+    assert text.text == ALIASED
+
+
+def test_merged_values_are_refused_but_unrelated_keys_stay_editable() -> None:
+    merged = (
+        "apis:\n  a: &base\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+        "  b:\n    <<: *base\n    timeouts_ms: {read: 100}\n  c:\n    base_url_env: C\n"
+        "    auth: none\n"
+        "    allowed_methods: [GET]\n"
+    )
+    text = YamlText(merged)
+    with pytest.raises(EditError):
+        text.set(("apis", "a", "allowed_methods"), ["GET", "POST"])  # b merges it
+    assert text.text == merged
+    # c shares nothing: it is edited as usual, anchors elsewhere notwithstanding.
+    text.set(("apis", "c", "allowed_methods"), ["GET", "POST"])
+    assert yaml.safe_load(text.text)["apis"]["c"]["allowed_methods"] == ["GET", "POST"]
+    assert yaml.safe_load(text.text)["apis"]["b"]["allowed_methods"] == ["GET"]
+    with pytest.raises(EditError, match="recursive"):
+        YamlText("a: &r\n  self: *r\n")
+
+
 BLOCK_METHODS = """\
 apis:
   orders:

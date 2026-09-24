@@ -189,7 +189,8 @@ when the project declares an API policy):
   `API_CALLS` **statically with `ast`** (no import, no model SDK loaded), validates
   `api-policy.yaml` with the same strict schema the runtime uses, and checks each entry against
   the named API (`allowed_methods`, `allowed_operations`, `denied_operations`) and, when the API
-  names an `openapi:` spec, against that spec (by `operationId`, or by `path` + `method`). It
+  names an `openapi:` spec, against that spec (by `operationId`, or by `path` + `method`; a
+  declared `operation_id` must be the one the spec gives that method and path). It
   reads the one module-level literal only, so a computed (non-literal) `API_CALLS` is invalid,
   and so is anything that binds or changes it elsewhere (`+=`, `.append()`, an item assignment,
   a second or conditional assignment, an import): declare every call in the single literal. A
@@ -202,11 +203,13 @@ when the project declares an API policy):
   `ApiPolicyError`. The API's optional `limits` are counted just before sending:
   `max_calls_per_run` (calls to that API in one agent run) and `rate_per_minute` (per process);
   a call over a limit raises `ApiPolicyError` too, with the reason the model reads. Policy `path` entries are
-  templates (`{param}` matches one segment, for `lint` and the client alike); an entry pinning
-  both `operationId` and `path` needs both to match. Denials win and fail closed: a call that
-  does not name a field a denial pins is refused by it, so when the API has a denial by
-  `operationId` alone, pass `operation_id=` on every call and declare it in `API_CALLS` (or pin
-  the denial's `path`). Paths match after decoding percent-encoded unreserved characters and
+  templates (`{param}` matches one segment, for `lint` and the client alike); an allowed entry
+  pinning both `operationId` and `path` needs both to match. Denials win and hold on the
+  endpoint: a denial pinning a path refuses every call to it whatever `operation_id` the call
+  names (the id is a label, so relabelling a call never gets it past a denial), and a call that
+  leaves out what a denial knows the operation by is refused by it, so when the API has a
+  denial by `operationId` alone, pass `operation_id=` on every call and declare it in
+  `API_CALLS`. Paths match after decoding percent-encoded unreserved characters and
   ignoring one trailing slash; denials also ignore letter case. Pass `path` as the declared
   template and the values in `path_params`; a concrete path is validated (no dot segments,
   encoded slashes, empty segments, query or fragment). A base URL with a path prefix works (the
@@ -220,8 +223,8 @@ when the project declares an API policy):
   (`Authorization` by default), and refuses to send when the caller has none; `auth: none`
   sends nothing. `forward` is refused under `langgraph-server` (the server persists run context).
 - No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS`; `lint`
-  then prints the `graph-agents-cli api` command that would allow it (`api allow`, or `api
-  access` for a new method). Propose it to the user: widening access is their decision and a
+  then prints the `graph-agents-cli api` command that would allow it (`api allow` with the
+  call's method and path, or `api access` for a new method). Propose it to the user: widening access is their decision and a
   reviewed change (CODEOWNERS covers `api-policy.yaml`); never run it unasked.
 - Unit-test tools with an `httpx.MockTransport` passed as `get_client(..., transport=...)` (or
   `respx`) and the `fake` model; never against a live API.

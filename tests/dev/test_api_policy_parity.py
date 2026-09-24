@@ -378,6 +378,9 @@ DENIALS = yaml.safe_load(
     "    auth: none\n"
     "    allowed_methods: ['*']\n"
     "    denied_operations:\n"
+    "      - operationId: deleteOrder\n"
+    "        path: /orders/{order_id}\n"
+    "        methods: [DELETE]\n"
     "      - operationId: deleteItem\n"
     "        methods: [DELETE]\n"
     "      - path: /admin/{section}\n"
@@ -391,6 +394,7 @@ DENIAL_CALLS = [
     ("DELETE", "DeleteItem", "/items/1", True, None),
     ("DELETE", None, "/items/1", True, "operation_id"),
     ("DELETE", "", "/items/1", True, "operation_id"),
+    # A denial by operationId alone knows only that label.
     ("DELETE", "archiveItem", "/items/1", False, None),
     ("GET", None, "/items/1", False, None),
     ("GET", "getAdmin", None, True, "path"),
@@ -401,10 +405,25 @@ DENIAL_CALLS = [
     ("GET", "x", "/%41DMIN/1", True, None),
     ("GET", "x", "/admin/{section}", True, None),
     ("GET", "x", "/administrator/1", False, None),
-    ("POST", None, "/items/1/purge", True, "operation_id"),
+    # A denial pinning a path holds on the wire: the call's label does not matter...
+    ("POST", None, "/items/1/purge", True, None),
     ("POST", "purge", "/items/1/purge", True, None),
-    ("POST", "other", "/items/1/purge", False, None),
-    ("POST", "purge", "/items/1", False, None),
+    ("POST", "other", "/items/1/purge", True, None),
+    # ...and its operationId is one more way to match, not a requirement.
+    ("POST", "purge", "/items/1", True, None),
+    ("POST", "other", "/items/1", False, None),
+    ("POST", "other", None, True, "path"),
+    # The auditor's case: `api deny orders deleteOrder` with a spec, relabelled calls.
+    ("DELETE", "deleteOrder", "/orders/1", True, None),
+    ("DELETE", "cancelOrder", "/orders/1", True, None),
+    ("DELETE", "deleteOrdr", "/orders/{order_id}", True, None),
+    ("DELETE", None, "/orders/1", True, None),
+    ("DELETE", "cancelOrder", "/ORDERS/1/", True, None),
+    ("DELETE", "cancelOrder", None, True, "path"),
+    # A denial pinning a path does not refuse an unnamed call to another path.
+    ("POST", None, "/carts/1", False, None),
+    ("GET", "getOrder", "/orders/1", False, None),
+    ("GET", "deleteOrder", "/orders/1", False, None),
 ]
 
 

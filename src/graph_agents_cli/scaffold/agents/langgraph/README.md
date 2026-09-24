@@ -140,16 +140,19 @@ refused. The client sends every method the policy allows (`request()`, or `get`,
 Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`none`, `bearer` with
 `token_env`, or `forward`, which sends the caller's own `attributes["credentials"][<api>]`; not available
 under langgraph-server, which would persist it), the required `allowed_methods`, and optional
-`allowed_operations` / `denied_operations` (an entry pinning both `operationId` and `path` needs both to
-match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the
+`allowed_operations` / `denied_operations` (an allowed entry pinning both `operationId` and `path` needs
+both to match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the
 parameter) and `limits`: `max_calls_per_run` (calls to that API within one agent run) and
 `rate_per_minute` (a token bucket per process, so per replica). A call over a limit is refused before it is
 sent, with a reason the model can read. `approval` is reserved for human approval of calls, which is planned:
 the key is refused until then. Unknown and repeated keys are errors, so a typo never widens access. Denials
-win and fail closed: a call that does not name a field a denial pins is refused by it, so a denial by
-`operationId` alone refuses every call without `operation_id` (name it on the call and in `API_CALLS`, or pin
-the denial's `path`). Paths match after decoding percent-encoded unreserved characters and ignoring one
-trailing slash; letter case counts for allows and is ignored for denials. Pass model input as `path_params`
+win and hold on the endpoint: a denial pinning a path refuses every call to it whatever `operation_id` the
+call gives, and a call that leaves out what a denial knows the operation by is refused by it, so a denial by
+`operationId` alone refuses every call without `operation_id` (name it on the call and in `API_CALLS`), but
+only knows that label: pin the denial's `path` too. With `openapi`, `lint` also refuses a declared
+`operation_id` the spec does not give that method and path. Paths match after decoding percent-encoded
+unreserved characters and ignoring one trailing slash; letter case counts for allows and is ignored for
+denials. Pass model input as `path_params`
 of a declared template, never as part of a concrete path.
 {%- if cookiecutter.has_api_policy %}
 This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
@@ -176,8 +179,8 @@ touch it. There is no default access level: every API lists its methods explicit
 |---|---|
 | `graph-agents-cli api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] --access read-only\|read-write\|custom [--methods M,...] [--openapi SPEC] [--max-calls-per-run N] [--rate-per-minute N]` | Declare an API; `--access` is required. read-only = GET, HEAD; read-write = GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods` |
 | `graph-agents-cli api access NAME read-only\|read-write\|custom [--methods M,...]` | Set the allowed methods |
-| `graph-agents-cli api allow NAME OPERATION_ID` (or `--method M --path P`) | Add an `allowed_operations` entry (with `openapi`, the id must exist and its method and path are filled in). Creating the list narrows access to the listed operations: the command says so |
-| `graph-agents-cli api deny NAME OPERATION_ID` (or `--method M --path P`) | Add a `denied_operations` entry |
+| `graph-agents-cli api allow NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add an `allowed_operations` entry pinning every field given (with `openapi`, the id must exist and its method and path are filled in). Creating the list narrows access to the listed operations: the command says so |
+| `graph-agents-cli api deny NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add a `denied_operations` entry (pin the path: it then holds whatever `operation_id` a call gives) |
 | `graph-agents-cli api revoke NAME OPERATION_ID [--from allowed\|denied]` | Remove matching entries |
 | `graph-agents-cli api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none]` | Set or clear limits |
 | `graph-agents-cli api remove NAME` | Remove an API |
@@ -192,9 +195,10 @@ Adding functionality to a working agent, for example letting it update orders:
 
 1. Change the policy, reviewing each printed diff (`--dry-run` first). If `orders` has no
    `allowed_operations` yet, every operation within its methods is allowed: first
-   `graph-agents-cli api allow orders <operation>` for each operation the agent already calls, because the
-   first `allow` creates the list and every call not on it is refused from then on (the command names the
-   declared calls that become refused). Then `graph-agents-cli api allow orders updateOrder --methods PATCH`,
+   `graph-agents-cli api allow orders <operation> --method M --path P` for each operation the agent already
+   calls, because the first `allow` creates the list and every call not on it is refused from then on (the
+   command names the declared calls that become refused). Then
+   `graph-agents-cli api allow orders updateOrder --method PATCH --path /orders/{order_id}`,
    and `graph-agents-cli api access orders custom --methods <the current methods>,PATCH` if PATCH is not
    allowed yet. With the list in place the new method reaches only the listed operations; `api access`
    without a list would allow every PATCH operation of the API.

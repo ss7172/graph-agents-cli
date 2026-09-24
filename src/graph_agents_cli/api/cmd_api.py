@@ -45,7 +45,7 @@ from graph_agents_cli._api_policy import (
     DEFAULT_TIMEOUTS_MS,
     HTTP_METHODS,
     POLICY_FILENAME,
-    denial_matches,
+    denial_match,
     ensure_no_legacy_api_policy,
     forward_runtime_problem,
     parse_policy_yaml,
@@ -117,6 +117,23 @@ def _operation_options(function: Callable[..., Any]) -> Callable[..., Any]:
     )(function)
     function = click.option(
         "--method", "method", default=None, help="The operation's HTTP method (with --path)."
+    )(function)
+    return click.argument("operation_id", required=False)(function)
+
+
+def _entry_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    """allow / deny: OPERATION_ID, --method M --path P, or both (the entry pins all three)."""
+    function = click.option(
+        "--path",
+        "path",
+        default=None,
+        help="The operation's path template (with --method; also with OPERATION_ID).",
+    )(function)
+    function = click.option(
+        "--method",
+        "method",
+        default=None,
+        help="The operation's HTTP method (with --path; also with OPERATION_ID).",
     )(function)
     return click.argument("operation_id", required=False)(function)
 
@@ -505,10 +522,14 @@ def _add_todos(plan: Plan, config: ProjectConfig, name: str, api: dict[str, Any]
             "a placeholder); only base URLs and tokens differ between environments"
         )
     plan.left_for_you.append(f"set {variable} {where}")
-    if api["auth"] == "bearer":
+    if api["auth"] == "bearer" and config.deployment_target == "kubernetes":
         plan.left_for_you.append(
             f"put {api['token_env']} in .env and in .env.<env>, then run "
             "`graph-agents-cli secrets apply --env <env>`"
+        )
+    elif api["auth"] == "bearer":
+        plan.left_for_you.append(
+            f"put {api['token_env']} in .env (local runs) and in the environment the agent runs in"
         )
     elif api["auth"] == "forward":
         plan.left_for_you.append(
@@ -541,7 +562,7 @@ def cmd_remove(name: str, dry_run: bool) -> None:
     keep = {str(o["base_url_env"]) for o in others} | {
         str(o["token_env"]) for o in others if o.get("token_env")
     }
-    env_example_remove(plan, name, api, keep, set(document["apis"]))
+    env_example_remove(plan, name, api, keep, document["apis"])
     if api["base_url_env"] not in keep:
         values_remove(
             plan, project.config, api["base_url_env"], {str(o["base_url_env"]) for o in others}
@@ -627,7 +648,7 @@ def _entry_for(
 
 @api_group.command("allow")
 @click.argument("name")
-@_operation_options
+@_entry_options
 @click.option(
     "--methods", "methods", default=None, help="Limit the entry to these methods (e.g. GET,PUT)."
 )
@@ -640,8 +661,15 @@ def cmd_allow(
     methods: str | None,
     dry_run: bool,
 ) -> None:
-    """Allow one operation (an allowed_operations entry, by OPERATION_ID or --method/--path)."""
-    ref = ch.OperationRef.from_options(operation_id, method, path)
+    """Allow one operation (an allowed_operations entry, by OPERATION_ID and/or --method/--path).
+
+    An entry pins every field given, and all of them must match a call: pin
+    the method (--methods, or --method with --path) and, without an OpenAPI
+    spec, the path, so the entry allows exactly the declared call. With the
+    API's openapi spec recorded, OPERATION_ID must exist there and its
+    method and path are filled in.
+    """
+    ref = ch.OperationRef.from_options(operation_id, method, path, combine=True)
     extra = ch.parse_methods(methods)
     project = _load_project()
     api = project.api(name)
@@ -680,11 +708,22 @@ def cmd_allow(
             f"for it until `graph-agents-cli api access {name} custom --methods {wanted}`"
         )
     for denial in api.get(ch.DENIED) or []:
-        if denial_matches(denial, entry_methods[0], entry.get("operationId"), entry.get("path")):
+        if any(
+            denial_match(denial, m, entry.get("operationId"), entry.get("path")) == ""
+            for m in entry_methods
+        ):
             notes.append(
                 f"denied_operations entry {ch.describe_entry(denial)} still refuses it "
                 "(denials win)"
             )
+    if entry.get("path") is None:
+        # An allow by label alone: the tool chooses the label, the entry does not say where.
+        pinned = "no path" if entry.get("methods") else "no path and no method"
+        notes.append(
+            f"the entry pins {pinned}: a call labelled {entry['operationId']} is allowed on any "
+            f"path with {', '.join(entry_methods)}; to allow exactly one call, pin its endpoint "
+            f"too (graph-agents-cli api allow {name} {entry['operationId']} --method M --path P)"
+        )
     _finish(
         project,
         plan,
@@ -699,13 +738,20 @@ def cmd_allow(
 
 @api_group.command("deny")
 @click.argument("name")
-@_operation_options
+@_entry_options
 @_dry_run_option
 def cmd_deny(
     name: str, operation_id: str | None, method: str | None, path: str | None, dry_run: bool
 ) -> None:
-    """Deny one operation (a denied_operations entry, by OPERATION_ID or --method/--path)."""
-    ref = ch.OperationRef.from_options(operation_id, method, path)
+    """Deny one operation (a denied_operations entry, by OPERATION_ID and/or --method/--path).
+
+    A denial with a path refuses every call to that path (with its method),
+    whatever operation id the call names. A denial by OPERATION_ID alone
+    knows only that label: with the API's openapi spec recorded, the id's
+    method and path are filled in; without one, give --method M --path P
+    too so the denial holds whatever a call is labelled.
+    """
+    ref = ch.OperationRef.from_options(operation_id, method, path, combine=True)
     project = _load_project()
     api = project.api(name)
     entry, warnings = _entry_for(project, api, ref, [])
@@ -727,8 +773,11 @@ def cmd_deny(
     notes = list(warnings)
     if entry.get("operationId") is not None and entry.get("path") is None:
         notes.append(
-            "a denial by operationId alone also refuses every call that names no operation_id "
-            "(fail closed); name operation_id on each call, or deny by --method/--path"
+            "a denial by operationId alone knows only that label: it refuses the calls that "
+            "name it, and also refuses every call that names no operation_id (fail closed), "
+            "but a call to the same endpoint under another operation_id gets past it. Pin "
+            f"the endpoint too (graph-agents-cli api deny {name} {entry['operationId']} "
+            "--method M --path P, or record the API's openapi spec, which fills them in)"
         )
     _finish(
         project,
@@ -804,11 +853,19 @@ def cmd_revoke(
         )
     document = copy.deepcopy(project.document)
     assert document is not None
-    document["apis"][name][key] = entries
+    # The last denial takes its key with it (an empty list says nothing).
+    drop_key = key == ch.DENIED and not entries
+    if drop_key:
+        del document["apis"][name][key]
+    else:
+        document["apis"][name][key] = entries
     _validate(project, document)
     editor = project.editor()
 
     def apply() -> None:
+        if drop_key:
+            editor.delete(("apis", name, key))
+            return
         for revocation in revocations:
             if revocation.remaining_methods is None:
                 editor.remove_item(("apis", name, key), revocation.index)

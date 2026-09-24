@@ -27,8 +27,12 @@ this module edits the text at the positions the parser reports, the way
 * a removed key or list item takes its own lines and nothing else.
 
 Every edit is checked: the new text is parsed again (a repeated key is
-refused) and must equal the old document with exactly that change. When it
-does not, or the text uses a shape the edit cannot handle safely (anchors, a
+refused) and must equal the old document with exactly that change, at that
+one key. The old document is compared as a copy in which nothing is shared,
+so an edit that would also change another key through a YAML anchor and
+alias (``orders: &o ...`` / ``billing: *o``) or a merge key is refused rather
+than widening that other key silently. When the check fails, or the text uses
+a shape the edit cannot handle safely (a merge key in the edited mapping, a
 multi-line flow value, ...), :class:`EditError` is raised and nothing changes.
 """
 
@@ -125,6 +129,33 @@ def block_lines(value: Any, column: int, step: int = 2) -> list[str]:
 
 def _parse(text: str) -> Any:
     return yaml.load(text, Loader=_StrictLoader)
+
+
+def _unshared(value: Any, _open: frozenset[int] = frozenset()) -> Any:
+    """``value`` rebuilt so that no mapping or list appears twice in it.
+
+    YAML aliases make the parser hand back one object at every place that
+    repeats it, and ``copy.deepcopy`` keeps that sharing: an edit applied to
+    such a copy would reach the other places too, and the check would accept
+    a text that changes them. A recursive alias cannot be rebuilt: EditError.
+    """
+    if not isinstance(value, dict | list):
+        return value
+    if id(value) in _open:
+        raise EditError("a recursive YAML alias")
+    inner = _open | {id(value)}
+    if isinstance(value, dict):
+        return {key: _unshared(item, inner) for key, item in value.items()}
+    return [_unshared(item, inner) for item in value]
+
+
+def _uses_aliases(text: str) -> bool:
+    """True when the text repeats a node through an alias (``*name``, merge keys included)."""
+    try:
+        events = yaml.parse(text, Loader=yaml.SafeLoader)
+        return any(isinstance(event, yaml.AliasEvent) for event in events)
+    except yaml.YAMLError:
+        return False
 
 
 class _Doc:
@@ -296,18 +327,26 @@ class YamlText:
             raise EditError(f"not valid YAML: {exc}") from exc
         if not isinstance(self.data, dict):
             raise EditError("the document is not a mapping")
+        _unshared(self.data)  # refuses a recursive alias up front
         self.text = text
 
     # -- plumbing -----------------------------------------------------------
 
     def _commit(self, new_text: str, change: Callable[[Any], None]) -> None:
-        expected = copy.deepcopy(self.data)
+        # Unshared: the change lands at its one path, so a text in which it also
+        # reaches another key through an alias does not match.
+        expected = _unshared(self.data)
         change(expected)
         try:
             parsed = _parse(new_text)
         except yaml.YAMLError as exc:
             raise EditError(f"the edited text is not valid YAML: {exc}") from exc
-        if parsed != expected:
+        if _unshared(parsed) != expected:
+            if _uses_aliases(self.text):
+                raise EditError(
+                    "the edit would also change another key that repeats the edited part "
+                    "through a YAML alias (*name) or merge key (<<)"
+                )
             raise EditError("the edited text would not mean exactly the intended change")
         self.text, self.data = new_text, parsed
 

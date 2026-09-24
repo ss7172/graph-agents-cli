@@ -263,16 +263,21 @@ apis:
   run (the run id from the LangGraph run's config metadata, else the request's; `get_client(...,
   run_id=...)` names it explicitly; calls outside any run share one count) and
   `rate_per_minute` is a token bucket per process, so per replica. Both are checked just before
-  sending and raise `ApiPolicyError`. A run's counters are dropped when a `/chat` run ends
-  (`end_run`) or after an hour without a call, and at most 10 000 runs are tracked.
+  sending and raise `ApiPolicyError`. A run's counters are dropped when a `/chat` or A2A run
+  ends (`end_run`), and otherwise (LangGraph Server runs included) after an hour without a
+  call; at most 10 000 runs are tracked.
 - `approval` (on an API or an operation entry) is reserved and refused by the schema ("approval
   gates are not supported yet (planned); remove the approval key").
-- Matching: an entry pinning several fields needs all of them to match. Denials win and fail
-  closed: a call that does not name a field a denial pins (no `operation_id` against an
-  `operationId` denial) is refused by it. Paths are compared after decoding percent-encoded
-  unreserved characters and ignoring one trailing slash; allows are case-sensitive, denials are
-  not. `pagination.max_page_size` applies to every value of the parameter, in any letter case.
-  Repeated YAML keys are errors, like unknown keys.
+- Matching: an allowed entry pinning several fields needs all of them to match. Denials win
+  and hold on the endpoint: a denial covers every call to a path its `path` covers (with its
+  `methods`), whatever `operation_id` the call names, and every call naming its
+  `operationId`; failing closed, it also covers a call that leaves out what it knows the
+  operation by (no `operation_id` against a denial by `operationId` alone, no path in
+  `API_CALLS` against a denial pinning a path). With `openapi:`, `lint` refuses a declared
+  `operation_id` the spec does not give that method and path. Paths are compared after
+  decoding percent-encoded unreserved characters and ignoring one trailing slash; allows are
+  case-sensitive, denials are not. `pagination.max_page_size` applies to every value of the
+  parameter, in any letter case. Repeated YAML keys are errors, like unknown keys.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
   the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the

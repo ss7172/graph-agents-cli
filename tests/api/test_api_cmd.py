@@ -366,15 +366,75 @@ def test_deny_and_revoke(project: Path) -> None:
     ]
     by_id = ok("api", "deny", "orders", "deleteOrder")
     assert "refuses every call that names no operation_id" in by_id.output
+    # Without a spec, a denial by id alone knows only the label: the command says so.
+    assert "under another operation_id gets past it" in by_id.output
+    assert "api deny orders deleteOrder --method M --path P" in by_id.output
     lifted = ok("api", "revoke", "orders", "--method", "GET", "--path", "/orders")
     assert "now allowed: orders_read.py" in lifted.output
     assert "This widens access to orders" in lifted.output
     assert policy(project)["orders"]["denied_operations"] == [{"operationId": "deleteOrder"}]
     ok("api", "revoke", "orders", "deleteOrder")
-    assert policy(project)["orders"]["denied_operations"] == []
+    # The last denial takes the key with it: no `denied_operations: []` left behind.
+    assert "denied_operations" not in policy(project)["orders"]
+    assert "denied_operations" not in (project / "api-policy.yaml").read_text()
     missing = cli("api", "revoke", "orders", "deleteOrder")
     assert missing.exit_code == 3 and "names deleteOrder" in missing.output
     assert "# end of orders" in (project / "api-policy.yaml").read_text()
+
+
+def test_deny_and_allow_pin_the_endpoint_with_the_operation_id(project: Path) -> None:
+    """Without a spec, OPERATION_ID --method M --path P writes an entry pinning all three."""
+    ok(*ORDERS_ADD)
+    denied = ok(
+        *("api", "deny", "orders", "deleteOrder", "--method", "delete"),
+        *("--path", "/orders/{order_id}"),
+    )
+    assert "under another operation_id" not in denied.output
+    ok("api", "allow", "orders", "createOrder", "--method", "POST", "--path", "/orders")
+    orders = policy(project)["orders"]
+    assert orders["denied_operations"] == [
+        {"operationId": "deleteOrder", "path": "/orders/{order_id}", "methods": ["DELETE"]}
+    ]
+    assert orders["allowed_operations"] == [
+        {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]}
+    ]
+    half = cli("api", "allow", "orders", "getOrder", "--path", "/orders/{order_id}")
+    assert half.exit_code == 2 and "give both --method and --path" in half.output
+    # revoke still names an entry one way: by id, or by method and path.
+    both = cli("api", "revoke", "orders", "deleteOrder", "--method", "DELETE", "--path", "/x")
+    assert both.exit_code == 2 and "not both" in both.output
+    # An allow by id alone says that it pins no path.
+    loose = ok("api", "allow", "orders", "listOrders", "--methods", "GET")
+    assert "a call labelled listOrders is allowed on any path with GET" in loose.output
+
+
+def test_a_relabelled_call_to_a_denied_endpoint_is_refused(project: Path) -> None:
+    """The auditor's case: `api deny <id>` with a spec, then a call naming another id."""
+    spec = project / "specs" / "orders.yaml"
+    spec.parent.mkdir()
+    spec.write_text(SPEC)
+    ok(*ORDERS_ADD, "--openapi", "specs/orders.yaml")
+    ok("api", "deny", "orders", "deleteOrder")
+    for label in ("cancelOrder", "deleteOrdr", "getOrder"):
+        tool = project / "app/tools/cancel.py"
+        tool.write_text(
+            "API_CALLS = [\n"
+            f'    {{"api": "orders", "method": "DELETE", "operation_id": "{label}",\n'
+            '     "path": "/orders/{order_id}"},\n'
+            "]\n"
+        )
+        refused = cli("api", "check")
+        assert refused.exit_code == 1, (label, refused.output)
+        assert "denied by denied_operations (operationId=deleteOrder" in refused.output
+        data = json.loads(ok("api", "show", "orders", "--json").output)
+        assert [c["status"] for c in data["calls"]] == ["denied"], label
+    # The runtime's rules (the same shared block) refuse it too.
+    api = policy(project)["orders"]
+    from graph_agents_cli._api_policy import refusal_reason
+
+    for label in ("cancelOrder", None, "deleteOrder"):
+        assert refusal_reason(api, "DELETE", label, "/orders/1"), label
+    assert refusal_reason(api, "GET", "getOrder", "/orders/1") is None
 
 
 def test_revoke_needs_from_when_both_lists_match(project: Path) -> None:
@@ -536,6 +596,11 @@ def test_removing_apis_that_share_a_variable_leaves_the_project_as_created(
     ok("api", "remove", first)
     env_example = (project / ".env.example").read_text()
     assert "SHARED_API_BASE_URL=" in env_example  # still used by the other API
+    # The shared variable's header names the API that still uses it, not the one removed.
+    other = "crm" if first == "orders" else "orders"
+    assert f"# {first} (auth:" not in env_example
+    header = env_example.index(f"# {other} (auth: bearer)")
+    assert env_example.index("SHARED_API_BASE_URL=") > header
     ok("api", "remove", "crm" if first == "orders" else "orders")
     # No orphaned "# <api> (auth: ...)" header, and the no-policy note is back.
     for name, text in fresh.items():
@@ -651,8 +716,41 @@ def test_following_the_check_hint_for_a_denied_call_is_enough(project: Path) -> 
     assert steps == [
         "graph-agents-cli api access orders custom --methods GET,POST,DELETE",
         "graph-agents-cli api revoke orders deleteOrder --from denied",
-        "graph-agents-cli api allow orders deleteOrder",
+        "graph-agents-cli api allow orders deleteOrder --method DELETE --path /orders",
     ]
     for step in steps:
         ok(*shlex.split(step)[1:])
     assert "All declared API calls are allowed" in ok("api", "check").output
+    # The allow the hint wrote covers exactly the declared call, not the label anywhere.
+    from graph_agents_cli._api_policy import refusal_reason
+
+    api = policy(project)["orders"]
+    assert refusal_reason(api, "DELETE", "deleteOrder", "/orders") is None
+    assert refusal_reason(api, "DELETE", "deleteOrder", "/admin/all") is not None
+    assert refusal_reason(api, "POST", "deleteOrder", "/orders") is not None
+
+
+def test_access_custom_without_methods_names_the_positional_choice(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    result = cli("api", "access", "orders", "custom")
+    assert result.exit_code == 2
+    assert "custom access needs --methods" in result.output
+    assert "--access custom" not in result.output
+    extra = cli("api", "access", "orders", "read-only", "--methods", "GET")
+    assert extra.exit_code == 2 and "--methods goes with custom access only" in extra.output
+
+
+@pytest.mark.parametrize(("target", "secrets_step"), [("kubernetes", True), ("none", False)])
+def test_add_names_the_secrets_step_only_for_kubernetes(target: str, secrets_step: bool) -> None:
+    from graph_agents_cli._project import ProjectConfig
+    from graph_agents_cli.api._files import Plan
+    from graph_agents_cli.api.cmd_api import _add_todos
+
+    plan = Plan(Path("."))
+    config = ProjectConfig(project_name="shop", create_params={"deployment_target": target})
+    api = {"base_url_env": "B", "auth": "bearer", "token_env": "B_TOKEN"}
+    _add_todos(plan, config, "billing", api)
+    todos = " ".join(plan.left_for_you)
+    assert "B_TOKEN" in todos
+    assert ("secrets apply" in todos) is secrets_step
+    assert (".env.<env>" in todos) is secrets_step

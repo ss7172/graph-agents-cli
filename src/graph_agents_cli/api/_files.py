@@ -28,6 +28,7 @@ import difflib
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -283,14 +284,27 @@ def env_example_add(plan: Plan, name: str, api: dict[str, Any]) -> None:
     plan.set_text(ENV_EXAMPLE, before, after)
 
 
+def _api_variables(api: Mapping[str, Any]) -> set[str]:
+    """The variables an API puts in ``.env.example``: its base URL, and its token under bearer."""
+    names = {str(api["base_url_env"])}
+    if api["auth"] == "bearer":
+        names.add(str(api["token_env"]))
+    return names
+
+
 def env_example_remove(
-    plan: Plan, name: str, api: dict[str, Any], keep: set[str], declared: set[str]
+    plan: Plan,
+    name: str,
+    api: dict[str, Any],
+    keep: set[str],
+    remaining: Mapping[str, Mapping[str, Any]],
 ) -> None:
     """Drop the variables of API ``name`` that no other API uses (``keep``).
 
-    ``declared``: the APIs left. The header line of an API that is gone goes
-    once none of its variables remain (a variable another API shares keeps it),
-    and without any API left the fresh project's "no policy" note comes back.
+    ``remaining``: the APIs left, by name. The header line of an API that is
+    gone goes once none of its variables remain; when a variable another API
+    shares keeps it, it is renamed to that API. Without any API left the
+    fresh project's "no policy" note comes back.
     """
     path = plan.root / ENV_EXAMPLE
     before = read_text(path)
@@ -303,8 +317,8 @@ def env_example_remove(
         after = before
         if names:
             after = env_remove(before, names, comments=[_env_comment(name, api)])
-        after = _drop_orphan_headers(after, declared)
-        if not declared:
+        after = _fix_orphan_headers(after, remaining)
+        if not remaining:
             after = _restore_no_policy_note(after)
     except (EditError, ValueError) as exc:
         plan.left_for_you.append(f"{ENV_EXAMPLE}: remove {', '.join(names)} (not edited: {exc})")
@@ -312,27 +326,38 @@ def env_example_remove(
     plan.set_text(ENV_EXAMPLE, before, after)
 
 
-def _drop_orphan_headers(text: str, declared: set[str]) -> str:
-    """``text`` without the headers of undeclared APIs that no longer head a variable."""
+def _fix_orphan_headers(text: str, remaining: Mapping[str, Mapping[str, Any]]) -> str:
+    """``text`` with the headers of APIs that are gone dropped or handed on.
+
+    A header that no longer heads a variable goes. One that still heads a
+    variable a remaining API uses names that API (the first in the policy)
+    instead, so the file never credits a variable to an API that is gone.
+    """
     lines = text.splitlines(keepends=True)
     kept = []
     for index, line in enumerate(lines):
-        match = ENV_API_HEADER.match(line.rstrip("\r\n"))
-        if match and match.group(1) not in declared and not _heads_a_variable(lines, index):
-            continue
+        stripped = line.rstrip("\r\n")
+        match = ENV_API_HEADER.match(stripped)
+        if match and match.group(1) not in remaining:
+            headed = _headed_variables(lines, index)
+            if not headed:
+                continue
+            owner = next((n for n, a in remaining.items() if headed & _api_variables(a)), None)
+            if owner is not None:
+                line = _env_comment(owner, dict(remaining[owner])) + line[len(stripped) :]
         kept.append(line)
     return "".join(kept)
 
 
-def _heads_a_variable(lines: list[str], index: int) -> bool:
-    """True when a variable follows line ``index`` before a blank line or another header."""
+def _headed_variables(lines: list[str], index: int) -> set[str]:
+    """The variables that follow line ``index`` before a blank line or another header."""
+    names: set[str] = set()
     for line in lines[index + 1 :]:
         stripped = line.strip()
         if not stripped or stripped.startswith("# ---") or ENV_API_HEADER.match(stripped):
-            return False
-        if env_names(line):
-            return True
-    return False
+            break
+        names |= env_names(line)
+    return names
 
 
 def _restore_no_policy_note(text: str) -> str:

@@ -34,6 +34,7 @@ from graph_agents_cli._api_policy import (
     ANY_METHOD,
     HTTP_METHODS,
     normalize_path,
+    path_matches,
     path_template_problem,
 )
 
@@ -84,10 +85,10 @@ def access_methods(access: str, methods: list[str]) -> list[str]:
     """The ``allowed_methods`` an access choice writes into the file."""
     if access == CUSTOM:
         if not methods:
-            raise click.UsageError("--access custom needs --methods M,... (the methods to allow)")
+            raise click.UsageError("custom access needs --methods M,... (the methods to allow)")
         return list(methods)
     if methods:
-        raise click.UsageError(f"--methods goes with --access custom only (not {access})")
+        raise click.UsageError(f"--methods goes with custom access only (not {access})")
     return list(PRESETS[access])
 
 
@@ -121,7 +122,7 @@ def describe_methods(methods: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class OperationRef:
-    """How a command names an operation: an operationId, or a method and a path."""
+    """How a command names an operation: an operationId, a method and a path, or all three."""
 
     operation_id: str | None = None
     method: str | None = None
@@ -129,17 +130,33 @@ class OperationRef:
 
     @classmethod
     def from_options(
-        cls, operation_id: str | None, method: str | None, path: str | None
+        cls,
+        operation_id: str | None,
+        method: str | None,
+        path: str | None,
+        *,
+        combine: bool = False,
     ) -> OperationRef:
-        if operation_id and (method or path):
+        """Read OPERATION_ID / ``--method`` / ``--path``.
+
+        With ``combine`` (``allow``, ``deny``) OPERATION_ID may come with
+        ``--method M --path P``, the endpoint it names: the entry then pins all
+        three.
+        """
+        if operation_id and (method or path) and not combine:
             raise click.UsageError(
                 "name the operation by OPERATION_ID or by --method/--path, not both"
             )
-        if operation_id:
-            if any(c.isspace() for c in operation_id):
-                raise click.UsageError("OPERATION_ID must not contain whitespace")
+        if operation_id and any(c.isspace() for c in operation_id):
+            raise click.UsageError("OPERATION_ID must not contain whitespace")
+        if operation_id and not (method or path):
             return cls(operation_id=operation_id)
         if not (method and path):
+            if operation_id:
+                raise click.UsageError(
+                    "with OPERATION_ID, give both --method and --path (the endpoint it names), "
+                    "or neither"
+                )
             raise click.UsageError("name the operation: OPERATION_ID, or --method M --path P")
         method = method.strip().upper()
         if method not in HTTP_METHODS:
@@ -149,18 +166,16 @@ class OperationRef:
         problem = path_template_problem(path)
         if problem:
             raise click.UsageError(f"--path {path}: {problem}")
-        return cls(method=method, path=path)
+        return cls(operation_id=operation_id or None, method=method, path=path)
 
     def describe(self) -> str:
-        if self.operation_id:
-            return self.operation_id
-        return f"{self.method} {self.path}"
+        endpoint = f"{self.method} {self.path}" if self.path else ""
+        return " ".join(part for part in (self.operation_id, endpoint) if part)
 
     def args(self) -> str:
         """The command-line form (for suggestions)."""
-        if self.operation_id:
-            return self.operation_id
-        return f"--method {self.method} --path {self.path}"
+        endpoint = f"--method {self.method} --path {self.path}" if self.path else ""
+        return " ".join(part for part in (self.operation_id, endpoint) if part)
 
 
 def spec_operations(spec: Mapping[str, Any]) -> list[tuple[str, str, str | None]]:
@@ -180,11 +195,14 @@ def build_entry(
 
     With an OpenAPI spec, an operationId must exist in it, and its method and
     path are filled in (all three must then match: AND semantics), so the entry
-    is exact.
+    is exact; a ``--method``/``--path`` given with it must agree with the
+    spec. Without a spec, an operationId given with ``--method M --path P``
+    pins all three.
     """
     warnings: list[str] = []
     if ANY_METHOD in methods:
         raise click.UsageError('an operation entry lists its methods; "*" is not allowed there')
+    wanted = [m for m in HTTP_METHODS if m in {*methods, *([ref.method] if ref.method else [])}]
     if ref.operation_id:
         entry: dict[str, Any] = {"operationId": ref.operation_id}
         if spec is not None:
@@ -195,24 +213,29 @@ def build_entry(
                     "spec); check the id, or update the spec"
                 )
             spec_path, spec_method = found[0]
-            if methods and methods != [spec_method]:
+            if wanted and wanted != [spec_method]:
                 raise ApiCommandError(
                     f"{ref.operation_id} is {spec_method} {spec_path} in {spec_name}, not "
-                    f"{', '.join(methods)}"
+                    f"{', '.join(wanted)}"
+                )
+            if ref.path is not None and not path_matches(spec_path, ref.path):
+                raise ApiCommandError(
+                    f"{ref.operation_id} is {spec_method} {spec_path} in {spec_name}, not "
+                    f"{ref.path}"
                 )
             entry["path"] = spec_path
             entry["methods"] = [spec_method]
-        elif methods:
-            entry["methods"] = list(methods)
+            return entry, warnings
+        if ref.path is not None:
+            entry["path"] = ref.path
+        if wanted:
+            entry["methods"] = wanted
         return entry, warnings
     assert ref.method is not None and ref.path is not None
-    entry_methods = [m for m in HTTP_METHODS if m in {ref.method, *methods}]
-    entry = {"path": ref.path, "methods": entry_methods}
+    entry = {"path": ref.path, "methods": wanted}
     if spec is not None:
         known = {(p, m) for p, m, _ in spec_operations(spec)}
-        from graph_agents_cli._api_policy import path_matches
-
-        for method in entry_methods:
+        for method in wanted:
             if not any(m == method and path_matches(p, ref.path) for p, m in known):
                 warnings.append(f"{method} {ref.path} is not in {spec_name}")
     return entry, warnings

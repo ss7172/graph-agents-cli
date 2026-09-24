@@ -736,7 +736,12 @@ def test_refused_calls_carry_the_api_command_that_would_allow_them():
                 allowed_methods=["GET"],
                 allowed_operations=[{"operationId": "listOrders"}],
                 denied_operations=[
-                    {"operationId": "deleteOrder", "path": "/orders/{order_id}"},
+                    {
+                        "operationId": "deleteOrder",
+                        "path": "/orders/{order_id}",
+                        "methods": ["DELETE"],
+                    },
+                    {"operationId": "purgeOrders", "methods": ["DELETE"]},
                     {"path": "/admin/{section}"},
                 ],
             )
@@ -751,17 +756,23 @@ def test_refused_calls_carry_the_api_command_that_would_allow_them():
         assert result.status == pc.STATUS_DENIED
         return result.hint
 
+    # An allow pins the call's method, and its path when it names one: exactly that call.
     assert hint("GET", "getOrder", "/orders/{order_id}") == (
-        "graph-agents-cli api allow orders getOrder"
+        "graph-agents-cli api allow orders getOrder --method GET --path /orders/{order_id}"
     )
     assert hint("POST", "createOrder", "/orders") == (
         "graph-agents-cli api access orders custom --methods GET,POST; then "
-        "graph-agents-cli api allow orders createOrder"
+        "graph-agents-cli api allow orders createOrder --method POST --path /orders"
+    )
+    assert hint("GET", "getReport", None) == (
+        'name the path: add "path" to the call\'s API_CALLS entry (a denial by path '
+        "refuses declared calls that name none; the client always sends one)"
     )
     assert hint("GET", None, "/reports") == (
         "graph-agents-cli api allow orders --method GET --path /reports"
     )
-    assert hint("GET", None, "/orders/7").startswith("name the operation")
+    # Unnamed, and covered by a denial by operationId alone: fixed in the tool.
+    assert hint("DELETE", None, "/carts/7").startswith("name the operation")
     assert hint("GET", "adminReport", "/admin/{section}").startswith(
         "graph-agents-cli api revoke orders --method GET --path /admin/{section} --from denied"
     )
@@ -773,14 +784,76 @@ def test_refused_calls_carry_the_api_command_that_would_allow_them():
     assert hint("DELETE", "deleteOrder", "/orders/{order_id}") == (
         "graph-agents-cli api access orders custom --methods GET,DELETE; then "
         "graph-agents-cli api revoke orders deleteOrder --from denied (lifts a deliberate "
-        "denial: make sure it should go); then graph-agents-cli api allow orders deleteOrder"
+        "denial: make sure it should go); then graph-agents-cli api allow orders deleteOrder "
+        "--method DELETE --path /orders/{order_id}"
+    )
+    # A relabelled call to the denied endpoint is refused by that denial all the same.
+    assert "revoke orders deleteOrder --from denied" in hint(
+        "DELETE", "cancelOrder", "/orders/{order_id}"
     )
     # A listed operation that is also denied needs the revoke only.
-    document["apis"]["orders"]["allowed_operations"].append({"operationId": "deleteOrder"})
-    assert hint("GET", "deleteOrder", "/orders/{order_id}") == (
+    orders = document["apis"]["orders"]
+    orders["allowed_methods"] = ["GET", "DELETE"]
+    orders["allowed_operations"].append({"operationId": "cancelOrder", "methods": ["DELETE"]})
+    assert hint("DELETE", "cancelOrder", "/orders/{order_id}") == (
         "graph-agents-cli api revoke orders deleteOrder --from denied (lifts a deliberate "
         "denial: make sure it should go)"
     )
+
+
+def test_a_declared_operation_id_must_be_the_one_the_spec_gives_the_call(tmp_path):
+    """With a spec, a typo or relabelled operation_id is refused, not trusted."""
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "t.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "a", "method": "POST", "operation_id": "createOrdr", "path": "/orders"},\n'
+        '    {"api": "a", "method": "POST", "operation_id": "listOrders", "path": "/orders"},\n'
+        '    {"api": "a", "method": "POST", "operation_id": "createOrder", "path": "/orders"},\n'
+        '    {"api": "a", "method": "POST", "operation_id": "shipOrder"},\n'
+        '    {"api": "a", "method": "DELETE", "operation_id": "cancelOrder",\n'
+        '     "path": "/orders/{order_id}"},\n'
+        "]\n"
+    )
+    spec = {
+        "paths": {
+            "/orders": {
+                "get": {"operationId": "listOrders"},
+                "post": {"operationId": "createOrder"},
+            },
+            "/orders/{order_id}": {"delete": {"operationId": "deleteOrder"}},
+        }
+    }
+    (tmp_path / "openapi.yaml").write_text(yaml.safe_dump(spec))
+    write_policy(
+        tmp_path,
+        a=api(
+            allowed_methods=["GET", "POST", "DELETE"],
+            openapi="openapi.yaml",
+            denied_operations=[
+                {"operationId": "deleteOrder", "path": "/orders/{order_id}", "methods": ["DELETE"]}
+            ],
+        ),
+    )
+    report = pc.build_report(tmp_path, "app")
+    by_id = {r.call.operation_id: r for r in report.results}
+    typo = by_id["createOrdr"]
+    assert typo.status == pc.STATUS_UNKNOWN
+    assert typo.reason == (
+        "operationId createOrdr is not in the OpenAPI spec; the spec names POST /orders createOrder"
+    )
+    assert '"operation_id": "createOrder" for POST /orders' in typo.hint
+    assert by_id["listOrders"].status == pc.STATUS_UNKNOWN
+    assert "is GET /orders in the spec, not POST" in by_id["listOrders"].reason
+    assert by_id["createOrder"].status == pc.STATUS_ALLOWED
+    assert by_id["shipOrder"].status == pc.STATUS_UNKNOWN
+    # Relabelled and aimed at the denied endpoint: denied, and the label is flagged too.
+    relabelled = by_id["cancelOrder"]
+    assert relabelled.status == pc.STATUS_DENIED
+    assert "denied by denied_operations (operationId=deleteOrder" in relabelled.reason
+    assert "also, operationId cancelOrder is not in the OpenAPI spec" in relabelled.reason
+    assert '"operation_id": "deleteOrder"' in relabelled.hint
+    assert report.violations == 4
 
 
 def test_an_invalid_policy_file_is_a_configuration_error(tmp_path):
