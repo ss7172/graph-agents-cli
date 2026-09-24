@@ -19,6 +19,9 @@
   binds it to every log record of the request, and records the request metrics.
 * `BodySizeLimitMiddleware`: refuses a body over `MAX_REQUEST_BYTES` with 413,
   from `Content-Length` before reading anything, or while reading a chunked body.
+* `max_message_chars()`: `MAX_MESSAGE_CHARS` (default 32000), the longest user
+  message a run accepts, on every surface that reaches the model (`/chat`
+  answers 422 above it, A2A an invalid-params error).
 * `RunStreamingResponse`: the `/chat` SSE response. It watches for the client
   going away and cancels the stream right then (the run is recorded as
   `cancelled` and stops spending model tokens), and it always calls
@@ -34,7 +37,8 @@ route, its own native API included, and two more apply there only:
   back and answers an escaped auth error (for example the 503 of a
   misconfigured policy or an unreachable token issuer) with its own status.
 * `ThreadDeleteHookMiddleware`: after the server's own
-  `DELETE /threads/{thread_id}` succeeds, drops that thread's run records.
+  `DELETE /threads/{thread_id}` succeeds, drops that thread's run records and
+  its A2A tasks.
 
 Both rely on the server's default middleware order (this app's middleware
 around the server's auth; no `"middleware_order": "auth_first"`).
@@ -44,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import uuid
@@ -56,11 +61,35 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from {{cookiecutter.agent_directory}}.app_utils.auth import AUTH_CHALLENGE_STATE_KEY
-from {{cookiecutter.agent_directory}}.app_utils.limits import max_request_bytes
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError, max_request_bytes
 from {{cookiecutter.agent_directory}}.app_utils.metrics import observe_request, route_label
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 
 logger = logging.getLogger(__name__)
+
+MAX_MESSAGE_CHARS = ("MAX_MESSAGE_CHARS", 32_000)
+
+
+def max_message_chars() -> int:
+    """`MAX_MESSAGE_CHARS`: the longest user message (in characters) a run accepts.
+
+    One cap for every surface that reaches the model (`/chat` and A2A), so a
+    message refused on one is refused on the other. Anything but a whole
+    number >= 1 is a `SettingsError`, reported at startup with every other
+    bad setting.
+    """
+    name, default = MAX_MESSAGE_CHARS
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SettingsError(f"{name}={raw!r} is not an integer.") from None
+    if value < 1:
+        raise SettingsError(f"{name}={value} must be >= 1.")
+    return value
+
 
 REQUEST_ID_HEADER = "x-request-id"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -114,6 +143,33 @@ class RequestContextMiddleware:
                 status,
                 time.perf_counter() - started,
             )
+
+
+async def read_body(receive: Receive) -> bytes:
+    """The whole request body, read from `receive` (pair it with `replay_body`)."""
+    chunks: list[bytes] = []
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            break  # the client left
+        chunks.append(message.get("body") or b"")
+        if not message.get("more_body"):
+            break
+    return b"".join(chunks)
+
+
+def replay_body(body: bytes, receive: Receive) -> Receive:
+    """A `receive` that hands the app `body` (already read), then the connection's own messages."""
+    replayed = False
+
+    async def replay() -> Message:
+        nonlocal replayed
+        if not replayed:
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+
+    return replay
 
 
 class BodySizeLimitMiddleware:
@@ -251,9 +307,9 @@ class ThreadDeleteHookMiddleware:
     """langgraph-server: `on_deleted(thread_id)` after the server's own thread delete succeeds.
 
     The server deletes a thread's checkpoints but knows nothing of the run
-    records this app keeps (`agent_runs`); `on_deleted` drops them. It runs
-    only after a 2xx, so a refused delete (someone else's thread, an unknown
-    one, a busy one) never touches them.
+    records this app keeps (`agent_runs`) or of its A2A tasks; `on_deleted`
+    drops them. It runs only after a 2xx, so a refused delete (someone else's
+    thread, an unknown one, a busy one) never touches them.
     """
 
     def __init__(self, app: ASGIApp, on_deleted: Callable[[str], Awaitable[None]]) -> None:
@@ -281,5 +337,6 @@ class ThreadDeleteHookMiddleware:
                 await self.on_deleted(match.group(1))
             except Exception:
                 logger.warning(
-                    "could not remove the run records of a deleted thread", exc_info=True
+                    "could not remove the run records or A2A tasks of a deleted thread",
+                    exc_info=True,
                 )

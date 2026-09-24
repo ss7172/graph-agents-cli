@@ -458,7 +458,7 @@ async def test_threads_can_be_listed_and_deleted_by_their_owner(client: httpx.As
     listed = (await client.get("/threads", headers=AUTH)).json()
     ids = [t["thread_id"] for t in listed]
     assert ids.index(second) < ids.index(first)  # most recently active first
-    assert set(listed[0]) == {"thread_id", "created_at", "updated_at"}
+    assert set(listed[0]) == {"thread_id", "owner", "created_at", "updated_at"}
     assert (await client.get("/threads?limit=1", headers=AUTH)).json()[0]["thread_id"] == second
     assert (await client.get("/threads?limit=0", headers=AUTH)).status_code == 422
 

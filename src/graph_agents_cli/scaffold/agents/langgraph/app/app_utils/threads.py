@@ -25,7 +25,20 @@ server's own `@auth.on` filters in `auth.py` protect the native Threads/Runs
 API called from outside; the app's loopback SDK calls bypass them).
 
 Only the owner may continue (write to) or delete a thread. Roles listed in
-`AUTH_READ_ACROSS_ROLES` may additionally *read* other principals' threads.
+`AUTH_READ_ACROSS_ROLES` may additionally *read* other principals' threads;
+listing lists the caller's own threads unless the caller asks for every
+principal's (`GET /threads?scope=all`, read-across roles only). Listed rows
+carry the owner as the hashed principal id (`owner`), never the raw id.
+
+Thread ids are one namespace shared by every caller. When a request names no
+thread, the server generates a random id (a UUID4). A client that picks its
+own ids must make them unguessable: an id another principal sent first is
+theirs (403), so a predictable id can be claimed ahead of its intended user,
+and a 403 tells a caller that the id exists.
+
+Deleting a thread (`ThreadStore.delete`, which the owner's DELETE and the
+retention purge both reach) tells the listeners in `DELETE_LISTENERS` (the
+A2A task store drops that conversation's tasks).
 
 `ThreadLocks` allows one run per thread at a time: a second run on a busy
 thread raises `ThreadBusy` (HTTP 409 `{"code": "thread_busy"}`) instead of
@@ -42,7 +55,7 @@ import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -55,6 +68,16 @@ from {{cookiecutter.agent_directory}}.app_utils.db import Database, utcnow_iso
 logger = logging.getLogger(__name__)
 
 THREAD_BUSY = "thread_busy"
+
+# `GET /threads?scope=`: the caller's threads (default), or every principal's
+# (read-across roles only).
+SCOPE_OWN = "own"
+SCOPE_ALL = "all"
+SCOPES = (SCOPE_OWN, SCOPE_ALL)
+
+# Called with a thread id after the thread's row is deleted (best effort: a
+# failing listener is logged and never fails the delete).
+DELETE_LISTENERS: list[Callable[[str], Awaitable[None]]] = []
 
 
 class ThreadBusy(Exception):
@@ -78,12 +101,18 @@ class ThreadRecord:
             self.updated_at = self.created_at
 
     def public(self) -> dict[str, Any]:
-        """What `GET /threads` returns (no principal id: it may be an email address)."""
+        """What `GET /threads` returns; the owner hashed (the raw id may be an email address)."""
         return {
             "thread_id": self.thread_id,
+            "owner": owner_hash(self.principal_id),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+
+def owner_hash(principal_id: str | None) -> str | None:
+    """A thread owner's id as logs and listings show it (`Principal.hashed_id()`)."""
+    return Principal(id=principal_id).hashed_id() if principal_id else None
 
 
 def read_across_roles() -> set[str]:
@@ -115,6 +144,29 @@ def assert_owner(principal: Principal, record: ThreadRecord) -> None:
     """Write access (continue, delete): the owner only; read-across roles are read-only."""
     if not is_owner(principal, record):
         raise HTTPException(status_code=403, detail="This thread belongs to another principal.")
+
+
+def check_scope(principal: Principal, scope: str) -> str:
+    """`scope` of a thread listing, or 403 for `all` without a read-across role (422 if unknown)."""
+    if scope not in SCOPES:
+        raise HTTPException(status_code=422, detail="scope must be 'own' or 'all'.")
+    if scope == SCOPE_ALL and not reads_across(principal):
+        raise HTTPException(
+            status_code=403,
+            detail="Listing every principal's threads needs a role in AUTH_READ_ACROSS_ROLES.",
+        )
+    return scope
+
+
+def own_view(principal: Principal) -> Principal:
+    """`principal` without its read-across roles: what it lists as its own threads."""
+    across = read_across_roles()
+    return Principal(
+        id=principal.id,
+        roles=[r for r in principal.roles if r not in across],
+        permissions=set(principal.permissions),
+        attributes=principal.public_attributes(),
+    )
 
 
 def _iso(value: Any) -> str | None:
@@ -235,9 +287,17 @@ class ThreadStore:
         )
 
     async def list_for(
-        self, principal: Principal, *, limit: int = 1000, offset: int = 0
+        self, principal: Principal, *, limit: int = 1000, offset: int = 0, scope: str | None = None
     ) -> list[ThreadRecord]:
-        """The principal's threads (every thread for a read-across role), most recent first."""
+        """Threads `principal` may read, most recent first.
+
+        `scope="own"`: its own threads only (a read-across role included);
+        `scope="all"`, or no scope: every principal's for a read-across role,
+        its own for anyone else. (`GET /threads` checks the scope and passes
+        the caller without its read-across roles for its own threads.)
+        """
+        if scope == SCOPE_OWN:
+            principal = own_view(principal)
         if not self.db.is_postgres:
             records = sorted(
                 (r for r in self._memory.values() if can_access(principal, r)),
@@ -275,8 +335,50 @@ class ThreadStore:
     async def delete(self, thread_id: str) -> None:
         if not self.db.is_postgres:
             self._memory.pop(thread_id, None)
-            return
-        await self.db.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
+        else:
+            await self.db.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
+        await thread_deleted(thread_id)
+
+
+async def thread_deleted(thread_id: str) -> None:
+    """Tell every `DELETE_LISTENERS` entry that `thread_id` is gone; never raises."""
+    for listener in list(DELETE_LISTENERS):
+        try:
+            await listener(thread_id)
+        except Exception:
+            logger.warning("a thread-delete listener failed", exc_info=True)
+
+
+async def search_server_threads(
+    client: Any, principal: Principal, *, scope: str, limit: int, offset: int
+) -> list[dict[str, Any]]:
+    """langgraph-server: a `GET /threads` page from the server's thread search.
+
+    `scope="own"` filters on the owner the app wrote into the thread's
+    metadata at creation; `scope="all"` (checked by `check_scope`) lists
+    every thread. Rows carry the owner hashed, like `ThreadRecord.public()`.
+    """
+    filters: dict[str, Any] = {}
+    if scope != SCOPE_ALL:
+        filters["metadata"] = {"principal_id": principal.id}
+    threads = await client.threads.search(
+        limit=limit, offset=offset, sort_by="updated_at", sort_order="desc", **filters
+    )
+    rows: list[dict[str, Any]] = []
+    for thread in threads:
+        if not isinstance(thread, Mapping):
+            continue
+        metadata = thread.get("metadata") if isinstance(thread.get("metadata"), Mapping) else {}
+        owner = metadata.get("principal_id")
+        rows.append(
+            {
+                "thread_id": str(thread.get("thread_id")),
+                "owner": owner_hash(owner if isinstance(owner, str) else None),
+                "created_at": _iso(thread.get("created_at")),
+                "updated_at": _iso(thread.get("updated_at")),
+            }
+        )
+    return rows
 
 
 # ---------------------------------------------------------------------------

@@ -100,14 +100,16 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
 | `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (25) | `.env` / chart | run guardrails |
 | `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
+| `MAX_MESSAGE_CHARS` (32000) | `.env` / chart | longest user message on `/chat` (422) and A2A (invalid params, -32602) |
 | `RETENTION_DAYS` (0) | `.env` / chart | purge threads idle longer than N days, hourly; 0 keeps everything |
-| `LOG_LEVEL` (INFO), `LOG_FORMAT` (`json`, `text` under dev) | `.env` / chart | structured logs with request id, run id, thread id, hashed principal |
+| `LOG_LEVEL` (INFO), `LOG_FORMAT` (`json`, `text` under dev) | `.env` / chart | structured logs with request id, run id, thread id, hashed principal; access lines without query strings, outbound calls by API/method/operation/path template (`httpx` and `httpcore` at WARNING), warnings as records |
 | `METRICS_ENABLED` (true) | `.env` / chart | `GET /metrics` |
 | `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT` | Secret (add to `secrets.keys`) | bearer token required by `/metrics`; HMAC key of the principal hash |
 | `CORS_ALLOW_ORIGINS` | `.env` / chart | comma list; empty = no CORS |
 | `DB_POOL_MIN_SIZE` (1), `DB_POOL_MAX_SIZE` (10) | `.env` / chart | connection pool per process |
 | `A2A_TASK_TTL_S` (3600) | `.env` / chart | in-memory A2A tasks dropped this long after their last update (0 = until restart; a value that is not a whole number >= 0 stops startup) |
 | `APP_URL` | chart (`appUrl` / hostname) / `.env` | public base URL in the A2A agent card; unset = bind address (warned outside dev) |
+| `A2A_DESCRIPTION`, `AGENT_VERSION` (0.1.0) | `.env` / chart | the A2A card's description (and its chat skill's) and version; `A2A_NAME` (the agent directory) is its name and mount |
 | `<API>_BASE_URL` (each API's `base_url_env`) | `.env` / chart | one per API in `api-policy.yaml` |
 | each `auth: bearer` API's `token_env` | Secret | joins `secrets.keys` at create |
 | `API_POLICY_PATH` | `.env` | default `./api-policy.yaml` |
@@ -137,7 +139,7 @@ Response: SSE. Each event is `event: <type>\ndata: <json>\n\n`.
 | `message.start` | `{"thread_id": "...", "run_id": "..."}` |
 | `message.delta` | `{"text": "..."}` |
 | `tool.call` | `{"id": "...", "name": "...", "args": {...}}` (args omitted when `TRACE_CAPTURE=metadata` and the caller is not the owner; always present to the caller) |
-| `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}` |
+| `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}`; a failed call adds `"error_id"` and, outside `APP_ENV=dev`, its `result` is `"The tool call did not succeed. Reference: <error_id>."` (the error text is for the model only) |
 | `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok"}` |
 | `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
 
@@ -148,9 +150,13 @@ carry the run status `ok`, `error`, `timeout` or `cancelled` (a client disconnec
 run); a stopped run answers its open tool calls with an error result so the next turn is valid.
 
 Request rules: a second `/chat` on a thread with a run in progress gets 409
-`{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; metadata outside the caps (or
+`{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; a message over
+`MAX_MESSAGE_CHARS`, text with an unpaired surrogate, metadata outside the caps (or
 with non-scalar values), `NaN`/`Infinity`, or a `thread_id` outside 1-128 characters of
-`[A-Za-z0-9_.:-]` (a non-UUID under langgraph-server) gets 422; a database or server outage gets
+`[A-Za-z0-9_.:-]` (a non-UUID under langgraph-server) gets 422, whose `detail` never echoes the
+submitted values (`input`); a missing `thread_id` starts a thread with a random
+server-generated id (ids are one namespace: an id another principal used first is theirs, so
+client-chosen ids must be unguessable); a database or server outage gets
 503 with a reference; an unhandled error gets 500 `{"detail": "Internal server error. Reference:
 <id>.", "error_id": ...}`. Every response carries `X-Request-ID`. Client metadata is stored in the
 run record, never in checkpoints, and exported to traces only under `TRACE_CAPTURE=full`.
@@ -160,13 +166,17 @@ Other routes:
 - `GET /health` -> `{"status": "ok", "runtime": "fastapi|langgraph-server", "checkpointer": "memory|postgres"}` (liveness, no auth)
 - `GET /ready` -> 200 `{"status": "ready"}` when the database (and run store) answer within 2 s, else 503 `{"status": "not_ready"}` (no auth)
 - `GET /metrics` -> Prometheus text (no auth unless `METRICS_TOKEN`; 404 when `METRICS_ENABLED=false`)
-- `GET /threads?limit=&offset=` -> the caller's threads, most recent first (`thread.list`)
-- `GET /threads/{thread_id}/messages` -> ordered messages (ownership enforced)
-- `DELETE /threads/{thread_id}` -> 204; the thread, its checkpoints and run records (owner only; 409 while a run is in progress). Under langgraph-server it is the server's native route
+- `GET /threads?limit=&offset=&scope=own|all` -> `[{thread_id, owner, created_at, updated_at}]`, most recent first (`thread.list`); `owner` is the hashed principal id; `scope=own` (default) is the caller's threads, a read-across role included; `scope=all` lists every principal's, for a role in `AUTH_READ_ACROSS_ROLES` only (403 otherwise)
+- `GET /threads/{thread_id}/messages` -> ordered messages (ownership enforced); a failed tool call's message carries `error_id` and, outside dev, the same generic text as its `tool.result`
+- `DELETE /threads/{thread_id}` -> 204; the thread, its checkpoints, run records and A2A tasks (owner only; 409 while a run is in progress). Under langgraph-server it is the server's native route
 - `GET /playground`, `/docs`, `/openapi.json` -> only when `APP_ENV=dev`
 - A2A: card at `/a2a/<agent_directory>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<agent_directory>`;
   the card advertises only the A2A 1.0 JSON-RPC interface (0.3 clients are served on the same URL
-  via compat) and the security scheme of the active auth policy
+  via compat) and the security scheme of the active auth policy. A message with no text, an
+  empty text part, a non-user role or over `MAX_MESSAGE_CHARS` is a JSON-RPC invalid-params
+  error (-32602) on both protocol versions. `SendMessage` returns the reply as one text part
+  of the `response` artifact; streamed, it arrives in chunks, the last with `lastChunk`, and the
+  stored task keeps it as one part
 
 `eval generate` derives `response`, `tool_calls`, `usage`, `latency_ms`, and `status` from these
 events; the A2A executor bridges the same events to task artifacts.
@@ -257,8 +267,16 @@ apis:
   json_body=None, headers=None)` (and `get`, `head`, `post`, `put`, `patch`, `delete`,
   `options`) sends any allowed method with a JSON body, query parameters and headers, and
   refuses, before sending, any method or operation outside the policy (`ApiPolicyError`, a tool
-  error the model can read); configuration or HTTP failures raise `ApiCallError`. An empty
-  response body returns `""`.
+  error the model can read); configuration or HTTP failures raise `ApiCallError` (a non-2xx
+  response sets `status_code` and `body`, the start of the error body with the sent credential
+  redacted). An empty response body returns `""`. Tool-supplied `Host`, method-override,
+  `X-Forwarded-*`, `Forwarded`, `X-Original-URL`, `X-Rewrite-URL` and hop-by-hop headers are
+  dropped, and a `_method` query parameter or top-level JSON body key is refused. Each call is
+  logged by API, method, operation id and path template, never its values.
+- The caller, for write tools: `current_caller(context)` (fails closed without a principal),
+  `require_owner(owner_id, context=..., allow_roles=())` and `require_user_mentioned(value,
+  runtime)` raise `ApiPolicyError` (a tool error) for a record that is not the caller's or an id
+  the user's latest message does not name.
 - `limits` (optional, per API): `max_calls_per_run` counts the calls to that API in one agent
   run (the run id from the LangGraph run's config metadata, else the request's; `get_client(...,
   run_id=...)` names it explicitly; calls outside any run share one count) and
