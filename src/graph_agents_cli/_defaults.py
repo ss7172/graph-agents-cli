@@ -97,6 +97,14 @@ ENVIRONMENTS: tuple[str, ...] = ("dev", "staging", "prod")
 
 DEFAULT_REGISTRY_HOST = "ghcr.io"
 DEFAULT_REGISTRY_PLACEHOLDER = "ghcr.io/CHANGE-ME"
+# The one command that replaces the placeholder everywhere `create` wrote it:
+# `build` and `deploy` read the manifest, Argo CD and the chart read the values,
+# and the CI workflows read .github/agent.env.
+REGISTRY_FIX_COMMAND = "graph-agents-cli scaffold enhance --registry <host>/<org>"
+REGISTRY_FIX_EFFECT = (
+    "it sets create_params.registry in graph-agents-cli-manifest.yaml, image.repository "
+    "in the chart's values.yaml and IMAGE_REPOSITORY in .github/agent.env"
+)
 
 DEFAULT_AGENT_GUIDANCE_FILENAME = "AGENTS.md"
 

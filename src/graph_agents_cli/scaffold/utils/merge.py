@@ -64,7 +64,7 @@ Baseline = Literal["authentic", "current"]
 BASELINE_CURRENT_LABEL = "(baseline: current templates, --baseline current)"
 
 
-def _is_fetchable_version(version: str) -> bool:
+def is_fetchable_version(version: str) -> bool:
     """True if ``version`` is worth attempting to fetch (a released version).
 
     Rejects the unknown-version sentinel and unparseable strings; whether the
@@ -228,7 +228,7 @@ def run_create_command(
         )
         return _run_vendored_create(args, output_dir, project_name)
 
-    if not _is_fetchable_version(version):
+    if not is_fetchable_version(version):
         logging.error(
             "Cannot fetch %s@%s to build the authentic prior-version baseline: the "
             "version is not a fetchable release. An inauthentic baseline would "
@@ -267,8 +267,15 @@ def display_results(
     groups: dict[str, list[FileCompareResult]],
     dep_resolutions: list[DependencyResolution],
     dry_run: bool = False,
+    baseline_current_of: str | None = None,
 ) -> None:
-    """Display the comparison results grouped by action."""
+    """Display the comparison results grouped by action.
+
+    ``baseline_current_of`` is the prior version when its snapshot was rendered
+    with the current templates (``--baseline current``): a file that differs
+    from them is then either the user's edit or one the templates changed
+    since that version, and the preserve list says so.
+    """
     if groups["auto_update"]:
         console.print("[bold green]Will auto-update (unchanged by you):[/bold green]")
         for result in groups["auto_update"]:
@@ -279,7 +286,18 @@ def display_results(
         r for r in groups["preserve"] if r.preserve_type == "gacli_unchanged"
     ]
     if preserved_user_modified:
-        console.print("[bold cyan]Will preserve (you modified, template unchanged):[/bold cyan]")
+        if baseline_current_of:
+            console.print(
+                "[bold cyan]Will preserve (differs from the current template):[/bold cyan]\n"
+                f"[yellow]  --baseline current cannot tell your edits from template changes "
+                f"since {baseline_current_of}: each file below that you did not edit keeps "
+                f"its {baseline_current_of} content, and dependency changes since then are "
+                "not merged. Prefer the authentic baseline.[/yellow]"
+            )
+        else:
+            console.print(
+                "[bold cyan]Will preserve (you modified, template unchanged):[/bold cyan]"
+            )
         for result in preserved_user_modified:
             console.print(f"  [cyan]✓[/cyan] {result.path}")
         console.print()
@@ -781,7 +799,12 @@ def run_three_way_merge(
 
         console.print()
 
-        display_results(groups, dep_resolutions, dry_run)
+        display_results(
+            groups,
+            dep_resolutions,
+            dry_run,
+            baseline_current_of=old_version if baseline == "current" else None,
+        )
 
         total_changes = (
             len(groups["auto_update"])

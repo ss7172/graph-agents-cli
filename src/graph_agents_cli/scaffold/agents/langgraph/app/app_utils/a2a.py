@@ -86,6 +86,7 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     RUNTIME,
     ChatRequest,
 )
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ def advertised_base_url() -> str:
     if host in ("0.0.0.0", "::", ""):  # what we bind is not what clients dial
         host = "127.0.0.1"
     fallback = f"http://{host}:{os.environ.get('PORT', '8000')}"
-    if (os.environ.get("APP_ENV") or "dev").strip().lower() != "dev":
+    if (os.environ.get("APP_ENV") or "dev") != "dev":
         logger.warning(
             "APP_URL is not set: the A2A agent card advertises %s (the bind address), which "
             "remote clients cannot reach. Set appUrl (or a gateway/ingress hostname) in the "
@@ -126,21 +127,20 @@ CONTEXT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def task_ttl_s() -> int:
-    """`A2A_TASK_TTL_S`: seconds a task is kept after its last update; 0 = until restart."""
+    """`A2A_TASK_TTL_S`: seconds a task is kept after its last update; 0 = until restart.
+
+    Anything but a whole number >= 0 is a `SettingsError`, which the app's
+    startup settings check reports with every other bad setting.
+    """
     raw = (os.environ.get("A2A_TASK_TTL_S") or "").strip()
     if not raw:
         return DEFAULT_TASK_TTL_S
     try:
         value = int(raw)
     except ValueError:
-        value = -1
+        raise SettingsError(f"A2A_TASK_TTL_S={raw!r} is not a whole number of seconds.") from None
     if value < 0:
-        logger.warning(
-            "A2A_TASK_TTL_S=%r is not a whole number of seconds >= 0; using %d.",
-            raw,
-            DEFAULT_TASK_TTL_S,
-        )
-        return DEFAULT_TASK_TTL_S
+        raise SettingsError(f"A2A_TASK_TTL_S={value} must be >= 0.")
     return value
 
 
@@ -421,9 +421,15 @@ def add_a2a_routes(app: FastAPI) -> Any:
     """
     check_startup()
     card = agent_card()
+    try:
+        ttl = task_ttl_s()
+    except SettingsError:
+        # The app is assembled at import; its lifespan's settings check then
+        # refuses to start and names this variable with every other bad one.
+        ttl = DEFAULT_TASK_TTL_S
     request_handler = DefaultRequestHandler(
         agent_executor=LangGraphAgentExecutor(),
-        task_store=ExpiringTaskStore(task_ttl_s()),
+        task_store=ExpiringTaskStore(ttl),
         agent_card=card,
     )
     add_a2a_routes_to_fastapi(

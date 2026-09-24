@@ -101,8 +101,9 @@ _TRUE = ("1", "true", "yes", "on")
 
 
 def dev_mode() -> bool:
-    """`APP_ENV=dev`. Unset or any other value is treated as a deployed environment."""
-    return (os.environ.get("APP_ENV") or "").strip().lower() == "dev"
+    """`APP_ENV` is exactly `dev`. Unset or any other value (`DEV`, ` dev`, `development`)
+    is a deployed environment: dev relaxes checks, so only the exact value turns it on."""
+    return os.environ.get("APP_ENV") == "dev"
 
 
 def _csv(raw: str | None) -> list[str]:
@@ -343,7 +344,7 @@ class JwtSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> JwtSettings:
         env = os.environ if env is None else env
-        dev = (env.get("APP_ENV") or "").strip().lower() == "dev"
+        dev = env.get("APP_ENV") == "dev"  # exactly, as dev_mode()
         s = cls()
         problems, warnings = s.problems, s.warnings
 

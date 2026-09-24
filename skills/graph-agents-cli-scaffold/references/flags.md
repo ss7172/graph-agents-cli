@@ -112,8 +112,11 @@ id>_<timestamp>` (0700; the newest 5 per project are kept).
 
 Behaviour: requires `uvx`; runs `uvx --from <install spec of the manifest cli_version> graph-agents-cli scaffold create`
 (`git+https://github.com/ss7172/graph-agents-cli@v<version>`, or `GRAPH_AGENTS_CLI_INSTALL_SPEC`
-with `{version}` filled in) to regenerate the old baseline; stops with a non-zero exit and no
-changes when that fails, unless `--baseline current`. Backup first to
+with `{version}` filled in) to regenerate the old baseline; stops with no changes when that
+fails (exit 2: `uvx` missing or the fetch failed; exit 3: `cli_version` missing or not a
+release, or an override without `{version}`), unless `--baseline current`, which cannot tell
+your edits from template changes since the old version (unedited files it preserves keep
+their old content; dependency changes are not merged). Backup first to
 `~/.graph-agents-cli/backups/`. Updates `cli_version` in the manifest on success. Outside a
 project: exit 3. A project still on the retired `product-policy.yaml` stops with migration steps
 (exit 3).

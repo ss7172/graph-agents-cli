@@ -32,7 +32,8 @@ exact integer `--set image.tag=1234567` produces (`--set-string` is preferred).
 
 {{/*
 What the HTTPRoute / Ingress publish, as a YAML list of {path, type}:
-route.publicPaths, plus route.devPaths while env.APP_ENV is dev. Read it back
+route.publicPaths, plus route.devPaths while env.APP_ENV is exactly dev (the app's
+own test: `DEV` or ` dev` is a deployed environment). Read it back
 with `include "agent.publicPaths" . | fromYamlArray`. Every entry is checked
 here, so each template that publishes paths fails with the same message. An
 empty list is refused while a Gateway or Ingress is enabled: it would publish
@@ -40,7 +41,7 @@ nothing, and a Gateway API rule without matches would publish every path.
 */}}
 {{- define "agent.publicPaths" -}}
 {{- $paths := .Values.route.publicPaths | default list -}}
-{{- if eq (dig "APP_ENV" "" (.Values.env | default dict) | toString | trim | lower) "dev" -}}
+{{- if eq (dig "APP_ENV" "" (.Values.env | default dict) | toString) "dev" -}}
 {{- $paths = concat $paths (.Values.route.devPaths | default list) -}}
 {{- end -}}
 {{- if and (or .Values.gateway.enabled .Values.ingress.enabled) (not $paths) -}}

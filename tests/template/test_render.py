@@ -1110,6 +1110,35 @@ def _check_optional_resources(chart: Path) -> None:
     assert (
         monitor["spec"]["selector"]["matchLabels"].items() <= service["metadata"]["labels"].items()
     )
+    # With METRICS_TOKEN set /metrics wants a bearer token: the ServiceMonitor sends it,
+    # from the app Secret by default.
+    for extra, credentials in (
+        ((), {"name": "weather-agent-app", "key": "METRICS_TOKEN"}),
+        (
+            (
+                "--set",
+                "metrics.serviceMonitor.bearerToken.secretName=scrape",
+                "--set",
+                "metrics.serviceMonitor.bearerToken.key=token",
+            ),
+            {"name": "scrape", "key": "token"},
+        ),
+    ):
+        bearer = _template(
+            chart,
+            *DEPLOY_SET,
+            "--set",
+            "metrics.serviceMonitor.enabled=true",
+            "--set",
+            "metrics.serviceMonitor.bearerToken.enabled=true",
+            *extra,
+        )
+        assert bearer.returncode == 0, bearer.stderr
+        bearer_monitor = next(d for d in _docs(bearer.stdout) if d["kind"] == "ServiceMonitor")
+        assert bearer_monitor["spec"]["endpoints"][0]["authorization"] == {
+            "type": "Bearer",
+            "credentials": credentials,
+        }
     pod_annotations = _agent_deployment(everything.stdout)["spec"]["template"]["metadata"][
         "annotations"
     ]
@@ -1138,6 +1167,20 @@ def _check_optional_resources(chart: Path) -> None:
         "/docs",
         "/openapi.json",
     }
+    # Only exactly `dev` counts, as in the app: `DEV` is a deployed environment.
+    upper = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set",
+        "env.APP_ENV=DEV",
+        "--set",
+        "gateway.enabled=false",
+        "--set",
+        "ingress.enabled=true",
+    )
+    assert upper.returncode == 0, upper.stderr
+    upper_ingress = next(d for d in _docs(upper.stdout) if d["kind"] == "Ingress")
+    assert set(_route_paths(upper_ingress)) == {"/chat", "/threads", "/a2a/app"}
     own = _template(
         chart,
         *DEPLOY_SET,

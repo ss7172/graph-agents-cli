@@ -84,9 +84,13 @@ manifests, only `pr_checks.yaml` among the workflows. Add deployment later with 
 ### Registry default
 
 `--registry` omitted: `ghcr.io/<org>`, where `<org>` under `-y` is the owner of the git `origin`
-remote when present, else `ghcr.io/CHANGE-ME` with a warning. Private registries (Harbor,
-`registry:2`) are the same flag with a different URL. The value lands in chart values and the
-workflows. The image pull secret is an operator prerequisite reported by `infra check`.
+remote when present, else `ghcr.io/CHANGE-ME` with a warning. `build` and `deploy` refuse the
+placeholder (exit 3) until `graph-agents-cli scaffold enhance --registry <host>/<org>` replaces
+it in the manifest (`create_params.registry`, read by `build` and `deploy`), the chart values
+(`image.repository`) and `.github/agent.env` (`IMAGE_REPOSITORY`); for a local cluster any
+valid name works, since the image is side-loaded. Private registries (Harbor, `registry:2`)
+are the same flag with a different URL. The image pull secret is an operator prerequisite
+reported by `infra check`.
 
 ### `langgraph-server` caveats
 
@@ -184,7 +188,8 @@ version is written beside it as `Dockerfile.new`, dependency changes uv could no
 `enhance` exit 1: do them before building or deploying. A provider change keeps the model only
 when it was the old provider's default; a model chosen for the old provider is refused (exit 2):
 pass `--model` as well. After a runtime change run `graph-agents-cli install` to update
-`uv.lock`. Exit codes: 0 applied, 1 required steps left, 2 usage error, 3 configuration error.
+`uv.lock`. Exit codes: 0 applied, 1 required steps left, 2 usage error (or `uvx` missing for a
+version-locked project), 3 configuration error.
 
 ### Upgrade a project
 
@@ -201,17 +206,26 @@ graph-agents-cli scaffold upgrade --baseline current   # explicit, logged opt-ou
 version (`uvx --from git+https://github.com/ss7172/graph-agents-cli@v<old-version> graph-agents-cli scaffold create ...`,
 or `GRAPH_AGENTS_CLI_INSTALL_SPEC` with `{version}` filled in). If that version cannot be
 fetched and run (source unreachable, version absent, `uvx` missing, or an install-spec override
-without `{version}`, which would install some other build), `upgrade` **stops with a
-non-zero exit and no changes**, because an inauthentic baseline would misclassify files.
-`--baseline current` compares against the current templates instead; it is an explicit opt-in,
-logged, and the result summary is labelled as such. Do not pass it just to make the error go
-away; tell the user why the baseline is unavailable.
+without `{version}`, which would install some other build), `upgrade` **stops with no changes**
+(exit 2 when `uvx` is missing or failed; exit 3 when the manifest's `cli_version` is missing or
+not a release, or the override lacks `{version}`), because an inauthentic baseline would
+misclassify files. `--baseline current` compares against the current templates instead; it is
+an explicit opt-in, logged, and the result is labelled as such. It cannot tell the user's edits
+from template changes since the old version: every file listed under "Will preserve (differs
+from the current template)" that the user did not edit keeps its old content, and dependency
+changes are not merged. Do not pass it just to make the error go away; tell the user why the
+baseline is unavailable.
 
-A project created with 0.1.0 needs the `v0.1.0` tag for its authentic baseline (otherwise use
-`--baseline current` knowingly), and manual steps afterwards: see the CHANGELOG's "Upgrading a
-project created with 0.1.0" (a new `app/policies/__init__.py` and `app/agent.py`, `API_CALLS`
-instead of `PRODUCT_CALLS`, `secretOptional: true` in `values-dev.yaml`). Outside a project
-`upgrade` exits 3.
+A project created with 0.1.0 is upgraded against the `v0.1.0` tag (commit `fc3f2f9`). Never
+use `--baseline current` for it: nearly every scaffolding file changed in 0.2.0, so the project
+would keep 0.1.0's `app_utils`, chart and workflows, its tests would fail to import and `/chat`
+would answer 500. If the tag cannot be fetched, build the baseline from a clone that holds the
+commit (`git -C <clone> tag v0.1.0 fc3f2f9`, then
+`GRAPH_AGENTS_CLI_INSTALL_SPEC='git+file://<clone>@v{version}' graph-agents-cli scaffold upgrade`,
+and afterwards set `GRAPH_AGENTS_CLI_SPEC` in `.github/agent.env` back to the release spec).
+Manual steps follow: see the CHANGELOG's "Upgrading a project created with 0.1.0" (a new
+`app/policies/__init__.py` and `app/agent.py`, `API_CALLS` instead of `PRODUCT_CALLS`,
+`secretOptional: true` in `values-dev.yaml`). Outside a project `upgrade` exits 3.
 
 **What upgrade never touches:**
 
@@ -309,9 +323,9 @@ then follows that process's gates.
 | Symptom | Cause / fix |
 |---|---|
 | `create` refuses the combination | consult the table; pick `postgres` for kubernetes |
-| `upgrade` stops: "authentic baseline unavailable" | the old CLI version could not be fetched; fix index access or use `--baseline current` knowingly |
+| `upgrade` exits 2: "Could not build the graph-agents-cli@X baseline" | the old CLI version could not be fetched (no `vX` tag, no network, no `uvx`); fix access, or point `GRAPH_AGENTS_CLI_INSTALL_SPEC` (with `{version}`) at a mirror or clone that has the tag. `--baseline current` only knowingly, never for a 0.1.0 project |
 | `enhance` misplaces files | pass `--agent-directory` matching where the code lives |
-| `ghcr.io/CHANGE-ME` in values | pass `--registry` or set a git `origin` remote before `create`; `build` and `deploy` refuse the placeholder (exit 3) until it is replaced |
+| `ghcr.io/CHANGE-ME` in values | pass `--registry` or set a git `origin` remote before `create`; afterwards `graph-agents-cli scaffold enhance --registry <host>/<org>` sets it in the manifest, the chart values and `.github/agent.env`. `build` and `deploy` refuse the placeholder (exit 3) until then |
 | `enhance` exits 1: "item(s) marked (required) above must be done by hand" | do each `(required)` step in the "Left for you" list (for example merge `Dockerfile.new` into your `Dockerfile`, or set the chart key it names) |
 | `enhance` exits 2: "--model-provider X changes the provider, but the recorded model ..." | the model was chosen for the old provider: pass `--model <name>` for the new one |
 | any command exits 3: "This project uses the retired product API policy" | follow the printed steps (rename to `api-policy.yaml`, `apis:` with `allowed_methods`, `API_CALLS`) |

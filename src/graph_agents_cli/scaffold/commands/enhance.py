@@ -273,7 +273,7 @@ def _ensure_uvx_available(project_version: str) -> None:
         console.print("💡 Install uv to use version-locked projects:", style="bold blue")
         console.print("   curl -LsSf https://astral.sh/uv/install.sh | sh")
         console.print("   OR visit: https://docs.astral.sh/uv/getting-started/installation/")
-        sys.exit(1)
+        sys.exit(2)  # a missing tool, like every other command
 
 
 def _execute_with_saved_config(

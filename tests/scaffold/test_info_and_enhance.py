@@ -659,3 +659,17 @@ def test_cli_version_mismatch_hint_uses_the_install_spec(
     check_cli_version(ProjectConfig.from_dict({"name": "x", "cli_version": "0.3.0"}))
     err = capsys.readouterr().err
     assert "git+https://github.com/ss7172/graph-agents-cli@v0.3.0" in err
+
+
+def test_version_locked_enhance_without_uvx_is_a_tool_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing uvx is exit 2, the CLI-wide code for a missing tool."""
+
+    def missing(name: str, install_hint: str = "") -> str:
+        raise enhance_module.ToolNotFoundError(f"{name} not found")
+
+    monkeypatch.setattr(enhance_module, "require_tool", missing)
+    with pytest.raises(SystemExit) as exc:
+        enhance_module._ensure_uvx_available("0.1.0")
+    assert exc.value.code == 2

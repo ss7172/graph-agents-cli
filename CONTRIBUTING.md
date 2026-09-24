@@ -52,10 +52,13 @@ runs the fast suite plus the slow template tests (the end-to-end tests skip with
 - **End-to-end tests** (`tests/integration/test_e2e.py`) drive the CLI through subprocesses:
   `create`, `install`, `run`, `eval`, `playground`, `lint`, `enhance`, `upgrade`, and the
   `deploy`/`secrets` dry runs. They never touch a cluster: `KUBECONFIG` is an empty file and
-  every kubectl/helm-mutating path is `--dry-run`. `GRAPH_AGENTS_CLI_RUN_PORT` and
-  `GRAPH_AGENTS_CLI_E2E_PLAYGROUND_PORT` (default 18790) move their ports so parallel runs do
-  not collide. Anonymous pulls from `registry-1.docker.io` are rate-limited; a 429 from
-  `helm dependency build` is an infrastructure failure, not a regression.
+  every kubectl/helm-mutating path is `--dry-run`. Nothing may write to the developer's home:
+  `tests/conftest.py` points the `enhance`/`upgrade` backup directory at a temporary one for
+  every in-process test, and a subprocess that backs a project up gets its own `HOME`.
+  `GRAPH_AGENTS_CLI_RUN_PORT` and `GRAPH_AGENTS_CLI_E2E_PLAYGROUND_PORT` (default 18790) move
+  their ports so parallel runs do not collide. Anonymous pulls from `registry-1.docker.io`
+  are rate-limited; a 429 from `helm dependency build` is an infrastructure failure, not a
+  regression.
 - **Template tests** (`tests/template`) render the template the way the engine does
   (`tests/template/render.py`), check the rendered files, workflows and charts, and in the
   slow tier install each rendered project and run its own ruff, tests, `uv lock --locked`,
@@ -253,23 +256,33 @@ owner tags releases.
 4. **Checks**: fast suite, `ruff check .`, `ruff format --check .`, and the slow tiers
    (`GRAPH_AGENTS_CLI_E2E=1 UV_NO_CONFIG=1 uv run pytest -q -m slow`, or a manual run of the
    `ci` workflow's `e2e` job on the release commit).
-5. **Tag and push**: `git tag -a vX.Y.Z -m "graph-agents-cli X.Y.Z" && git push origin vX.Y.Z`.
-6. `.github/workflows/release.yml` then checks that the tag equals the package version (and
+5. **Tag every earlier release that projects may upgrade from.** `scaffold upgrade` rebuilds
+   a project's baseline from `git+https://github.com/ss7172/graph-agents-cli@v<cli_version>`,
+   so each version a project can record needs its tag on the remote. 0.1.0 was never tagged:
+   before (or together with) the first `v0.2.x` tag, push it once at commit `fc3f2f9`:
+   `git tag -a v0.1.0 fc3f2f9 -m "graph-agents-cli 0.1.0" && git push origin v0.1.0`. That
+   commit has no workflows, so the tag creates no GitHub Release. Check it with a project
+   created by 0.1.0: `graph-agents-cli scaffold upgrade --dry-run` lists about 30 files under
+   "Will auto-update" (without the tag it stops with exit 2).
+6. **Tag and push**: `git tag -a vX.Y.Z -m "graph-agents-cli X.Y.Z" && git push origin vX.Y.Z`.
+7. `.github/workflows/release.yml` then checks that the tag equals the package version (and
    the plugin manifests, the skills' `metadata.version` and the changelog agree), runs ruff
    and the fast suite, builds the sdist and wheel with `uv build`, checks that the wheel
    installs and reports the version, and creates the GitHub Release with the sdist, the
    wheel, `SHA256SUMS` and the changelog section as notes (a version with `a`, `b`, `rc` or
    `dev` is a prerelease).
-7. **PyPI (off by default).** The `pypi` job runs only when the repository variable
-   `PUBLISH_TO_PYPI` is `true`. Before turning it on, the owner registers the project on PyPI
-   with a trusted publisher (owner `ss7172`, repository `graph-agents-cli`, workflow
-   `release.yml`, environment `pypi`) and creates the `pypi` environment in the repository
-   settings (required reviewers recommended). Publishing uses OIDC, no token. Once a version
-   is on PyPI, `install_spec()` in `scaffold/utils/version.py` is the one place to switch the
-   default install spec to the index, and the README install section changes with it.
-
-Projects created with 0.1.0 need the `v0.1.0` tag (commit `fc3f2f9`) for an authentic
-`scaffold upgrade` baseline; until it exists they use `--baseline current`.
+8. **PyPI (off by default).** The `pypi` job runs only when the variable `PUBLISH_TO_PYPI`
+   is `true`. Before turning it on, the owner registers the project on PyPI with a trusted
+   publisher (owner `ss7172`, repository `graph-agents-cli`, workflow `release.yml`,
+   environment `pypi`) and creates the `pypi` environment in the repository settings with
+   required reviewers. That environment and the trusted-publisher registration are the real
+   gate: the job's `if:` is a GitHub expression, which compares strings case-insensitively
+   (`TRUE` passes it) and reads organization variables as well as repository ones (a
+   repository variable wins over an organization variable of the same name). The job's
+   first step therefore refuses any value but exactly `true`. Publishing uses OIDC, no
+   token. Once a version is on PyPI, `install_spec()` in `scaffold/utils/version.py` is the
+   one place to switch the default install spec to the index, and the README install
+   section changes with it.
 
 The workflows pin actions to full commit SHAs with the version in a comment. To bump one,
 resolve the new tag's commit (`git ls-remote https://github.com/<owner>/<action>

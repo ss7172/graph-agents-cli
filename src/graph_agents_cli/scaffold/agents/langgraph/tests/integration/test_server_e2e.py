@@ -142,9 +142,10 @@ async def test_playground_only_in_dev(
 ) -> None:
     r = await client.get("/playground")
     assert r.status_code == 200 and "text/html" in r.headers["content-type"] and "/chat" in r.text
-    monkeypatch.setenv("APP_ENV", "prod")
-    r = await client.get("/playground")
-    assert r.status_code == 404
+    for other in ("prod", "DEV", " dev "):  # dev relaxes checks: only the exact value counts
+        monkeypatch.setenv("APP_ENV", other)
+        r = await client.get("/playground")
+        assert r.status_code == 404, other
 
 
 async def test_openapi_and_docs_exist_only_in_dev(client: httpx.AsyncClient) -> None:

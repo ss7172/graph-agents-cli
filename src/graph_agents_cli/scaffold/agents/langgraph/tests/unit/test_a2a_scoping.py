@@ -71,6 +71,7 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     task_ttl_s,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS, Principal
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.fast_api_app import app
 
 A2A_PATH = "/a2a/{{cookiecutter.agent_directory}}"
@@ -261,8 +262,10 @@ async def test_ttl_zero_keeps_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("A2A_TASK_TTL_S", "0")
     assert task_ttl_s() == 0
     for bad in ("-1", "soon", "1.5"):
+        # Refused, not replaced by the default: the startup check names it.
         monkeypatch.setenv("A2A_TASK_TTL_S", bad)
-        assert task_ttl_s() == DEFAULT_TASK_TTL_S
+        with pytest.raises(SettingsError, match="A2A_TASK_TTL_S"):
+            task_ttl_s()
     monkeypatch.delenv("A2A_TASK_TTL_S")
     assert task_ttl_s() == DEFAULT_TASK_TTL_S == 3600
 

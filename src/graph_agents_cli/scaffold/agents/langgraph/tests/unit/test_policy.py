@@ -171,9 +171,18 @@ def test_check_startup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_dev_mode_needs_an_explicit_app_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for value, expected in (("dev", True), (" DEV ", True), ("prod", False), ("", False)):
+    # Only exactly `dev`: dev relaxes checks, so a near miss is a deployed environment.
+    for value, expected in (
+        ("dev", True),
+        (" DEV ", False),
+        ("Dev", False),
+        ("dev ", False),
+        ("development", False),
+        ("prod", False),
+        ("", False),
+    ):
         monkeypatch.setenv("APP_ENV", value)
-        assert dev_mode() is expected
+        assert dev_mode() is expected, value
     monkeypatch.delenv("APP_ENV")
     assert dev_mode() is False
 

@@ -80,7 +80,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from {{cookiecutter.agent_directory}}.app_utils.a2a import A2A_RPC_PATH, add_a2a_routes
+from {{cookiecutter.agent_directory}}.app_utils.a2a import A2A_RPC_PATH, add_a2a_routes, task_ttl_s
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
     authenticate_and_authorize,
@@ -124,6 +124,7 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     log_level,
     setup_logging,
     setup_telemetry,
+    trace_capture,
 )
 from {{cookiecutter.agent_directory}}.app_utils.threads import THREAD_BUSY, ThreadBusy
 
@@ -141,8 +142,19 @@ if detect_runtime() == FASTAPI:
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
-    # A bad limit, log or pool setting stops startup instead of being guessed.
-    check_settings(extra=(log_level, log_format, metrics_enabled, pool_sizes, model_limits))
+    # A bad limit, log, metrics, pool, model, trace-capture or A2A setting
+    # stops startup instead of being guessed.
+    check_settings(
+        extra=(
+            log_level,
+            log_format,
+            metrics_enabled,
+            pool_sizes,
+            model_limits,
+            trace_capture,
+            task_ttl_s,
+        )
+    )
     if RUNTIME.runtime == FASTAPI:
         setup_logging()  # LangGraph Server configures logging itself
     setup_telemetry()
@@ -183,7 +195,8 @@ class A2APolicyMiddleware:
 
 
 def _dev_mode() -> bool:
-    return (os.environ.get("APP_ENV") or "").strip().lower() == "dev"
+    """`APP_ENV` is exactly `dev` (as `auth.dev_mode`)."""
+    return os.environ.get("APP_ENV") == "dev"
 
 
 def cors_origins() -> list[str]:

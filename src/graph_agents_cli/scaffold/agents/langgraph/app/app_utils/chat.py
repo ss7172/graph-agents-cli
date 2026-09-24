@@ -171,7 +171,8 @@ def select_forward_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 
 def dev_mode() -> bool:
-    return (os.environ.get("APP_ENV") or "").strip().lower() == "dev"
+    """`APP_ENV` is exactly `dev` (as `auth.dev_mode`)."""
+    return os.environ.get("APP_ENV") == "dev"
 
 
 def sse_encode(event: str, data: Mapping[str, Any]) -> str:

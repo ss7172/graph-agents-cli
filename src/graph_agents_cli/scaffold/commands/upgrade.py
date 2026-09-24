@@ -24,6 +24,7 @@ from graph_agents_cli import _api_policy, _tools
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import (
     MANIFEST_FILENAME,
+    ManifestError,
     NotInProjectError,
     find_project_config,
     find_project_root,
@@ -31,11 +32,27 @@ from graph_agents_cli._project import (
 
 from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.generation_metadata import metadata_to_cli_args
-from ..utils.merge import run_three_way_merge
+from ..utils.merge import is_fetchable_version, run_three_way_merge
 from ..utils.upgrade import update_cli_metadata
-from ..utils.version import PACKAGE_NAME, get_current_version
+from ..utils.version import (
+    INSTALL_SPEC_ENV,
+    PACKAGE_NAME,
+    InstallSpecError,
+    get_current_version,
+    pinned_install_spec,
+    pinned_spec_unavailable,
+)
 
 console = Console()
+
+# The CLI-wide scheme: 0 ok, 1 refused or failed gate, 2 tool failure (uvx
+# missing, or it could not fetch and run the prior release), 3 configuration
+# error (the manifest's cli_version, the install-spec override).
+EXIT_TOOL_FAILURE = 2
+_BASELINE_CURRENT_HINT = (
+    "Nothing was changed. `--baseline current` compares against the current templates "
+    "instead, but it cannot tell your edits from the template's own changes since then."
+)
 
 
 def _display_version_header(old_version: str, new_version: str) -> None:
@@ -133,12 +150,12 @@ def upgrade(
 
     old_version = metadata.cli_version
     if not old_version:
-        console.print("[bold red]Error:[/bold red] No cli_version found in project metadata.")
-        console.print(
-            "The project metadata is missing the version. "
-            f"Please ensure {MANIFEST_FILENAME} has cli_version set."
+        raise ManifestError(
+            f"No cli_version found in {MANIFEST_FILENAME}.\n"
+            "  It records the graph-agents-cli version that created the project, which "
+            "upgrade needs to rebuild that version's templates; set it (for example "
+            "cli_version: '0.1.0')."
         )
-        raise SystemExit(1)
 
     new_version = get_current_version()
 
@@ -147,8 +164,19 @@ def upgrade(
         return
 
     if baseline == "authentic":
-        # Checked up front: without uvx the authentic baseline cannot be built
-        # and the merge would stop anyway, after generating nothing.
+        # Checked up front: without a release to fetch, a usable install spec
+        # or uvx the authentic baseline cannot be built, and the merge would
+        # stop anyway, after generating nothing.
+        if not is_fetchable_version(old_version):
+            raise ManifestError(
+                f"cli_version {old_version!r} in {MANIFEST_FILENAME} is not a released "
+                f"{PACKAGE_NAME} version, so its templates cannot be rebuilt.\n"
+                f"  {_BASELINE_CURRENT_HINT}"
+            )
+        if pinned_install_spec(old_version) is None:
+            raise InstallSpecError(
+                f"{pinned_spec_unavailable(old_version)}.\n  {_BASELINE_CURRENT_HINT}"
+            )
         try:
             _tools.require_tool("uvx")
         except _tools.ToolNotFoundError as e:
@@ -157,7 +185,7 @@ def upgrade(
                 f"[dim]The authentic {old_version} baseline needs uvx. Install uv, or re-run "
                 "with --baseline current to compare against the current templates.[/dim]"
             )
-            raise SystemExit(1) from e
+            raise SystemExit(EXIT_TOOL_FAILURE) from e
     else:
         logging.warning(
             "--baseline current: the %s snapshot will be rendered with the current "
@@ -217,8 +245,11 @@ def upgrade(
             "cannot be computed authentically."
         )
         console.print(
-            "[dim]Your project was not modified. Check your network/proxy and retry, or "
-            "re-run with --baseline current to compare against the current templates "
-            "(the result is labelled as such).[/dim]"
+            f"[dim]Your project was not modified. Check your network/proxy and that the "
+            f"v{old_version} tag exists, and retry; {INSTALL_SPEC_ENV} with {{version}} can "
+            "point at a mirror or a local clone that has it. --baseline current compares "
+            "against the current templates instead, but cannot tell your edits from the "
+            f"template's changes since {old_version}: files you did not edit keep their "
+            f"{old_version} content.[/dim]"
         )
-        raise SystemExit(1)
+        raise SystemExit(EXIT_TOOL_FAILURE)

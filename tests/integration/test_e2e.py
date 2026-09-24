@@ -623,8 +623,14 @@ def test_enhance_to_argocd_then_upgrade_is_noop(workspace: Path) -> None:
     project = _create(
         workspace, "p2-enh", "--runtime", "fastapi", "--cd", "skip", "-d", "kubernetes"
     )
+    # enhance backs the project up to ~/.graph-agents-cli/backups: a temporary home
+    # keeps it out of the developer's (these commands install nothing, so no uv cache).
+    home = workspace / "home-p2-enh"
+    home.mkdir()
+    env = _env({"HOME": str(home)})
     before = {p: (project / p).read_bytes() for p in ("app/agent.py", "app/fast_api_app.py")}
-    result = _ok(cli("scaffold", "enhance", "--cd", "argocd", "-y", cwd=project))
+    result = _ok(cli("scaffold", "enhance", "--cd", "argocd", "-y", cwd=project, env=env))
+    assert str(home / ".graph-agents-cli" / "backups") in _out(result)
     assert "Enhancement complete" in _out(result)
     for rel in (
         "deployment/argocd/application-dev.yaml",
@@ -638,7 +644,7 @@ def test_enhance_to_argocd_then_upgrade_is_noop(workspace: Path) -> None:
     assert "cd: argocd" in manifest or "cd: 'argocd'" in manifest
     for rel, content in before.items():
         assert (project / rel).read_bytes() == content, f"{rel} was modified"
-    upgrade = _ok(cli("scaffold", "upgrade", "-y", cwd=project))
+    upgrade = _ok(cli("scaffold", "upgrade", "-y", cwd=project, env=env))
     assert "already at version" in _out(upgrade)
 
 

@@ -82,6 +82,10 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   exits 3 (was 1), `run` exits 2 when the agent cannot be reached or goes silent (was 1),
   `secrets status` exits 1 only when a *required* key is missing (`--strict` for every
   allow-listed key), and a local server that cannot start exits 2 from `run` and `eval`.
+  `scaffold upgrade` exits 3 for a manifest without a released `cli_version` or an
+  install-spec override without `{version}`, and 2 when `uvx` is missing or cannot fetch and
+  run the prior release (all were 1); a version-locked `scaffold enhance` without `uvx`
+  exits 2 (was 1).
 - **Chat API changes.** The SSE `error` event is `{code, message, error_id, run_id}` with
   `code` one of `run_failed`, `timeout`, `recursion_limit`, `thread_busy`, `unavailable`,
   `forbidden` (was the exception class name); details go to the server log (and `detail` only
@@ -98,9 +102,33 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
    `apis: {<name>: ...}` with `allowed_methods`, change `product_api:` in the manifest to
    `api_policy: {policy_file: api-policy.yaml}`, rename `PRODUCT_CALLS` to `API_CALLS` with an
    `"api"` key).
-2. Run `graph-agents-cli scaffold upgrade`. Its authentic baseline re-renders the project
-   with the exact prior version from the `v0.1.0` tag; if the repository has no such tag,
-   use `scaffold upgrade --baseline current` (a less precise comparison, labelled as such).
+2. Run `graph-agents-cli scaffold upgrade` (preview with `--dry-run`, apply with `-y`). Its
+   authentic baseline re-renders the project with graph-agents-cli 0.1.0 from the `v0.1.0`
+   tag of this repository (commit `fc3f2f9`), so it updates every scaffolding file you did
+   not edit (about 30: `app/app_utils/*.py`, `app/fast_api_app.py`, the Dockerfile, the chart
+   templates and `values.yaml`, `pr_checks.yaml`, `.github/agent.env`, ...), adds the new
+   ones (`app/policies/custom.py` among them), removes `app/app_utils/product_client.py` and
+   reports your own edits as conflicts. It needs `uvx` and access to the repository.
+
+   If the tag cannot be fetched (an offline mirror, a fork without tags), build the same
+   baseline from any clone that holds commit `fc3f2f9`:
+
+   ```bash
+   git clone https://github.com/ss7172/graph-agents-cli /tmp/gac   # or your mirror
+   git -C /tmp/gac tag v0.1.0 fc3f2f9
+   GRAPH_AGENTS_CLI_INSTALL_SPEC='git+file:///tmp/gac@v{version}' graph-agents-cli scaffold upgrade -y
+   ```
+
+   The override also becomes the new `.github/agent.env`'s `GRAPH_AGENTS_CLI_SPEC`: set that
+   line back to `git+https://github.com/ss7172/graph-agents-cli@v0.2.0` (or your mirror).
+
+   **Do not use `--baseline current` for a 0.1.0 project.** It compares against the 0.2.0
+   templates, so it cannot tell your edits from 0.2.0's changes: every scaffolding file 0.2.0
+   changed is listed under "Will preserve" and keeps its 0.1.0 content, the new dependencies
+   (`pyjwt`, `prometheus-client`) are not merged, and only new files are added (not
+   `app/policies/custom.py`). After step 3 the project's tests fail to import and `/chat`
+   answers 500. If you ran it, restore the project from the backup it printed
+   (`~/.graph-agents-cli/backups/...`) or from git, and upgrade with the authentic baseline.
 3. `scaffold upgrade` never rewrites agent code or config, so port these by hand (compare
    with a fresh `graph-agents-cli create` of the same settings):
    - `app/policies/__init__.py`: replace it with the 0.2.0 registry. The old file imports
@@ -175,6 +203,8 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   env, CODEOWNERS, Argo CD `repoURL`), missing required Secret keys, and, for `helm-push`,
   whether `DEPLOY_KUBECONFIG` exists as an environment secret and no repository-level
   kubeconfig secret exists.
+- Chart: `metrics.serviceMonitor.bearerToken` makes the ServiceMonitor send `METRICS_TOKEN`
+  (from the app Secret by default), so a token-protected `/metrics` can be scraped.
 - `run --port` and `GRAPH_AGENTS_CLI_RUN_PORT`; a port preflight for `run` and `playground`
   (exit 3 when the port is taken); `GRAPH_AGENTS_CLI_DEBUG=1` shows the traceback behind a
   one-line error.
@@ -206,6 +236,17 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 - The printed "Get Started" after `create` includes `cp .env.example .env` and
   `graph-agents-cli login --write-env`, so a first `eval run` does not fail with 503.
+- With no `--registry` and no git `origin` remote, `create` still records the placeholder
+  `ghcr.io/CHANGE-ME`; its hints, the generated README, `deploy`, `build` and `infra check`
+  now name `graph-agents-cli scaffold enhance --registry <host>/<org>`, which sets the
+  registry everywhere it is read (the manifest, the chart values, `.github/agent.env`).
+- A `TRACE_CAPTURE` other than `metadata` or `full` stops the app at startup, like the other
+  settings that do not parse (0.1.0 read it as `metadata`); so does an `A2A_TASK_TTL_S` that
+  is not a whole number >= 0.
+- `scaffold upgrade --baseline current` labels its "Will preserve" list as files that differ
+  from the current template, and says that files you did not edit keep their old content and
+  that dependency changes are not merged; when the authentic baseline fails, the hint that
+  suggests `--baseline current` warns about this too.
 - `login --write-env` fills a blank `KEY=` line in place (no duplicate lines), keeps `.env`
   at mode 0600 and writes it atomically.
 - `extension add` accepts a local path without the `local@` prefix; `extension update`
@@ -283,12 +324,16 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - `NaN`/`Infinity` in a request body gives 422 instead of a 500 with a traceback.
 - The chart runs pods as non-root with a read-only root filesystem, dropped capabilities
   and no service-account token, and keeps probes and metrics off the public route.
+- `APP_ENV` counts as dev (dev-only pages, the error `detail`, an optional jwt issuer and
+  audience, the chart's dev paths) only when it is exactly `dev`; 0.1.0 also accepted any
+  case and surrounding whitespace.
 
 ## [0.1.0] - 2026-09-23
 
 First public import of graph-agents-cli, a fork of google-agents-cli 1.6.1 with the Google
-Cloud specific parts removed (see NOTICE). Not tagged as a release: it corresponds to commit
-`fc3f2f9` on `main`.
+Cloud specific parts removed (see NOTICE). It is commit `fc3f2f9` on `main`, with no GitHub
+Release; the release process tags that commit `v0.1.0` so `scaffold upgrade` can rebuild a
+0.1.0 project's baseline.
 
 ### Added
 

@@ -81,7 +81,7 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `APP_ENV` | chart / `.env` | `dev` enables `/playground`; anything else disables it |
+| `APP_ENV` | chart / `.env` | exactly `dev` enables `/playground`, `/docs`, the error `detail` and an optional jwt issuer and audience; anything else (`DEV`, ` dev`, unset) is a deployed environment |
 | `MODEL_PROVIDER`, `MODEL_NAME` | `.env` / chart | agent model via `init_chat_model` |
 | `OPENAI_BASE_URL` | `.env` / chart | only for `openai-compatible` |
 | `OPENAI_API_KEY` \| `ANTHROPIC_API_KEY` \| `GOOGLE_API_KEY` \| `MODEL_API_KEY` | Secret | provider key |
@@ -106,13 +106,13 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT` | Secret (add to `secrets.keys`) | bearer token required by `/metrics`; HMAC key of the principal hash |
 | `CORS_ALLOW_ORIGINS` | `.env` / chart | comma list; empty = no CORS |
 | `DB_POOL_MIN_SIZE` (1), `DB_POOL_MAX_SIZE` (10) | `.env` / chart | connection pool per process |
-| `A2A_TASK_TTL_S` (3600) | `.env` / chart | in-memory A2A tasks dropped this long after their last update (0 = until restart) |
+| `A2A_TASK_TTL_S` (3600) | `.env` / chart | in-memory A2A tasks dropped this long after their last update (0 = until restart; a value that is not a whole number >= 0 stops startup) |
 | `APP_URL` | chart (`appUrl` / hostname) / `.env` | public base URL in the A2A agent card; unset = bind address (warned outside dev) |
 | `<API>_BASE_URL` (each API's `base_url_env`) | `.env` / chart | one per API in `api-policy.yaml` |
 | each `auth: bearer` API's `token_env` | Secret | joins `secrets.keys` at create |
 | `API_POLICY_PATH` | `.env` | default `./api-policy.yaml` |
 | `TRACING_ENABLED` (`true`\|`false`) | `.env`=false | tracing opt-in |
-| `TRACE_CAPTURE` (`metadata`\|`full`) | `.env`=metadata | capture policy |
+| `TRACE_CAPTURE` (`metadata`\|`full`) | `.env`=metadata | capture policy; any other value stops startup |
 | `LANGSMITH_API_KEY` | Secret | |
 | `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT` | `.env` / chart | project defaults to the project name |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | chart | OTLP fallback |

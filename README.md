@@ -56,8 +56,8 @@ baseline and generated projects' CI (`GRAPH_AGENTS_CLI_SPEC` in `.github/agent.e
 the CLI from: a private mirror, a wheel, or a package index once one is used. Write
 `{version}` where the version goes (`git+https://git.example.com/graph-agents-cli@v{version}`)
 so the upgrade baseline can install an older release; an override without it is refused for
-that (use `scaffold upgrade --baseline current`). An override with control characters or
-whitespace is refused (exit 3), except the spaces of a PEP 508 `name @ url` reference.
+that (exit 3). An override with control characters or whitespace is refused (exit 3), except
+the spaces of a PEP 508 `name @ url` reference.
 
 `setup` installs the skills with `npx skills add`, falling back to the copy bundled in the
 wheel and then to a plain copy into `~/.agents/skills` (`./.agents/skills` with
@@ -98,7 +98,14 @@ skill walks the same steps.
 To deploy to a local cluster (kind, k3d, minikube, Docker Desktop), see
 [Environments and CD modes](#environments-and-cd-modes): `graph-agents-cli deploy --env dev`
 builds the image, side-loads it and runs `helm upgrade --install` on the kubeconfig's
-current context.
+current context. The image needs a registry name: `create` takes it from `--registry` or
+from the git `origin` remote (`ghcr.io/<owner>`). Without either, as in the quick start
+above outside a git repository, it records the placeholder `ghcr.io/CHANGE-ME`, which
+`build` and `deploy` refuse (exit 3). Set it with
+`graph-agents-cli scaffold enhance --registry <host>/<org>`: that updates
+`create_params.registry` in the manifest (what `build` and `deploy` read), `image.repository`
+in the chart values and `IMAGE_REPOSITORY` in `.github/agent.env`. A side-loaded image never
+leaves your machine, so any valid name works for a local cluster (`--registry localhost/dev`).
 
 ## Commands
 
@@ -112,7 +119,7 @@ line naming the file that implements it.
 | `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig. `--write-env` prompts for missing keys (never echoed), generates `API_KEY`, fills blank `KEY=` lines in place and keeps `.env` at 0600. Exit 1 on a failed check (0 with `--status`) |
 | `create [NAME]` / `scaffold create [NAME]` | Create a project: `-a/--agent`, `-o/--output-dir`, `--runtime`, `--model-provider`, `--model`, `--checkpointer`, `-d/--deployment-target`, `--registry`, `--cd`, `--auth-policy`, `--api-policy FILE`, `--process`, `-p/--prototype`, `-dir/--agent-directory`, `--agent-guidance-filename` (default `AGENTS.md`), `-bt/--base-template`, `-i`, `-y`, `-s/--skip-checks`, `--debug` |
 | `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`; `--api-policy` is refused). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
-| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built |
+| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest's `cli_version` or the install-spec override is the reason) |
 | `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
 | `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL |
 | `install [--clean] [--locked]` | `uv sync` the project |
@@ -218,8 +225,11 @@ Behaviour:
   health-checked on checkout, so a Postgres restart heals itself. Schema changes run at
   startup under an advisory lock, so replicas can start together.
 
-Every setting has a default in code and is documented in the generated `.env.example`; a
-value that does not parse stops the app at startup, naming the variable.
+Every setting has a default in code and is documented in the generated `.env.example`. A
+guardrail, limit, pool, logging, metrics, `TRACE_CAPTURE` or `A2A_TASK_TTL_S` value that does
+not parse stops the app at startup, naming every bad variable; the auth settings follow the
+policy's startup rule below. `TRACING_ENABLED` turns tracing on only for `true`, `yes` or `1`
+(any case); any other value leaves it off.
 
 ## Authentication
 
@@ -228,7 +238,8 @@ guards every surface: `/chat` and the thread routes, the A2A card and JSON-RPC, 
 `langgraph-server` the server's native API. `/health`, `/ready`, `/metrics` and the dev-only
 pages are outside it. Startup fails closed: an unknown `AUTH_POLICY` never starts, and a
 misconfigured policy stops the process outside `APP_ENV=dev` (under dev the problem is logged
-and requests get 503). `APP_ENV` counts as dev only when it is exactly `dev`.
+and requests get 503). `APP_ENV` counts as dev only when it is exactly `dev` (the app and the
+chart compare it as is: `DEV` or ` dev` is a deployed environment).
 
 Common settings: `AUTH_READ_ACROSS_ROLES` (comma list; roles that may read, never continue or
 delete, other principals' threads) and `AUTH_ADMIN_ROLES` (comma list, empty = nobody; under
@@ -422,7 +433,8 @@ Rules `deploy` and `secrets apply` follow:
   with `--atomic` (default), rolls back to the newest good revision or uninstalls a first
   install that never succeeded. It only undoes the revision this run created: when another
   helm operation holds the release (a `pending-*` revision), deploy refuses up front (exit 2)
-  and prints the command that clears a lock left by an interrupted helm.
+  and prints the command that clears a lock left by an interrupted helm. Two deploys started
+  at the same moment have narrow gaps (see [Known limitations](#known-limitations)).
 - **Images.** Workstation builds are tagged with the short commit sha, plus
   `-dirty-<timestamp>` when the tree has uncommitted changes (outside `deployment/`,
   `.github/`, `tests/`, `docs/`), with a warning; `--tag` overrides. A placeholder registry
@@ -463,6 +475,9 @@ requests in prod). Values worth knowing:
 - `gateway.*` / `ingress.*` / `tls.*`: set `gateway.parentRef.name` and `gateway.hostname`
   (staging and prod), or enable the Ingress; TLS from `tls.existingSecret` or cert-manager.
 - `metrics.scrapeAnnotations`, `metrics.serviceMonitor.enabled`: Prometheus scraping (off).
+  With `METRICS_TOKEN` in the app Secret, `metrics.serviceMonitor.bearerToken.enabled` makes
+  the ServiceMonitor send it (from the app Secret, or `bearerToken.secretName` and `.key`).
+  Pod annotations cannot carry a token: give that Prometheus's scrape job the token itself.
 - `networkPolicy.*`: an optional NetworkPolicy (off). It admits only the http port, from the
   `ingressFrom` sources when listed; with `restrictEgress` it also limits egress to DNS and
   `egressTo`.
@@ -544,8 +559,8 @@ Every command follows one scheme:
 |---|---|
 | 0 | Success (`eval`: gate met; `secrets status`: every required key present) |
 | 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `scaffold enhance`: required steps left) |
-| 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; an unexpected crash |
-| 3 | Configuration error: not in a project, an invalid manifest, env file, policy, port or context, a placeholder registry |
+| 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; `scaffold upgrade` and version-locked `scaffold enhance`: `uvx` is missing or could not fetch and run the prior release; an unexpected crash |
+| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy, port or context, a placeholder registry, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
 
 Usage errors from Click (an unknown flag) are also 2. A signal ends a command with 128+N
 (130 for Ctrl-C, 143 for SIGTERM) after the local server it started is stopped.
@@ -566,7 +581,9 @@ Usage errors from Click (an unknown flag) are also 2. A signal ends a command wi
   prompts, tool results and context the agent assembles: decide what may leave your network
   before connecting one.
 - **Deploys** need an explicit context outside dev, never reuse development keys, never
-  rotate the live `API_KEY` implicitly, and only roll back their own revision. Production
+  rotate the live `API_KEY` implicitly, and only roll back their own revision (two narrow
+  races between concurrent deploys are listed under
+  [Known limitations](#known-limitations)). Production
   desired state changes only through a reviewed pull request (`argocd`) or the `production`
   environment gate (`helm-push`).
 - **Supply chain**: the CLI installs from a pinned git tag; generated projects pin the CLI
@@ -599,8 +616,10 @@ NetworkPolicy is off by default), and backups of the agent's database.
       replicas x (`DB_POOL_MAX_SIZE` + 1); no transaction-mode PgBouncer in front.
 - [ ] Gateway or Ingress with TLS; review `route.publicPaths`; rate limiting at the gateway.
 - [ ] `APP_URL` (or `appUrl`, or a hostname) so the A2A card advertises the public URL.
-- [ ] `METRICS_TOKEN` or a NetworkPolicy if anything outside the cluster can reach the pods;
-      Prometheus scraping configured; alerts on `agent_runs_total{status!="ok"}` and `/ready`.
+- [ ] `METRICS_TOKEN` (in `secrets.keys` and the Secret) or a NetworkPolicy if anything outside
+      the cluster can reach the pods; Prometheus scraping configured, with
+      `metrics.serviceMonitor.bearerToken.enabled` (or the token in your scrape job) when
+      `METRICS_TOKEN` is set; alerts on `agent_runs_total{status!="ok"}` and `/ready`.
 - [ ] `PRINCIPAL_HASH_SALT` set (and added to `secrets.keys`) if principal ids are guessable
       (email addresses, for example).
 - [ ] Decide `RETENTION_DAYS`, `TRACING_ENABLED` and `TRACE_CAPTURE` with whoever owns the
@@ -688,6 +707,13 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 - **No built-in rate limiting**: configure it at the gateway or ingress.
 - **Run lock across replicas** uses Postgres session advisory locks: one extra connection per
   replica, and it does not hold behind a transaction-mode connection pooler.
+- **Concurrent deploys to one release.** `deploy` refuses while another helm operation holds
+  the release, but two narrow races remain. If this run's helm fails before recording a
+  revision (a render error) just as another deploy records a revision that has already
+  failed, that revision is attributed to this run (and, with `--atomic`, rolled back). A
+  deploy that passes the idle check can still apply its Secret before helm refuses it,
+  when another deploy starts in between. Serialize deploys to one environment (one CI
+  concurrency group, one operator at a time).
 - **`jwt`**: one issuer; no tenant or scope claims mapped to permissions (every
   authenticated principal may use every action; ownership is per thread); the JWKS URL must
   answer directly (no redirects); for a PEM certificate only its public key is used.
@@ -702,8 +728,9 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 - `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after
   `enhance --runtime`, run `graph-agents-cli install` to bring `uv.lock` up to date; required
   steps are reported only by the enhance that changes the settings.
-- Upgrading a 0.1.0 project needs manual steps (see CHANGELOG.md), and an authentic baseline
-  needs the `v0.1.0` tag.
+- Upgrading a 0.1.0 project needs manual steps (see CHANGELOG.md) and the `v0.1.0` tag for its
+  authentic baseline. `--baseline current` is no substitute there: it cannot tell your edits
+  from 0.2.0's changes, so every scaffolding file 0.2.0 changed keeps its 0.1.0 content.
 - The Bitnami subcharts come from `registry-1.docker.io`, which rate-limits anonymous pulls;
   their images are pinned by digest, and a pin must be refreshed if the digest is withdrawn.
 - The generated workflows reference actions by version tag, not commit SHA.

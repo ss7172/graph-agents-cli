@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from graph_agents_cli._defaults import REGISTRY_FIX_COMMAND, REGISTRY_FIX_EFFECT
 from graph_agents_cli.deploy import _image, _kube, _modes, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings
 from graph_agents_cli.deploy._kube import Target, ToolFailed
@@ -484,7 +485,8 @@ def check_placeholders(settings: DeploySettings, values: dict[str, Any]) -> list
             registry if not problem else problem.splitlines()[0],
             ""
             if not problem
-            else "set create_params.registry in graph-agents-cli-manifest.yaml (e.g. ghcr.io/<org>)",
+            else f"run `{REGISTRY_FIX_COMMAND}` ({REGISTRY_FIX_EFFECT}), or set "
+            "create_params.registry in graph-agents-cli-manifest.yaml (e.g. ghcr.io/<org>)",
         )
     )
     repository = str(_get(values, "image", "repository", default="") or "")
@@ -498,8 +500,8 @@ def check_placeholders(settings: DeploySettings, values: dict[str, Any]) -> list
             repository or "(unset)",
             ""
             if not chart_placeholder
-            else "set image.repository in the chart's values.yaml (Argo CD renders it as is; "
-            "`deploy` overrides it with --set)",
+            else f"run `{REGISTRY_FIX_COMMAND}`, or set image.repository in the chart's "
+            "values.yaml (Argo CD renders it as is; `deploy` overrides it with --set)",
         )
     )
     env_keys = _env_placeholders(values)

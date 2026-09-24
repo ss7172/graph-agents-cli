@@ -346,12 +346,128 @@ def test_upgrade_command_stops_without_authentic_baseline(
 
     before = sorted(str(p.relative_to(project)) for p in project.rglob("*"))
     result = CliRunner().invoke(upgrade, [str(project), "-y"], catch_exceptions=False)
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # uvx could not fetch and run the prior release: a tool failure
     assert "--baseline current" in result.output
     assert "not modified" in result.output
     after = sorted(str(p.relative_to(project)) for p in project.rglob("*"))
     assert before == after
     assert read_manifest(project)["cli_version"] == "0.0.1"
+
+
+def _set_cli_version(project: pathlib.Path, value: str | None) -> None:
+    """Replace (or, with None, drop) the manifest's cli_version line."""
+    manifest_path = project / "graph-agents-cli-manifest.yaml"
+    lines = manifest_path.read_text().splitlines(keepends=True)
+    out = []
+    for line in lines:
+        if line.startswith("cli_version:"):
+            if value is None:
+                continue
+            line = f"cli_version: '{value}'\n"
+        out.append(line)
+    manifest_path.write_text("".join(out))
+
+
+@pytest.fixture
+def newer_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The running CLI is 9.9.9, newer than any project the tests create."""
+    from graph_agents_cli.scaffold.utils import version as version_module
+
+    monkeypatch.setattr(
+        "graph_agents_cli.scaffold.commands.upgrade.get_current_version", lambda: "9.9.9"
+    )
+    monkeypatch.setattr(version_module, "get_current_version", lambda: "9.9.9")
+
+
+def _tree(project: pathlib.Path) -> list[str]:
+    return sorted(str(p.relative_to(project)) for p in project.rglob("*"))
+
+
+def _uvx(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if c[0] == "uvx"]
+
+
+def test_upgrade_without_cli_version_is_a_configuration_error(
+    run_create: CreateRunner, newer_cli, uvx_calls
+) -> None:
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    _set_cli_version(project, None)
+    before = _tree(project)
+    result = CliRunner().invoke(upgrade, [str(project), "-y"])
+    assert result.exit_code == 3, result.output
+    assert "No cli_version found in graph-agents-cli-manifest.yaml" in result.output
+    assert _uvx(uvx_calls) == [] and _tree(project) == before
+
+
+@pytest.mark.parametrize("version", ["0.0.0", "not-a-version"])
+def test_upgrade_from_an_unreleased_cli_version_is_a_configuration_error(
+    run_create: CreateRunner, newer_cli, uvx_calls, version: str
+) -> None:
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    _set_cli_version(project, version)
+    result = CliRunner().invoke(upgrade, [str(project), "-y"])
+    assert result.exit_code == 3, result.output
+    assert "is not a released graph-agents-cli version" in result.output
+    assert "--baseline current" in result.output
+    assert _uvx(uvx_calls) == []
+
+
+def test_upgrade_with_an_install_spec_override_lacking_version_is_a_configuration_error(
+    run_create: CreateRunner, newer_cli, uvx_calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    _set_cli_version(project, "0.0.1")
+    monkeypatch.setenv("GRAPH_AGENTS_CLI_INSTALL_SPEC", "git+https://git.example/gac@main")
+    result = CliRunner().invoke(upgrade, [str(project), "-y"])
+    assert result.exit_code == 3, result.output
+    assert "{version}" in result.output and "--baseline current" in result.output
+    assert _uvx(uvx_calls) == []
+
+
+def test_upgrade_without_uvx_is_a_tool_failure(
+    run_create: CreateRunner, newer_cli, uvx_calls, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_agents_cli import _tools
+
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    _set_cli_version(project, "0.0.1")
+
+    def missing(name, install_hint=""):
+        raise _tools.ToolNotFoundError(f"{name} not found")
+
+    monkeypatch.setattr(_tools, "require_tool", missing)
+    before = _tree(project)
+    result = CliRunner().invoke(upgrade, [str(project), "-y"])
+    assert result.exit_code == 2, result.output
+    assert "needs uvx" in result.output
+    assert _uvx(uvx_calls) == [] and _tree(project) == before
+
+
+def test_baseline_current_says_what_the_preserve_list_holds(
+    run_create: CreateRunner, newer_cli, uvx_calls
+) -> None:
+    """Under --baseline current a file that differs from the current template may be
+    one the template changed since the old version, not an edit: the list says so."""
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    _set_cli_version(project, "0.0.1")
+    readme = project / "README.md"
+    readme.write_text(readme.read_text() + "\nAs rendered by an older release.\n")
+    result = CliRunner().invoke(
+        upgrade, [str(project), "--dry-run", "--baseline", "current"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "Will preserve (differs from the current template):" in output
+    assert "cannot tell your edits from template changes since 0.0.1" in output
+    assert "keeps its 0.0.1 content" in output
+    assert "dependency changes since then are not merged" in output
+    assert "you modified, template unchanged" not in output
+    assert "README.md" in output
 
 
 def test_upgrade_command_baseline_current_is_labelled(

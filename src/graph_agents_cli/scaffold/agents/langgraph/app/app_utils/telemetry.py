@@ -101,8 +101,7 @@ def log_format() -> str:
     """`LOG_FORMAT` (`json` or `text`); defaults to `text` under APP_ENV=dev, else `json`."""
     fmt = (os.environ.get("LOG_FORMAT") or "").strip().lower()
     if not fmt:
-        dev = (os.environ.get("APP_ENV") or "").strip().lower() == "dev"
-        return "text" if dev else "json"
+        return "text" if os.environ.get("APP_ENV") == "dev" else "json"
     if fmt not in ("json", "text"):
         raise SettingsError(f"LOG_FORMAT={fmt!r} must be 'json' or 'text'.")
     return fmt
@@ -198,7 +197,20 @@ def tracing_enabled() -> bool:
     return (os.environ.get("TRACING_ENABLED") or "false").strip().lower() in ("1", "true", "yes")
 
 
+CAPTURE_MODES = ("metadata", "full")
+
+
+def trace_capture() -> str:
+    """`TRACE_CAPTURE` (`metadata`, the default, or `full`); anything else is a startup error."""
+    mode = (os.environ.get("TRACE_CAPTURE") or "metadata").strip().lower()
+    if mode not in CAPTURE_MODES:
+        raise SettingsError(f"TRACE_CAPTURE={mode!r} must be 'metadata' or 'full'.")
+    return mode
+
+
 def capture_mode() -> str:
+    """The capture mode for a trace. Startup refuses a bad `TRACE_CAPTURE`
+    (`trace_capture`); should one be read anyway, it records metadata only."""
     mode = (os.environ.get("TRACE_CAPTURE") or "metadata").strip().lower()
     return "full" if mode == "full" else "metadata"
 

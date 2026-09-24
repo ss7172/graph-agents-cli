@@ -119,8 +119,10 @@ type, the client's `/chat` metadata; payload (prompt, completion, tool I/O) only
   `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`,
   `agent_tokens_total`. It is unauthenticated unless `METRICS_TOKEN` is set (then the scraper
   sends `Authorization: Bearer <token>`), and the chart never publishes it on the Gateway or
-  Ingress. Scrape it with `metrics.serviceMonitor.enabled` (Prometheus Operator) or
-  `metrics.scrapeAnnotations`. Under `langgraph dev` the server's own `/metrics` answers instead;
+  Ingress. Scrape it with `metrics.serviceMonitor.enabled` (Prometheus Operator; add
+  `metrics.serviceMonitor.bearerToken.enabled` when `METRICS_TOKEN` is set, so it sends the
+  token from the app Secret) or `metrics.scrapeAnnotations` (annotations carry no token: put
+  it in that Prometheus's scrape job). Under `langgraph dev` the server's own `/metrics` answers instead;
   the server image disables it so the app's is served.
 - **Health:** `GET /health` is liveness (the process answers); `GET /ready` is readiness (the
   database answers within 2 s, else 503). Useful alerts: `/ready` failing, a rising

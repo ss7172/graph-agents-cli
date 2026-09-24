@@ -17,9 +17,11 @@ startup.
 Exit codes, for every command: `0` ok; `1` refused by policy or mode, a declined confirmation,
 or a failed gate (a lint violation, an agent that answered with an error, `scaffold enhance`
 with required steps left); `2` tool failure (helm/kubectl/docker/git/gh non-zero or missing from
-`PATH`, a local server that cannot start, an agent that cannot be reached, an unexpected crash);
-`3` configuration error (not in a project, an invalid manifest, env file, policy, port or kube
-context). A signal ends a command with 128+N (130 for Ctrl-C, 143 for SIGTERM) after the local
+`PATH`, a local server that cannot start, an agent that cannot be reached, `uvx` missing or unable
+to fetch the prior release for `scaffold upgrade` or a version-locked `scaffold enhance`, an
+unexpected crash); `3` configuration error (not in a project, an invalid manifest, including a
+missing or unreleased `cli_version` for `scaffold upgrade`, env file, policy, port or kube
+context, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC`). A signal ends a command with 128+N (130 for Ctrl-C, 143 for SIGTERM) after the local
 server it started is stopped. `secrets status` exits `1` when the Secret or a *required* key is
 missing (`--strict`: any allow-listed key). `eval` exit codes are in `/graph-agents-cli-eval`.
 `GRAPH_AGENTS_CLI_DEBUG=1` shows the traceback behind a one-line network, file or parse error.

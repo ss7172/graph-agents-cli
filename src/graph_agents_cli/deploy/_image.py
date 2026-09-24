@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import re
 
+from graph_agents_cli._defaults import REGISTRY_FIX_COMMAND, REGISTRY_FIX_EFFECT
+
 PLACEHOLDER = "CHANGE-ME"
 
 _DOMAIN_COMPONENT = r"(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9])"
@@ -95,8 +97,9 @@ def tag_problem(tag: str) -> str | None:
 def placeholder_message(registry: str) -> str:
     return (
         f"The image registry is still the placeholder {registry!r}.\n"
-        "  Set create_params.registry in graph-agents-cli-manifest.yaml to your registry "
-        "(for example ghcr.io/<org>); `build` also takes --registry."
+        f"  Run `{REGISTRY_FIX_COMMAND}` ({REGISTRY_FIX_EFFECT}), or set "
+        "create_params.registry in graph-agents-cli-manifest.yaml to your registry (for "
+        "example ghcr.io/<org>) by hand; `build` also takes --registry."
     )
 
 

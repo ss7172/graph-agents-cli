@@ -245,7 +245,7 @@ disconnected" (this profile).
 | `deploy` exit 1 "Refusing to deploy <env> from outside CI in helm-push mode" | run from the CI runner, or `--force-direct` for a deliberate workstation deploy (dev is always allowed) |
 | `deploy` exit 1 "--env-file is not accepted in argocd mode" (or helm-push) | Secrets are applied separately: `secrets apply --env <env>`; `deploy --env <env> --image <ref>` only opens the PR (argocd) or runs helm (helm-push) |
 | `deploy` exit 1 "the manifest records auth_policy_implemented: false" | implement `app/policies/custom.py`, flip the manifest flag |
-| `build` / `deploy` exit 3 "still the placeholder 'ghcr.io/CHANGE-ME'" | set `create_params.registry` in the manifest (or `--registry`) and `image.repository` in the chart |
+| `build` / `deploy` exit 3 "still the placeholder 'ghcr.io/CHANGE-ME'" | `graph-agents-cli scaffold enhance --registry <host>/<org>` (sets `create_params.registry` in the manifest, `image.repository` in the chart values and `IMAGE_REPOSITORY` in `.github/agent.env`); `build` also takes `--registry` |
 | `deploy` exit 3 "gateway.parentRef.name is blank" | set `gateway.parentRef.name` in `values-<env>.yaml` (or `gateway.enabled: false` / `ingress.enabled: true`) |
 | chart error "image.tag is empty" / "must be a quoted string" | deploy with a built image (`deploy` passes the tag); quote tags in values files (`tag: "0123456"`) |
 | `deploy` exit 3 "is a digest reference" | pass `<registry>/<repo>:<tag>`; the chart has no `image.digest` |

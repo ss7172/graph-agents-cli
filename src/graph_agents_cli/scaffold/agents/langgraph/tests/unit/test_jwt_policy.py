@@ -638,10 +638,10 @@ def test_issuer_and_audience_are_optional_only_under_dev() -> None:
     dev = _settings(APP_ENV="dev", AUTH_JWT_ISSUER="", AUTH_JWT_AUDIENCE="")
     assert dev.problems == []
     assert len(dev.warnings) == 2
-    for app_env in ("prod", "staging", ""):
+    for app_env in ("prod", "staging", "", "DEV", "Dev", " dev "):  # only exactly `dev` relaxes
         assert (
             len(_settings(APP_ENV=app_env, AUTH_JWT_ISSUER="", AUTH_JWT_AUDIENCE="").problems) == 2
-        )
+        ), app_env
 
 
 async def test_unchecked_issuer_and_audience_under_dev_accept_any() -> None:

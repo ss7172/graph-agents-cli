@@ -146,7 +146,9 @@ route:
 # env.METRICS_ENABLED is false; never published by the route). Off by default.
 metrics:
   # prometheus.io/scrape, /path and /port annotations on the pods, for a
-  # Prometheus that discovers pods by annotation.
+  # Prometheus that discovers pods by annotation. Annotations cannot carry a
+  # token: with METRICS_TOKEN set, give that Prometheus's scrape job the token
+  # (`authorization.credentials_file`) or use the ServiceMonitor below.
   scrapeAnnotations: false
   # A ServiceMonitor for the Prometheus Operator (needs its CRDs installed).
   serviceMonitor:
@@ -156,6 +158,13 @@ metrics:
     # Extra labels, e.g. `release: kube-prometheus-stack`, so the Prometheus's
     # serviceMonitorSelector picks it up.
     labels: {}
+    # With METRICS_TOKEN in the app Secret, /metrics answers only
+    # `Authorization: Bearer <token>`: enable this so the ServiceMonitor sends
+    # it, read from that Secret (same namespace) or from `secretName`.
+    bearerToken:
+      enabled: false
+      secretName: ""     # default: the app Secret (existingSecret, else <release>-app)
+      key: METRICS_TOKEN
 
 tls:
   existingSecret: ""     # operator-provided certificate Secret

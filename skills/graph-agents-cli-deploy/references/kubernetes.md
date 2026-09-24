@@ -36,7 +36,7 @@ ingress: { enabled: false, className: "", hostname: "", annotations: {} }
 route:
   publicPaths: [{path: /chat, type: Exact}, {path: /threads, type: PathPrefix}, {path: /a2a/<agent dir>, type: PathPrefix}]
   devPaths: [{path: /playground, type: Exact}, {path: /docs, type: Exact}, {path: /openapi.json, type: Exact}]
-metrics: { scrapeAnnotations: false, serviceMonitor: { enabled: false, interval: 30s, scrapeTimeout: 10s, labels: {} } }
+metrics: { scrapeAnnotations: false, serviceMonitor: { enabled: false, interval: 30s, scrapeTimeout: 10s, labels: {}, bearerToken: { enabled: false, secretName: "", key: METRICS_TOKEN } } }
 tls: { existingSecret: "", certManager: { enabled: false, issuerRef: { name: "", kind: ClusterIssuer } } }
 postgresql: { enabled: false, image: {..., digest: sha256:...}, auth: { database: agent, username: agent, existingSecret: <name>-postgresql-auth }, primary: { persistence: { size: 8Gi } } }
 postgresqlSecret: { create: true }   # the dev database password, created once and kept
@@ -132,7 +132,13 @@ instead of being restarted. Tune `probes.<kind>.{path,periodSeconds,timeoutSecon
 `/metrics` (Prometheus text) is served on the http port. `metrics.scrapeAnnotations: true` adds
 `prometheus.io/scrape|path|port` pod annotations; `metrics.serviceMonitor.enabled: true` renders a
 `ServiceMonitor` (Prometheus Operator CRDs needed; `labels` for its selector). With
-`METRICS_TOKEN` in the Secret the scraper must send `Authorization: Bearer <token>`.
+`METRICS_TOKEN` in the Secret (add it to `secrets.keys`) the scraper must send
+`Authorization: Bearer <token>`: `metrics.serviceMonitor.bearerToken.enabled: true` makes the
+ServiceMonitor do so (its endpoint's `authorization`, read from the app Secret, or from
+`bearerToken.secretName` / `.key` in the same namespace). Pod annotations cannot carry a
+token: an annotation-discovering Prometheus needs the token in its own scrape job
+(`authorization.credentials_file`), or leave `METRICS_TOKEN` unset and rely on the
+NetworkPolicy.
 `networkPolicy.enabled: true` admits only the http port, from `networkPolicy.ingressFrom` when
 listed (list the Gateway's namespace and, if you scrape, the Prometheus namespace);
 `restrictEgress: true` also limits egress to DNS and `networkPolicy.egressTo` (the database, the

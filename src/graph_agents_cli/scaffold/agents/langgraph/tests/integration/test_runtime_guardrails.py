@@ -713,12 +713,19 @@ async def test_request_ids_are_echoed_or_generated(client: httpx.AsyncClient) ->
 
 
 async def test_bad_settings_stop_startup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RUN_TIMEOUT_S", "five minutes")
-    monkeypatch.setenv("MAX_METADATA_KEYS", "-1")
+    bad = {
+        "RUN_TIMEOUT_S": "five minutes",
+        "MAX_METADATA_KEYS": "-1",
+        "TRACE_CAPTURE": "everything",
+        "A2A_TASK_TTL_S": "an hour",
+    }
+    for name, value in bad.items():
+        monkeypatch.setenv(name, value)
     with pytest.raises(SettingsError) as exc:
         async with app.router.lifespan_context(app):
             pass
-    assert "RUN_TIMEOUT_S" in str(exc.value) and "MAX_METADATA_KEYS" in str(exc.value)
+    for name in bad:
+        assert name in str(exc.value)
 
 
 async def test_cors_is_off_by_default_and_follows_cors_allow_origins(

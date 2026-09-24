@@ -242,17 +242,29 @@ modes CI never holds application secrets: the owner named in the manifest (`secr
 `secrets apply` from a workstation with cluster access, once per environment.
 
 ## Deploying (`cd: {{cookiecutter.cd}}`)
+{%- set registry_placeholder = 'CHANGE-ME' in cookiecutter.registry %}
+{%- set registry = '<registry>' if registry_placeholder else cookiecutter.registry %}
+{%- if registry_placeholder %}
+
+The registry is still the placeholder `{{cookiecutter.registry}}` (`create` had no `--registry` and found no git
+`origin` remote). `build` and `deploy` refuse it until you run
+`graph-agents-cli scaffold enhance --registry <host>/<org>`, which sets `create_params.registry` in the manifest,
+`image.repository` in the chart's `values.yaml` and `IMAGE_REPOSITORY` in `.github/agent.env`.
+{%- if cookiecutter.cd != 'argocd' %} A local cluster
+gets the image side-loaded, so there any valid name works (for example `--registry localhost/dev`).
+{%- endif %}
+{%- endif %}
 {%- if cookiecutter.cd == 'skip' %}
 
 Direct mode. `graph-agents-cli deploy --env dev` builds the image, loads it into a local cluster (kind, k3d, k3s,
-minikube; nothing for Docker Desktop) or pushes it to `{{cookiecutter.registry}}` for a remote cluster, applies the
+minikube; nothing for Docker Desktop) or pushes it to `{{registry}}` for a remote cluster, applies the
 Secret from the allow-listed keys and runs `helm upgrade --install`. `deploy --env staging|prod` works the same way
 from a workstation, with the context rules above. Add CD later with
 `graph-agents-cli scaffold enhance --cd argocd|helm-push`.
 {%- elif cookiecutter.cd == 'argocd' %}
 
 Pull-based. On every push to `main` the `staging` workflow builds and pushes
-`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses),
+`{{registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses),
 writes the tag into `values-staging.yaml` on a branch built on the latest `main` (closing older staging PRs it
 supersedes) and opens a PR with auto-merge; Argo CD reconciles `main` into `{{cookiecutter.project_name}}-staging`.
 Production changes only through a PR that touches `values-prod.yaml`: the `promote-to-prod` workflow (GitHub
@@ -264,7 +276,7 @@ Point `deployment/argocd/application-*.yaml` at this repository (`repoURL`) and 
 {%- elif cookiecutter.cd == 'helm-push' %}
 
 Push-based. On every push to `main` the `staging` workflow builds and pushes
-`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses), and a
+`{{registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses), and a
 **self-hosted runner** inside the network runs `graph-agents-cli deploy --env staging --image <ref> --context <ctx> --yes`
 with the kubeconfig from the `DEPLOY_KUBECONFIG` secret of the `staging` environment, then verifies the rollout
 (`/health`, `/ready`). `promote-to-prod` does the same for production with the `production` environment's secret

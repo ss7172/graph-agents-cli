@@ -39,6 +39,8 @@ from graph_agents_cli._defaults import (
     DEFAULT_REGISTRY_HOST,
     DEFAULT_REGISTRY_PLACEHOLDER,
     DEFAULT_RUNTIME,
+    REGISTRY_FIX_COMMAND,
+    REGISTRY_FIX_EFFECT,
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import MANIFEST_FILENAME, read_project_config
@@ -1272,9 +1274,10 @@ def _resolve_registry(
 
     if not quiet:
         console.print(
-            f"⚠️  --registry not specified and no git origin remote found; using "
-            f"'{DEFAULT_REGISTRY_PLACEHOLDER}'. Set image.repository in the chart values "
-            "or re-run with --registry <host>/<org>.",
+            f"⚠️  --registry not specified and no git origin remote found; using the "
+            f"placeholder '{DEFAULT_REGISTRY_PLACEHOLDER}', which `build` and `deploy` refuse. "
+            f"Re-run with --registry <host>/<org>, or later run `{REGISTRY_FIX_COMMAND}` in "
+            f"the project ({REGISTRY_FIX_EFFECT}).",
             style="yellow",
         )
     return DEFAULT_REGISTRY_PLACEHOLDER
@@ -1330,8 +1333,9 @@ def _print_next_steps(
         console.print("   [bold bright_green]graph-agents-cli deploy --env dev[/]")
     if params.registry == DEFAULT_REGISTRY_PLACEHOLDER:
         console.print(
-            f"\n   [yellow]Replace '{DEFAULT_REGISTRY_PLACEHOLDER}' in the chart values before "
-            "deploying.[/]"
+            f"\n   [yellow]Before `deploy`: the registry is still the placeholder "
+            f"'{DEFAULT_REGISTRY_PLACEHOLDER}'. Run `{REGISTRY_FIX_COMMAND}` "
+            f"({REGISTRY_FIX_EFFECT}).[/]"
         )
 
 

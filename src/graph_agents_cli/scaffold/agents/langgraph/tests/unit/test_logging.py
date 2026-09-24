@@ -81,8 +81,9 @@ def test_level_and_text_format(root_logging, monkeypatch, capsys) -> None:
 def test_dev_defaults_to_text_and_other_envs_to_json(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "dev")
     assert telemetry.log_format() == "text"
-    monkeypatch.setenv("APP_ENV", "prod")
-    assert telemetry.log_format() == "json"
+    for other in ("prod", "DEV", " dev "):  # only exactly `dev` is dev
+        monkeypatch.setenv("APP_ENV", other)
+        assert telemetry.log_format() == "json"
 
 
 def test_lines_logged_before_the_lifespan_follow_log_format_too() -> None:
@@ -135,3 +136,13 @@ def test_bad_logging_settings_are_refused(monkeypatch, name: str, value: str) ->
     monkeypatch.setenv(name, value)
     with pytest.raises(SettingsError):
         telemetry.log_level() if name == "LOG_LEVEL" else telemetry.log_format()
+
+
+def test_trace_capture_is_metadata_or_full(monkeypatch) -> None:
+    for value, expected in (("", "metadata"), ("metadata", "metadata"), (" FULL ", "full")):
+        monkeypatch.setenv("TRACE_CAPTURE", value)
+        assert telemetry.trace_capture() == expected
+    monkeypatch.setenv("TRACE_CAPTURE", "everything")
+    with pytest.raises(SettingsError, match="TRACE_CAPTURE"):
+        telemetry.trace_capture()  # the startup check refuses it
+    assert telemetry.capture_mode() == "metadata"  # read anyway, it records the least

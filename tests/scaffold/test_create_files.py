@@ -366,6 +366,11 @@ def test_registry_defaults_to_placeholder_without_git_remote(run_create: CreateR
     assert result.exit_code == 0, result.output
     assert read_manifest(project)["create_params"]["registry"] == DEFAULT_REGISTRY_PLACEHOLDER
     assert "no git origin remote found" in result.output
+    # Both hints name the command that fixes every place `deploy`, Argo CD and CI read.
+    output = " ".join(result.output.split())
+    assert output.count("graph-agents-cli scaffold enhance --registry <host>/<org>") == 2
+    for setting in ("create_params.registry", "image.repository", "IMAGE_REPOSITORY"):
+        assert output.count(setting) == 2, setting
 
 
 def test_registry_defaults_to_git_origin_owner(
