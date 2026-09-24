@@ -52,7 +52,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
-| api-policy | 4 | 4 | 8 |
+| api-policy | 4 | 5 | 9 |
 | approvals | 7 | 5 | 12 |
 | runtime | 9 | 6 | 15 |
 | a2a | 3 | 5 | 8 |
@@ -63,7 +63,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 10 | 11 |
 | upgrade | 2 | 12 | 14 |
 | docs | 0 | 6 | 6 |
-| **Total** | **41** | **71** | **112** |
+| **Total** | **41** | **72** | **113** |
 
 ## Owner actions before release
 
@@ -673,7 +673,18 @@ Low · api-policy · found in wave 8
 - **Workaround:** Use the same placeholder names as the API's spec, and do not pin concrete
   path values in approval rules.
 
-### KI-048: `approvals` output misleads viewers who cannot see the body or decide
+### KI-048: `api remove` suggests deleting an OpenAPI spec another API still uses
+
+Low · api-policy · found in wave 8
+
+- **Issue:** Removing an API that names an `openapi:` spec lists "delete <spec> if nothing
+  else uses it" under "Left for you" without checking the other APIs, so it also appears
+  when another API in the file names the same spec.
+- **Impact:** A misleading follow-up; deleting the spec would make the remaining API's policy
+  invalid, which `lint` then reports.
+- **Workaround:** Check `api-policy.yaml` for other `openapi:` entries before deleting a spec.
+
+### KI-049: `approvals` output misleads viewers who cannot see the body or decide
 
 Low · approvals · found in waves 7 and 8
 
@@ -688,7 +699,7 @@ Low · approvals · found in waves 7 and 8
 - **Impact:** Misleading output.
 - **Workaround:** Read "(none)" as "not shown to you"; the server's 403 is authoritative.
 
-### KI-049: An approval's stated reason is kept after the decision
+### KI-050: An approval's stated reason is kept after the decision
 
 Low · approvals · found in wave 7
 
@@ -699,7 +710,7 @@ Low · approvals · found in wave 7
   already readable by those roles in the thread's messages.
 - **Workaround:** Rely on `RETENTION_DAYS` for removal.
 
-### KI-050: Tool-set request headers are bound to an approval but not shown
+### KI-051: Tool-set request headers are bound to an approval but not shown
 
 Low · approvals · found in wave 6
 
@@ -708,7 +719,7 @@ Low · approvals · found in wave 6
 - **Impact:** An approver cannot review them.
 - **Workaround:** Keep decision-relevant data in the path, query or body.
 
-### KI-051: No policy-level redaction list for approval bodies
+### KI-052: No policy-level redaction list for approval bodies
 
 Low · approvals · found in wave 6
 
@@ -717,7 +728,7 @@ Low · approvals · found in wave 6
 - **Impact:** Each tool has to remember to redact sensitive fields.
 - **Workaround:** Pass `redact=` in tools that send sensitive fields.
 
-### KI-052: `langgraph dev`: limits of the local approvals ledger
+### KI-053: `langgraph dev`: limits of the local approvals ledger
 
 Low · approvals · found in wave 6b
 
@@ -729,7 +740,7 @@ Low · approvals · found in wave 6b
   cap.
 - **Workaround:** None needed outside local development.
 
-### KI-053: `langgraph-server` logs a warning on every `/chat` run
+### KI-054: `langgraph-server` logs a warning on every `/chat` run
 
 Low · runtime · found in wave 5b (not re-run)
 
@@ -738,7 +749,7 @@ Low · runtime · found in wave 5b (not re-run)
 - **Impact:** Log noise.
 - **Workaround:** Filter that message in your log pipeline.
 
-### KI-054: `langgraph-server`: the server logs 500 for auth failures that clients see as 503
+### KI-055: `langgraph-server`: the server logs 500 for auth failures that clients see as 503
 
 Low · runtime · found in wave 2b (not re-run)
 
@@ -748,7 +759,7 @@ Low · runtime · found in wave 2b (not re-run)
 - **Impact:** Server logs and the app's metrics disagree during an identity-provider outage.
 - **Workaround:** Alert on the app's metrics and `/ready`, not on the server's 500 count.
 
-### KI-055: `langgraph dev`: a run cancelled by a hot reload reads as an empty success
+### KI-056: `langgraph dev`: a run cancelled by a hot reload reads as an empty success
 
 Low · runtime · found in wave 6b (not re-run)
 
@@ -757,7 +768,7 @@ Low · runtime · found in wave 6b (not re-run)
 - **Impact:** Local development only; a confusing result.
 - **Workaround:** Send the message again after a reload.
 
-### KI-056: A concurrently built index that fails midway stays invalid
+### KI-057: A concurrently built index that fails midway stays invalid
 
 Low · runtime · found in wave 2
 
@@ -766,7 +777,7 @@ Low · runtime · found in wave 2
 - **Impact:** Slower thread listing and run reconciliation; results stay correct.
 - **Workaround:** Drop the invalid index and restart a pod.
 
-### KI-057: `TRACING_ENABLED` accepts any value
+### KI-058: `TRACING_ENABLED` accepts any value
 
 Low · runtime · found in wave 3
 
@@ -775,7 +786,7 @@ Low · runtime · found in wave 3
 - **Impact:** A typo silently leaves tracing off (the safe direction).
 - **Workaround:** Check for the startup log line "Tracing disabled".
 
-### KI-058: The default prompt's approval paragraph can make a model ask instead of acting
+### KI-059: The default prompt's approval paragraph can make a model ask instead of acting
 
 Low · runtime · found in wave 7 (depends on the model; not re-run)
 
@@ -786,7 +797,7 @@ Low · runtime · found in wave 7 (depends on the model; not re-run)
 - **Workaround:** Add "then call the tool in the same reply" to your prompt and test with your
   model.
 
-### KI-059: A resumed A2A task ends with two response artifacts
+### KI-060: A resumed A2A task ends with two response artifacts
 
 Low · a2a · found in wave 7
 
@@ -796,7 +807,7 @@ Low · a2a · found in wave 7
 - **Impact:** A client that reads the first artifact gets an empty or stale answer.
 - **Workaround:** Read the last `response` artifact.
 
-### KI-060: A non-JSON A2A request prints a raw traceback to the logs
+### KI-061: A non-JSON A2A request prints a raw traceback to the logs
 
 Low · a2a · found in wave 7
 
@@ -806,7 +817,7 @@ Low · a2a · found in wave 7
 - **Impact:** Breaks JSON-lines log parsing.
 - **Workaround:** Let the log pipeline tolerate non-JSON lines.
 
-### KI-061: The a2a SDK logs push-notification config requests at ERROR
+### KI-062: The a2a SDK logs push-notification config requests at ERROR
 
 Low · a2a · found in wave 5b (not re-run)
 
@@ -815,7 +826,7 @@ Low · a2a · found in wave 5b (not re-run)
 - **Impact:** Any authenticated caller can add ERROR lines; log noise.
 - **Workaround:** Filter that message in your log pipeline.
 
-### KI-062: The template relies on private internals of the a2a SDK and LangGraph
+### KI-063: The template relies on private internals of the a2a SDK and LangGraph
 
 Low · a2a · found in waves 5b and 6b (the pending-loop part not re-run)
 
@@ -828,7 +839,7 @@ Low · a2a · found in waves 5b and 6b (the pending-loop part not re-run)
 - **Workaround:** Upgrade those libraries through the bundled locks and run the template's
   tests.
 
-### KI-063: `run --mode a2a` does not prompt for approvals
+### KI-064: `run --mode a2a` does not prompt for approvals
 
 Low · a2a · found in wave 6
 
@@ -838,7 +849,7 @@ Low · a2a · found in wave 6
 - **Workaround:** Decide with `graph-agents-cli approvals`, or send the data part yourself.
   Also in README Known limitations.
 
-### KI-064: Every eval case runs as one identity
+### KI-065: Every eval case runs as one identity
 
 Low · eval · found in wave 4
 
@@ -848,7 +859,7 @@ Low · eval · found in wave 4
 - **Impact:** Role-based behaviour needs several runs.
 - **Workaround:** Split role-specific cases into datasets run with different credentials.
 
-### KI-065: For `--url` targets the fake-model warning depends on local settings
+### KI-066: For `--url` targets the fake-model warning depends on local settings
 
 Low · eval · found in wave 5
 
@@ -857,7 +868,7 @@ Low · eval · found in wave 5
 - **Impact:** A deployed agent running on the fake model gets no warning.
 - **Workaround:** Check the deployment's `MODEL_PROVIDER` before trusting a gate.
 
-### KI-066: No overall size limit for a judge prompt
+### KI-067: No overall size limit for a judge prompt
 
 Low · eval · found in wave 5
 
@@ -866,7 +877,7 @@ Low · eval · found in wave 5
 - **Impact:** A judge call can exceed the judge model's context window and error the case.
 - **Workaround:** Lower the cap or split long cases.
 
-### KI-067: Credentials in the `--url` of `eval` replace the bearer token
+### KI-068: Credentials in the `--url` of `eval` replace the bearer token
 
 Low · eval · found in wave 5b
 
@@ -876,7 +887,7 @@ Low · eval · found in wave 5b
 - **Impact:** A confusing failed run.
 - **Workaround:** Leave credentials out of `--url` and use `GRAPH_AGENTS_CLI_API_KEY`.
 
-### KI-068: Eval joins the text before and after an approval with no separator
+### KI-069: Eval joins the text before and after an approval with no separator
 
 Low · eval · found in wave 7
 
@@ -887,7 +898,7 @@ Low · eval · found in wave 7
 - **Workaround:** Check words only the final reply uses, or check `expect.approvals` and the
   tool calls.
 
-### KI-069: `eval run` prints no setup hint for a 503 from the local server
+### KI-070: `eval run` prints no setup hint for a 503 from the local server
 
 Low · eval · found in wave 7
 
@@ -897,7 +908,7 @@ Low · eval · found in wave 7
 - **Impact:** A slower first-run diagnosis.
 - **Workaround:** Run `graph-agents-cli login`, or `run "hi"`, to see the hint.
 
-### KI-070: Evaluation is narrower than upstream's
+### KI-071: Evaluation is narrower than upstream's
 
 Low · eval · found in wave 0
 
@@ -906,7 +917,7 @@ Low · eval · found in wave 0
 - **Impact:** More manual work to grow a dataset.
 - **Workaround:** Write cases by hand. See "Where it is behind" in the README.
 
-### KI-071: helm's failure reason is printed on stdout
+### KI-072: helm's failure reason is printed on stdout
 
 Low · deploy · found in wave 2b
 
@@ -916,7 +927,7 @@ Low · deploy · found in wave 2b
   `--wait`.
 - **Workaround:** Keep stdout in CI logs.
 
-### KI-072: `infra check`'s GitHub secret rows are worded imprecisely
+### KI-073: `infra check`'s GitHub secret rows are worded imprecisely
 
 Low · deploy · found in wave 2b
 
@@ -927,7 +938,7 @@ Low · deploy · found in wave 2b
 - **Impact:** Misleading diagnostics.
 - **Workaround:** Check `gh auth status` and the secret names directly.
 
-### KI-073: `deploy` passes the image tag with `--set`, not `--set-string`
+### KI-074: `deploy` passes the image tag with `--set`, not `--set-string`
 
 Low · deploy · found in wave 2b
 
@@ -937,7 +948,7 @@ Low · deploy · found in wave 2b
 - **Impact:** None today; fragile.
 - **Workaround:** None needed.
 
-### KI-074: Secret-only changes and failed first installs need a manual follow-up
+### KI-075: Secret-only changes and failed first installs need a manual follow-up
 
 Low · deploy · found in wave 5
 
@@ -947,7 +958,7 @@ Low · deploy · found in wave 5
 - **Impact:** Extra manual steps.
 - **Workaround:** Run `deploy --restart`; delete the namespace if you do not want it.
 
-### KI-075: The LangGraph Server licence is not checked before a deploy
+### KI-076: The LangGraph Server licence is not checked before a deploy
 
 Low · deploy · found in wave 0
 
@@ -958,7 +969,7 @@ Low · deploy · found in wave 0
 - **Workaround:** Add the licence variable to `secrets.keys`. Also in README Known
   limitations.
 
-### KI-076: Some deploy paths are verified in a narrow set of environments
+### KI-077: Some deploy paths are verified in a narrow set of environments
 
 Low · deploy · found in wave 2
 
@@ -968,7 +979,7 @@ Low · deploy · found in wave 2
 - **Impact:** Other helm versions or local clusters may behave differently.
 - **Workaround:** Run `deploy --dry-run` first there.
 
-### KI-077: No infrastructure provisioning or CI/CD bootstrap
+### KI-078: No infrastructure provisioning or CI/CD bootstrap
 
 Low · deploy · found in wave 0
 
@@ -978,7 +989,7 @@ Low · deploy · found in wave 0
 - **Workaround:** Follow the deploy skill's GitHub settings reference. See "Where it is behind"
   in the README.
 
-### KI-078: Post-deploy verification in the generated workflows is thin
+### KI-079: Post-deploy verification in the generated workflows is thin
 
 Low · chart/CD · found in waves 0 and 2
 
@@ -988,7 +999,7 @@ Low · chart/CD · found in waves 0 and 2
 - **Impact:** A broken image or rollout is found later.
 - **Workaround:** Add a smoke test and an image build to the workflows.
 
-### KI-079: Staging promotion edge cases in argocd mode
+### KI-080: Staging promotion edge cases in argocd mode
 
 Low · chart/CD · found in wave 2b
 
@@ -1000,7 +1011,7 @@ Low · chart/CD · found in wave 2b
 - **Workaround:** Close stale staging pull requests, set `GH_PR_TOKEN`, and re-run the
   workflow.
 
-### KI-080: Gaps in the chart's value validation
+### KI-081: Gaps in the chart's value validation
 
 Low · chart/CD · found in wave 2b
 
@@ -1010,7 +1021,7 @@ Low · chart/CD · found in wave 2b
 - **Impact:** Errors surface late or unclearly.
 - **Workaround:** Keep those blocks as maps and check paths by hand.
 
-### KI-081: The Bitnami subcharts come from Docker Hub
+### KI-082: The Bitnami subcharts come from Docker Hub
 
 Low · chart/CD · found in wave 2
 
@@ -1020,7 +1031,7 @@ Low · chart/CD · found in wave 2
 - **Impact:** CI or local deploys can fail on rate limits.
 - **Workaround:** Authenticate pulls or vendor the charts. Also in README Known limitations.
 
-### KI-082: The helm-push workflows refuse kube context names the CLI accepts
+### KI-083: The helm-push workflows refuse kube context names the CLI accepts
 
 Low · chart/CD · found in wave 8 (reported in wave 2b)
 
@@ -1030,7 +1041,7 @@ Low · chart/CD · found in wave 8 (reported in wave 2b)
 - **Impact:** A CD run fails for an environment the CLI configured without complaint.
 - **Workaround:** Use context names without whitespace and without a leading `-`.
 
-### KI-083: `secrets status` on a missing Secret does not split required and optional keys
+### KI-084: `secrets status` on a missing Secret does not split required and optional keys
 
 Low · secrets · found in wave 7
 
@@ -1040,7 +1051,7 @@ Low · secrets · found in wave 7
 - **Impact:** A less useful report.
 - **Workaround:** Run `secrets apply --dry-run` to see what would be applied.
 
-### KI-084: `secrets apply --dry-run` can fail with an empty key list
+### KI-085: `secrets apply --dry-run` can fail with an empty key list
 
 Low · secrets · found in wave 7
 
@@ -1052,7 +1063,7 @@ Low · secrets · found in wave 7
 - **Workaround:** Fill the env file, or run without `--dry-run` against a Secret that already
   holds the keys.
 
-### KI-085: `approvals list --json` is not valid JSON when it starts a temporary server
+### KI-086: `approvals list --json` is not valid JSON when it starts a temporary server
 
 Low · cli · found in wave 7
 
@@ -1061,7 +1072,7 @@ Low · cli · found in wave 7
 - **Workaround:** Start the local server first (`run --start-server`), or skip the lines
   before the JSON.
 
-### KI-086: A kept local server holding a paused approval is replaced after 30 idle minutes
+### KI-087: A kept local server holding a paused approval is replaced after 30 idle minutes
 
 Low · cli · found in wave 7
 
@@ -1071,7 +1082,7 @@ Low · cli · found in wave 7
 - **Impact:** Local development only.
 - **Workaround:** Use a Postgres checkpointer locally for long approvals.
 
-### KI-087: After a crash, a thread answers 409 for up to 30 s with a misleading hint
+### KI-088: After a crash, a thread answers 409 for up to 30 s with a misleading hint
 
 Low · cli · found in wave 7
 
@@ -1081,7 +1092,7 @@ Low · cli · found in wave 7
 - **Impact:** Confusing retries.
 - **Workaround:** Wait 30 s and retry. The lease is described in README Known limitations.
 
-### KI-088: Stopping `langgraph dev` can drop its last save
+### KI-089: Stopping `langgraph dev` can drop its last save
 
 Low · cli · found in wave 6b (not re-run)
 
@@ -1091,7 +1102,7 @@ Low · cli · found in wave 6b (not re-run)
 - **Impact:** Local development only; lost threads or a busy port.
 - **Workaround:** Stop the server when it is idle and check the port afterwards.
 
-### KI-089: Robustness and output polish
+### KI-090: Robustness and output polish
 
 Low · cli · found in wave 2b
 
@@ -1101,7 +1112,7 @@ Low · cli · found in wave 2b
 - **Impact:** Cosmetic or rare.
 - **Workaround:** Delete a corrupted `run_server.json`.
 
-### KI-090: `lint` has no type checker or spell checker
+### KI-091: `lint` has no type checker or spell checker
 
 Low · cli · found in wave 0
 
@@ -1109,7 +1120,7 @@ Low · cli · found in wave 0
 - **Impact:** Type errors and typos are found later.
 - **Workaround:** Add a type checker to the project's own CI.
 
-### KI-091: One Python template and no sample catalogue
+### KI-092: One Python template and no sample catalogue
 
 Low · cli · found in wave 0
 
@@ -1118,7 +1129,7 @@ Low · cli · found in wave 0
 - **Impact:** Teams start from the example tool and structure the rest themselves.
 - **Workaround:** Use a remote template (`local@<dir>` or a git reference).
 
-### KI-092: Remote templates skip symlinks; upstream fixes are ported by hand
+### KI-093: Remote templates skip symlinks; upstream fixes are ported by hand
 
 Low · cli · found in wave 0
 
@@ -1129,7 +1140,7 @@ Low · cli · found in wave 0
 - **Workaround:** Use real files in templates. CONTRIBUTING.md describes the upstream-sync
   process.
 
-### KI-093: For maintainers: an in-folder re-render replaces top-level directories
+### KI-094: For maintainers: an in-folder re-render replaces top-level directories
 
 Low · cli · found in wave 1
 
@@ -1140,7 +1151,7 @@ Low · cli · found in wave 1
   files.
 - **Workaround:** None needed; keep the overlay in any new caller.
 
-### KI-094: `api approval` answers a wrong rule selection with exit 2 or exit 3
+### KI-095: `api approval` answers a wrong rule selection with exit 2 or exit 3
 
 Low · cli · found in wave 8
 
@@ -1150,7 +1161,7 @@ Low · cli · found in wave 8
 - **Workaround:** Treat any non-zero exit as a refused edit; nothing is written in either
   case.
 
-### KI-095: The manifest's comments are lost when a command rewrites it
+### KI-096: The manifest's comments are lost when a command rewrites it
 
 Low · upgrade · found in waves 0, 7 and 8
 
@@ -1163,7 +1174,7 @@ Low · upgrade · found in waves 0, 7 and 8
 - **Workaround:** Restore the comments from version control. Also in README Known
   limitations.
 
-### KI-096: `scaffold upgrade`'s conflict warning suggests a flag it does not have
+### KI-097: `scaffold upgrade`'s conflict warning suggests a flag it does not have
 
 Low · upgrade · found in wave 7
 
@@ -1172,7 +1183,7 @@ Low · upgrade · found in wave 7
 - **Impact:** A misleading hint.
 - **Workaround:** Merge the file by hand.
 
-### KI-097: `scaffold enhance` reports required follow-ups only once
+### KI-098: `scaffold enhance` reports required follow-ups only once
 
 Low · upgrade · found in waves 2 and 2b
 
@@ -1185,7 +1196,7 @@ Low · upgrade · found in waves 2 and 2b
 - **Workaround:** Act on the first run's "Left for you" list; run `install` after
   `enhance --runtime`. Also in README Known limitations.
 
-### KI-098: `scaffold enhance` checks every chart under `deployment/helm/`
+### KI-099: `scaffold enhance` checks every chart under `deployment/helm/`
 
 Low · upgrade · found in wave 2b
 
@@ -1195,7 +1206,7 @@ Low · upgrade · found in wave 2b
 - **Impact:** A false failure.
 - **Workaround:** Keep other charts outside `deployment/helm/`, or ignore their entries.
 
-### KI-099: The upgrade notes for an edited `app/agent.py` are incomplete
+### KI-100: The upgrade notes for an edited `app/agent.py` are incomplete
 
 Low · upgrade · found in wave 7
 
@@ -1208,7 +1219,7 @@ Low · upgrade · found in wave 7
 - **Impact:** Upgraded agents can miss approval context and prompt guidance.
 - **Workaround:** Diff your `agent.py` against a fresh `create` and port the changes.
 
-### KI-100: Data written before an upgrade keeps its old shape
+### KI-101: Data written before an upgrade keeps its old shape
 
 Low · upgrade · found in wave 2
 
@@ -1220,7 +1231,7 @@ Low · upgrade · found in wave 2
 - **Workaround:** Let `RETENTION_DAYS` age old threads out; delete the dev database's volume
   after upgrading an argocd dev environment.
 
-### KI-101: A same-version upgrade by an older build moves the project to older templates
+### KI-102: A same-version upgrade by an older build moves the project to older templates
 
 Low · upgrade · found in wave 8
 
@@ -1231,7 +1242,7 @@ Low · upgrade · found in wave 8
 - **Workaround:** Compare `graph-agents-cli --version` with the manifest's `cli_build` before
   upgrading, and preview with `--dry-run`.
 
-### KI-102: Upgrade failure hints for a same-version baseline name options that do not apply
+### KI-103: Upgrade failure hints for a same-version baseline name options that do not apply
 
 Low · upgrade · found in wave 8
 
@@ -1244,7 +1255,7 @@ Low · upgrade · found in wave 8
 - **Workaround:** Use `--baseline-ref <clone>@<commit>`, or the install-spec override for a
   release.
 
-### KI-103: A 0.1.0 build named as a 0.2.0 project's baseline exits 2, not 3
+### KI-104: A 0.1.0 build named as a 0.2.0 project's baseline exits 2, not 3
 
 Low · upgrade · found in wave 8
 
@@ -1255,7 +1266,7 @@ Low · upgrade · found in wave 8
 - **Impact:** A misleading first line and exit code.
 - **Workaround:** Read the stderr tail; name a build of the manifest's version.
 
-### KI-104: A build with uncommitted changes records a `cli_build` no upgrade can rebuild
+### KI-105: A build with uncommitted changes records a `cli_build` no upgrade can rebuild
 
 Low · upgrade · found in wave 8
 
@@ -1266,7 +1277,7 @@ Low · upgrade · found in wave 8
 - **Workaround:** Commit before creating projects you mean to upgrade (CONTRIBUTING says so),
   or name the baseline with `--baseline-ref`.
 
-### KI-105: A build without git data looks like the release and can refuse its own projects
+### KI-106: A build without git data looks like the release and can refuse its own projects
 
 Low · upgrade · found in wave 8
 
@@ -1278,7 +1289,7 @@ Low · upgrade · found in wave 8
 - **Workaround:** Install from a git checkout, tag or commit, or name the baseline with
   `--baseline-ref`.
 
-### KI-106: Upgrades between builds of one version rebuild the recorded commit when there is no digest
+### KI-107: Upgrades between builds of one version rebuild the recorded commit when there is no digest
 
 Low · upgrade · found in wave 8
 
@@ -1291,7 +1302,7 @@ Low · upgrade · found in wave 8
 - **Impact:** An extra fetch, and a failure without network or for unpushed commits.
 - **Workaround:** `--baseline-ref <clone>@<commit>` with a local clone.
 
-### KI-107: The workflow skill says `create` runs `uv sync`
+### KI-108: The workflow skill says `create` runs `uv sync`
 
 Low · docs · found in waves 4 and 7
 
@@ -1300,7 +1311,7 @@ Low · docs · found in waves 4 and 7
 - **Impact:** A coding agent may skip `graph-agents-cli install`.
 - **Workaround:** Run `graph-agents-cli install` after `create`.
 
-### KI-108: The eval skill's install line is not pinned to the release tag
+### KI-109: The eval skill's install line is not pinned to the release tag
 
 Low · docs · found in wave 7
 
@@ -1309,7 +1320,7 @@ Low · docs · found in wave 7
 - **Impact:** A user following that line can get a different version.
 - **Workaround:** Install from the pinned tag, as the README shows.
 
-### KI-109: The docs call a server-generated thread id a UUID4 on both runtimes
+### KI-110: The docs call a server-generated thread id a UUID4 on both runtimes
 
 Low · docs · found in wave 5b
 
@@ -1319,7 +1330,7 @@ Low · docs · found in wave 5b
 - **Impact:** Such ids are still hard to guess but reveal their creation time.
 - **Workaround:** Generate a UUID4 in the client if creation times must stay private.
 
-### KI-110: The README's policy lifecycle starts from a read-only API
+### KI-111: The README's policy lifecycle starts from a read-only API
 
 Low · docs · found in wave 3b
 
@@ -1328,7 +1339,7 @@ Low · docs · found in wave 3b
 - **Impact:** Can suggest read-only as the recommended starting point.
 - **Workaround:** Choose the access level your agent needs.
 
-### KI-111: Some test docstrings refer to an internal review
+### KI-112: Some test docstrings refer to an internal review
 
 Low · docs · found in wave 3b
 
@@ -1337,7 +1348,7 @@ Low · docs · found in wave 3b
 - **Impact:** An opaque reference for contributors; not shipped in the package.
 - **Workaround:** None needed.
 
-### KI-112: No documentation site
+### KI-113: No documentation site
 
 Low · docs · found in wave 0
 
