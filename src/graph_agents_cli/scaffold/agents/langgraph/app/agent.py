@@ -29,10 +29,13 @@ run with a reply saying so and `message.end` status `step_limit`; its work
 stays in the thread.
 
 `middleware()` is the agent's middleware: `SurfaceApiErrors` turns API-policy
-refusals and failed API calls into tool errors the model reads, and
+refusals and failed API calls into tool errors the model reads,
+`AnswerInvalidToolCalls` answers a tool call whose arguments are not valid
+JSON with an error result and asks the model again (without it the run ends
+with no reply and the provider refuses the thread's later turns), and
 `UntrustedToolResults` fences every tool result the model reads as untrusted
 data. The graph is the same under both runtimes (LangGraph Server loads it
-from `langgraph.json`), so both apply everywhere.
+from `langgraph.json`), so all three apply everywhere.
 """
 
 from __future__ import annotations
@@ -47,7 +50,10 @@ from langchain_core.messages import ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import ApiCallError, ApiPolicyError
-from {{cookiecutter.agent_directory}}.app_utils.content import UntrustedToolResults
+from {{cookiecutter.agent_directory}}.app_utils.content import (
+    AnswerInvalidToolCalls,
+    UntrustedToolResults,
+)
 from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
 from {{cookiecutter.agent_directory}}.tools import get_tools
@@ -116,8 +122,8 @@ class SurfaceApiErrors(AgentMiddleware):
 
 
 def middleware() -> list[AgentMiddleware]:
-    """The agent's middleware (new instances): keep both when you add your own."""
-    return [SurfaceApiErrors(), UntrustedToolResults()]
+    """The agent's middleware (new instances): keep all three when you add your own."""
+    return [SurfaceApiErrors(), AnswerInvalidToolCalls(), UntrustedToolResults()]
 
 
 graph: CompiledStateGraph = create_agent(

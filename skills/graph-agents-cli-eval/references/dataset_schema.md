@@ -119,7 +119,9 @@ A multi-turn example (two user messages on one thread; the checks read both turn
 `message.end` carried a status other than `ok`, such as `step_limit` when the run reached
 `RECURSION_LIMIT`), or `missing` (no events at all). A completed run with an empty reply is `ok` with `response: ""` and
 is graded. Values are derived from the SSE events `message.delta`, `tool.call`, `tool.result`,
-`message.end`, `error`; `model` is `<provider>/<model>` as the app labels it.
+`message.end`, `error`; `model` is `<provider>/<model>` as the app labels it, for the
+project's own local server only: with `--url` it is `null` (the agent there does not report
+its model, and the project's settings need not be what runs there), in the results too.
 
 Additive keys the implementation writes (all contract keys above are present unchanged): the
 wrapper also carries `dataset_paths` (project-relative dataset files), `base_url`, `app_name`,

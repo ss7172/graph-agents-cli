@@ -157,7 +157,9 @@ step-limit reply could not be written). There is no status for a paused graph an
 `step_limit`, `error`, `timeout`, `cancelled` (a client disconnect) or `interrupted` (the run
 lost its lease, or its process died; `/metrics` counts the same final statuses). A run stopped
 mid tool call leaves a call without a result: the next run answers it with an error result
-right after the call before adding its turn, so the thread stays valid.
+right after the call before adding its turn, so the thread stays valid. A tool call whose
+arguments are not valid JSON runs no tool: it arrives as `tool.call` with `"args": {}` and an
+error `tool.result`, and the model is asked again in the same step (`AnswerInvalidToolCalls`).
 
 Request rules: a second `/chat` on a thread with a run in progress gets 409
 `{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; a message over
@@ -184,7 +186,8 @@ Other routes:
   the card advertises only the A2A 1.0 JSON-RPC interface (0.3 clients are served on the same URL
   via compat) and the security scheme of the active auth policy. A message with no text, an
   empty text part, a non-user role or over `MAX_MESSAGE_CHARS` is a JSON-RPC invalid-params
-  error (-32602) on both protocol versions. `SendMessage` returns the reply as one text part
+  error (-32602) on both protocol versions, and an unknown task is -32001 on both (no error
+  log). `SendMessage` returns the reply as one text part
   of the `response` artifact; streamed, it arrives in chunks, the last with `lastChunk`, and the
   stored task keeps it as one part
 

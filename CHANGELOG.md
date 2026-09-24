@@ -164,8 +164,10 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 6. Eval datasets: review `not_contains` checks (now case-insensitive) and metrics declared
    on only some cases (see above).
 7. Template files you have not edited take the new versions with `graph-agents-cli scaffold
-   upgrade`; in `app/agent.py` keep `middleware()` (`SurfaceApiErrors` and
-   `UntrustedToolResults`) if you rewrote it, and in tools use `ToolRuntime[Any]`.
+   upgrade`; in `app/agent.py` keep `middleware()` (`SurfaceApiErrors`,
+   `AnswerInvalidToolCalls` and `UntrustedToolResults`, in that order) if you rewrote it,
+   and in tools use `ToolRuntime[Any]`. `scaffold upgrade` never rewrites `agent.py`: an
+   edited one needs `AnswerInvalidToolCalls()` added by hand (from `app_utils.content`).
 
 
 #### Upgrading a project created with 0.1.0
@@ -366,14 +368,25 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   whatever the result's text looks like (tags inside it are renamed, so it cannot close the
   fence or forge one); the default `SYSTEM_PROMPT` says tool output is data, never
   instructions. Helpers for tools in `app_utils.api_client`: `require_user_mentioned`,
-  `require_owner`, `current_caller`, `latest_user_message`.
+  `require_owner`, `current_caller`, `latest_user_message`. Content blocks are fenced as one
+  text (a tag split across two blocks is renamed too), other non-media blocks are read as
+  JSON text, and look-alikes of the tag (full-width brackets, zero-width characters, HTML
+  entities) are renamed as well.
+- **Tool calls with arguments that are not valid JSON**: `AnswerInvalidToolCalls` (in
+  `app_utils.content`), wired into `agent.middleware()`, answers each one with an error
+  result saying so and asks the model again in the same step (at most twice; it adds no
+  graph step, so `RECURSION_LIMIT` counts the same). `/chat` streams such a call as
+  `tool.call` (with `args: {}`) and an error `tool.result`, and the thread history lists it.
 - **A2A**: `A2A_DESCRIPTION` sets the card's description (and its chat skill's) and is in the
   chart values; `AGENT_VERSION` sets the card version. `SendMessage` returns the reply as one
   text part; streamed replies mark the last chunk `lastChunk`, and the stored task holds one
   part. A message with no text, an empty text part, a non-user role or over
   `MAX_MESSAGE_CHARS` is -32602, and an A2A 0.3 request that fails the SDK's validation
   (a JSON-escaped method name, an unpaired surrogate, a missing `messageId`) is answered
-  -32602 or -32600 naming the fields, never the values, with no traceback.
+  -32602 or -32600 naming the fields, never the values, with no traceback. A 0.3 request
+  that names an unknown or deleted task (`tasks/get`, `tasks/cancel`, `tasks/resubscribe`)
+  or push notifications gets the code A2A 1.0 answers with (-32001, -32003, ...), logged at
+  INFO, instead of -32603 with a traceback.
 - `/chat` without a `thread_id` starts a thread with a server-generated UUID4; `DELETE
   /threads/{id}` and the retention purge (both runtimes) drop the thread's A2A tasks.
 - **eval**: judges of a multi-turn case see every earlier turn (user message, each tool call
@@ -387,7 +400,9 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   the fake model, and when `all_turns` checks had to read the final turn only; `eval
   generate --url` / `eval run --url` warn before the first case that tools run for real
   there, naming the write methods `api-policy.yaml` allows; trace files record `target` and
-  `model_provider`; `eval metric list` shows the check modifiers.
+  `model_provider`, and `model` only for the local server (`null` for `--url`: the agent
+  there does not report its model, and the project's settings need not be what runs
+  there); `eval metric list` shows the check modifiers.
 - **deploy**: a failed rollout that is rolled back (or a first install that is uninstalled)
   puts the app Secret and `<release>-metrics` back to their values from before the run, keys
   the run removed included, or deletes a Secret the run created; a Secret changed by someone
@@ -505,6 +520,21 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `secrets.keys` on the old settings.
 - A thread whose tool call was cut short failed every later turn with a provider 400; the
   langgraph-server repair now sends a remove-all update the real server accepts.
+- A tool call whose arguments were not valid JSON (`{'query': 'SF'}`, a trailing comma,
+  `query=SF`, which OpenAI and OpenAI-compatible models can return) ended the run with an
+  empty reply and failed every later turn of the thread with a provider 400 on both
+  runtimes: LangChain sends such a call back as a call, and nothing answered it. The agent
+  now answers it in the run, and the history repair treats it as a call (a thread an older
+  version left broken is repaired by its next turn).
+- The history repair dropped a valid tool result when one assistant message repeated a
+  tool-call id (or gave its parallel calls empty ids), so the next turn failed with a
+  provider 400; results are now matched per call, not per id.
+- A2A: a 0.3 request naming an unknown or deleted task was answered -32603 with an ERROR
+  traceback, and a cancel or subscription naming one (either protocol version) left two
+  event-queue tasks of the SDK running, logged later as ERROR "Task was destroyed but it is
+  pending!". Any authenticated caller could write those records.
+- The untrusted-output fence could be closed from a tool result made of content blocks (a
+  tag split across two text blocks, which the provider joins) or with a look-alike tag.
 - A database outage made requests hang for about a minute with tracebacks, and a replica
   started during an outage exited (crash loop); `/ready` took over a minute to recover.
 - Under `langgraph-server` a run that reached the step limit ended with an error instead of

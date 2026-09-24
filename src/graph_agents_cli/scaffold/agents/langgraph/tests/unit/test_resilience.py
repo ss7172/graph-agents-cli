@@ -14,8 +14,9 @@
 
 """Building blocks of the runtime's failure handling, without a database.
 
-Tool-call history repair, the step budget, connection defaults and error
-classification, database health, and stopping a run when its lease is lost.
+Tool-call history repair, tool calls whose arguments are not valid JSON, the
+step budget, connection defaults and error classification, database health,
+and stopping a run when its lease is lost.
 """
 
 from __future__ import annotations
@@ -33,6 +34,11 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     _Pump,
     dangling_tool_calls,
     repair_tool_history,
+)
+from {{cookiecutter.agent_directory}}.app_utils.content import (
+    INVALID_TOOL_CALL_RESULT,
+    AnswerInvalidToolCalls,
+    UntrustedToolResults,
 )
 from {{cookiecutter.agent_directory}}.app_utils.threads import LeaseLost
 
@@ -207,6 +213,166 @@ def test_a_later_turns_result_is_never_taken_for_an_earlier_open_call() -> None:
     assert repair is not None
     assert shape(repair.messages)[:3] == ["user", "ai(call_0)", "tool:call_0:error"]
     assert "t2-call_0" in [m.id for m in repair.messages]
+
+
+@pytest.mark.parametrize("call_id", ["dup", ""])
+def test_one_id_for_two_calls_of_one_message_keeps_both_results(call_id: str) -> None:
+    """Some OpenAI-compatible servers repeat an id (or send none) within one message."""
+    history = turn("sf and rome", [call_id, call_id], 1)
+    history[3] = ToolMessage(content="rome", tool_call_id=call_id, id="t1-second")
+    assert repair_tool_history(history, error_result) is None
+    assert [c["id"] for c in dangling_tool_calls(history[:4])] == []
+    # Only one of the two answered: the other gets an error result, the answer stays.
+    repair = repair_tool_history(history[:3], error_result)
+    assert repair is not None and repair.append_only and len(repair.added) == 1
+    assert shape(repair.messages)[2:] == [f"tool:{call_id}:success", f"tool:{call_id}:error"]
+    assert [c["id"] for c in dangling_tool_calls(history[:3])] == [call_id]
+    # A third result for the id answers no call: dropped.
+    extra = ToolMessage(content="again", tool_call_id=call_id, id="t1-third")
+    repair = repair_tool_history([*history[:4], extra, history[4]], error_result)
+    assert repair is not None and [m.id for m in repair.messages] == [m.id for m in history]
+
+
+def invalid_call(call_id: str, raw: str = "{'query': 'SF'}") -> AIMessage:
+    """An assistant message whose only tool call has arguments that are not valid JSON."""
+    return AIMessage(
+        content="",
+        id=f"ai-invalid-{call_id}",
+        invalid_tool_calls=[
+            {
+                "type": "invalid_tool_call",
+                "id": call_id,
+                "name": "get_weather",
+                "args": raw,
+                "error": "not valid JSON",
+            }
+        ],
+    )
+
+
+def test_a_call_with_invalid_arguments_needs_a_result_too() -> None:
+    """LangChain sends invalid calls back to the provider as calls: each needs a result."""
+
+    def result(call: Any) -> ToolMessage:
+        text = chat.open_call_result_text(call, "did not finish")
+        return ToolMessage(content=text, tool_call_id=call["id"], status="error")
+
+    history = [human("a"), invalid_call("call_0"), human("b")]
+    repair = repair_tool_history(history, result)
+    assert repair is not None and not repair.append_only
+    assert shape(repair.messages) == ["user", "ai()", "tool:call_0:error", "user"]
+    assert repair.messages[2].content == INVALID_TOOL_CALL_RESULT
+    assert repair_tool_history(repair.messages, result) is None
+    assert [c["id"] for c in dangling_tool_calls(history[:2])] == ["call_0"]
+    # A valid call next to it keeps the stop reason.
+    both = invalid_call("call_1")
+    both.tool_calls = [{"id": "call_0", "name": "get_weather", "args": {}}]
+    repair = repair_tool_history([human("a"), both], result)
+    assert repair is not None and repair.append_only
+    assert [m.content for m in repair.added] == ["did not finish", INVALID_TOOL_CALL_RESULT]
+
+
+def test_the_server_rebuilds_an_invalid_call_as_a_call_its_result_answers() -> None:
+    """The server has no key for `invalid_tool_calls`: kept as a call with no arguments."""
+    message = invalid_call("call_0").model_dump()
+    kept = chat._server_message(message)
+    assert "invalid_tool_calls" not in kept
+    assert kept["tool_calls"] == [
+        {"name": "get_weather", "args": {}, "id": "call_0", "type": "tool_call"}
+    ]
+
+
+# --- tool calls whose arguments are not valid JSON --------------------------------------
+
+
+def _agent(model: Any, tools: list[Any]) -> Any:
+    from langchain.agents import create_agent
+
+    return create_agent(
+        model=model, tools=tools, middleware=[AnswerInvalidToolCalls(), UntrustedToolResults()]
+    )
+
+
+def _weather_tool() -> Any:
+    from langchain_core.tools import tool
+
+    @tool
+    def get_weather(query: str) -> str:
+        """Test-only tool: the weather for QUERY."""
+        return f"sunny in {query}"
+
+    return get_weather
+
+
+@pytest.mark.parametrize("script", ["BADARGS", "TRAILINGCOMMA"])
+async def test_invalid_arguments_are_answered_and_the_model_replies(
+    openai_compatible: Any, script: str
+) -> None:
+    """Without the answer the run ended with no reply and every later turn was a 400."""
+    graph = _agent(openai_compatible.model(), [_weather_tool()])
+    state = await graph.ainvoke({"messages": [{"role": "user", "content": f"weather {script}"}]})
+    messages = state["messages"]
+    assert shape(messages) == ["user", "ai()", "tool:call_0:error", "ai()"]
+    assert messages[1].invalid_tool_calls and messages[2].content == INVALID_TOOL_CALL_RESULT
+    assert messages[-1].content.startswith("Found: ") and "not valid JSON" in messages[-1].content
+    assert openai_compatible.refusals == []
+    assert repair_tool_history(messages, error_result) is None
+    # The next turn is accepted by the provider.
+    state = await graph.ainvoke({"messages": [*messages, HumanMessage("thanks")]})
+    assert state["messages"][-1].content == "ok" and openai_compatible.refusals == []
+
+
+async def test_a_model_that_never_gets_the_arguments_right_is_asked_twice_more(
+    openai_compatible: Any,
+) -> None:
+    graph = _agent(openai_compatible.model(), [_weather_tool()])
+    state = await graph.ainvoke({"messages": [{"role": "user", "content": "ALWAYSBAD"}]})
+    assert shape(state["messages"]) == [
+        "user",
+        *(item for n in range(3) for item in ("ai()", f"tool:call_{n}:error")),
+    ]
+    assert len(openai_compatible.requests) == 3 and openai_compatible.refusals == []
+    assert repair_tool_history(state["messages"], error_result) is None
+    # The three tries take the steps of one plain reply: the step budget counts the same.
+    from langgraph.errors import GraphRecursionError
+
+    budget = 1
+    while budget < 20 and isinstance(
+        await _outcome(graph.with_config({"recursion_limit": budget}), "hello"),
+        GraphRecursionError,
+    ):
+        budget += 1
+    state = await _outcome(graph.with_config({"recursion_limit": budget}), "ALWAYSBAD")
+    assert not isinstance(state, Exception) and len(state["messages"]) == 7
+
+
+async def _outcome(graph: Any, text: str) -> Any:
+    try:
+        return await graph.ainvoke({"messages": [{"role": "user", "content": text}]})
+    except Exception as exc:
+        return exc
+
+
+async def test_a_valid_call_next_to_an_invalid_one_still_runs(openai_compatible: Any) -> None:
+    graph = _agent(openai_compatible.model(), [_weather_tool()])
+    state = await graph.ainvoke({"messages": [{"role": "user", "content": "BADANDGOOD"}]})
+    results = {m.tool_call_id: m for m in state["messages"] if isinstance(m, ToolMessage)}
+    assert results["call_0"].content == "sunny in SF" and results["call_0"].status == "success"
+    assert results["call_1"].content == INVALID_TOOL_CALL_RESULT
+    assert state["messages"][-1].content.startswith("Found: ")
+    assert openai_compatible.refusals == []
+
+
+async def test_one_id_for_two_calls_runs_both_and_the_next_turn_is_accepted(
+    openai_compatible: Any,
+) -> None:
+    graph = _agent(openai_compatible.model(), [_weather_tool()])
+    state = await graph.ainvoke({"messages": [{"role": "user", "content": "DUPIDS"}]})
+    results = [m.content for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert sorted(results) == ["sunny in Rome", "sunny in SF"]
+    assert repair_tool_history(state["messages"], error_result) is None
+    state = await graph.ainvoke({"messages": [*state["messages"], HumanMessage("thanks")]})
+    assert openai_compatible.refusals == []
 
 
 # --- step budget -------------------------------------------------------------------------

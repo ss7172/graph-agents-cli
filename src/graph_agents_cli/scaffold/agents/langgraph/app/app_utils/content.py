@@ -25,6 +25,9 @@ results, and what clients see of failed tool calls.
   follow instructions found inside it, keeps that text data rather than
   instructions. Only the model's request is changed: the thread's state,
   `tool.result` events and the thread history keep the tool's own output.
+* `AnswerInvalidToolCalls`: agent middleware that answers a tool call whose
+  arguments are not valid JSON with an error result, so the model can call
+  again and the thread stays valid for the provider.
 * `client_tool_result` / `client_message`: a failed tool call as a client sees
   it outside `APP_ENV=dev`: a generic message with an `error_id`, never the
   error text (exception names, policy rules and limits, upstream status and
@@ -35,13 +38,15 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain.agents.middleware import AgentMiddleware, ModelResponse
+from langchain_core.messages import AIMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -74,14 +79,61 @@ TOOL_OUTPUT_TAG = "tool_output"
 # Our tag's name inside a tool result is renamed (`<tool_output` -> `<tool-output`),
 # so the text cannot close the fence early or open a fake one.
 _TAG_IN_TEXT = re.compile(r"<(\s*/?\s*)tool_output", re.IGNORECASE)
+# Content blocks a provider sends as media, not as text the model reads.
+_MEDIA_BLOCK_TYPES = frozenset(
+    {"image", "image_url", "audio", "input_audio", "video", "file", "document"}
+)
+
+
+def _plain_form(text: str) -> str:
+    """`text` as a reader takes it: compatibility forms folded (a full-width
+    less-than sign is `<`), invisible format characters (zero-width spaces, soft
+    hyphens) dropped, HTML entities decoded (`&lt;`, twice encoded included)."""
+    if text.isascii() and "&" not in text:
+        return text  # nothing to fold, drop or decode
+    plain = unicodedata.normalize("NFKC", text)
+    plain = "".join(ch for ch in plain if unicodedata.category(ch) != "Cf")
+    for _ in range(3):
+        decoded = html.unescape(plain)
+        if decoded == plain:
+            break
+        plain = decoded
+    return plain
 
 
 def _neutralise(text: str) -> str:
-    return _TAG_IN_TEXT.sub(r"<\1tool-output", text)
+    text = _TAG_IN_TEXT.sub(r"<\1tool-output", text)
+    plain = _plain_form(text)
+    if plain is not text and _TAG_IN_TEXT.search(plain):
+        # A look-alike of the tag (full-width brackets, a zero-width space in
+        # it, HTML entities): the model reads the result in its plain form,
+        # with the tag renamed there too.
+        text = _TAG_IN_TEXT.sub(r"<\1tool-output", plain)
+    return text
+
+
+def _block_text(block: Any) -> str | None:
+    """The text a content block puts before the model; None for a media block."""
+    if isinstance(block, str):
+        return block
+    if isinstance(block, Mapping):
+        if isinstance(block.get("text"), str):
+            return block["text"]
+        if block.get("type") in _MEDIA_BLOCK_TYPES:
+            return None
+    # Anything else (a `json` block, an unknown type) is data the model reads as text.
+    return json.dumps(block, ensure_ascii=False, default=str)
 
 
 def fence_tool_output(content: Any, *, name: str | None, status: str | None) -> Any:
-    """`content` (a string or content blocks) inside the untrusted-data fence."""
+    """`content` (a string or content blocks) inside the untrusted-data fence.
+
+    Content blocks are fenced as one text: a provider joins adjacent text
+    blocks, so a tag split across two of them (`<` + `/tool_output>`) would
+    otherwise reach the model whole. Their text (and any other non-media
+    block, as JSON) is joined and neutralised at once; media blocks (images,
+    files, audio) follow it inside the fence.
+    """
     attrs = f' name="{html.escape(name or "", quote=True)}"'
     if status == "error":
         attrs += ' status="error"'
@@ -90,16 +142,22 @@ def fence_tool_output(content: Any, *, name: str | None, status: str | None) -> 
     if isinstance(content, str):
         return f"{opening}{_neutralise(content)}{closing}"
     if isinstance(content, list):
-        blocks: list[Any] = [{"type": "text", "text": opening}]
+        texts: list[str] = []
+        media: list[Any] = []
         for block in content:
-            if isinstance(block, str):
-                blocks.append(_neutralise(block))
-            elif isinstance(block, dict) and isinstance(block.get("text"), str):
-                blocks.append({**block, "text": _neutralise(block["text"])})
+            text = _block_text(block)
+            if text is None:
+                media.append(block)
             else:
-                blocks.append(block)
-        blocks.append({"type": "text", "text": closing})
-        return blocks
+                texts.append(text)
+        body = _neutralise("".join(texts))
+        if not media:
+            return f"{opening}{body}{closing}"
+        return [
+            {"type": "text", "text": f"{opening}{body}"},
+            *media,
+            {"type": "text", "text": closing},
+        ]
     return f"{opening}{closing}"
 
 
@@ -160,6 +218,102 @@ class UntrustedToolResults(AgentMiddleware):
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         return await handler(request.override(messages=fence_tool_messages(list(request.messages))))
+
+
+# ---------------------------------------------------------------------------
+# Tool calls whose arguments are not valid JSON
+# ---------------------------------------------------------------------------
+
+# The `type` LangChain gives a call whose arguments did not parse.
+INVALID_TOOL_CALL_TYPE = "invalid_tool_call"
+INVALID_TOOL_CALL_RESULT = (
+    "The tool was not called: the arguments of this call were not valid JSON. "
+    "Call the tool again with its arguments as one JSON object."
+)
+
+
+# How many times a model whose tool calls all had invalid arguments is asked again
+# in one step (each is one more model call).
+INVALID_TOOL_CALL_RETRIES = 2
+
+
+def invalid_tool_call_results(messages: list[Any]) -> list[ToolMessage]:
+    """An error result for each tool call in `messages` whose arguments are not valid JSON."""
+    return [
+        ToolMessage(
+            content=INVALID_TOOL_CALL_RESULT,
+            tool_call_id=str(call.get("id") or ""),
+            name=str(call.get("name") or ""),
+            status="error",
+        )
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.invalid_tool_calls
+    ]
+
+
+def _makes_valid_calls(messages: list[Any]) -> bool:
+    return any(isinstance(m, AIMessage) and m.tool_calls for m in messages)
+
+
+class AnswerInvalidToolCalls(AgentMiddleware):
+    """Answer each tool call whose arguments are not valid JSON, and ask the model again.
+
+    A model can return arguments that do not parse (`{'query': 'SF'}`, a
+    trailing comma, `query=SF`); OpenAI-compatible servers pass them on as
+    written. LangChain keeps such a call in `invalid_tool_calls` and runs no
+    tool, so without this the run ends with no reply and a call with no
+    result, which LangChain sends back to the provider on the next turn and
+    the provider refuses on every later turn.
+
+    Here each such call gets an error result right after it, saying why. When
+    the reply has no call that can run, the model is asked again in the same
+    step (at most `retries` times; its replies and the results stay in the
+    thread); the calls that can run go to the tools as usual. Put it before
+    `UntrustedToolResults`, so the model reads those results fenced like any
+    other. It adds no graph step: `RECURSION_LIMIT` counts the same.
+    """
+
+    def __init__(self, retries: int = INVALID_TOOL_CALL_RETRIES) -> None:
+        super().__init__()
+        self.retries = retries
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        answered: list[Any] = []  # replies whose calls could not run, and their results
+        response = handler(request)
+        for _ in range(self.retries):
+            results = invalid_tool_call_results(response.result)
+            if not results or _makes_valid_calls(response.result):
+                break
+            answered += [*response.result, *results]
+            response = handler(request.override(messages=[*request.messages, *answered]))
+        return self._response(answered, response)
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        answered: list[Any] = []
+        response = await handler(request)
+        for _ in range(self.retries):
+            results = invalid_tool_call_results(response.result)
+            if not results or _makes_valid_calls(response.result):
+                break
+            answered += [*response.result, *results]
+            response = await handler(request.override(messages=[*request.messages, *answered]))
+        return self._response(answered, response)
+
+    @staticmethod
+    def _response(answered: list[Any], response: Any) -> Any:
+        """The step's messages: the earlier tries, then the last reply, its invalid calls answered."""
+        results = invalid_tool_call_results(response.result)
+        if not answered and not results:
+            return response
+        logger.info(
+            "answered %d tool call(s) whose arguments were not valid JSON",
+            len(results) + sum(isinstance(m, ToolMessage) for m in answered),
+        )
+        return ModelResponse(
+            result=[*answered, *response.result, *results],
+            structured_response=response.structured_response,
+        )
 
 
 # ---------------------------------------------------------------------------

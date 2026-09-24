@@ -123,8 +123,9 @@ graph-agents-cli eval metric list [--json]
 - **The fake model is announced.** When the agent ran on `MODEL_PROVIDER=fake` on the local
   server, or the judge is the fake model, `eval grade` prints a warning above the result and
   appends "(fake model: plumbing check only, not a quality signal)" to "gate met"; the results
-  record `fake_model` and `warnings`. For `--url` traces it warns when the project's own settings
-  name the fake model (the target may run them). A case with `scope: all_turns` whose trace has
+  record `fake_model` and `warnings`. For `--url` traces (which record `model: null`: the
+  target does not report its model) it warns when the project's own settings name the fake
+  model (the target may run them). A case with `scope: all_turns` whose trace has
   no per-turn records is graded on its final turn, with a warning naming it.
 - `eval run` validates the eval config and every case's metrics **before** generating (exit 3,
   no model calls spent; skipped when an `eval.grade` override is installed), then chains both on a

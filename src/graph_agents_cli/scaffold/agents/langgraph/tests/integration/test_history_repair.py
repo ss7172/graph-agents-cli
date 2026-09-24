@@ -19,6 +19,12 @@ by its result. A process that dies mid tool call (a crash, an OOM kill, a lost
 node, a database outage) never writes the result; older versions also wrote
 the repair after the next user turn. Each run puts the history right before it
 appends its own turn (in-process, fake model, memory checkpointer).
+
+A model's tool call whose arguments are not valid JSON needs a result too
+(LangChain sends it back to the provider as a call): the agent answers it in
+the same run, and the repair answers one an older version left open. Those
+tests run the agent on `ChatOpenAI` against an in-process OpenAI-compatible
+server that refuses invalid histories as OpenAI does (`openai_compatible`).
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from {{cookiecutter.agent_directory}} import agent as agent_module
 from {{cookiecutter.agent_directory}}.app_utils.chat import repair_tool_history
+from {{cookiecutter.agent_directory}}.app_utils.content import INVALID_TOOL_CALL_RESULT
 from {{cookiecutter.agent_directory}}.fast_api_app import app
 
 AUTH = {"Authorization": "Bearer test-key"}
@@ -172,3 +179,100 @@ async def test_turns_that_reuse_a_tool_call_id_keep_every_result(
     assert results == ["probe reading for SF", "probe reading for Paris"]
     assert not [r for r in caplog.records if "tool results" in r.getMessage()]
     assert not [r for r in caplog.records if "tool calls" in r.getMessage()]
+
+
+# --- a provider that refuses invalid histories -----------------------------------------------
+
+
+def serve_openai_compatible(openai_compatible: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the agent's graph on `ChatOpenAI` against the in-process OpenAI-compatible fake."""
+    from langchain.agents import create_agent
+    from langchain_core.tools import tool
+
+    @tool
+    def probe(query: str) -> str:
+        """Test-only tool: reports what it was asked about."""
+        return f"probe reading for {query}"
+
+    graph = create_agent(
+        model=openai_compatible.model(),
+        tools=[probe],
+        system_prompt=agent_module.SYSTEM_PROMPT,
+        middleware=agent_module.middleware(),
+        context_schema=agent_module.AgentContext,
+    )
+    graph.checkpointer = agent_module.graph.checkpointer
+    monkeypatch.setattr(agent_module, "graph", graph)
+
+
+async def events_of(client: httpx.AsyncClient, message: str, thread_id: str) -> list[str]:
+    text = await chat(client, message, thread_id)
+    return [line[7:] for line in text.splitlines() if line.startswith("event: ")]
+
+
+@pytest.mark.parametrize("script", ["BADARGS", "TRAILINGCOMMA"])
+async def test_a_tool_call_with_invalid_arguments_leaves_the_thread_usable(
+    client: httpx.AsyncClient,
+    openai_compatible: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    script: str,
+) -> None:
+    """Arguments that are not valid JSON: the model is told and replies, every turn after works.
+
+    Before, the run ended with no reply, and the provider refused every later
+    turn (the call had no result).
+    """
+    serve_openai_compatible(openai_compatible, monkeypatch)
+    thread_id = str(uuid.uuid4())
+    text = await chat(client, f"probe {script}", thread_id)
+    assert "event: tool.call" in text and "event: tool.result" in text
+    assert "Found: " in text and '"status": "ok"' in text
+    for message in ("thanks", "and again"):
+        assert (await events_of(client, message, thread_id))[-1] == "message.end"
+    assert openai_compatible.refusals == []
+    messages = await history(thread_id)
+    assert roles(messages)[:4] == ["user", "ai", "tool!", "ai"]
+    assert messages[1].invalid_tool_calls and messages[2].content == INVALID_TOOL_CALL_RESULT
+    assert repair_tool_history(messages, lambda call: None) is None
+
+
+async def test_a_thread_an_invalid_call_broke_before_is_repaired_by_the_next_turn(
+    client: httpx.AsyncClient, openai_compatible: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape older versions left: an invalid call and no result, then more turns."""
+    thread_id = str(uuid.uuid4())
+    await chat(client, "hello", thread_id)
+    broken = AIMessage(
+        content="",
+        id="ai-bad",
+        invalid_tool_calls=[
+            {"type": "invalid_tool_call", "id": "call_0", "name": "probe", "args": "query=SF"}
+        ],
+    )
+    await seed(thread_id, [HumanMessage(content="probe?", id="u2"), broken])
+    await seed(thread_id, [HumanMessage(content="hello?", id="u3")], as_node="tools")
+    serve_openai_compatible(openai_compatible, monkeypatch)
+    assert (await events_of(client, "still there?", thread_id))[-1] == "message.end"
+    assert openai_compatible.refusals == []
+    messages = await history(thread_id)
+    assert roles(messages)[2:6] == ["user", "ai", "tool!", "user"]
+    assert [messages[2].id, messages[3].id, messages[5].id] == ["u2", "ai-bad", "u3"]
+    assert messages[4].tool_call_id == "call_0"
+    assert messages[4].content == INVALID_TOOL_CALL_RESULT
+    assert all(body.get("stream") for body in openai_compatible.requests)
+
+
+async def test_one_id_for_two_calls_keeps_both_results_on_the_next_turn(
+    client: httpx.AsyncClient, openai_compatible: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Some OpenAI-compatible servers give parallel calls one id: no result is dropped."""
+    serve_openai_compatible(openai_compatible, monkeypatch)
+    thread_id = str(uuid.uuid4())
+    await chat(client, "probe DUPIDS", thread_id)
+    before = [m.id for m in await history(thread_id)]
+    assert (await events_of(client, "thanks", thread_id))[-1] == "message.end"
+    assert openai_compatible.refusals == []
+    messages = await history(thread_id)
+    assert [m.id for m in messages[: len(before)]] == before  # nothing rewritten
+    results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert sorted(results) == ["probe reading for Rome", "probe reading for SF"]

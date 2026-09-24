@@ -108,7 +108,7 @@ graph-agents-cli-manifest.yaml
 | `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
 | `GET /ready` | Readiness: 200 when the database is set up and answers within 2 s, else 503 (no auth) |
 | `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
-| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` (description `A2A_DESCRIPTION`, version `AGENT_VERSION`); tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S`; `SendMessage` returns the reply as one text part |
+| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` (description `A2A_DESCRIPTION`, version `AGENT_VERSION`); tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S` (an unknown task is -32001, A2A 0.3 included); `SendMessage` returns the reply as one text part |
 | `/playground`, `/docs`, `/openapi.json` | Only under `APP_ENV=dev` |
 {%- if cookiecutter.runtime == 'langgraph-server' %}
 
@@ -133,7 +133,9 @@ at startup):
   cancels the run. Idle streams get a keep-alive comment every `SSE_HEARTBEAT_S` (15).
 - **Valid history:** a run stopped mid tool call (a timeout, a crash, an outage) leaves a call
   without a result; the next run answers it with an error result right after the call before
-  adding its turn, so model providers accept the thread.
+  adding its turn, so model providers accept the thread. A tool call whose arguments are not
+  valid JSON (some OpenAI-compatible models return them) runs no tool: the agent answers it
+  with an error result and asks the model again, at most twice (`AnswerInvalidToolCalls`).
 - **Run records:** written as `running` when a run starts and updated when it ends (`ok`,
   `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); runs of a process that died
   are marked `interrupted` within about a minute.

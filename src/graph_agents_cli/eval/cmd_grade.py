@@ -352,7 +352,10 @@ def grade_traces(
         "judge": judge,
         "capture": identity["capture"],
         "agent_version": meta.get("agent_version") or identity["agent_version"],
-        "model": meta.get("model") or identity["model"],
+        # A --url agent's model is unknown (null): never the project's settings.
+        "model": meta.get("model")
+        if meta.get("target") == "url"
+        else meta.get("model") or identity["model"],
         "traces_files": meta["files"],
         "dataset_paths": [str(p) for p in planned.sources] or meta.get("dataset_paths") or [],
         "config": str(config.source) if config.source else None,

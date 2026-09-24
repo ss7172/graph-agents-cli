@@ -218,7 +218,7 @@ Two runtimes share the same routes, auth and clients:
 | `GET /health` | none | Liveness, process only: `{"status": "ok", "runtime", "checkpointer"}` |
 | `GET /ready` | none | Readiness: 200 `{"status": "ready"}` when the database (and run store) is set up and answers within 2 s, else 503 `{"status": "not_ready"}` |
 | `GET /metrics` | none, or `METRICS_TOKEN` | Prometheus text (`METRICS_ENABLED`, default true): `http_requests_total`, `http_request_duration_seconds`, `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`, `agent_tokens_total`, `agent_database_up`. With `METRICS_TOKEN` set, only `Authorization: Bearer <METRICS_TOKEN>` is answered |
-| `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them. `SendMessage` returns the reply as one text part (streamed replies arrive in chunks, the last marked `lastChunk`); a message with no text, an empty text part or over `MAX_MESSAGE_CHARS` is an invalid-params error (-32602). The card's description is `A2A_DESCRIPTION`, its version `AGENT_VERSION` |
+| `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them. `SendMessage` returns the reply as one text part (streamed replies arrive in chunks, the last marked `lastChunk`); a message with no text, an empty text part or over `MAX_MESSAGE_CHARS` is an invalid-params error (-32602); an unknown task is -32001 under both versions. The card's description is `A2A_DESCRIPTION`, its version `AGENT_VERSION` |
 | `GET /playground`, `/docs`, `/openapi.json` | none | Only under `APP_ENV=dev` |
 
 Behaviour:
@@ -255,6 +255,11 @@ Behaviour:
   A timeout, a disconnect, a crash, an OOM kill or a database outage can leave one, so every
   run first answers its thread's open tool calls with an error result placed right after
   the call (and moves misplaced results back) before it adds its turn.
+- **Tool arguments that are not valid JSON.** A model (OpenAI and OpenAI-compatible ones
+  among them) can return a tool call whose arguments do not parse (`{'query': 'SF'}`, a
+  trailing comma). No tool runs; the agent answers the call with an error result saying so
+  and asks the model again in the same step, at most twice (`AnswerInvalidToolCalls` in
+  `agent.py`). The client sees a `tool.call` with `args: {}` and an error `tool.result`.
 - **Errors.** The SSE `error` event is `{"code", "message", "error_id", "run_id"}` with `code`
   one of `run_failed`, `timeout`, `recursion_limit` (only when the step-limit reply cannot be
   written), `thread_busy`, `unavailable`, `forbidden`. An unhandled error answers 500
@@ -613,8 +618,10 @@ that metric (a case that does not declare it is not counted as a pass). The
   write methods the project's `api-policy.yaml` allows before the first case. Use an
   environment whose data you can reset and a dedicated test identity, never production data.
   Its credential goes in `GRAPH_AGENTS_CLI_API_KEY`, not on the command line; credentials in
-  the URL itself are shown as `***@` and never stored in traces or results. When the project's
-  own settings name the fake model, `eval grade` warns that the target may be running them.
+  the URL itself are shown as `***@` and never stored in traces or results. The agent there
+  does not report its model, so the traces and results record `model: null`; when the
+  project's own settings name the fake model, `eval grade` warns that the target may be
+  running them.
 - A multi-turn case with `expect.scope: all_turns` whose trace has no per-turn records (an older
   traces file, an `eval generate` override) is graded on its final turn, and `eval grade` says
   which cases.
@@ -914,8 +921,8 @@ staging/prod policy to adapt), and backups of the agent's database.
       hurt; `graph-agents-cli api check` passes and CODEOWNERS covers `api-policy.yaml`.
 - [ ] Every write tool calls `require_user_mentioned` on the ids it acts on (and
       `require_owner` under a per-user policy), write-capable APIs use `auth: forward` where
-      the upstream can authorize the user, and `agent.py` keeps `UntrustedToolResults` and the
-      prompt's tool-results rule.
+      the upstream can authorize the user, and `agent.py` keeps `UntrustedToolResults` (and
+      `AnswerInvalidToolCalls`) and the prompt's tool-results rule.
 - [ ] `eval run` passes on the real model, with cases for your tools, refusals, failure
       modes and instructions planted in tool data; the `pr_checks` gate runs on the real
       provider (its key secret is set).

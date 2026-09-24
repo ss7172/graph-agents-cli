@@ -37,10 +37,12 @@ of that conversation too.
 
 Requests: a message needs the user role, text, no empty text part, and at
 most `MAX_MESSAGE_CHARS` characters in all (the `/chat` limit); anything else
-is a JSON-RPC invalid-params error (-32602) before a task is created. The
-reply is one `response` artifact: `SendMessage` returns it as one text part;
-`SendStreamingMessage` streams it in chunks (the last with `lastChunk`), and
-the stored task keeps the chunks joined into one part.
+is a JSON-RPC invalid-params error (-32602) before a task is created. A2A 0.3
+requests get the same error codes as 1.0 (an unknown task is -32001, logged
+at INFO; see `LegacyJsonRpcAdapter`). The reply is one `response` artifact:
+`SendMessage` returns it as one text part; `SendStreamingMessage` streams it
+in chunks (the last with `lastChunk`), and the stored task keeps the chunks
+joined into one part.
 
 The card's description (and its one skill's) is `A2A_DESCRIPTION`, its
 version `AGENT_VERSION`, its name the mount name `A2A_NAME`.
@@ -82,11 +84,23 @@ from a2a.types import (
     SecurityScheme,
     Task,
 )
-from a2a.types.a2a_pb2 import ListTasksRequest, ListTasksResponse, SendMessageRequest
+from a2a.types.a2a_pb2 import (
+    CancelTaskRequest,
+    ListTasksRequest,
+    ListTasksResponse,
+    SendMessageRequest,
+    SubscribeToTaskRequest,
+)
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH, PROTOCOL_VERSION_1_0
-from a2a.utils.errors import InvalidParamsError
+from a2a.utils.errors import (
+    JSON_RPC_ERROR_CODE_MAP,
+    A2AError,
+    InvalidParamsError,
+    TaskNotFoundError,
+)
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     CUSTOM,
@@ -428,16 +442,22 @@ def _strings(value: Any) -> Any:
 # message text included), and answers any error raised while handling a
 # request as an internal error (-32603, logged with a traceback). So a 0.3
 # request is checked before it gets there (`fast_api_app.A2APolicyMiddleware`
-# answers the error itself, naming fields, never values).
+# answers the error itself, naming fields, never values), and the layer is
+# served by `LegacyJsonRpcAdapter`, which answers an A2A error raised while
+# handling a request (an unknown task, say) with its own code.
 LEGACY_SEND_METHODS = ("message/send", "message/stream")
 try:
+    from a2a.compat.v0_3 import types as types_v03
     from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
+    from a2a.compat.v0_3.request_handler import RequestHandler03
 
     LEGACY_METHOD_MODELS: dict[str, Any] = dict(JSONRPC03Adapter.METHOD_TO_MODEL)
 except ImportError:  # an SDK without the 0.3 layer, or with it elsewhere
+    JSONRPC03Adapter = RequestHandler03 = types_v03 = None  # type: ignore[assignment,misc]
     LEGACY_METHOD_MODELS = {}
 JSONRPC_INVALID_REQUEST = -32600
 JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
 
 
 def legacy_request_error(payload: Any) -> dict[str, Any] | None:
@@ -499,11 +519,109 @@ def legacy_message_problem(payload: Any) -> str | None:
     return message_problem(message.get("role") == "user", texts)
 
 
+def legacy_error(exc: A2AError) -> dict[str, Any] | None:
+    """The JSON-RPC error for an A2A error raised by a 0.3 request, or None for an internal one.
+
+    The code is the one A2A 1.0 answers with (`TaskNotFoundError` -32001,
+    `TaskNotCancelableError` -32002, `PushNotificationNotSupportedError`
+    -32003, ...); the message is the error's own, which names no value the
+    server holds. It is logged at INFO: the caller asked for something that
+    is not there, the server did nothing wrong.
+    """
+    code = JSON_RPC_ERROR_CODE_MAP.get(type(exc), JSONRPC_INTERNAL_ERROR)
+    if code == JSONRPC_INTERNAL_ERROR:
+        return None
+    logger.info("A2A 0.3 request refused: %s (%d)", type(exc).__name__, code)
+    return {"code": code, "message": str(exc)}
+
+
+if RequestHandler03 is not None:
+
+    class LegacyRequestHandler(RequestHandler03):
+        """The SDK's 0.3 request handler; a streamed request's A2A error ends its stream."""
+
+        async def on_message_send_stream(self, request: Any, context: ServerCallContext) -> Any:
+            try:
+                async for event in super().on_message_send_stream(request, context):
+                    yield event
+            except A2AError as exc:
+                yield _legacy_stream_error(request, exc)
+
+        async def on_subscribe_to_task(self, request: Any, context: ServerCallContext) -> Any:
+            try:
+                async for event in super().on_subscribe_to_task(request, context):
+                    yield event
+            except A2AError as exc:
+                yield _legacy_stream_error(request, exc)
+
+    class LegacyJsonRpcAdapter(JSONRPC03Adapter):
+        """The SDK's A2A 0.3 layer, answering each A2A error with its own code.
+
+        The SDK's layer answers any error raised while handling a 0.3 request
+        as an internal error (-32603) and logs it at ERROR with a traceback, so
+        any caller could write ERROR records with an unknown or deleted task id
+        (`tasks/get`, `tasks/cancel`, `tasks/resubscribe`) or a push
+        notification request (not supported). Here such a request gets the
+        error A2A 1.0 answers with (`legacy_error`); an internal error is still
+        answered and logged as the SDK does.
+        """
+
+        def __init__(self, http_handler: Any, context_builder: Any = None) -> None:
+            super().__init__(http_handler, context_builder)
+            self.handler = LegacyRequestHandler(request_handler=http_handler)
+
+        async def _process_non_streaming_request(
+            self, request_id: Any, request_obj: Any, context: ServerCallContext
+        ) -> Any:
+            try:
+                return await super()._process_non_streaming_request(
+                    request_id, request_obj, context
+                )
+            except A2AError as exc:
+                error = legacy_error(exc)
+                if error is None:
+                    raise
+                return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": error})
+
+
+def _legacy_stream_error(request: Any, exc: A2AError) -> Any:
+    """The stream event that ends a streamed 0.3 request with the A2A error `exc`."""
+    error = legacy_error(exc)
+    if error is None:
+        raise exc
+    return types_v03.SendStreamingMessageResponse(
+        root=types_v03.JSONRPCErrorResponse(
+            id=getattr(request, "id", None), error=types_v03.JSONRPCError(**error)
+        )
+    )
+
+
+def _use_legacy_adapter(routes: list[Any], request_handler: Any, context_builder: Any) -> None:
+    """Serve A2A 0.3 requests on `routes` with `LegacyJsonRpcAdapter` (see there).
+
+    The SDK builds its 0.3 layer inside the JSON-RPC route's dispatcher; it is
+    replaced there. With an SDK that builds it elsewhere the routes keep the
+    SDK's own layer (the A2A 0.3 tests in `tests/integration/test_api_surface.py`
+    notice).
+    """
+    if RequestHandler03 is None:
+        return
+    for route in routes:
+        dispatcher = getattr(getattr(route, "endpoint", None), "__self__", None)
+        if isinstance(getattr(dispatcher, "_v03_adapter", None), JSONRPC03Adapter):
+            dispatcher._v03_adapter = LegacyJsonRpcAdapter(request_handler, context_builder)
+
+
 class PolicyRequestHandler(DefaultRequestHandler):
     """The SDK's request handler, checking each message before a task exists.
 
     It also records whether the reply is streamed, so the executor returns a
-    non-streamed reply as one text part.
+    non-streamed reply as one text part, and answers a cancel or a
+    subscription naming a task the caller does not have (`CancelTask`,
+    `SubscribeToTask`, 0.3 `tasks/cancel`, `tasks/resubscribe`) before the SDK
+    sets the task up: the SDK starts two event-queue loops first and leaves
+    them running when the task is not found, which logs two ERROR records
+    ("Task was destroyed but it is pending!") per request.
     """
 
     async def on_message_send(  # type: ignore[override]
@@ -519,6 +637,21 @@ class PolicyRequestHandler(DefaultRequestHandler):
         check_user_message(params.message)
         context.state[STREAMING_STATE_KEY] = True
         async for event in super().on_message_send_stream(params, context):
+            yield event
+
+    async def on_cancel_task(  # type: ignore[override]
+        self, params: CancelTaskRequest, context: ServerCallContext
+    ) -> Any:
+        if await self.task_store.get(params.id, context) is None:
+            raise TaskNotFoundError
+        return await super().on_cancel_task(params, context)
+
+    async def on_subscribe_to_task(  # type: ignore[override]
+        self, params: SubscribeToTaskRequest, context: ServerCallContext
+    ) -> Any:
+        if await self.task_store.get(params.id, context) is None:
+            raise TaskNotFoundError
+        async for event in super().on_subscribe_to_task(params, context):
             yield event
 
 
@@ -735,15 +868,18 @@ def add_a2a_routes(app: FastAPI) -> Any:
         task_store=store,
         agent_card=card,
     )
+    context_builder = PolicyContextBuilder()
+    # v0.3 compat keeps older A2A clients working against the same endpoint.
+    jsonrpc_routes = create_jsonrpc_routes(
+        request_handler,
+        rpc_url=A2A_RPC_PATH,
+        context_builder=context_builder,
+        enable_v0_3_compat=True,
+    )
+    _use_legacy_adapter(jsonrpc_routes, request_handler, context_builder)
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card, card_url=A2A_CARD_PATH),
-        # v0.3 compat keeps older A2A clients working against the same endpoint.
-        jsonrpc_routes=create_jsonrpc_routes(
-            request_handler,
-            rpc_url=A2A_RPC_PATH,
-            context_builder=PolicyContextBuilder(),
-            enable_v0_3_compat=True,
-        ),
+        jsonrpc_routes=jsonrpc_routes,
     )
     return card

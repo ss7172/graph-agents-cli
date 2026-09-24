@@ -499,12 +499,16 @@ def test_no_fake_warning_for_a_real_judge_or_a_url_agent(
     assert "not a quality signal" not in result.output
 
     # The project's own settings name the fake model: the agent at --url may run them.
-    write_traces(project, good_traces(), extra={"target": "url", "model_provider": "fake"})
+    write_traces(
+        project, good_traces(), extra={"target": "url", "model_provider": "fake", "model": None}
+    )
     result = _grade(runner)
     assert result.exit_code == 0, result.output
     results = read_results(project)
     assert results["fake_model"] == []
     assert results["warnings"] == [FAKE_URL_AGENT_WARNING]
+    # Its model is unknown: the results never name the project's settings for it.
+    assert results["model"] is None
     assert "Warning: this project's settings name the deterministic fake model" in result.output
 
     # No judge metric at all: the (fake) judge never ran, so it is not reported.

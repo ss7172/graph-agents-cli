@@ -26,6 +26,7 @@ status, not the text.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -44,6 +45,7 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (  # noqa: E402
     ChatRequest,
     ChatRuntime,
 )
+from {{cookiecutter.agent_directory}}.app_utils.content import INVALID_TOOL_CALL_RESULT  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunRecord, RunStore  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadLocks, ThreadStore  # noqa: E402
 
@@ -63,6 +65,14 @@ def sdk_error(cls: type[Exception], status: int, message: str) -> Exception:
     request = httpx.Request("GET", "http://loopback/threads/x")
     response = httpx.Response(status, request=request, json={"detail": message})
     return cls(message, response=response, body={"detail": message})
+
+
+def stored_messages(dumps: list[dict[str, Any]]) -> list[Any]:
+    """Messages as the server stores them, from their JSON form (every field kept)."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+    classes = {"human": HumanMessage, "ai": AIMessage, "tool": ToolMessage, "system": SystemMessage}
+    return [classes[m["type"]].model_validate(m) for m in dumps]
 
 
 class FakeSdk:
@@ -113,8 +123,10 @@ class FakeSdk:
     def apply(self, values: Any) -> None:
         """Apply a state update as LangGraph Server does.
 
-        The server turns each message dict into a message with langchain's
-        coercion (a dict it cannot read is a 400) and merges them with
+        The server turns each message dict of the update into a message with
+        langchain's coercion (a dict it cannot read is a 400; a key it does not
+        know, such as `invalid_tool_calls`, lands in `additional_kwargs`) and
+        merges them into the stored messages, which keep every field, with
         `add_messages` (a remove-all marker replaces the history).
         """
         from langchain_core.messages import convert_to_messages
@@ -124,7 +136,7 @@ class FakeSdk:
             update = convert_to_messages((values or {}).get("messages", []))
         except ValueError as exc:
             raise sdk_error(errors.BadRequestError, 400, str(exc)) from exc
-        merged = add_messages(convert_to_messages(self.messages), update)
+        merged = add_messages(stored_messages(self.messages), update)
         self.messages = [m.model_dump(exclude_none=True) for m in merged]
 
     def get_client(
@@ -587,7 +599,11 @@ async def test_a_result_after_the_next_turn_is_moved_back_before_the_run(server)
     human, call = sdk.messages[:2]
     sdk.messages = [
         human,
-        {**call, "usage_metadata": {"input_tokens": 1}, "invalid_tool_calls": []},
+        {
+            **call,
+            "usage_metadata": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "invalid_tool_calls": [],
+        },
         {"type": "human", "id": "m9", "content": "hello?"},
         {"type": "tool", "id": "t1", "tool_call_id": "c1", "name": "get_weather", "content": "x"},
     ]
@@ -616,6 +632,88 @@ async def test_a_healthy_thread_with_repeated_tool_call_ids_is_never_rewritten(s
         {**result, "id": "m7", "content": "rainy"},
         {"type": "ai", "id": "m8", "content": "It is rainy."},
     ]
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+    assert sdk.state_updates == []
+
+
+def _invalid_call(message_id: str, call_id: str) -> dict[str, Any]:
+    """An assistant message whose tool call has arguments that are not valid JSON, as stored."""
+    return {
+        "type": "ai",
+        "id": message_id,
+        "content": "",
+        "tool_calls": [],
+        "invalid_tool_calls": [
+            {
+                "type": "invalid_tool_call",
+                "id": call_id,
+                "name": "probe",
+                "args": "{'query': 'SF'}",
+                "error": "not valid JSON",
+            }
+        ],
+    }
+
+
+def _refusals(openai_compatible: Any, messages: list[dict[str, Any]]) -> list[str]:
+    """What an OpenAI-compatible provider refuses of the thread's history, as it is stored."""
+    with contextlib.suppress(Exception):  # the refusal is recorded; the error is expected
+        openai_compatible.model().invoke([*stored_messages(messages), ("user", "next")])
+    return openai_compatible.refusals
+
+
+async def test_an_open_call_with_invalid_arguments_is_answered_before_the_run(
+    server, openai_compatible
+) -> None:
+    """LangChain sends an invalid call back to the provider as a call: it needs a result."""
+    rt, sdk = server
+    human = sdk.messages[0]
+    sdk.messages = [human, _invalid_call("m2", "call_0")]
+    assert _refusals(openai_compatible, sdk.messages) != []  # the broken thread
+    openai_compatible.refusals.clear()
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+    (update,) = sdk.state_updates
+    (patch,) = update["values"]["messages"]  # appended right after the call
+    assert patch["tool_call_id"] == "call_0" and patch["content"] == INVALID_TOOL_CALL_RESULT
+    assert sdk.history_at_stream == [["human", "ai", "tool"]]
+    assert _refusals(openai_compatible, sdk.messages) == []
+
+
+async def test_a_rewritten_history_keeps_an_invalid_call_answered(
+    server, openai_compatible
+) -> None:
+    """A rewrite rebuilds every message from a dict: the invalid call must stay a call."""
+    rt, sdk = server
+    human, call = sdk.messages[:2]
+    sdk.messages = [
+        human,
+        _invalid_call("m2", "call_0"),
+        {"type": "human", "id": "m3", "content": "hello?"},
+        call,  # c1, answered only after the next turn: the history is rewritten
+        {"type": "human", "id": "m5", "content": "still there?"},
+        {"type": "tool", "id": "t1", "tool_call_id": "c1", "name": "probe", "content": "x"},
+    ]
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+    (update,) = sdk.state_updates
+    rewritten = update["values"]["messages"]
+    assert rewritten[0]["type"] == "remove"
+    assert rewritten[2]["tool_calls"] == [
+        {"name": "probe", "args": {}, "id": "call_0", "type": "tool_call"}
+    ]
+    assert rewritten[3]["tool_call_id"] == "call_0"
+    assert rewritten[3]["content"] == INVALID_TOOL_CALL_RESULT
+    assert [m["id"] for m in rewritten[1:]][:3] == ["m1", "m2", rewritten[3]["id"]]
+    assert _refusals(openai_compatible, sdk.messages) == []
+
+
+async def test_one_id_for_two_calls_of_a_message_is_never_rewritten(server) -> None:
+    rt, sdk = server
+    human, call, result, reply = sdk.messages
+    two = {**call, "tool_calls": [call["tool_calls"][0], {**call["tool_calls"][0]}]}
+    sdk.messages = [human, two, result, {**result, "id": "m3b", "content": "rainy"}, reply]
     events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
     assert events[-1][0] == "message.end"
     assert sdk.state_updates == []

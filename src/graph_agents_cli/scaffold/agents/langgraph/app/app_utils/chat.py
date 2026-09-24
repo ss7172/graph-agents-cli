@@ -40,7 +40,10 @@ Both runtimes apply the same rules:
   followed by its result. A run cut short (a timeout, a disconnect, a crash, a
   database outage, an OOM kill) can leave one, so every run first answers the
   open tool calls of its thread with an error result placed right after the
-  call (and puts misplaced results back in place), before its own turn.
+  call (and puts misplaced results back in place), before its own turn. A
+  call whose arguments are not valid JSON counts as a call too (providers
+  are sent it back as one); the agent answers those in the run that made
+  them (`content.AnswerInvalidToolCalls`).
 * Guardrails: `RUN_TIMEOUT_S` cancels a run (status `timeout`), a client that
   disconnects cancels its run (status `cancelled`), and `SSE_HEARTBEAT_S`
   keeps idle streams alive. `RECURSION_LIMIT` caps graph steps: a run that
@@ -74,7 +77,7 @@ import logging
 import os
 import time
 import uuid
-from collections import deque
+from collections import Counter, deque
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -91,7 +94,11 @@ from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
     get_checkpointer,
     postgres_saver,
 )
-from {{cookiecutter.agent_directory}}.app_utils.content import content_to_text
+from {{cookiecutter.agent_directory}}.app_utils.content import (
+    INVALID_TOOL_CALL_RESULT,
+    INVALID_TOOL_CALL_TYPE,
+    content_to_text,
+)
 from {{cookiecutter.agent_directory}}.app_utils.db import (
     RUN_INTERRUPTED,
     Database,
@@ -383,6 +390,44 @@ def _role(m: Any) -> str:
     return "system" if t in ("system", "SystemMessage") else t
 
 
+def tool_calls_of(m: Any) -> list[Any]:
+    """Every tool call of an assistant message, in the order providers are sent them.
+
+    The calls whose arguments did not parse (`invalid_tool_calls`, marked
+    `"type": "invalid_tool_call"`) count too: LangChain sends them back to
+    the provider as tool calls (langchain-openai does), so each needs a
+    result like any other call.
+    """
+    if not _is_ai(m):
+        return []
+    calls = list(_get(m, "tool_calls") or [])
+    for call in _get(m, "invalid_tool_calls") or []:
+        if isinstance(call, Mapping) and call.get("type") != INVALID_TOOL_CALL_TYPE:
+            call = {**call, "type": INVALID_TOOL_CALL_TYPE}
+        calls.append(call)
+    return calls
+
+
+def is_invalid_tool_call(call: Any) -> bool:
+    """Whether `call` is one whose arguments did not parse (never run)."""
+    return _get(call, "type") == INVALID_TOOL_CALL_TYPE
+
+
+def open_call_result_text(call: Any, reason: str) -> str:
+    """The error result for a call that has none: `reason`, or why an invalid call never ran."""
+    return INVALID_TOOL_CALL_RESULT if is_invalid_tool_call(call) else reason
+
+
+def _call_id(call: Any) -> str:
+    return str(_get(call, "id") or "")
+
+
+def _call_args(call: Any) -> dict[str, Any]:
+    """A call's arguments as a dict; `{}` for a call whose arguments did not parse."""
+    args = _get(call, "args")
+    return dict(args) if isinstance(args, Mapping) else {}
+
+
 def _iter_messages(update: Any) -> Iterator[Any]:
     if isinstance(update, Mapping):
         messages = update.get("messages")
@@ -403,7 +448,11 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
     """Map one LangGraph stream item (`messages` or `updates` mode) to chat events."""
     if mode == "messages":
         chunk = data[0] if isinstance(data, list | tuple) and data else data
-        if _is_ai(chunk) and not (_get(chunk, "tool_call_chunks") or _get(chunk, "tool_calls")):
+        if _is_ai(chunk) and not (
+            _get(chunk, "tool_call_chunks")
+            or _get(chunk, "tool_calls")
+            or _get(chunk, "invalid_tool_calls")
+        ):
             text = content_to_text(_get(chunk, "content", ""))
             if text:
                 state.text.append(text)
@@ -420,11 +469,11 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
                 if msg_id:
                     state.seen_ai_ids.add(msg_id)
                 _accumulate_usage(state, m)
-                for call in _get(m, "tool_calls") or []:
+                for call in tool_calls_of(m):
                     entry = {
                         "id": str(_get(call, "id") or uuid.uuid4()),
                         "name": str(_get(call, "name") or ""),
-                        "args": dict(_get(call, "args") or {}),
+                        "args": _call_args(call),
                     }
                     state.tool_calls.append({**entry, "result": None, "is_error": False})
                     yield EVENT_TOOL_CALL, entry
@@ -474,10 +523,10 @@ def serialize_message(m: Any, *, include_tool_args: bool = True) -> dict[str, An
     }
     if _is_ai(m):
         calls = []
-        for call in _get(m, "tool_calls") or []:
+        for call in tool_calls_of(m):
             entry: dict[str, Any] = {"id": _get(call, "id"), "name": _get(call, "name")}
             if include_tool_args:
-                entry["args"] = dict(_get(call, "args") or {})
+                entry["args"] = _call_args(call)
             calls.append(entry)
         if calls:
             out["tool_calls"] = calls
@@ -496,16 +545,18 @@ def dangling_tool_calls(messages: list[Any]) -> list[Any]:
     """
     for i in range(len(messages) - 1, -1, -1):
         if _is_ai(messages[i]):
-            answered = set()
+            answered: Counter[str] = Counter()
             for m in messages[i + 1 :]:
                 if not _is_tool(m):
                     break
-                answered.add(str(_get(m, "tool_call_id")))
-            return [
-                c
-                for c in _get(messages[i], "tool_calls") or []
-                if str(_get(c, "id")) not in answered
-            ]
+                answered[str(_get(m, "tool_call_id") or "")] += 1
+            open_calls = []
+            for c in tool_calls_of(messages[i]):
+                if answered[_call_id(c)] > 0:
+                    answered[_call_id(c)] -= 1
+                else:
+                    open_calls.append(c)
+            return open_calls
     return []
 
 
@@ -524,14 +575,17 @@ def repair_tool_history(
     """The history with every tool call followed by its result, or None when it already is.
 
     Model providers reject an assistant message whose tool calls are not
-    answered right after it, and a tool result that answers no call. Calls
-    and results are paired by position, turn by turn, since tool-call ids
-    repeat across turns (a model may number its calls `call_0`, `call_1`, ...
-    in every message):
+    answered right after it, and a tool result that answers no call. Every
+    call counts, the ones whose arguments did not parse included
+    (`tool_calls_of`). Calls and results are paired by position, turn by
+    turn, since tool-call ids repeat across turns (a model may number its
+    calls `call_0`, `call_1`, ... in every message) and can repeat within one
+    message (some OpenAI-compatible servers send the same id, or an empty
+    one, for parallel calls):
 
     * a call's result is a tool message with its id in the block of tool
-      messages right after the call's assistant message; these are kept
-      where they are, in their order;
+      messages right after the call's assistant message, one per call with
+      that id; these are kept where they are, in their order;
     * a call without one takes the first unclaimed tool message with its id
       that sits after the call and before the next assistant message that
       makes a call with the same id (a result a crash or an old repair left
@@ -545,12 +599,7 @@ def repair_tool_history(
     count = len(messages)
 
     def call_ids(m: Any) -> list[str]:
-        ids: list[str] = []
-        for call in _get(m, "tool_calls") or []:
-            call_id = str(_get(call, "id") or "")
-            if call_id not in ids:
-                ids.append(call_id)
-        return ids
+        return [_call_id(call) for call in tool_calls_of(m)]
 
     def result_id(m: Any) -> str:
         return str(_get(m, "tool_call_id") or "")
@@ -561,12 +610,12 @@ def repair_tool_history(
     for i, m in enumerate(messages):
         if not _is_ai(m):
             continue
-        pending = set(call_ids(m))
+        pending = Counter(call_ids(m))
         block: list[int] = []
         j = i + 1
         while j < count and _is_tool(messages[j]):
-            if result_id(messages[j]) in pending:
-                pending.discard(result_id(messages[j]))
+            if pending[result_id(messages[j])] > 0:
+                pending[result_id(messages[j])] -= 1
                 block.append(j)
                 claimed.add(j)
             j += 1
@@ -591,18 +640,19 @@ def repair_tool_history(
         out.append(m)
         if not _is_ai(m):
             continue
-        answered = {result_id(messages[k]) for k in direct[i]}
+        answered = Counter(result_id(messages[k]) for k in direct[i])
         out.extend(messages[k] for k in direct[i])
-        calls = {str(_get(c, "id") or ""): c for c in _get(m, "tool_calls") or []}
-        for call_id in call_ids(m):
-            if call_id in answered:
+        for call in tool_calls_of(m):
+            call_id = _call_id(call)
+            if answered[call_id] > 0:
+                answered[call_id] -= 1
                 continue
             k = later_result(i, call_id)
             if k is not None:
                 claimed.add(k)
                 out.append(messages[k])
             else:
-                result = make_result(calls[call_id])
+                result = make_result(call)
                 out.append(result)
                 added.append(result)
     if len(out) == count and all(a is b for a, b in zip(out, messages, strict=True)):
@@ -618,16 +668,31 @@ def _server_message(m: Any) -> dict[str, Any]:
 
     The server rebuilds messages from dicts by their known keys and puts any
     other key into `additional_kwargs`; only the keys that matter for the
-    history are kept.
+    history are kept. It has no key for `invalid_tool_calls`, so a call
+    whose arguments did not parse is kept as a call with no arguments: its
+    error result must still answer a call the provider is sent.
     """
     if not isinstance(m, Mapping):
         return m
     keep = ["type", "content", "id", "name", "additional_kwargs", "response_metadata"]
-    if _is_ai(m):
-        keep.append("tool_calls")
-    elif _is_tool(m):
+    if _is_tool(m):
         keep.extend(("tool_call_id", "status", "artifact"))
-    return {k: m[k] for k in keep if m.get(k) is not None}
+    out = {k: m[k] for k in keep if m.get(k) is not None}
+    if _is_ai(m):
+        calls = [
+            {
+                "name": str(_get(c, "name") or ""),
+                "args": {},
+                "id": _get(c, "id"),
+                "type": "tool_call",
+            }
+            if is_invalid_tool_call(c)
+            else c
+            for c in tool_calls_of(m)
+        ]
+        if calls:
+            out["tool_calls"] = calls
+    return out
 
 
 # The remove-everything marker of LangGraph's `add_messages` reducer
@@ -1531,7 +1596,9 @@ class ChatRuntime:
         """Put the thread's tool-call history right, then add `final_text` as the last reply.
 
         Every tool call gets its result right after it (an error result saying
-        `reason` when it has none) and results that answer no call go; see
+        `reason` when it has none, or that the arguments were not valid JSON
+        for a call whose arguments did not parse) and results that answer no
+        call go; see
         `repair_tool_history`. Only the owner of the thread's run lease writes
         (fastapi: the checkpointer's fence). Returns how many open calls got a
         result. Under langgraph-server a thread with a run in progress (started
@@ -1546,7 +1613,7 @@ class ChatRuntime:
 
         def error_result(call: Any) -> Any:
             return ToolMessage(
-                content=reason,
+                content=open_call_result_text(call, reason),
                 tool_call_id=str(_get(call, "id") or ""),
                 name=str(_get(call, "name") or ""),
                 status="error",
@@ -1611,7 +1678,7 @@ class ChatRuntime:
         def error_result(call: Any) -> dict[str, Any]:
             return {
                 "type": "tool",
-                "content": reason,
+                "content": open_call_result_text(call, reason),
                 "tool_call_id": str(_get(call, "id") or ""),
                 "name": str(_get(call, "name") or ""),
                 "status": "error",

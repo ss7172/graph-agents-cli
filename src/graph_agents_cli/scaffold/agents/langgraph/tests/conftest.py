@@ -33,6 +33,11 @@ test module has imported the agent, each test serves a graph built like
 `agent.py`'s but with no tools (the fake model would otherwise call a project
 tool whose name a test prompt happens to mention). A test that needs the
 project's own graph is marked `@pytest.mark.project_graph`.
+
+`openai_compatible` is an OpenAI-compatible server in process (behind
+`httpx.MockTransport`, no network) that refuses a chat history the way OpenAI
+does: the tests that keep a thread valid for providers run the agent on
+`ChatOpenAI` against it.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ import re
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import dotenv
 import dotenv.main
@@ -149,6 +154,10 @@ def _no_project_tools(
     is at startup, and reads `agent.graph` again for every run.
     """
     agent = sys.modules.get(AGENT_MODULE)
+    if (agent is not None or APP_MODULE in sys.modules) and not os.environ.get("MODEL_PROVIDER"):
+        # A module that imported the app without setting a model (a test of
+        # its routes): the graph runs on the fake model.
+        monkeypatch.setenv("MODEL_PROVIDER", "fake")
     if agent is None and APP_MODULE in sys.modules:
         import importlib
 
@@ -178,3 +187,163 @@ def use_test_tools(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Any]:
         return graph
 
     return install
+
+
+# --- an OpenAI-compatible server that checks the history, in process ----------------------
+
+
+def openai_history_problem(messages: list[dict[str, Any]]) -> str | None:
+    """Why OpenAI would refuse this chat history (a 400), or None.
+
+    An assistant message with `tool_calls` must be followed by one tool message
+    per call before anything else, and a tool message must answer such a call.
+    """
+    pending: list[str] = []
+    for message in messages:
+        role = message.get("role")
+        if pending and role != "tool":
+            return (
+                "An assistant message with 'tool_calls' must be followed by tool messages "
+                "responding to each 'tool_call_id'. The following tool_call_ids did not have "
+                f"response messages: {', '.join(pending)}"
+            )
+        if role == "tool":
+            if message.get("tool_call_id") not in pending:
+                return "messages with role 'tool' must be a response to a preceding 'tool_calls'"
+            pending.remove(message.get("tool_call_id"))
+        elif role == "assistant":
+            pending = [call.get("id") for call in message.get("tool_calls") or []]
+    if pending:
+        return f"tool_call_ids did not have response messages: {', '.join(pending)}"
+    return None
+
+
+class OpenAICompatibleFake:
+    """A scripted OpenAI-compatible chat server behind `httpx.MockTransport`.
+
+    It refuses a history OpenAI refuses (`openai_history_problem`, a 400), and
+    answers the last message: a user message naming a script word gets that
+    reply (see `SCRIPTS`: arguments that are not valid JSON, one id for two
+    calls), a tool result gets `Found: <results>` (unless the user asked for
+    `ALWAYSBAD`: invalid arguments again), anything else `ok`. Tool calls go
+    to the first tool of the request. `requests` keeps every request body;
+    `refusals` every 400.
+    """
+
+    SCRIPTS: ClassVar[dict[str, list[tuple[str, str]]]] = {
+        # (call id, raw arguments) per tool call
+        "BADARGS": [("call_0", "{'query': 'SF'}")],
+        "TRAILINGCOMMA": [("call_0", '{"query": "SF",}')],
+        "DUPIDS": [("dup", '{"query": "SF"}'), ("dup", '{"query": "Rome"}')],
+        "BADANDGOOD": [("call_0", '{"query": "SF"}'), ("call_1", "query=Rome")],
+    }
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.refusals: list[str] = []
+
+    def model(self) -> Any:
+        import httpx
+        from langchain_openai import ChatOpenAI
+
+        transport = httpx.MockTransport(self._handle)
+        return ChatOpenAI(
+            model="fake-gpt",
+            api_key="test",
+            base_url="http://openai-compatible.test/v1",
+            max_retries=0,
+            http_client=httpx.Client(transport=transport),
+            http_async_client=httpx.AsyncClient(transport=transport),
+        )
+
+    def _reply(self, body: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
+        messages = body.get("messages") or []
+        last = messages[-1] if messages else {}
+        asked = next((str(m.get("content")) for m in reversed(messages) if m["role"] == "user"), "")
+        tools = [t["function"]["name"] for t in body.get("tools") or []]
+        if "ALWAYSBAD" in asked and tools:
+            call_id = f"call_{sum(m['role'] == 'assistant' for m in messages)}"
+            function = {"name": tools[0], "arguments": "{query: SF}"}
+            return None, [{"index": 0, "id": call_id, "type": "function", "function": function}]
+        if last.get("role") == "tool":
+            results = []
+            for message in reversed(messages):
+                if message.get("role") != "tool":
+                    break
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = "".join(str(b.get("text", "")) for b in content)
+                results.append(str(content))
+            return "Found: " + " | ".join(reversed(results)), []
+        text = str(last.get("content") or "")
+        for word, calls in self.SCRIPTS.items():
+            if word in text and tools:
+                return None, [
+                    {
+                        "index": i,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tools[0], "arguments": arguments},
+                    }
+                    for i, (call_id, arguments) in enumerate(calls)
+                ]
+        return "ok", []
+
+    def _handle(self, request: Any) -> Any:
+        import json
+
+        import httpx
+
+        body = json.loads(request.content)
+        self.requests.append(body)
+        problem = openai_history_problem(body.get("messages") or [])
+        if problem:
+            self.refusals.append(problem)
+            error = {"message": problem, "type": "invalid_request_error", "param": "messages"}
+            return httpx.Response(400, json={"error": error})
+        text, calls = self._reply(body)
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        head = {"id": "chatcmpl-fake", "created": 0, "model": "fake-gpt"}
+        if not body.get("stream"):
+            message: dict[str, Any] = {"role": "assistant", "content": text}
+            if calls:
+                message["tool_calls"] = [
+                    {k: v for k, v in c.items() if k != "index"} for c in calls
+                ]
+            choice = {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if calls else "stop",
+            }
+            return httpx.Response(
+                200, json={**head, "object": "chat.completion", "choices": [choice], "usage": usage}
+            )
+
+        def chunk(delta: dict[str, Any], finish: str | None = None) -> str:
+            choice = {"index": 0, "delta": delta, "finish_reason": finish}
+            return "data: " + json.dumps(
+                {**head, "object": "chat.completion.chunk", "choices": [choice]}
+            )
+
+        if calls:
+            lines = [chunk({"role": "assistant", "content": None, "tool_calls": calls})]
+            lines.append(chunk({}, "tool_calls"))
+        else:
+            lines = [chunk({"role": "assistant", "content": ""})]
+            lines += [
+                chunk({"content": (text or "")[i : i + 20]}) for i in range(0, len(text or ""), 20)
+            ]
+            lines.append(chunk({}, "stop"))
+        final = {**head, "object": "chat.completion.chunk", "choices": [], "usage": usage}
+        lines += ["data: " + json.dumps(final), "data: [DONE]"]
+        return httpx.Response(
+            200,
+            content="\n\n".join(lines).encode() + b"\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+
+@pytest.fixture
+def openai_compatible() -> OpenAICompatibleFake:
+    """An in-process OpenAI-compatible server that refuses invalid histories (see its class)."""
+    return OpenAICompatibleFake()

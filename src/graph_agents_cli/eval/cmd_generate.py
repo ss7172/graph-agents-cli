@@ -332,9 +332,13 @@ def generate_traces(
         finally:
             teardown()
 
+    # The model is known only for the project's own local server, which runs the
+    # project's settings. The agent at a --url target does not report its model,
+    # and the local settings need not be what runs there: its traces name none.
+    model = None if url else meta["model"]
     for trace, case in zip(traces, ds.cases, strict=True):
         trace["agent_version"] = meta["agent_version"]
-        trace["model"] = meta["model"]
+        trace["model"] = model
         trace["case"] = case.raw
 
     doc = {
@@ -345,9 +349,10 @@ def generate_traces(
         ],
         "generated_at": utc_now_iso(),
         "agent_version": meta["agent_version"],
-        "model": meta["model"],
-        # The model provider is the project's own only for its local server;
-        # `eval grade` warns when that agent ran on the fake model.
+        "model": model,
+        # The project's MODEL_PROVIDER: the agent's only for the local server.
+        # `eval grade` warns when that agent ran on the fake model, and for a
+        # --url target when these settings name it.
         "model_provider": meta["model_provider"],
         "target": "url" if url else "local",
         "base_url": display_url(base_url),

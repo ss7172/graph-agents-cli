@@ -62,7 +62,7 @@ from langchain.agents import create_agent
 from langgraph.graph.state import CompiledStateGraph
 
 from app.app_utils.api_client import ApiCallError, ApiPolicyError
-from app.app_utils.content import UntrustedToolResults
+from app.app_utils.content import AnswerInvalidToolCalls, UntrustedToolResults
 from app.app_utils.limits import recursion_limit
 from app.app_utils.model import get_model
 from app.tools import get_tools
@@ -86,8 +86,8 @@ class SurfaceApiErrors(
     ...
 
 
-def middleware() -> list[AgentMiddleware]:  # keep both when you add your own
-    return [SurfaceApiErrors(), UntrustedToolResults()]
+def middleware() -> list[AgentMiddleware]:  # keep all three when you add your own
+    return [SurfaceApiErrors(), AnswerInvalidToolCalls(), UntrustedToolResults()]
 
 
 graph: CompiledStateGraph = create_agent(
@@ -106,10 +106,14 @@ Rules:
   checkpointer chosen by `CHECKPOINTER`; under `langgraph-server` the server binds its own
   persistence. Passing `checkpointer=` here breaks both runtimes.
 - Keep the export name `graph`; `langgraph.json` points at `./app/agent.py:graph` and the app
-  imports it by that name. Keep the `recursion_limit` config, the `SurfaceApiErrors` and
-  `UntrustedToolResults` middleware and the prompt's tool-results rule when you rewrite it: the
-  first stops a looping run, the second turns API refusals into tool errors the model can read,
-  and the last two keep text that tools return from acting as instructions (section 2a).
+  imports it by that name. Keep the `recursion_limit` config, the `SurfaceApiErrors`,
+  `AnswerInvalidToolCalls` and `UntrustedToolResults` middleware and the prompt's tool-results
+  rule when you rewrite it: the first stops a looping run, the second turns API refusals into
+  tool errors the model can read, the third answers a tool call whose arguments are not valid
+  JSON and asks the model again (without it the run ends with no reply and the provider
+  refuses the thread's later turns), and the last two keep text that tools return from acting
+  as instructions (section 2a). An explicit `StateGraph` needs the same: pass the middleware
+  to your model node's wrapper, or answer `AIMessage.invalid_tool_calls` yourself.
 - Move to an explicit `StateGraph` when the conversation has fixed stages, branching, a
   human-approval step, or subgraphs. `references/langgraph.md` has the pattern; keep the same
   export and stay unbound.

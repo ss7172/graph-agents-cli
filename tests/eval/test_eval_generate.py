@@ -54,8 +54,10 @@ def test_generate_with_url_writes_traces_per_contract(
     assert set(doc) >= {"dataset_hash", "generated_at", "agent_version", "model", "traces"}
     assert doc["dataset_hash"] == dataset_digest
     assert doc["dataset_paths"] == [_paths.DEFAULT_INPUT_DATASET]
-    assert doc["agent_version"] == "0.3.1" and doc["model"] == "fake/fake-model"
-    assert doc["app_name"] == "app"
+    assert doc["agent_version"] == "0.3.1" and doc["app_name"] == "app"
+    # The agent at --url does not report its model: never the project's settings.
+    assert doc["model"] is None and all(t["model"] is None for t in doc["traces"])
+    assert doc["target"] == "url" and doc["model_provider"] == "fake"
     traces = {t["case_id"]: t for t in doc["traces"]}
     assert set(traces) == {"greeting", "weather", "plain"}
     weather = traces["weather"]
@@ -156,6 +158,8 @@ def test_generate_starts_and_stops_local_server_with_env_api_key(
     assert doc["base_url"] == "http://127.0.0.1:18080"
     # The local server runs the project's own model: recorded for `eval grade`.
     assert doc["target"] == "local" and doc["model_provider"] == "fake"
+    assert doc["model"] == "fake/fake-model"
+    assert all(t["model"] == "fake/fake-model" for t in doc["traces"])
     # A local run touches nothing outside this machine: no live-target warning.
     assert "will run against the agent at" not in result.output
 

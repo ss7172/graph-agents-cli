@@ -23,6 +23,8 @@ principals come from a header test policy (`X-User`, `X-Roles`).
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 import logging
 import os
@@ -342,6 +344,76 @@ async def test_a2a_0_3_edge_cases_are_refused_without_tracebacks_or_values(
     assert "SECRETTEXT" not in error["message"]
     assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert not [rec for rec in caplog.records if "SECRETTEXT" in rec.getMessage()]
+
+
+async def legacy_rpc(client: httpx.AsyncClient, user: str, method: str, params: dict) -> Any:
+    r = await client.post(
+        A2A_PATH,
+        json={"jsonrpc": "2.0", "id": 5, "method": method, "params": params},
+        headers={**_as(user), "A2A-Version": "0.3"},
+    )
+    assert r.status_code == 200, r.text
+    if r.headers["content-type"].startswith("text/event-stream"):
+        return [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+    return r.json()
+
+
+@pytest.mark.parametrize("method", ["tasks/get", "tasks/cancel", "tasks/resubscribe"])
+async def test_a2a_0_3_an_unknown_task_is_not_found_and_logs_no_error(
+    client, caplog, method: str
+) -> None:
+    """The SDK's 0.3 layer answered -32603 and logged a traceback: any caller could."""
+    with caplog.at_level(logging.INFO):
+        answer = await legacy_rpc(client, "alice", method, {"id": "nope-TASKCANARY"})
+    if method == "tasks/resubscribe":
+        (answer,) = answer  # one stream event: the error
+    assert answer["id"] == 5 and answer["error"]["code"] == -32001, answer
+    assert "TASKCANARY" not in answer["error"]["message"]
+    await _collect_abandoned_tasks()
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert not [rec for rec in caplog.records if "TASKCANARY" in rec.getMessage()]
+
+
+async def _collect_abandoned_tasks() -> None:
+    """Report now what a request left running: asyncio logs a pending task when it is collected."""
+    await asyncio.sleep(0.1)
+    gc.collect()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("method", ["CancelTask", "SubscribeToTask"])
+async def test_a2a_1_0_an_unknown_task_leaves_nothing_running(client, caplog, method) -> None:
+    """The SDK started two event-queue loops before the lookup and left them pending."""
+    with caplog.at_level(logging.INFO):
+        answer = await rpc(client, "alice", method, {"id": "nope"})
+        await _collect_abandoned_tasks()
+    assert answer["error"]["code"] == -32001, answer
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+
+
+async def test_a2a_0_3_task_errors_have_their_own_codes(client, caplog) -> None:
+    """Another principal's task, a deleted thread's task, push notifications: as 1.0 answers."""
+    context_id = f"ctx-{uuid.uuid4()}"
+    sent = await rpc(client, "alice", "SendMessage", _message("hello", contextId=context_id))
+    task_id = sent["result"]["task"]["id"]
+    with caplog.at_level(logging.INFO):
+        got = await legacy_rpc(client, "alice", "tasks/get", {"id": task_id})
+        assert got["result"]["id"] == task_id
+        # Another principal's task reads as not found.
+        other = await legacy_rpc(client, "bob", "tasks/get", {"id": task_id})
+        assert other["error"]["code"] == -32001
+        assert (await client.delete(f"/threads/{context_id}", headers=_as("alice"))).status_code
+        gone = await legacy_rpc(client, "alice", "tasks/get", {"id": task_id})
+        assert gone["error"]["code"] == -32001
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+    # Push notifications are not supported (the SDK logs that check itself, for 1.0 too).
+    push = await legacy_rpc(
+        client,
+        "alice",
+        "tasks/pushNotificationConfig/get",
+        {"id": task_id, "pushNotificationConfigId": "x"},
+    )
+    assert push["error"]["code"] == -32003, push
 
 
 # --- the A2A reply -------------------------------------------------------------------
