@@ -18,6 +18,8 @@ the production-readiness findings of an independent assessment of 0.1.0 (runtime
 per-user authentication, deploy safety, supply chain, release engineering); the remaining
 ones are listed under "Known limitations" and "Where it is behind" in the README.
 
+Parked medium- and low-priority issues are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
 Install from the release tag (the package is not on PyPI yet):
 
 ```bash

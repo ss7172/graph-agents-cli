@@ -1286,6 +1286,9 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 
 ## Known limitations
 
+Medium- and low-priority issues parked for a later release, each with its severity, impact
+and workaround, are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
 - **LangGraph Server licence.** The `langgraph-server` runtime's image
   (`langchain/langgraph-api`) checks for a LangGraph licence at startup (a LangSmith API key
   or a licence key; see LangChain's LangGraph Server documentation) and exits without one.
