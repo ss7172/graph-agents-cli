@@ -1387,6 +1387,49 @@ class ChatRuntime:
         with database_errors():
             return [r.public() for r in await self.approvals.pending_for_thread(thread_id)]
 
+    async def replay_refusal(self, thread_id: str) -> str | None:
+        """Why a run without input, or from a checkpoint, is refused on this thread; None if not.
+
+        Such a run (LangGraph Server's own API) runs a paused step's tool calls
+        again without a decision: refused on a thread that recorded approvals
+        or waits on a gated call's interrupt, so a decided call is sent only
+        through its decision (the API client refuses it too). Fails closed:
+        when this cannot be checked, the run is refused.
+        """
+        refusal = await self.copy_refusal(thread_id)
+        if refusal:
+            return refusal
+        try:
+            paused = await self._paused_interrupts(thread_id, {})
+        except Exception as exc:
+            logger.warning(
+                "could not check a thread's gated calls (%s): run refused", type(exc).__name__
+            )
+            return "its gated API calls could not be checked"
+        if any(is_approval_interrupt(value) for value in paused.values()):
+            return "the thread waits on a gated API call"
+        return None
+
+    async def copy_refusal(self, thread_id: str) -> str | None:
+        """Why this thread is not copied (LangGraph Server's native copy); None if it may be.
+
+        A copy keeps the thread's tool calls but not their approvals, which
+        belong to the source (and go when it is deleted): refused on a thread
+        that recorded approvals. Only the records are read: the server holds
+        the source while it copies it. (A copy of a thread that waits on a
+        gated call it never recorded waits on it too, and `replay_refusal`
+        refuses the runs that would run it again there.) Fails closed.
+        """
+        if self.approvals is None:
+            return "the approvals store is not ready"
+        try:
+            if await self.approvals.for_thread(thread_id):
+                return "the thread has approvals of gated API calls"
+        except Exception as exc:
+            logger.warning("could not check a thread's approvals (%s): refused", type(exc).__name__)
+            return "its approvals could not be checked"
+        return None
+
     async def assert_no_pending_approval(self, thread_id: str) -> None:
         """`ApprovalPending` (409) while the thread waits for an approval decision."""
         pending = await self.pending_approvals(thread_id)
@@ -1909,7 +1952,16 @@ class ChatRuntime:
             end_api_run(run_id)
             finish = asyncio.ensure_future(
                 self._finish_run(
-                    principal, req, record, state, status, error, latency_ms, pump, lease
+                    principal,
+                    req,
+                    record,
+                    state,
+                    status,
+                    error,
+                    latency_ms,
+                    pump,
+                    lease,
+                    resumed=resume is not None,
                 )
             )
             # Shielded: the record and the lock release complete even when the
@@ -1992,8 +2044,13 @@ class ChatRuntime:
         latency_ms: int,
         pump: _Pump | None,
         lease: ThreadLease,
+        *,
+        resumed: bool = False,
     ) -> None:
-        """Bookkeeping after a run, each step bounded: the client's last event is not held up."""
+        """Bookkeeping after a run, each step bounded: the client's last event is not held up.
+
+        `resumed`: the run continued a paused one with a decision (`decide()`).
+        """
         thread_id = record.thread_id
         try:
             if pump is not None and not await pump.close(PUMP_STOP_WAIT_S):
@@ -2013,8 +2070,13 @@ class ChatRuntime:
                 reason = f"The tool call did not finish: the run stopped ({status})."
                 jobs.append(self._close_dangling_tool_calls(req, thread_id, reason))
             await asyncio.gather(*jobs)
-            if stopped and not lease.lost and status not in (STATUS_OK, STATUS_AWAITING_APPROVAL):
-                await self._expire_orphaned_approvals(req, thread_id, record.run_id)
+            if stopped and not lease.lost:
+                if status not in (STATUS_OK, STATUS_AWAITING_APPROVAL):
+                    await self._expire_orphaned_approvals(req, thread_id, record.run_id)
+                elif resumed:
+                    # A resumed call a later denial (or narrower policy) refused
+                    # did not pause again: its approval waits for nothing now.
+                    await self._expire_orphaned_approvals(req, thread_id)
         finally:
             await lease.release()
         logger.info(
@@ -2023,17 +2085,22 @@ class ChatRuntime:
         )
 
     async def _expire_orphaned_approvals(
-        self, req: ChatRequest, thread_id: str, run_id: str
+        self, req: ChatRequest, thread_id: str, run_id: str | None = None
     ) -> None:
         """Expire the thread's pending approvals that nothing waits for (best effort).
 
         A run that ends without pausing (cancelled, failed, timed out) can
         leave pending approvals behind: ones it recorded before it was cut
-        short (its client never saw them), or ones of the paused run it
-        resumed whose calls the repair has since answered. Left pending, they
-        would refuse the thread's next message (409 `approval_pending`) until
-        they expire; expired, the next message goes through and the history
-        repair tells the model the call was not approved.
+        short (its client never saw them: `run_id`, the stopped run), or ones
+        of the paused run it resumed whose calls the repair has since
+        answered. A resumed run that ends (paused again or not) can too: a
+        sibling call whose approval was still pending runs again on the
+        resume and, when the policy now refuses it (a denial added, or
+        narrower `allowed_methods`), ends with that error instead of pausing
+        again for its approval. Left pending, they would refuse the thread's
+        next message (409 `approval_pending`) until they expire; expired, the
+        next message goes through and the history repair tells the model the
+        call was not approved.
         """
         if self.approvals is None or (self.db is not None and not self.db.health.up):
             return
@@ -2045,7 +2112,9 @@ class ChatRuntime:
                     return
                 waiting = await self._paused_interrupts(thread_id, req.forward_headers)
                 for item in pending:
-                    if item.run_id == run_id or item.interrupt_id not in waiting:
+                    if (run_id is not None and item.run_id == run_id) or (
+                        item.interrupt_id not in waiting
+                    ):
                         if await self.approvals.expire(item.approval_id) is not None:
                             expired += 1
         except Exception as exc:
@@ -2055,7 +2124,7 @@ class ChatRuntime:
             )
         if expired:
             metrics.observe_approvals("expired", expired)
-            logger.info("expired %d approval(s) left by a stopped run", expired)
+            logger.info("expired %d approval(s) the thread no longer waits for", expired)
 
     def _repairs_after(self, status: str, error: BaseException | None, lease: ThreadLease) -> bool:
         """Whether a stopped run should answer the tool calls it left open.

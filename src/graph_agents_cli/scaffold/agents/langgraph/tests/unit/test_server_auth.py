@@ -62,6 +62,28 @@ WRITES = {
 
 SOURCE = "11111111-1111-1111-1111-111111111111"
 COPY = "22222222-2222-2222-2222-222222222222"
+INPUT = {"messages": [{"role": "user", "content": "hello"}]}
+
+
+def _no_approvals(monkeypatch: pytest.MonkeyPatch, refusal: str | None = None) -> list[str]:
+    """The chat runtime as the hook sees it: no pending approval; `refusal` for a replay
+    or a copy. Returns the threads whose replay or copy was checked.
+    """
+    from {{cookiecutter.agent_directory}}.app_utils.chat import RUNTIME
+
+    checked: list[str] = []
+
+    async def pending(thread_id: str) -> list[Any]:
+        return []
+
+    async def replay_refusal(thread_id: str) -> str | None:
+        checked.append(thread_id)
+        return refusal
+
+    monkeypatch.setattr(RUNTIME, "pending_approvals", pending)
+    monkeypatch.setattr(RUNTIME, "replay_refusal", replay_refusal)
+    monkeypatch.setattr(RUNTIME, "copy_refusal", replay_refusal)
+    return checked
 
 
 @pytest.fixture
@@ -221,9 +243,12 @@ async def test_an_owner_cannot_hand_a_thread_to_another_principal(auth: Any) -> 
     }
 
 
-async def test_a_copy_is_a_write_even_for_read_across_roles(auth: Any) -> None:
+async def test_a_copy_is_a_write_even_for_read_across_roles(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The server's copy reads its source with the read filter, then authorizes a create
     without metadata (the copy keeps the source's metadata, owner included)."""
+    _no_approvals(monkeypatch)
     support = _user("sam", "support")
 
     async def copy_as(user: Any) -> Any:
@@ -251,8 +276,9 @@ async def test_a_copy_is_a_write_even_for_read_across_roles(auth: Any) -> None:
     }
 
 
-async def test_the_copy_flag_is_per_request(auth: Any) -> None:
+async def test_the_copy_flag_is_per_request(auth: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Concurrent requests (separate tasks, like the server's) never see each other's flag."""
+    _no_approvals(monkeypatch)
     support = _user("sam", "support")
     gate = asyncio.Event()
 
@@ -269,24 +295,99 @@ async def test_the_copy_flag_is_per_request(auth: Any) -> None:
     assert await asyncio.gather(copying(), reading()) == [{"principal_id": "sam"}, None]
 
 
+async def test_a_thread_with_gated_calls_is_not_copied(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy would carry the thread's tool calls without their approvals."""
+    checked = _no_approvals(monkeypatch, "the thread has approvals of gated API calls")
+    await _authenticate(auth, "POST", f"/threads/{SOURCE}/copy")
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await _dispatch(auth, _user("alice"), "threads", "read", {"thread_id": SOURCE})
+    assert exc.value.status_code == 403
+    assert "cannot be copied: the thread has approvals of gated API calls" in str(exc.value.detail)
+    # Reading it is not copying it.
+    await _authenticate(auth, "GET", f"/threads/{SOURCE}")
+    assert await _dispatch(auth, _user("alice"), "threads", "read", {"thread_id": SOURCE}) == {
+        "principal_id": "alice"
+    }
+    assert checked == [SOURCE]
+
+
 async def test_native_runs_on_existing_threads_carry_the_hashed_owner_id(
     auth: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRINCIPAL_HASH_SALT", "pepper")
+    _no_approvals(monkeypatch)
     alice = _user("alice@example.com")
     hashed = Principal(id="alice@example.com").hashed_id()
-    run: dict[str, Any] = {"thread_id": SOURCE, "if_not_exists": "reject", "metadata": {}}
+    run: dict[str, Any] = {
+        "thread_id": SOURCE,
+        "if_not_exists": "reject",
+        "metadata": {},
+        "kwargs": {"input": INPUT},
+    }
     assert await _dispatch(auth, alice, "threads", "create_run", run) == {
         "principal_id": "alice@example.com"  # the filter still checks the thread's raw stamp
     }
     assert run["metadata"] == {"principal_id": hashed, "tenant": None}
     # A run that may create its thread stamps the raw id: it becomes the thread's owner.
     for creating in (
-        {"thread_id": SOURCE, "if_not_exists": "create", "metadata": {}},
+        {
+            "thread_id": SOURCE,
+            "if_not_exists": "create",
+            "metadata": {},
+            "kwargs": {"input": INPUT},
+        },
         {"thread_id": None, "metadata": {"principal_id": "mallory"}},
     ):
         await _dispatch(auth, alice, "threads", "create_run", creating)
         assert creating["metadata"]["principal_id"] == "alice@example.com"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"input": None},
+        {},
+        {"input": INPUT, "config": {"configurable": {"checkpoint_id": "cp-1"}}},
+        {"input": INPUT, "config": {"configurable": {"checkpoint": {"checkpoint_id": "cp-1"}}}},
+        {"input": None, "context": {"checkpoint_id": "cp-1"}},
+        {"input": INPUT, "config": {"configurable": {"checkpoint_map": {"": "cp-1"}}}},
+    ],
+    ids=["input null", "no input", "checkpoint_id", "checkpoint", "context", "checkpoint_map"],
+)
+async def test_a_native_run_that_reruns_a_paused_step_is_refused_where_calls_were_gated(
+    auth: Any, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any]
+) -> None:
+    """Continued without input, or replayed from a checkpoint, a step runs its tool calls again."""
+    checked = _no_approvals(monkeypatch, "the thread has approvals of gated API calls")
+    run: dict[str, Any] = {"thread_id": SOURCE, "metadata": {}, "kwargs": kwargs}
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await _dispatch(auth, _user("alice"), "threads", "create_run", run)
+    assert exc.value.status_code == 403
+    assert "the thread has approvals of gated API calls" in str(exc.value.detail)
+    assert checked == [SOURCE]
+
+
+async def test_a_native_run_with_input_or_on_a_thread_without_approvals_goes_ahead(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked = _no_approvals(monkeypatch, "the thread has approvals of gated API calls")
+    run: dict[str, Any] = {
+        "thread_id": SOURCE,
+        "metadata": {},
+        "kwargs": {"input": INPUT, "config": {"configurable": {"checkpoint_ns": ""}}},
+    }
+    assert await _dispatch(auth, _user("alice"), "threads", "create_run", run) == {
+        "principal_id": "alice"
+    }
+    assert checked == []  # a new message is not a replay: not even checked
+    checked = _no_approvals(monkeypatch, None)
+    replay: dict[str, Any] = {"thread_id": SOURCE, "metadata": {}, "kwargs": {"input": None}}
+    assert await _dispatch(auth, _user("alice"), "threads", "create_run", replay) == {
+        "principal_id": "alice"
+    }
+    assert checked == [SOURCE]
 
 
 async def test_the_native_api_gets_the_policys_challenge_and_status(

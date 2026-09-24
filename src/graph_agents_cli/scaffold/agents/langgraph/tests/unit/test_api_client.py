@@ -317,7 +317,21 @@ async def test_auth_none_sends_no_credential(policy_file: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "item_id", ["1/../../admin", "../admin", "..", ".", "1/extra", "a/b", "a\\b", "", " 1", "1;x"]
+    "item_id",
+    [
+        "1/../../admin",
+        "../admin",
+        "..",
+        ".",
+        "1/extra",
+        "a/b",
+        "a\\b",
+        "",
+        " 1",
+        "1;x",
+        "1\x00",  # servers that end a path at a NUL route it to /items/1
+        "1\n2",
+    ],
 )
 async def test_path_params_refuse_traversal_before_sending(policy_file: Path, item_id: str) -> None:
     calls: list[httpx.Request] = []
@@ -342,6 +356,14 @@ async def test_path_params_refuse_traversal_before_sending(policy_file: Path, it
         "/items/1;jsessionid=x",
         "/items/1%3B",
         "/items/1%3bx",
+        # Servers that trim segments, or end a path at a NUL, route these to /items/1.
+        "/items/1%20",
+        "/items/%201",
+        "/items/1%09",
+        "/items/1 ",
+        "/items/1%00",
+        "/items/1%00/x",
+        "/items/1%7F",
     ],
 )
 async def test_concrete_paths_are_validated(policy_file: Path, path: str) -> None:
@@ -350,6 +372,14 @@ async def test_concrete_paths_are_validated(policy_file: Path, path: str) -> Non
     with pytest.raises(ApiPolicyError):
         await client.get(path, operation_id="getItem")
     assert calls == []
+
+
+async def test_whitespace_inside_a_segment_is_sent(policy_file: Path) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("items", transport=_transport(calls))
+    await client.get("/items/red%20shirt", operation_id="getItem")
+    await client.get("/items/{item_id}", operation_id="getItem", path_params={"item_id": "a b"})
+    assert [c.url.raw_path for c in calls] == [b"/items/red%20shirt", b"/items/a%20b"]
 
 
 async def test_an_operation_id_denial_refuses_calls_that_do_not_name_one(policy_file: Path) -> None:

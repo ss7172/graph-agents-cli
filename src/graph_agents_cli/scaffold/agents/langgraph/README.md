@@ -220,8 +220,10 @@ only knows that label: pin the denial's `path` too. With `openapi`, `lint` also 
 unreserved characters and ignoring one trailing slash; letter case counts for allows and is ignored for
 denials and approval gates, which also cover a literal segment's dot-suffixed spellings (a denial of
 `/orders/{order_id}/cancel` refuses `/orders/7/cancel.json` and `cancel.`, which servers that route format
-suffixes or drop a trailing dot send to the same endpoint). A `;` in a request path is refused. Pass model
-input as `path_params` of a declared template, never as part of a concrete path.
+suffixes or drop a trailing dot send to the same endpoint). A `;` in a request path is refused, and so is a
+segment with a control character or with whitespace at either end, also percent-encoded (`cancel%20`,
+`7%00`, which servers that trim segments or end a path at a NUL route elsewhere). Pass model input as
+`path_params` of a declared template, never as part of a concrete path.
 `graph-agents-cli api show` lists the APIs `api-policy.yaml` declares now, what each allows, and every
 tool's declared calls; without the file, declare the first API with `graph-agents-cli api add` (below). When
 `{{cookiecutter.agent_directory}}/tools/example_api.py` exists (a project created with a policy), it shows
@@ -278,10 +280,15 @@ request waits for someone who sees exactly what it does.
   path), not to the policy of the moment: a rejected or expired call is never sent, even if a new policy no
   longer gates it; an approved one is sent only while the policy still allows it (a later denial or a
   narrower `allowed_methods`/`allowed_operations` refuses it) and still gates it with the same approvers;
-  and a call still waiting when another call's decision resumes the run waits on for its own approval.
-  Anything else sends nothing and the tool gets an error saying why, which the model relays. A pending
-  approval that expires is closed on the next decision or message on the thread; one a failed or
-  cancelled run leaves behind is expired when that run ends.
+  and a call still waiting when another call's decision resumes the run waits on for its own approval (if
+  the policy now refuses it, it is refused and its approval expires). The approvals table binds the decision
+  to its tool call too: a tool call that runs again without a decision (a run continued without input or
+  replayed from a checkpoint through LangGraph Server's own API, or a copied thread) does not send a call an
+  approval was asked for; a rejected, expired or pending one is refused and an approved one is sent only by
+  the run its decision resumed, once. Keep the agent's middleware (`agent.middleware()`), which names the
+  tool call. Anything else sends nothing and the tool gets an error saying why, which the model relays. A
+  pending approval that expires is closed on the next decision or message on the thread; one a failed or
+  cancelled run leaves behind, or a resumed run no longer waits for, is expired when that run ends.
 - **Writing a tool that makes a gated call.** Make at most one gated call per tool call: on resume the tool
   runs again from its start, so a second gated call in the same tool call is refused after the first was
   sent, and anything the tool does before the gated call runs again (keep other side effects after it).
@@ -296,7 +303,9 @@ request waits for someone who sees exactly what it does.
 - **LangGraph Server.** The run pauses and resumes through the server's own interrupt and resume. The
   server's auth handler refuses a run that carries a `command` (a resume) from outside the app, and the
   client sends only an approval the app recorded as approved, so the native API cannot skip the decision.
-  A new native run on a thread whose approval is pending gets 409, as `/chat` does.
+  A new native run on a thread whose approval is pending gets 409, as `/chat` does, and a run without input
+  or from a checkpoint (which would run a paused step's tool calls again) gets 403 on a thread that has
+  approvals or waits on a gated call; a thread that has approvals is not copied (403).
   Resuming needs the in-process loopback (`LANGGRAPH_SERVER_URL` unset, the default).
 {%- endif %}
 

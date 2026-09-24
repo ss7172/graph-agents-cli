@@ -112,7 +112,9 @@ CREATE SEQUENCE IF NOT EXISTS {locks}_token_seq;
 # Human approvals of gated outbound API calls (see `approvals.py`). The requester
 # and the decider are hashed ids; `payload` is what approvers are shown (the
 # call, masked fields masked); `requester_context` the requester's roles and
-# public attributes, which a run resumed by another principal acts with.
+# public attributes, which a run resumed by another principal acts with;
+# `message_id` and `tool_call_id` name the tool call that asked, which the API
+# client looks up (with `interrupt_id`) when that tool call runs again.
 APPROVALS_DDL = """
 CREATE TABLE IF NOT EXISTS {approvals} (
     approval_id       TEXT PRIMARY KEY,
@@ -127,6 +129,7 @@ CREATE TABLE IF NOT EXISTS {approvals} (
     operation_id      TEXT,
     call_hash         TEXT NOT NULL,
     tool_call_id      TEXT,
+    message_id        TEXT,
     approvers         JSONB NOT NULL,
     payload           JSONB NOT NULL,
     status            TEXT NOT NULL,
@@ -137,7 +140,10 @@ CREATE TABLE IF NOT EXISTS {approvals} (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at        TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS message_id TEXT;
 CREATE INDEX IF NOT EXISTS {approvals}_thread_id_idx ON {approvals} (thread_id);
+CREATE INDEX IF NOT EXISTS {approvals}_tool_call_idx ON {approvals} (message_id, tool_call_id);
+CREATE INDEX IF NOT EXISTS {approvals}_interrupt_idx ON {approvals} (interrupt_id);
 CREATE INDEX IF NOT EXISTS {approvals}_pending_idx ON {approvals} (expires_at)
     WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS {approvals}_requester_idx ON {approvals} (requester_hash);

@@ -74,6 +74,17 @@ the same approvers, and the request is exactly the approved one; otherwise
 nothing is sent and the model is told to ask again. A call a decision stopped
 stays stopped for the rest of that tool call.
 
+The ledger binds a decision to its call too, for a tool call that runs again
+with no decision (LangGraph Server's own API can continue a paused run
+without input, or replay it from a checkpoint, and a copied thread keeps its
+tool calls): before a call is sent without a decision waiting for it, the
+ledger is asked for the approvals recorded for this tool call (the model
+message that made it and its call id, or the task's interrupt), and a call
+one was asked for is refused, gated or not now: a rejected, expired or
+pending one is not sent, and an approved one is sent only by the run its
+decision resumed, once (`_bound_approvals`). Keep the agent's middleware
+(`tool_call_scope`), which names the tool call.
+
 Every tool module declares `API_CALLS`, a module-level list of
 `{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
 `graph-agents-cli lint` checks those declarations against the same rules.
@@ -94,7 +105,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 from urllib.parse import quote, unquote
 
 import httpx
@@ -490,12 +501,30 @@ def _approvers_errors(where: str, value: Any) -> list[str]:
     return errors
 
 
+def segment_text_problem(text: str) -> str | None:
+    """Why a path segment's text (percent-decoded) is refused, or None.
+
+    A control character anywhere (``%00``: servers that end a path at a NUL
+    route it to the part before) and whitespace at either end (``cancel%20``:
+    servers that trim path segments route it to ``cancel``) would send a call
+    to an endpoint other than the one the policy judged. Whitespace inside a
+    segment (``red%20shirt``) is kept: trimming does not touch it.
+    """
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
+        return "holds a control character (also percent-encoded, such as %00)"
+    if text[:1].isspace() or text[-1:].isspace():
+        return "starts or ends with whitespace (also percent-encoded, such as %20)"
+    return None
+
+
 def path_template_problem(path: Any) -> str | None:
     """Why ``path`` is not a valid path template, or None.
 
     A template starts with ``/``; each segment holds literal characters and
     ``{name}`` placeholders only (no query, fragment, spaces, empty, ``.`` or
-    ``..`` segments). One trailing slash is allowed.
+    ``..`` segments), and no control characters or whitespace at either end
+    percent-encoded either (``segment_text_problem``). One trailing slash is
+    allowed.
     """
     if not isinstance(path, str) or not path.startswith("/"):
         return "must be a string starting with /"
@@ -512,6 +541,9 @@ def path_template_problem(path: Any) -> str | None:
                 "segments may hold literal characters and {name} placeholders only "
                 "(no query, fragment or whitespace)"
             )
+        problem = segment_text_problem(unquote(_PLACEHOLDER_SPLIT_RE.sub("x", segment)))
+        if problem:
+            return f"has a segment that {problem}"
     return None
 
 
@@ -1031,11 +1063,15 @@ def validate_concrete_path(path: str) -> None:
 
     Dot segments (`.`/`..`, also percent-encoded), an encoded slash or
     backslash inside a segment, empty segments (`//`), a `;` (also
-    percent-encoded), and a query or fragment in the path (send them through
-    `params=`) are refused: the policy check would otherwise pass a template
-    while the wire path lands on another endpoint (for example
-    `/items/1/../../admin` -> `/admin`, or `/orders/7/cancel;x=1`, which
-    servers that strip path parameters route to `/orders/7/cancel`).
+    percent-encoded), a control character anywhere or whitespace at either
+    end of a segment (also percent-encoded: `segment_text_problem`), and a
+    query or fragment in the path (send them through `params=`) are refused:
+    the policy check would otherwise pass a template while the wire path
+    lands on another endpoint (for example `/items/1/../../admin` ->
+    `/admin`, `/orders/7/cancel;x=1`, which servers that strip path
+    parameters route to `/orders/7/cancel`, `/orders/7/cancel%20`, which
+    servers that trim segments route there too, or `/orders/7%00/cancel`,
+    which servers that end a path at a NUL route to `/orders/7`).
     """
     if not path.startswith("/"):
         raise ApiPolicyError(f"path {path!r} must start with /.")
@@ -1058,6 +1094,12 @@ def validate_concrete_path(path: str) -> None:
             raise ApiPolicyError(
                 f"path {path!r} contains ';' (a path parameter, which some servers strip "
                 "before routing): refused."
+            )
+        problem = segment_text_problem(decoded)
+        if problem:
+            raise ApiPolicyError(
+                f"path {path!r} has a segment that {problem}, which some servers route to "
+                "another endpoint: refused."
             )
 
 
@@ -1202,6 +1244,18 @@ COMMENT_MAX_CHARS = 300
 _UNPRINTABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
+class BoundApproval(NamedTuple):
+    """An approval the ledger recorded for a tool call: the call it was asked for and its state."""
+
+    api: str
+    method: str
+    path: str
+    # "pending", "approved", "rejected" or "expired" (a pending one past its expiry).
+    status: str
+    # Whether its approved call was sent (an approval is used once).
+    used: bool
+
+
 class ApprovalLedger(Protocol):
     """Where approvals are recorded (the chat runtime's approvals table)."""
 
@@ -1211,6 +1265,14 @@ class ApprovalLedger(Protocol):
         """Mark the approval used for the request `call_hash` (of thread `thread_id`):
         None when it may be sent now (approved, for exactly this request on this
         thread, never used before), else why not."""
+        ...
+
+    async def bound_approvals(
+        self, *, tool_call: tuple[str, str] | None = None, interrupt_id: str | None = None
+    ) -> list[BoundApproval]:
+        """The approvals recorded for a tool call, newest first: the ones asked by the
+        tool call `(message id, tool call id)` or by the interrupt `interrupt_id`,
+        on whichever thread (a copied thread keeps its tool calls)."""
         ...
 
 
@@ -1248,6 +1310,9 @@ class ToolCallScope:
 
     name: str
     call_id: str | None = None
+    # The id of the model message that made the tool call: with `call_id`, it names
+    # this tool call in the approvals ledger (a model may reuse call ids across turns).
+    message_id: str | None = None
     # The text the model wrote with the tool call: its stated purpose, when any.
     purpose: str | None = None
     # An approved call was sent in this tool call (a second gated call is refused).
@@ -1333,6 +1398,24 @@ def _next_resume_value(taken: int) -> Any:
         ) from exc
 
 
+def _task_interrupt_id() -> str | None:
+    """The id an `interrupt()` of the current LangGraph task gets (None outside a task).
+
+    LangGraph derives it from the task's checkpoint namespace, so the task a
+    run continues without input interrupts with the same id as when it paused.
+    """
+    try:
+        from langgraph.config import get_config
+        from langgraph.types import Interrupt
+
+        namespace = (get_config().get("configurable") or {}).get("checkpoint_ns")
+        if not isinstance(namespace, str) or not namespace:
+            return None
+        return str(Interrupt.from_ns(None, namespace).id)
+    except Exception:  # outside a graph run, or another LangGraph version
+        return None
+
+
 def _resumes_taken() -> int:
     scope = _TOOL_CALL.get()
     return scope.resumes_taken if scope is not None else _RESUMES_TAKEN.get()
@@ -1372,6 +1455,37 @@ def _decision_waiting(identity: tuple[str, str, str]) -> Mapping[str, Any] | Non
     return None
 
 
+def _bound_refusal(bound: list[BoundApproval]) -> tuple[str, str]:
+    """What the model reads, and the log reason, for a call refused by its recorded approval.
+
+    `bound` is newest first; a used approval wins (the call was sent once).
+    """
+    record = next((b for b in bound if b.used), bound[0])
+    if record.used:
+        return (
+            "was sent already with its approval, which is used once (the tool call ran "
+            "again without a new decision)",
+            "approval already used",
+        )
+    if record.status == "rejected":
+        return "was not approved: an approver rejected it", "approval rejected"
+    if record.status == "expired":
+        return (
+            "was not approved: the approval request expired before anyone decided",
+            "approval expired",
+        )
+    if record.status == "approved":
+        return (
+            "was approved, but only the run its decision resumed may send it (the tool "
+            "call ran again without that decision)",
+            "approval not resumed",
+        )
+    return (
+        "needs human approval, and the run was resumed without an approval decision",
+        "resumed without a decision",
+    )
+
+
 def _plain(text: Any, limit: int) -> str | None:
     """`text` as one printable line of at most `limit` characters, or None when empty."""
     if isinstance(text, list):
@@ -1387,6 +1501,23 @@ def _plain(text: Any, limit: int) -> str | None:
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 3].rstrip() + "..."
 
 
+def _field(message: Any, name: str) -> Any:
+    return message.get(name) if isinstance(message, Mapping) else getattr(message, name, None)
+
+
+def calling_message(messages: Iterable[Any], call_id: str | None) -> Any:
+    """The assistant message that made tool call `call_id` (the latest one), or None."""
+    if not call_id:
+        return None
+    for message in reversed(list(messages or [])):
+        if any(
+            (c.get("id") if isinstance(c, Mapping) else getattr(c, "id", None)) == call_id
+            for c in _field(message, "tool_calls") or []
+        ):
+            return message
+    return None
+
+
 def stated_purpose(messages: Iterable[Any], call_id: str | None) -> str | None:
     """The text of the assistant message that made tool call `call_id`, when it wrote any.
 
@@ -1394,25 +1525,8 @@ def stated_purpose(messages: Iterable[Any], call_id: str | None) -> str | None:
     system prompt asks for one before an action that needs approval). It is
     shown to the approver as the model's statement, beside the exact request.
     """
-    if not call_id:
-        return None
-    for message in reversed(list(messages or [])):
-        calls = (
-            message.get("tool_calls")
-            if isinstance(message, Mapping)
-            else getattr(message, "tool_calls", None)
-        )
-        if any(
-            (c.get("id") if isinstance(c, Mapping) else getattr(c, "id", None)) == call_id
-            for c in calls or []
-        ):
-            content = (
-                message.get("content")
-                if isinstance(message, Mapping)
-                else getattr(message, "content", None)
-            )
-            return _plain(content, PURPOSE_MAX_CHARS)
-    return None
+    message = calling_message(messages, call_id)
+    return None if message is None else _plain(_field(message, "content"), PURPOSE_MAX_CHARS)
 
 
 @contextlib.contextmanager
@@ -1426,10 +1540,13 @@ def tool_call_scope(request: Any) -> Iterator[ToolCallScope]:
     state = getattr(request, "state", None)
     messages = state.get("messages") if isinstance(state, Mapping) else None
     call_id = call.get("id") if isinstance(call, Mapping) else None
+    message = calling_message(messages or [], call_id)
+    message_id = _field(message, "id") if message is not None else None
     scope = ToolCallScope(
         name=str((call.get("name") if isinstance(call, Mapping) else "") or ""),
         call_id=str(call_id) if call_id else None,
-        purpose=stated_purpose(messages or [], call_id),
+        message_id=str(message_id) if message_id else None,
+        purpose=None if message is None else _plain(_field(message, "content"), PURPOSE_MAX_CHARS),
     )
     token = _TOOL_CALL.set(scope)
     try:
@@ -1691,7 +1808,9 @@ class ApiClient:
         for values they need not read (a card number, say). The approval is
         bound to the request as sent, masked fields included, and a decision
         to the call it was taken for: on resume it applies to that call even
-        when the policy no longer gates it (a rejected call is never sent).
+        when the policy no longer gates it, and a tool call that runs again
+        without a decision does not send a call an approval was asked for (a
+        rejected call is never sent, an approved one once).
         """
         method = method.upper()
         label = operation_id or (path if path_params is not None else "<concrete path>")
@@ -1705,8 +1824,9 @@ class ApiClient:
             prepared = self._prepare(
                 method, path, operation_id, path_params, params, json_body, headers
             )
+            bound = await self._bound_approvals(prepared, method, operation_id or label)
             approved = self._await_approval(
-                prepared, method, operation_id, label, json_body, redact, log_fields
+                prepared, method, operation_id, label, json_body, redact, log_fields, bound
             )
             # Counted just before sending: a call held for approval counts once, when sent.
             self.take_limits(method, operation_id or path)
@@ -1855,6 +1975,45 @@ class ApiClient:
             gate = self.policy.gate(self.name, method, operation_id, path)
         return gate
 
+    async def _bound_approvals(
+        self, prepared: PreparedRequest, method: str, what: str
+    ) -> list[BoundApproval]:
+        """The approvals the ledger holds for this call in this tool call, when none is resumed now.
+
+        Asked when no decision waits for the call in this run: the tool call
+        runs again without one (a run continued without input, or replayed
+        from a checkpoint, through LangGraph Server's own API; a copy of the
+        thread). The ledger then answers, by the tool call (the model message
+        and the call id) or by the task's interrupt, with the approvals it
+        recorded, and `_await_approval` refuses the call when one was asked
+        for it, whatever the policy now says about gating it. Nothing to ask
+        (no ledger, outside a tool call and a task): empty. A ledger that
+        cannot answer refuses the call.
+        """
+        identity = call_identity(self.name, method, prepared.wire_path)
+        if identity in _stopped_calls() or _decision_waiting(identity) is not None:
+            return []  # `_await_approval` refuses it, or applies its decision
+        ledger = _ledger
+        scope = _TOOL_CALL.get()
+        tool_call = (
+            (scope.message_id, scope.call_id)
+            if scope is not None and scope.message_id and scope.call_id
+            else None
+        )
+        interrupt_id = _task_interrupt_id()
+        if ledger is None or (tool_call is None and interrupt_id is None):
+            return []
+        try:
+            found = await ledger.bound_approvals(tool_call=tool_call, interrupt_id=interrupt_id)
+        except Exception as exc:
+            raise ApiPolicyError(
+                f"{self.name}: {method} {what}: the approvals of this tool call could not be "
+                f"read ({type(exc).__name__}), so it may have been decided already; nothing "
+                "was sent.",
+                reason="approvals unreadable",
+            ) from exc
+        return [b for b in found if call_identity(b.api, b.method, b.path) == identity]
+
     def _await_approval(
         self,
         prepared: PreparedRequest,
@@ -1864,6 +2023,7 @@ class ApiClient:
         json_body: Any,
         redact: Iterable[str],
         log_fields: Mapping[str, Any],
+        bound: list[BoundApproval] | None = None,
     ) -> tuple[str, str] | None:
         """Hold a gated call for a human decision (see the module doc); None when not gated.
 
@@ -1874,7 +2034,10 @@ class ApiClient:
         marks it used); anything else raises `ApiPolicyError`, nothing sent.
         The decision is taken for the call it was made for even when the
         policy no longer gates it (`_decision_waiting`), and a call a decision
-        stopped is refused again for the rest of the tool call.
+        stopped is refused again for the rest of the tool call. A call the
+        ledger holds an approval for (`bound`, from `_bound_approvals`) while
+        no decision waits for it is refused, gated or not: it is sent only
+        through its own decision, once.
         """
         identity = call_identity(self.name, method, prepared.wire_path)
         what = operation_id or label
@@ -1886,6 +2049,12 @@ class ApiClient:
                 reason="stopped by an approval decision",
             )
         waiting = _decision_waiting(identity)
+        if waiting is None and bound:
+            why, reason = _bound_refusal(bound)
+            _stop_call(identity)
+            raise ApiPolicyError(
+                f"{self.name}: {method} {what} {why}; nothing was sent.", reason=reason
+            )
         if gate is None and waiting is None:
             return None
         if gate is not None:
@@ -1940,6 +2109,7 @@ class ApiClient:
             "operation_id": operation_id or None,
             "tool": tool,
             "tool_call_id": scope.call_id if scope is not None else None,
+            "message_id": scope.message_id if scope is not None else None,
             "reason": f"{tool}: {purpose}" if tool and purpose else (tool or purpose or None),
             "approvers": list(approvers),
             "timeout_s": timeout_s,

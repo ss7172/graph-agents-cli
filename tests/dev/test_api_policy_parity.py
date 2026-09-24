@@ -127,6 +127,11 @@ VALID = [
         "apis:\n  c:\n    base_url_env: C\n    auth: none\n    allowed_methods: [POST]\n"
         "    approval: {required_for: {methods: [post]}, approvers: [requester, requester]}\n"
     ),
+    # whitespace inside a segment (not at an end) is kept, also encoded
+    (
+        "apis:\n  d:\n    base_url_env: D\n    auth: none\n    allowed_methods: [GET]\n"
+        "    allowed_operations:\n      - path: /files/my%20doc\n"
+    ),
 ]
 
 INVALID = [
@@ -238,6 +243,10 @@ INVALID = [
             "{required_for: {operations: [{operationId: 'cancel order'}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x/../admin}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: '/x?y=1'}]}, approvers: [requester]}",
+            # control characters, or whitespace at either end of a segment, also encoded
+            "{required_for: {operations: [{path: /x/cancel%20}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: /x/cancel%00}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: '/x/{id}%09'}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x, methods: ['*']}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x, method: POST}]}, approvers: [requester]}",
             "{required_for: {operations: [{operationId: x, approval: {approvers: [requester]}}]},"
@@ -598,6 +607,37 @@ def test_denials_fail_closed_the_same_way(
         assert f"the call names no {unnamed}" in reason
     elif reason:
         assert "the call names no" not in reason
+
+
+@pytest.mark.parametrize(
+    ("path", "problem"),
+    [
+        ("/orders/{id}/cancel", None),
+        ("/files/red%20shirt", None),
+        ("/orders/{id}/cancel%20", "starts or ends with whitespace"),
+        ("/orders/{id}/%20cancel", "starts or ends with whitespace"),
+        ("/orders/{id}/cancel%09", "holds a control character"),
+        ("/orders/{id}/cancel%C2%A0", "starts or ends with whitespace"),
+        ("/orders/{id}%20", "starts or ends with whitespace"),
+        ("/orders/{id}/cancel%00", "holds a control character"),
+        ("/orders/{id}/can%0Acel", "holds a control character"),
+        ("/orders/{id}/cancel\x00", "holds a control character"),
+        ("/orders/{id}/cancel%7f", "holds a control character"),
+    ],
+)
+def test_segments_servers_trim_or_cut_are_refused_by_both(
+    runtime: ModuleType, path: str, problem: str | None
+) -> None:
+    """Lint (a declared path) and the runtime (the path sent) refuse the same segments."""
+    for side in (cli, runtime):
+        found = side.path_template_problem(path)
+        assert (found is None) if problem is None else (problem in (found or "")), (side, found)
+    concrete = path.replace("{id}", "7")
+    if problem is None:
+        runtime.validate_concrete_path(concrete)
+    else:
+        with pytest.raises(runtime.ApiPolicyError, match=problem):
+            runtime.validate_concrete_path(concrete)
 
 
 @pytest.mark.parametrize(

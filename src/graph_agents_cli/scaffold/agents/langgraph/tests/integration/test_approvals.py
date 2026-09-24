@@ -447,6 +447,72 @@ async def test_a_decision_binds_its_call_whatever_the_policy_says_by_then(
     assert SENT == []
 
 
+async def _paused_checkpoint(thread: str) -> dict[str, Any]:
+    """The config of the checkpoint the thread's run paused at (its latest, just after)."""
+    from {{cookiecutter.agent_directory}} import agent
+
+    state = await agent.graph.aget_state({"configurable": {"thread_id": thread}})
+    assert state.interrupts
+    return dict(state.config)
+
+
+async def _run_paused_step_again(thread: str, paused: dict[str, Any]) -> str:
+    """What LangGraph Server's own API offers, on the local graph: continue the thread
+    without input, then replay the paused step from its checkpoint; the last tool result."""
+    from {{cookiecutter.agent_directory}} import agent
+
+    context = agent.AgentContext(principal_id="alice", roles=["user"])
+    latest = {"configurable": {"thread_id": thread}}
+    lease = await RUNTIME.acquire_thread(thread)  # the checkpoint writes need the thread's lock
+    try:
+        await agent.graph.ainvoke(None, latest, context=context)
+        await agent.graph.ainvoke(None, paused, context=context)
+    finally:
+        await lease.release()
+    state = await agent.graph.aget_state(latest)
+    return next(m.content for m in reversed(state.values["messages"]) if m.type == "tool")
+
+
+BOUND_BY = {
+    "reject": "was not approved: an approver rejected it",
+    "expired": "was not approved: the approval request expired",
+    "approve": "was sent already with its approval, which is used once",
+}
+
+
+@pytest.mark.parametrize("decision", ["reject", "expired", "approve"])
+async def test_a_tool_call_run_again_without_its_decision_sends_nothing_more(
+    client, tmp_path, decision: str
+) -> None:
+    """The ledger binds a decision to its tool call, whatever the policy says by then."""
+    end = await _pause(client)
+    thread = end["thread_id"]
+    paused = await _paused_checkpoint(thread)
+    if decision == "expired":
+        await _expire_now(end["approval"]["approval_id"])
+    else:
+        r = await _decide(client, end, decision)
+        assert r.status_code == 200, r.text
+    sent = [req.url.path for req in SENT]
+    assert sent == (["/orders/7/cancel"] if decision == "approve" else [])
+    _change_policy(tmp_path, "gate removed")
+    assert BOUND_BY[decision] in await _run_paused_step_again(thread, paused)
+    assert [req.url.path for req in SENT] == sent
+
+
+async def test_a_thread_with_approvals_refuses_a_replay_and_a_copy(client) -> None:
+    """What the langgraph-server auth hook asks before a run without input or from a
+    checkpoint, and before a copy."""
+    end = await _pause(client)
+    for refusal in (RUNTIME.replay_refusal, RUNTIME.copy_refusal):
+        assert await refusal(end["thread_id"]) == "the thread has approvals of gated API calls"
+    r = await client.post("/chat", json={"message": "hello"}, headers=_as("alice"))
+    assert r.status_code == 200, r.text
+    thread = parse_sse(r.text)[-1][1]["thread_id"]
+    assert await RUNTIME.replay_refusal(thread) is None
+    assert await RUNTIME.copy_refusal(thread) is None
+
+
 async def test_approvals_a_failed_run_recorded_do_not_block_the_thread(client, monkeypatch) -> None:
     record = RUNTIME._record_approvals
 
@@ -805,6 +871,37 @@ async def test_an_expired_approval_stops_its_call_whatever_the_policy_says_by_th
     assert REFUSED_BY.get(change, DECIDED_BY["expired"]) in results["c8"]["result"]
     assert results["c7"]["is_error"] is True
     assert events[-1][1]["status"] == "ok"
+    assert SENT == []
+
+
+@pytest.mark.parametrize("change", list(REFUSED_BY))
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_a_waiting_call_the_policy_now_refuses_does_not_block_the_thread(
+    client, two_calls, tmp_path, change: str, decision: str
+) -> None:
+    """The other call runs again on the resume and is refused before it could pause again:
+    its approval waits for nothing, so it is expired and the thread takes new messages."""
+    end = await _pause(client)
+    by_path = {a["path"]: a for a in end["approvals"]}
+    _change_policy(tmp_path, change)
+    r = await _decide(client, {**end, "approval": by_path["/orders/7/cancel"]}, decision)
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    results = {d["id"]: d for e, d in events if e == "tool.result"}
+    assert REFUSED_BY[change] in results["c8"]["result"]
+    assert events[-1][1]["status"] == "ok"
+    listed = (
+        await client.get(f"/threads/{end['thread_id']}/approvals", headers=_as("alice"))
+    ).json()
+    assert {a["path"]: a["status"] for a in listed} == {
+        "/orders/7/cancel": "approved" if decision == "approve" else "rejected",
+        "/orders/8/cancel": "expired",
+    }
+    r = await client.post(
+        "/chat", json={"message": "hello", "thread_id": end["thread_id"]}, headers=_as("alice")
+    )
+    assert r.status_code == 200, r.text
+    assert parse_sse(r.text)[-1][1]["status"] == "ok"
     assert SENT == []
 
 

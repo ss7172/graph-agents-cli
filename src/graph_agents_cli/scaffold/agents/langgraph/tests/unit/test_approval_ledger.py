@@ -48,6 +48,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     APPROVAL_DECISION,
     APPROVAL_INTERRUPT,
     ApiPolicyError,
+    BoundApproval,
     call_hash,
     canonical_call,
     get_client,
@@ -315,6 +316,39 @@ async def test_listing_across_threads(
     assert await store.visible(ALICE) == []
 
 
+async def test_the_ledger_names_the_approvals_a_tool_call_asked_for(store: ApprovalStore) -> None:
+    """By the tool call (its model message and call id) or by the interrupt, on any thread."""
+    asked, _, _ = await store.add(_record(message_id="m1", tool_call_id="c1"))
+    copied = record_from_interrupt(
+        _interrupt_value(message_id="m1", tool_call_id="c1", path="/orders/8/cancel"),
+        interrupt_id="i2",
+        thread_id="t-copy",
+        run_id="r2",
+        requester=ALICE,
+    )
+    await store.add(copied)
+    # The same call id in another model message (a model that reuses ids) is another call.
+    await store.add(_record(interrupt_id="i3", message_id="m2", tool_call_id="c1"))
+    await store.decide(asked.approval_id, REJECTED, "x", None)
+    found = await store.bound_approvals(tool_call=("m1", "c1"))
+    assert sorted(found) == [
+        BoundApproval("shop", "POST", "/orders/7/cancel", REJECTED, False),
+        BoundApproval("shop", "POST", "/orders/8/cancel", PENDING, False),
+    ]
+    assert [b.path for b in await store.bound_approvals(interrupt_id="i2")] == ["/orders/8/cancel"]
+    assert await store.bound_approvals(tool_call=("m9", "c1"), interrupt_id="i9") == []
+    assert await store.bound_approvals() == []
+    # Read as a decision would be: used once sent, expired once past its expiry.
+    await store.decide(copied.approval_id, APPROVED, "x", None)
+    assert await store.consume(copied.approval_id, "h1", "t-copy") is None
+    [used] = await store.bound_approvals(interrupt_id="i2")
+    assert used.status == APPROVED and used.used
+    later, _, _ = await store.add(_record(interrupt_id="i4", message_id="m4", tool_call_id="c4"))
+    store._clock = lambda: later.expires_at + timedelta(seconds=1)
+    [expired] = await store.bound_approvals(tool_call=("m4", "c4"))
+    assert expired.status == EXPIRED and not expired.used
+
+
 # --- the call, as bound and as shown ------------------------------------------------------
 
 
@@ -472,6 +506,8 @@ async def test_a_gated_call_interrupts_with_the_call_before_anything_is_sent(gra
     assert value["type"] == APPROVAL_INTERRUPT
     assert (value["method"], value["path"], value["body"]) == ("POST", "/orders/7/cancel", BODY)
     assert value["tool"] == "cancel_order" and value["tool_call_id"] == "call_cancel_order"
+    assert value["message_id"]  # the model message that made the call
+    assert record.message_id == value["message_id"]
     assert value["approvers"] == ["requester", "role:ops"] and value["timeout_s"] == 60
     assert len(value["call_hash"]) == 64
     assert SENT == [] and record.status == PENDING
@@ -669,6 +705,92 @@ async def test_a_call_still_waiting_pauses_again_for_its_own_approval(
     decided = await _decided(store, record, "approve")
     await _run(graph, "t1", Command(resume={again.id: decision_value(decided, "approve")}))
     assert "approval gate the policy no longer has" in await _last_tool_result(graph, "t1")
+    assert SENT == []
+
+
+# --- a tool call run again without a decision (LangGraph Server's own API can) ---------
+
+# What the model reads when the ledger refuses a call its tool call asked an approval for.
+BOUND_BY = {
+    "reject": "was not approved: an approver rejected it",
+    "expired": "was not approved: the approval request expired",
+    "approve": "was sent already with its approval, which is used once",
+    "pending": "was resumed without an approval decision",
+}
+
+
+async def _run_from(graph: Any, config: Any) -> None:
+    """Run the graph from the checkpoint `config` names, without input (a replay)."""
+    async for _ in graph.astream(None, config, stream_mode="updates"):
+        pass
+
+
+@pytest.mark.parametrize("decision", ["reject", "expired", "approve", "pending"])
+async def test_a_tool_call_run_again_without_its_decision_sends_nothing_more(
+    graph, store, tmp_path, decision: str
+) -> None:
+    """Continued without input, or replayed from its checkpoint, whatever the policy says."""
+    interrupt, record = await _pause(graph, "t1", store)
+    paused = (await graph.aget_state({"configurable": {"thread_id": "t1"}})).config
+    if decision != "pending":
+        decided = await _decided(store, record, decision)
+    if decision == "approve":
+        await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, decision)}))
+        assert len(SENT) == 1
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    await _run(graph, "t1", None)  # continue the thread without input
+    await _run_from(graph, paused)  # replay the paused step from its checkpoint (a fork)
+    await _run_from(graph, paused)
+    assert BOUND_BY[decision] in await _last_tool_result(graph, "t1")
+    assert len(SENT) == (1 if decision == "approve" else 0)
+
+
+async def test_a_new_tool_call_is_not_bound_by_an_earlier_one(graph, store, tmp_path) -> None:
+    """The fake model reuses its call ids: a new message makes a new tool call."""
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, "reject")
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "reject")}))
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    await _run(graph, "t1", {"messages": [("user", "Cancel the order for 7")]})
+    assert [r.url.path for r in SENT] == ["/orders/7/cancel"]
+
+
+async def test_without_the_tool_call_scope_the_task_interrupt_binds_the_call(
+    graph, store, tmp_path
+) -> None:
+    """A graph without the agent's middleware: a continued task is known by its interrupt."""
+    from {{cookiecutter.agent_directory}} import agent
+    from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+
+    bare = create_agent(
+        model=get_model(),
+        tools=[cancel_order],
+        context_schema=agent.AgentContext,
+        checkpointer=InMemorySaver(),
+    )
+    _, record = await _pause(bare, "t1", store)
+    assert record.message_id is None and record.tool_call_id is None
+    await _decided(store, record, "reject")
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    with pytest.raises(ApiPolicyError, match="an approver rejected it"):
+        await _run(bare, "t1", None)
+    assert SENT == []
+
+
+class _BrokenLedger:
+    async def consume(self, *args: Any, **kwargs: Any) -> str | None:
+        return "unused"
+
+    async def bound_approvals(self, **kwargs: Any) -> list[BoundApproval]:
+        raise ConnectionError("database down")
+
+
+async def test_a_ledger_that_cannot_answer_refuses_the_call(graph, store, tmp_path) -> None:
+    _change_policy(tmp_path, POLICY_CHANGES["gate removed"])
+    set_approval_ledger(_BrokenLedger())
+    await _run(graph, "t1", {"messages": [("user", "Cancel the order for 7")]})
+    result = await _last_tool_result(graph, "t1")
+    assert "the approvals of this tool call could not be read (ConnectionError)" in result
     assert SENT == []
 
 

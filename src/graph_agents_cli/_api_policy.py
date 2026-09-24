@@ -50,6 +50,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import click
 import yaml
@@ -433,12 +434,30 @@ def _approvers_errors(where: str, value: Any) -> list[str]:
     return errors
 
 
+def segment_text_problem(text: str) -> str | None:
+    """Why a path segment's text (percent-decoded) is refused, or None.
+
+    A control character anywhere (``%00``: servers that end a path at a NUL
+    route it to the part before) and whitespace at either end (``cancel%20``:
+    servers that trim path segments route it to ``cancel``) would send a call
+    to an endpoint other than the one the policy judged. Whitespace inside a
+    segment (``red%20shirt``) is kept: trimming does not touch it.
+    """
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
+        return "holds a control character (also percent-encoded, such as %00)"
+    if text[:1].isspace() or text[-1:].isspace():
+        return "starts or ends with whitespace (also percent-encoded, such as %20)"
+    return None
+
+
 def path_template_problem(path: Any) -> str | None:
     """Why ``path`` is not a valid path template, or None.
 
     A template starts with ``/``; each segment holds literal characters and
     ``{name}`` placeholders only (no query, fragment, spaces, empty, ``.`` or
-    ``..`` segments). One trailing slash is allowed.
+    ``..`` segments), and no control characters or whitespace at either end
+    percent-encoded either (``segment_text_problem``). One trailing slash is
+    allowed.
     """
     if not isinstance(path, str) or not path.startswith("/"):
         return "must be a string starting with /"
@@ -455,6 +474,9 @@ def path_template_problem(path: Any) -> str | None:
                 "segments may hold literal characters and {name} placeholders only "
                 "(no query, fragment or whitespace)"
             )
+        problem = segment_text_problem(unquote(_PLACEHOLDER_SPLIT_RE.sub("x", segment)))
+        if problem:
+            return f"has a segment that {problem}"
     return None
 
 

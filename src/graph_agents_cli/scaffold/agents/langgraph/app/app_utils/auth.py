@@ -1005,6 +1005,28 @@ _THREAD_COPY_PATH = re.compile(r"(?:^|/)threads/[^/]+/copy/?$")
 _THREAD_COPY: ContextVar[bool] = ContextVar("thread_copy", default=False)
 
 
+# Run settings that start a run from a given checkpoint (a replay) instead of the latest.
+_CHECKPOINT_KEYS = ("checkpoint_id", "checkpoint", "checkpoint_ns", "checkpoint_map")
+
+
+def _replays(kwargs: Any) -> bool:
+    """Whether a native run re-runs a thread's pending step: it has no input, or
+    starts from a checkpoint (in `config.configurable` or `context`, where the
+    server puts `checkpoint_id` and `checkpoint`)."""
+    if not isinstance(kwargs, Mapping):
+        return True
+    if kwargs.get("input") is None:
+        return True
+    config = kwargs.get("config")
+    configurable = config.get("configurable") if isinstance(config, Mapping) else None
+    for settings in (configurable, kwargs.get("context")):
+        if isinstance(settings, Mapping) and any(
+            settings.get(key) not in (None, "") for key in _CHECKPOINT_KEYS
+        ):
+            return True
+    return False
+
+
 def _is_thread_copy(request: Any) -> bool:
     scope = getattr(request, "scope", None) or {}
     path = scope.get("path") or ""
@@ -1038,12 +1060,19 @@ def build_sdk_auth() -> Any:
       an update can never change a thread's `principal_id` or `tenant`.
       A copy (`POST /threads/{id}/copy`) is a write: it creates a thread that
       keeps the source's metadata, owner included, so its source must be the
-      caller's own thread whatever the caller's roles.
+      caller's own thread whatever the caller's roles. A thread that recorded
+      approvals of gated API calls is not copied (403): the copy would carry
+      its tool calls without their approvals.
     * a run that carries a `command` (a resume of a paused run) is refused:
       a run paused for the approval of a gated API call resumes only through
       the app's approval routes, which check who may decide (the app's
       approvals ledger refuses a forged resume anyway). A new run on a thread
       whose approval is still pending is refused with 409, as `/chat` does.
+      A run without input, or from a checkpoint (`checkpoint_id`,
+      `checkpoint`: a replay), is refused (403) on a thread that recorded
+      approvals or waits on a gated call: it would run a paused step's tool
+      calls again without a decision (the API client refuses a call an
+      approval was asked for anyway).
     * the raw principal id is kept only in the thread metadata, where the
       owner filters need it. The server merges thread metadata into every
       run's metadata (and from there into traced config metadata and
@@ -1176,6 +1205,19 @@ def build_sdk_auth() -> Any:
 
     @auth.on.threads.read
     async def on_threads_read(ctx: Any, value: Any) -> dict[str, Any] | None:
+        thread_id = value.get("thread_id") if isinstance(value, dict) else None
+        if _THREAD_COPY.get() and thread_id is not None and not _is_studio(ctx):
+            # The server's copy reads its source first. A copy keeps the
+            # source's tool calls but not its approvals (they belong to the
+            # source, and go when it is deleted): refused where calls were gated.
+            from {{cookiecutter.agent_directory}}.app_utils.chat import RUNTIME
+
+            refusal = await RUNTIME.copy_refusal(str(thread_id))
+            if refusal:
+                raise Auth.exceptions.HTTPException(
+                    status_code=403,
+                    detail=f"This thread cannot be copied: {refusal}.",
+                )
         return _owner_filter(ctx)
 
     @auth.on.threads.search
@@ -1222,6 +1264,17 @@ def build_sdk_auth() -> Any:
                     detail="approval_pending: a gated API call on this thread waits for a "
                     "decision; decide it first (GET /threads/{thread_id}/approvals).",
                 )
+            if _replays(kwargs):
+                refusal = await RUNTIME.replay_refusal(str(thread_id))
+                if refusal:
+                    # Continued without input or replayed from a checkpoint, a
+                    # paused step runs its tool calls again with no decision.
+                    raise Auth.exceptions.HTTPException(
+                        status_code=403,
+                        detail=f"A run without input, or from a checkpoint, is refused here: "
+                        f"{refusal}. Send a new message instead (POST /chat), and decide "
+                        "approvals through POST /threads/{thread_id}/approvals/{approval_id}.",
+                    )
         metadata = _metadata_of(value)
         if value.get("thread_id") is None or value.get("if_not_exists") == "create":
             # The run may create its thread, whose metadata is then the run's

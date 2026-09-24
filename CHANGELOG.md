@@ -612,15 +612,26 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   whose approval is pending is refused (409), as `/chat` is; approvals a run left behind when
   it failed or was cancelled are expired rather than blocking the thread. The API client
   refuses a `;` in a request path (also percent-encoded): servers that strip path parameters
-  would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial. Denials and
-  gates also cover a literal segment's dot-suffixed spellings (`/orders/7/cancel.json`,
-  `cancel.`, `cancel%2e`), which servers that route format suffixes or drop a trailing dot
-  send to the gated or denied endpoint; `lint` and the runtime share the rule. A decision is
-  bound to the call it was taken for: a policy that changes while a call waits (a new image,
-  or a typo that un-gates it) can no longer turn a rejected or expired approval into a send,
-  nor let an approval outrun a later denial, narrower `allowed_methods` or
-  `allowed_operations`, or a removed or changed gate. `eval generate` rejects the gates it
-  does not decide, so an unattended run leaves no approval behind for someone to approve.
+  would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial. It also
+  refuses a segment with a control character or with whitespace at either end, also
+  percent-encoded (`cancel%20`, `7%00`), which servers that trim segments or end a path at a
+  NUL route to the gated or denied endpoint; `lint` refuses the same in declared paths.
+  Denials and gates also cover a literal segment's dot-suffixed spellings
+  (`/orders/7/cancel.json`, `cancel.`, `cancel%2e`), which servers that route format suffixes
+  or drop a trailing dot send to the gated or denied endpoint; `lint` and the runtime share
+  the rule. A decision is bound to the call it was taken for: a policy that changes while a
+  call waits (a new image, or a typo that un-gates it) can no longer turn a rejected or
+  expired approval into a send, nor let an approval outrun a later denial, narrower
+  `allowed_methods` or `allowed_operations`, or a removed or changed gate. The approvals table
+  binds it to the tool call as well (a new `message_id` column beside `tool_call_id`): a tool
+  call that runs again without a decision (a LangGraph Server run continued without input or
+  replayed from a checkpoint through the native API, or a copied thread) no longer sends a
+  rejected or expired call once its gate is removed, nor an approved call a second time; the
+  server's auth handler refuses such runs (403) on a thread that has approvals or waits on a
+  gated call, and refuses to copy a thread that has approvals. A waiting call that a later denial or narrower policy refuses when another
+  decision resumes the run has its approval expired, so the thread takes new messages again.
+  `eval generate` rejects the gates it does not decide, so an unattended run leaves no
+  approval behind for someone to approve.
 - `run --mode a2a` no longer follows an agent card to another origin: A2A clients dial the URL
   the card advertises, and a stale `APP_URL` or `PORT` (the template's `.env` sets `PORT=8000`,
   which `langgraph dev` loads over the port it was given) sent the message and its bearer

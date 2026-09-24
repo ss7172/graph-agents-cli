@@ -229,7 +229,8 @@ when the project declares an API policy):
   ignoring one trailing slash; denials and approval gates also ignore letter case and cover a
   literal segment's dot-suffixed spellings (`cancel.json`, `cancel.`). Pass `path` as the declared
   template and the values in `path_params`; a concrete path is validated (no dot segments,
-  encoded slashes, empty segments, query or fragment). A base URL with a path prefix works (the
+  encoded slashes, empty segments, `;`, query or fragment, and no control character or
+  whitespace at either end of a segment, also percent-encoded: `cancel%20`, `7%00`). A base URL with a path prefix works (the
   path is joined under it), `pagination.max_page_size` is enforced (every value of the
   parameter, in any letter case and any `params` shape), redirects are never followed.
   Let the errors propagate: the scaffolded `agent.py` middleware turns them into a
@@ -266,7 +267,11 @@ when the project declares an API policy):
   timestamp or random id in the body or path): the approved request is hashed, and a resumed
   call that differs from it is refused, never sent. A decision stays bound to its call even if
   the policy changes while it waits: a rejected or expired call is never sent, and an approved
-  one is refused when the policy no longer allows it or no longer gates it the same way.
+  one is refused when the policy no longer allows it or no longer gates it the same way. The
+  approvals table binds it to the tool call too: a tool call that runs again without a decision
+  (a LangGraph Server run continued without input or replayed from a checkpoint, a copied
+  thread) never sends a call an approval was asked for, and an approved call is sent once.
+  Keep the scaffolded `agent.middleware()`: it names the tool call for that check.
 - No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS`; `lint`
   then prints the `graph-agents-cli api` command that would allow it (`api allow` with the
   call's method and path, or `api access` for a new method). Propose it to the user: widening access is their decision and a

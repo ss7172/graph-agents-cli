@@ -338,7 +338,10 @@ Common settings: `AUTH_READ_ACROSS_ROLES` (comma list; roles that may read, neve
 delete, other principals' threads) and `AUTH_ADMIN_ROLES` (comma list, empty = nobody; under
 `langgraph-server` only these roles may create, update or delete assistants and crons or
 write the store; reads are open to any authenticated principal, and every other native-API
-action is denied).
+action is denied). A native run cannot resume a paused run (a `command` is refused: decide
+through the approval routes), a run without input or from a checkpoint is refused on a
+thread that has approvals or waits on a gated call, and a thread that has approvals is not
+copied.
 
 ### `shared-bearer` (default)
 
@@ -521,9 +524,12 @@ shared byte-for-byte and a test keeps the copies in sync):
   `/orders/{order_id}/cancel` covers `/orders/7/cancel.json`, `cancel.` and `cancel%2e`,
   which servers that route format suffixes or drop a trailing dot send to the same endpoint);
   an allow never matches that way. A `;` in a concrete path is refused (servers that strip
-  path parameters would route around a denial or a gate). Pass model input as `path_params`
-  of a declared template (each value is encoded as one segment; `.`, `..` and `/` are
-  refused), never as part of a concrete path.
+  path parameters would route around a denial or a gate), and so is a segment with a control
+  character or with whitespace at either end, also percent-encoded (`cancel%20`, `7%00`:
+  servers that trim segments or end a path at a NUL route those elsewhere); `lint` refuses
+  the same in declared paths. Pass model input as `path_params` of a declared template (each
+  value is encoded as one segment; `.`, `..` and `/` are refused), never as part of a
+  concrete path.
 - The page-size parameter is capped in every spelling and shape of the query; redirects are
   not followed.
 
@@ -596,7 +602,17 @@ apis:
     with the same approvers; if the gate was removed, no longer covers the call, or names
     other approvers, nothing is sent and the agent asks again.
   - A call whose approval is still pending when another call's decision resumes the run
-    waits on for its own approval, even if the policy no longer gates it.
+    waits on for its own approval, even if the policy no longer gates it. If the policy now
+    refuses it (a denial, narrower `allowed_methods`), it is refused and its approval
+    expires, so the thread takes new messages.
+  - The approvals table binds a decision to its tool call as well. A tool call that runs
+    again without a decision (under `langgraph-server`, the server's own API can continue a
+    paused run without input or replay it from a checkpoint, and a copied thread keeps its
+    tool calls) does not send a call an approval was asked for: a rejected, expired or
+    pending one is refused, and an approved one is sent only by the run its decision
+    resumed, once. The server's auth handler also refuses such runs (403) on a thread that
+    has approvals or waits on a gated call, and refuses to copy a thread that has approvals
+    (the copy would carry its tool calls without them).
 
   An approval is decided once (409 after that, 410 once expired), and while one is pending
   the thread takes no new message (409 `approval_pending`).

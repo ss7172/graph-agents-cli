@@ -116,6 +116,8 @@ def test_collect_declared_calls_reads_literals_without_importing(project):
         ('API_CALLS = [{"api": "a", "method": "GET"}]\n', "neither operation_id nor path"),
         ('API_CALLS = [{"api": "a", "method": "GET", "path": "x"}]\n', "starting with /"),
         ('API_CALLS = [{"api": "a", "method": "GET", "path": "/x?y=1"}]\n', "no query"),
+        ('API_CALLS = [{"api": "a", "method": "POST", "path": "/x/cancel%20"}]\n', "whitespace"),
+        ('API_CALLS = [{"api": "a", "method": "POST", "path": "/x/cancel%00"}]\n', "control"),
         ('API_CALLS = [{"api": "a", "method": "GET", "path": "/x", "url": "u"}]\n', "unknown key"),
         ("API_CALLS = [\n", "syntax error"),
     ],

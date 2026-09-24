@@ -32,14 +32,18 @@ other finds the approval no longer pending. The run then resumes with the
 decision; the tool runs again, and `api_client` sends the call only when the
 decision approves exactly the request it rebuilds (the same `call_hash`) and
 `ApprovalStore.consume` (the ledger) marks the approval used: once, on the
-thread it was made for.
+thread it was made for. A tool call that runs again without a decision (a run
+continued or replayed through LangGraph Server's own API) asks the ledger
+first (`ApprovalStore.bound_approvals`) and sends no call an approval was
+asked for.
 
 Records (table `approvals`, `agent_approvals` under langgraph-server, in the
 app's database; in process memory without one): the thread, the run that
 paused, the interrupt, the requester's hashed id and the roles and public
-attributes the run acted with (never credentials), the call (API, method,
-path, operation id, `call_hash`, and in `payload` the query and JSON body as
-the approver sees them, with the fields the tool named in `redact=` masked),
+attributes the run acted with (never credentials), the tool call that asked
+(the model message and its call id), the call (API, method, path, operation
+id, `call_hash`, and in `payload` the query and JSON body as the approver sees
+them, with the fields the tool named in `redact=` masked),
 the approvers, the status (`pending`, `approved`, `rejected`, `expired`), the
 decider's hashed id, the decision time and comment, when the approval was
 used, and when it expires (`approval.timeout_s` after it was requested). Once
@@ -72,6 +76,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     MIN_APPROVAL_TIMEOUT_S,
     REQUESTER_APPROVER,
     ROLE_APPROVER_PREFIX,
+    BoundApproval,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, read_across_roles
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, capture_full
@@ -149,6 +154,8 @@ class ApprovalRecord:
     expires_at: datetime
     operation_id: str | None = None
     tool_call_id: str | None = None
+    # The model message that made the tool call (with `tool_call_id`, the tool call).
+    message_id: str | None = None
     requester_context: dict[str, Any] = field(default_factory=dict)
     status: str = PENDING
     decided_by: str | None = None
@@ -243,6 +250,7 @@ def record_from_interrupt(
         operation_id=str(value["operation_id"]) if value.get("operation_id") else None,
         call_hash=str(value.get("call_hash") or ""),
         tool_call_id=str(value["tool_call_id"]) if value.get("tool_call_id") else None,
+        message_id=str(value["message_id"]) if value.get("message_id") else None,
         approvers=approvers,
         payload=payload,
         created_at=now,
@@ -359,8 +367,8 @@ def _without_call(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 _COLUMNS = (
     "approval_id, thread_id, run_id, interrupt_id, requester_hash, requester_context, api, "
-    "method, path, operation_id, call_hash, tool_call_id, approvers, payload, status, "
-    "decided_by, decided_at, comment, used_at, created_at, expires_at"
+    "method, path, operation_id, call_hash, tool_call_id, message_id, approvers, payload, "
+    "status, decided_by, decided_at, comment, used_at, created_at, expires_at"
 )
 # Clears the call from the payload unless the first parameter is true (TRACE_CAPTURE=full).
 _CLEARED_PAYLOAD = "CASE WHEN %s THEN payload ELSE payload - 'query' - 'body' END"
@@ -380,6 +388,7 @@ def _record_from_row(row: Mapping[str, Any]) -> ApprovalRecord:
         operation_id=row.get("operation_id"),
         call_hash=row["call_hash"],
         tool_call_id=row.get("tool_call_id"),
+        message_id=row.get("message_id"),
         approvers=list(_decode(row.get("approvers")) or []),
         payload=dict(_decode(row.get("payload")) or {}),
         status=row["status"],
@@ -469,8 +478,8 @@ class ApprovalStore:
         await self.db.execute(
             f"""
             INSERT INTO {self.table} ({_COLUMNS})
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
-                    %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 record.approval_id,
@@ -485,6 +494,7 @@ class ApprovalStore:
                 record.operation_id,
                 record.call_hash,
                 record.tool_call_id,
+                record.message_id,
                 _json(record.approvers),
                 _json(record.payload),
                 record.status,
@@ -626,6 +636,48 @@ class ApprovalStore:
         return len(rows)
 
     # -- reads ------------------------------------------------------------------
+
+    async def bound_approvals(
+        self, *, tool_call: tuple[str, str] | None = None, interrupt_id: str | None = None
+    ) -> list[BoundApproval]:
+        """The ledger's answer for a tool call that runs again without a decision.
+
+        Every approval asked by the tool call `(message id, tool call id)` or by
+        the interrupt `interrupt_id`, newest first, on any thread: a copy of a
+        thread keeps its messages, so a tool call there is the same tool call
+        (message ids are unique, so another thread's tool call never matches).
+        `api_client` refuses the call when one of them was asked for it.
+        """
+        now = self.now()
+        message_id, call_id = tool_call or (None, None)
+        if not self.db.is_postgres:
+            records = [
+                r
+                for r in self._memory.values()
+                if (message_id and r.message_id == message_id and r.tool_call_id == call_id)
+                or (interrupt_id and r.interrupt_id == interrupt_id)
+            ]
+        else:
+            rows = await self.db.fetchall(
+                f"""
+                SELECT {_COLUMNS} FROM {self.table}
+                 WHERE (message_id = %s::text AND tool_call_id = %s::text)
+                    OR interrupt_id = %s::text
+                """,
+                (message_id, call_id, interrupt_id),
+            )
+            records = [_record_from_row(r) for r in rows]
+        records.sort(key=lambda r: r.created_at, reverse=True)
+        return [
+            BoundApproval(
+                api=r.api,
+                method=r.method,
+                path=r.path,
+                status=r.effective_status(now),
+                used=r.used_at is not None,
+            )
+            for r in records
+        ]
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         if not self.db.is_postgres:

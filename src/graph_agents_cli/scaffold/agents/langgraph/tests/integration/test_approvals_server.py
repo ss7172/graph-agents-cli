@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -132,6 +133,7 @@ class Server:
     log: Path
     policy: Path
     expiring: dict[str, Any] = field(default_factory=dict)
+    expiring_native: dict[str, Any] = field(default_factory=dict)
 
 
 def _free_port() -> int:
@@ -262,13 +264,64 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
                 pytest.fail(f"langgraph dev did not start:\n{log.read_text()[-4000:]}")
             time.sleep(0.5)
         running = Server(url=url, upstream=upstream, body_file=body_file, log=log, policy=policy)
-        # Paused first, so it has expired by the time the last test decides it.
+        # Paused first, so they have expired by the time the last tests use them.
         running.expiring = pause(running, "90")
+        running.expiring_native = pause(running, "91")
         yield running
     finally:
         _stop(proc)
         upstream.shutdown()
         upstream.server_close()
+
+
+def native_run(server: Server, thread: str, body: dict[str, Any]) -> httpx.Response:
+    """A run through the server's own API (not the app's routes), as the thread's owner."""
+    return httpx.post(
+        f"{server.url}/threads/{thread}/runs/wait",
+        json={"assistant_id": "agent", **body},
+        headers=token("alice"),
+        timeout=60,
+    )
+
+
+def paused_checkpoint(server: Server, thread: str) -> str:
+    """The checkpoint where the thread's run paused for the gated call."""
+    r = post(server, f"/threads/{thread}/history", {"limit": 20}, token("alice"))
+    assert r.status_code == 200, r.text
+    return next(
+        h["checkpoint"]["checkpoint_id"]
+        for h in r.json()
+        if any(task.get("interrupts") for task in h.get("tasks") or [])
+    )
+
+
+def rerun_paused_step(server: Server, thread: str, checkpoint: str) -> list[httpx.Response]:
+    """The native runs that run a paused step again: without input, and from its checkpoint."""
+    return [
+        native_run(server, thread, {"input": None}),
+        native_run(server, thread, {"checkpoint_id": checkpoint}),
+    ]
+
+
+def assert_refused_at_the_server(server: Server, thread: str, checkpoint: str) -> None:
+    """Native runs that would run the paused step again, and a copy (which would carry its
+    tool call without the approval), are refused on a thread with approvals."""
+    for r in rerun_paused_step(server, thread, checkpoint):
+        assert r.status_code == 403, r.text
+        assert "the thread has approvals of gated API calls" in r.json()["detail"]
+    r = httpx.post(f"{server.url}/threads/{thread}/copy", headers=token("alice"), timeout=30)
+    assert r.status_code == 403, r.text
+    assert "cannot be copied" in r.json()["detail"]
+
+
+@contextmanager
+def gate_removed(server: Server) -> Iterator[None]:
+    """A new policy that no longer gates the call (a new image, a typo)."""
+    server.policy.write_text(POLICY.split("    approval:")[0], encoding="utf-8")
+    try:
+        yield
+    finally:
+        server.policy.write_text(POLICY, encoding="utf-8")
 
 
 def _stop(proc: subprocess.Popen[bytes]) -> None:
@@ -393,6 +446,43 @@ def test_the_server_binds_a_decision_to_its_call_when_the_gate_is_removed(
     assert server.upstream.sent_to("/orders/18/cancel") == []
 
 
+def test_a_native_replay_does_not_send_a_rejected_call_once_its_gate_is_removed(
+    server: Server,
+) -> None:
+    """Rejected, then un-gated: continuing or replaying the paused step sends nothing."""
+    end = pause(server, "20")
+    thread = end["thread_id"]
+    checkpoint = paused_checkpoint(server, thread)
+    with gate_removed(server):
+        r = decide(server, end, "reject", token("alice"))
+        assert r.status_code == 200, r.text
+        assert_refused_at_the_server(server, thread, checkpoint)
+    assert server.upstream.sent_to("/orders/20/cancel") == []
+
+
+def test_a_native_replay_does_not_send_an_approved_call_a_second_time(server: Server) -> None:
+    """Approved and sent, then un-gated: a replay of the paused step does not send it again."""
+    end = pause(server, "21")
+    thread = end["thread_id"]
+    checkpoint = paused_checkpoint(server, thread)
+    r = decide(server, end, "approve", token("alice"))
+    assert r.status_code == 200, r.text
+    assert server.upstream.sent_to("/orders/21/cancel") == [BODY]
+    with gate_removed(server):
+        assert_refused_at_the_server(server, thread, checkpoint)
+    assert server.upstream.sent_to("/orders/21/cancel") == [BODY]
+
+
+def test_a_thread_without_gated_calls_is_still_copied_and_continued(server: Server) -> None:
+    r = post(server, "/chat", {"message": "hello"}, token("alice"))
+    assert r.status_code == 200, r.text
+    thread = parse_sse(r.text)[-1][1]["thread_id"]
+    r = httpx.post(f"{server.url}/threads/{thread}/copy", headers=token("alice"), timeout=30)
+    assert r.status_code == 200, r.text
+    assert native_run(server, thread, {"input": None}).status_code == 200
+    assert native_run(server, r.json()["thread_id"], {"input": None}).status_code == 200
+
+
 def test_deleting_the_thread_on_the_server_deletes_its_approvals(server: Server) -> None:
     end = pause(server, "15")
     thread = end["thread_id"]
@@ -452,13 +542,31 @@ def test_the_server_a2a_task_waits_for_input_and_resumes(server: Server) -> None
     assert server.upstream.sent_to("/orders/16/cancel") == [BODY]
 
 
-def test_an_expired_approval_on_the_server_sends_nothing(server: Server) -> None:
-    """Last: the approval paused when the server started has expired by now."""
-    end = server.expiring
+def _wait_until_expired(end: dict[str, Any]) -> None:
     expires = datetime.fromisoformat(end["approval"]["expires_at"])
     wait = expires.timestamp() - time.time() + 1
     if wait > 0:
         time.sleep(wait)
+
+
+def test_a_native_run_does_not_send_an_expired_call_once_its_gate_is_removed(
+    server: Server,
+) -> None:
+    """Near last: an approval paused when the server started has expired by now."""
+    end = server.expiring_native
+    _wait_until_expired(end)
+    thread = end["thread_id"]
+    checkpoint = paused_checkpoint(server, thread)
+    with gate_removed(server):
+        assert decide(server, end, "approve", token("alice")).status_code == 410
+        assert_refused_at_the_server(server, thread, checkpoint)
+    assert server.upstream.sent_to("/orders/91/cancel") == []
+
+
+def test_an_expired_approval_on_the_server_sends_nothing(server: Server) -> None:
+    """Last: the approval paused when the server started has expired by now."""
+    end = server.expiring
+    _wait_until_expired(end)
     r = decide(server, end, "approve", token("alice"))
     assert r.status_code == 410 and r.json()["code"] == "approval_expired"
     thread = end["thread_id"]

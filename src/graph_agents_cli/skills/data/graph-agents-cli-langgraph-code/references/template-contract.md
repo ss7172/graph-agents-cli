@@ -322,7 +322,15 @@ apis:
   resume, whatever the policy says about gating it by then: a rejected or expired call is never
   sent, an approved one only while the policy still allows it and gates it with the same
   approvers, and a call still pending when another decision resumes the run pauses again for
-  its own approval. Only calls the policy allows are gated (approval never widens access). An `approval` key on an operation entry is refused ("not valid on an
+  its own approval (a call the policy now refuses is refused, and its approval expires when
+  the run ends). The ledger binds a decision to its tool call as well (the model message and
+  call id, else the task's interrupt): a tool call that runs again with no decision waiting
+  (LangGraph Server's own API continuing a paused run without input or replaying it from a
+  checkpoint, a copied thread) has a call an approval was asked for refused, whatever the
+  policy now says; an approved one is sent only by the run its decision resumed, once. Under
+  `langgraph-server` the auth handler also refuses (403) a native run without input or from a
+  checkpoint on a thread that has approvals or waits on a gated call, and a copy of a thread
+  that has approvals. Only calls the policy allows are gated (approval never widens access). An `approval` key on an operation entry is refused ("not valid on an
   operation entry; gate the operation with apis.<name>.approval.required_for.operations").
   The tool re-runs from its start on resume: keep it idempotent up to the call and the request
   deterministic. Approvals are stored in an `approvals` table beside the checkpoints.
@@ -336,7 +344,9 @@ apis:
   decoding percent-encoded unreserved characters and ignoring one trailing slash; allows are
   case-sensitive, denials and gates are not, and a denial or gate also covers a literal
   segment's dot-suffixed spellings (`cancel.json`, `cancel.`), which servers that route format
-  suffixes or drop a trailing dot send to the same endpoint; allows never match that way. `pagination.max_page_size` applies to every value of the
+  suffixes or drop a trailing dot send to the same endpoint; allows never match that way. A
+  segment with a control character or whitespace at either end, also percent-encoded
+  (`cancel%20`, `7%00`), is refused in declared paths (`lint`) and in the paths sent. `pagination.max_page_size` applies to every value of the
   parameter, in any letter case. Repeated YAML keys are errors, like unknown keys.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
