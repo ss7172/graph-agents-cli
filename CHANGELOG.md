@@ -273,7 +273,10 @@ the manifest has to be edited.
   manifest cannot: a commit or tag of the repository, `<clone>@<commit>` for a local clone
   (looked up there first), a path to a checkout or wheel (rebuilt with `uvx
   --refresh-package`), or a full install spec. The baseline must render the manifest's
-  `cli_version` (exit 3 otherwise); a different recorded commit is a warning.
+  `cli_version` (exit 3 otherwise); a different recorded commit is a warning, and so is a
+  baseline under which most template files would keep their current content (the sign of a
+  later build than the one that created the project) or that renders the same files as the
+  running build.
 - **`jwt` auth policy**: per-user principals from a verified OIDC/JWT bearer token. JWKS URL
   (`AUTH_JWT_JWKS_URL`, cached for `AUTH_JWT_JWKS_CACHE_S`, one rate-limited refetch on an
   unknown key id, stale-while-revalidate, a bounded grace when the issuer is down) or one PEM

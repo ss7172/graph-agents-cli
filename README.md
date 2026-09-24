@@ -213,14 +213,16 @@ The manifest names the old build. `cli_version` is the release; `cli_build` (wri
   and shows how to name its build.
 
 `--baseline-ref REF` names the build that created the project and wins over the manifest:
-a commit or tag of this repository (`d99c816`, `v0.1.0`), `<clone>@<commit>` for a local
+a commit or tag of this repository (`1a2b3c4`, `v0.1.0`), `<clone>@<commit>` for a local
 clone (the commit is looked up there first; the way to reach a commit that was never
 pushed), a path to a checkout or wheel (rebuilt, never a stale uv cache), or a full install
 spec (`git+https://git.example.com/graph-agents-cli@<commit>`, for a mirror). The baseline
 must render the manifest's `cli_version` (exit 3 otherwise). Without a known commit, the
 newest one before the project was generated is a first candidate; the build may be older (a
 checkout behind its branch, or a stale uv build), so check it with `--dry-run`: with the
-right build only files you edited are listed under "Will preserve" or as conflicts.
+right build only files you edited are listed under "Will preserve" or as conflicts
+(`upgrade` warns when most template files would keep their current content, the sign of a
+later build named as the baseline).
 
 ```bash
 git -C <clone> log -1 --format=%H --before='<generated_at from the manifest>'

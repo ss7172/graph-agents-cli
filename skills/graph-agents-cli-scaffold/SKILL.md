@@ -236,7 +236,7 @@ version is upgraded from that build, unless both render the same files for its s
 `template_digest`: "already at version"). A manifest without `cli_build` (made before builds were
 recorded, for example by a pre-release 0.2.0 build) is compared by version only: `upgrade` says
 "already at version" and prints how to name the build. Name it with `--baseline-ref`, which
-wins over the manifest: a commit or tag of the repository (`d99c816`, `v0.1.0`),
+wins over the manifest: a commit or tag of the repository (`1a2b3c4`, `v0.1.0`),
 `<clone>@<commit>` for a local clone (the commit is looked up there first), a path to a checkout
 or wheel (rebuilt, never a stale uv cache), or a full install spec
 (`git+https://<mirror>/graph-agents-cli@<commit>`). The baseline must render the manifest's
@@ -245,7 +245,9 @@ commit, `git -C <clone> log -1 --format=%H --before=<generated_at from the manif
 first candidate (the newest commit before the project was generated); the build may be older
 (a checkout behind its branch, or a stale uv build). Check it with `--dry-run`: with the right
 build only files the user edited are listed under "Will preserve" or as conflicts; many
-untouched scaffolding files there mean the wrong build. After the upgrade the manifest records
+untouched scaffolding files there mean the wrong build (`upgrade` warns when most template files
+would keep their current content, and when the baseline renders the same files as the running
+build). After the upgrade the manifest records
 the running build. Tags on the remote are the owner's to create; until `v<version>` exists there,
 `--baseline-ref <clone>@<commit>` is the way to name any build.
 

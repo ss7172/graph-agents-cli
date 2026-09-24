@@ -515,7 +515,6 @@ def upgrade(
                 "can be upgraded from it. If it is not the build that created the project, "
                 "name that build instead.[/yellow]"
             )
-            return
         _warn_if_not_the_projects_build(project_dir, old_dir, new_dir, agent_directory)
 
     def _record_new_build(proj_dir: pathlib.Path, lang: str) -> None:

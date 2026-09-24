@@ -446,6 +446,14 @@ def test_a_later_build_named_as_the_baseline_is_flagged(
     assert "6 of 7 template files differ from this baseline" in out
     assert "the baseline is not that build" in out
 
+    # A named build that renders exactly this build's files: both warnings.
+    uvx.render = None
+    result = _upgrade(project, "--baseline-ref", "main", "--dry-run")
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())
+    assert "renders the same files as this build" in out
+    assert "6 of 6 template files differ from this baseline" in out
+
     # The right build (it rendered what the project has) raises no such warning.
     def right(snapshot: pathlib.Path) -> None:
         for rel in older:
