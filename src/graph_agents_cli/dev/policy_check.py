@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import click
 import yaml
 from rich.markup import escape
 from rich.table import Table
@@ -130,6 +131,9 @@ class PolicyReport:
     notes: list[str] = field(default_factory=list)
     policy_path: Path | None = None
     openapi_paths: dict[str, Path] = field(default_factory=dict)
+    # The policy file itself is unusable (schema, a spec it names, a declared
+    # file that is missing): a configuration error, not a refused call.
+    policy_invalid: bool = False
 
     @property
     def violations(self) -> int:
@@ -139,6 +143,16 @@ class PolicyReport:
         self.results.append(
             CheckResult(DeclaredCall(tool=where, method="-"), STATUS_INVALID, reason)
         )
+
+    def invalid_policy(self, where: str, reason: str) -> None:
+        self.invalid(where, reason)
+        self.policy_invalid = True
+
+
+class InvalidPolicyFile(click.ClickException):
+    """``lint`` / ``api check``: the policy file is invalid (a configuration error, exit 3)."""
+
+    exit_code = 3
 
 
 # ---------------------------------------------------------------------------
@@ -551,8 +565,10 @@ def _allowed_methods(api: Mapping[str, Any]) -> list[str]:
 def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -> str:
     """What would make ``api`` accept ``call``: the exact ``graph-agents-cli api`` commands.
 
-    Each is a reviewed change to api-policy.yaml (CODEOWNERS covers it). A call
-    refused only because it names no operation id is fixed in the tool instead.
+    Each is a reviewed change to api-policy.yaml (CODEOWNERS covers it), and
+    together they are every change the call needs: the method, the denial and
+    the allow-list. A call refused only because it names no operation id is
+    fixed in the tool instead.
     """
     steps: list[str] = []
     allowed = _allowed_methods(api)
@@ -572,11 +588,12 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
                 if entry.get("operationId") is None and entry.get("path") is not None
                 else str(entry.get("operationId"))
             )
-            steps.append(
+            step = (
                 f"{API_COMMAND} revoke {call.api} {revoke} --from denied (lifts a deliberate "
                 "denial: make sure it should go)"
             )
-            return "; then ".join(steps)
+            if step not in steps:
+                steps.append(step)
     allowed_operations = api.get("allowed_operations")
     if allowed_operations is not None and not any(
         operation_matches(entry, call.method, call.operation_id, path)
@@ -775,11 +792,11 @@ def build_report(
             document = load_policy_document(policy_path)
         except ApiPolicyFileError as exc:
             for error in exc.errors:
-                report.invalid(policy_file, error)
+                report.invalid_policy(policy_file, error)
             return report
         problem = forward_runtime_problem(summarize(document), runtime)
         if problem:
-            report.invalid(policy_file, problem)
+            report.invalid_policy(policy_file, problem)
         for name, api in document["apis"].items():
             openapi_ref = api.get("openapi")
             if not openapi_ref:
@@ -791,11 +808,11 @@ def build_report(
             try:
                 specs[name] = load_openapi(openapi_path)
             except (OSError, ValueError, yaml.YAMLError) as exc:
-                report.invalid(
+                report.invalid_policy(
                     policy_file, f"apis.{name}.openapi: cannot load {openapi_ref}: {exc}"
                 )
     elif policy_declared:
-        report.invalid(
+        report.invalid_policy(
             policy_file,
             f"the manifest declares {policy_file} but the file does not exist; every API call "
             "would be refused at runtime",
@@ -868,7 +885,12 @@ def run_policy_check(
     policy_declared: bool = False,
     console: Console | None = None,
 ) -> int:
-    """Run the check, print the table, and return the number of violations."""
+    """Run the check, print the table, and return the number of violations.
+
+    An invalid policy file raises :class:`InvalidPolicyFile` (exit 3) after the
+    table: like an invalid manifest, it is a configuration error, and the
+    ``api`` commands refuse the same file with the same code.
+    """
     report = build_report(
         project_root,
         agent_dir,
@@ -877,4 +899,9 @@ def run_policy_check(
         policy_declared=policy_declared,
     )
     print_report(report, console)
+    if report.policy_invalid:
+        raise InvalidPolicyFile(
+            f"API policy check failed: {policy_file} is invalid (see above); fix it first "
+            "(a configuration error)."
+        )
     return report.violations

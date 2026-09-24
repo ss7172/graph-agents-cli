@@ -134,6 +134,16 @@ def test_lint_policy_only_end_to_end_with_real_check(fake_project, recorded_runs
     )
 
 
+def test_lint_exits_3_on_an_invalid_policy_file(fake_project, recorded_runs):
+    (fake_project.root / "api-policy.yaml").write_text(
+        "apis:\n  incidents:\n    base_url_env: I\n    auth: none\n    alowed_methods: [GET]\n"
+    )
+    result = CliRunner().invoke(lint, ["--policy-only"])
+    assert result.exit_code == 3, result.output
+    assert "api-policy.yaml is invalid (see above)" in result.output
+    assert "configuration error" in result.output
+
+
 @pytest.mark.parametrize(
     ("legacy_file", "content"),
     [

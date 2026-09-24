@@ -769,6 +769,36 @@ def test_refused_calls_carry_the_api_command_that_would_allow_them():
         "graph-agents-cli api add billing --base-url-env"
     )
     assert "--access <read-only|read-write|custom>" in hint("GET", "x", "/x", name="billing")
+    # A denied call outside the method and the allow-list: every step it needs, in order.
+    assert hint("DELETE", "deleteOrder", "/orders/{order_id}") == (
+        "graph-agents-cli api access orders custom --methods GET,DELETE; then "
+        "graph-agents-cli api revoke orders deleteOrder --from denied (lifts a deliberate "
+        "denial: make sure it should go); then graph-agents-cli api allow orders deleteOrder"
+    )
+    # A listed operation that is also denied needs the revoke only.
+    document["apis"]["orders"]["allowed_operations"].append({"operationId": "deleteOrder"})
+    assert hint("GET", "deleteOrder", "/orders/{order_id}") == (
+        "graph-agents-cli api revoke orders deleteOrder --from denied (lifts a deliberate "
+        "denial: make sure it should go)"
+    )
+
+
+def test_an_invalid_policy_file_is_a_configuration_error(tmp_path):
+    (tmp_path / "api-policy.yaml").write_text(
+        "apis:\n  orders:\n    base_url_env: X\n    auth: none\n    allowed_methods: [GET]\n"
+        "    approval: required\n"
+    )
+    buf = io.StringIO()
+    with pytest.raises(pc.InvalidPolicyFile) as raised:
+        pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=300))
+    assert raised.value.exit_code == 3
+    assert "approval gates are not supported yet" in buf.getvalue()
+    # The manifest names the file, but it is missing: the same.
+    (tmp_path / "api-policy.yaml").unlink()
+    with pytest.raises(pc.InvalidPolicyFile):
+        pc.run_policy_check(
+            tmp_path, "app", policy_declared=True, console=Console(file=io.StringIO())
+        )
 
 
 def test_the_report_prints_each_hint_once(tmp_path):

@@ -48,8 +48,9 @@ COPY --from=builder /app /app
 # The outbound API policy travels with the image: without it the API client
 # refuses every call. The glob copies api-policy.yaml when the project has one
 # and nothing otherwise (pyproject.toml is repeated only so the COPY always has
-# a source).
-COPY pyproject.toml api-policy.yam[l] ./
+# a source). --chmod makes it readable by uid 1000 whatever its mode in the
+# working tree (an unreadable policy also refuses every call).
+COPY --chmod=0644 pyproject.toml api-policy.yam[l] ./
 
 USER 1000:1000
 

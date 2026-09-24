@@ -452,6 +452,9 @@ class YamlText:
         if not _is_collection(value):
             raise EditError("a block collection replaced by a scalar")
         if isinstance(value_node, yaml.SequenceNode):
+            kept = _scalar_list_lines(doc, value_node, value)
+            if kept is not None:
+                return doc.replace_lines(first, last, kept)
             inner_column = value_node.start_mark.column
         else:
             inner_column = value_node.value[0][0].start_mark.column
@@ -534,6 +537,43 @@ class YamlText:
 
 
 _ABSENT: Any = type("Absent", (), {"__repr__": lambda self: "<absent>"})()
+
+
+def _scalar_list_lines(doc: _Doc, node: yaml.SequenceNode, value: Any) -> list[str] | None:
+    """A block list of scalars rewritten item by item, or None when it is another shape.
+
+    An item that stays keeps its own line, with the comment after it and the
+    comment lines above it (``- GET  # reads``); a new item gets a line like
+    the first one's; an item that goes takes its comment lines with it.
+    """
+    if not isinstance(value, list) or not value or any(_is_collection(v) for v in value):
+        return None
+    items = node.value
+    for item in items:
+        if not isinstance(item, yaml.ScalarNode) or item.style in ("|", ">"):
+            return None
+        line = doc.lines[item.start_mark.line]
+        if (
+            item.end_mark.line != item.start_mark.line
+            or line[: item.start_mark.column].strip() != "-"
+        ):
+            return None  # the item is not on its dash's line, or spans several lines
+    dash = node.start_mark.column
+    gap = items[0].start_mark.column - dash
+    groups: dict[Any, list[list[str]]] = {}
+    start = node.start_mark.line
+    for item in items:
+        group = [line.rstrip("\r\n") for line in doc.lines[start : item.end_mark.line + 1]]
+        groups.setdefault(doc.key_of(item), []).append(group)
+        start = item.end_mark.line + 1
+    lines: list[str] = []
+    for item in value:
+        reusable = groups.get(item)
+        if reusable:
+            lines.extend(reusable.pop(0))
+        else:
+            lines.append(f"{' ' * dash}-{' ' * (gap - 1)}{inline(item)}")
+    return lines
 
 
 # ---------------------------------------------------------------------------

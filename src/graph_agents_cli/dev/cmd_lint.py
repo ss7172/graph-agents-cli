@@ -46,6 +46,13 @@ def cmd_lint(fix: bool, policy_only: bool) -> None:
                             every API_CALLS entry of every tool must name a
                             declared API and be allowed by its rules (and
                             exist in its OpenAPI spec when one is named)
+
+    \b
+    Exit codes:
+      0  clean
+      1  a refused call or an unreadable API_CALLS, or ruff failed
+      3  configuration error: an invalid api-policy.yaml, the retired
+         product policy, or not in a project
     """
     chdir_project_root()
     cfg = read_project_config()

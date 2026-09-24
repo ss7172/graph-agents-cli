@@ -133,7 +133,7 @@ line naming the file that implements it.
 | `api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] [--forward-header H] --access read-only\|read-write\|custom [--methods M,...] [--openapi PATH] [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]` | Declare an outbound API (creates `api-policy.yaml` when absent); `--access` is required, there is no default |
 | `api access NAME read-only\|read-write\|custom [--methods M,...] [--dry-run]` | Set the methods an API allows |
 | `api allow\|deny NAME (OPERATION_ID \| --method M --path P) [--methods M,...] [--dry-run]` | Add an `allowed_operations` / `denied_operations` entry (`--methods` for `allow` only) |
-| `api revoke NAME (OPERATION_ID \| --method M --path P) [--from allowed\|denied] [--dry-run]` | Remove the matching entries |
+| `api revoke NAME (OPERATION_ID \| --method M --path P) [--from allowed\|denied] [--dry-run]` | Remove the matching entries (with `--method`, only that method of each) |
 | `api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none] [--dry-run]` / `api remove NAME [--dry-run]` | Set or clear call limits / remove an API |
 | `api show [NAME] [--json]` / `api check` | The effective policy and each tool's declared calls / the policy check (`lint --policy-only`) |
 | `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` with the runtime's Dockerfile (default tag `latest`); a placeholder or invalid registry is exit 3 |
@@ -459,20 +459,31 @@ and `deny` by operation id check that the id exists and fill in its method and p
    Narrowing is always safe, and the runtime keeps refusing anything outside the policy even
    if a tool declares otherwise.
 5. `build`, then `deploy --env dev`, staging, prod. Both Dockerfiles copy the policy into the
-   image, so each image carries exactly one policy: what passed staging is what reaches
+   image (readable by the image's uid 1000, whatever the file's mode in your checkout), so each
+   image carries exactly one policy: what passed staging is what reaches
    production. Only the base URLs (the chart's `env`, per environment in
    `values-<env>.yaml`) and the tokens (the Secret) differ between environments.
 
-Adding functionality to a working agent, for example letting it change orders:
+Adding functionality to a working agent, for example letting the agent of step 1 (`orders`
+read-only, no `allowed_operations`, a tool calling `listOrders`) update orders:
 
 ```bash
-graph-agents-cli api access orders custom --methods GET,HEAD,PATCH --dry-run   # review, then without --dry-run
-graph-agents-cli api allow orders updateOrder        # filled in from the spec when openapi: is set
+graph-agents-cli api show orders                                # the calls your tools declare, each allowed or not
+graph-agents-cli api allow orders listOrders --methods GET      # first, what the agent already calls (see below)
+graph-agents-cli api allow orders updateOrder --methods PATCH   # --dry-run first to review the diff
+graph-agents-cli api access orders custom --methods GET,HEAD,PATCH   # PATCH reaches the listed operations only
 # write app/tools/update_order.py with {"api": "orders", "method": "PATCH", "operation_id": "updateOrder", ...}
 graph-agents-cli api check
-graph-agents-cli eval run                            # with new cases for the change
-git checkout -b orders-update && git commit -am "Allow updating orders" && git push   # PR: CODEOWNERS review
+graph-agents-cli eval run                                       # with new cases for the change
+git switch -c orders-update && git add -A && git commit -m "Allow updating orders" && git push   # PR: CODEOWNERS review
 ```
+
+An API without `allowed_operations` allows every operation within its methods. There,
+`api access` alone would open the new method to every operation of the API (every PATCH of
+`orders`, not only `updateOrder`), and the first `api allow` creates the list, so every call
+not on it is refused from then on (the command names the declared calls that become refused).
+So list the operations the agent already calls first, as above: `api check` then passes
+throughout. When the API already has `allowed_operations`, skip that line.
 
 ## Environments and CD modes
 
@@ -642,7 +653,7 @@ Every command follows one scheme:
 | 0 | Success (`eval`: gate met; `secrets status`: every required key present) |
 | 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `scaffold enhance`: required steps left) |
 | 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; `scaffold upgrade` and version-locked `scaffold enhance`: `uvx` is missing or could not fetch and run the prior release; an unexpected crash |
-| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy, port or context, a placeholder registry, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
+| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy (`lint` and `api check` included: an invalid `api-policy.yaml` is not a refused call), port or context, a placeholder registry, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
 
 Usage errors from Click (an unknown flag) are also 2. A signal ends a command with 128+N
 (130 for Ctrl-C, 143 for SIGTERM) after the local server it started is stopped.

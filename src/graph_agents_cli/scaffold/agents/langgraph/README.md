@@ -190,8 +190,14 @@ always safe, and the runtime keeps refusing anything outside the policy even if 
 
 Adding functionality to a working agent, for example letting it update orders:
 
-1. `graph-agents-cli api allow orders updateOrder` (and `api access orders custom --methods ...` if the
-   method is not allowed yet); review the printed diff.
+1. Change the policy, reviewing each printed diff (`--dry-run` first). If `orders` has no
+   `allowed_operations` yet, every operation within its methods is allowed: first
+   `graph-agents-cli api allow orders <operation>` for each operation the agent already calls, because the
+   first `allow` creates the list and every call not on it is refused from then on (the command names the
+   declared calls that become refused). Then `graph-agents-cli api allow orders updateOrder --methods PATCH`,
+   and `graph-agents-cli api access orders custom --methods <the current methods>,PATCH` if PATCH is not
+   allowed yet. With the list in place the new method reaches only the listed operations; `api access`
+   without a list would allow every PATCH operation of the API.
 2. Write the tool with `{"api": "orders", "method": "PATCH", "operation_id": "updateOrder", "path": ...}` in
    `API_CALLS`, calling `get_client("orders")`.
 3. `graph-agents-cli api check` (or `lint`), then add eval cases in `tests/eval/datasets/` and run

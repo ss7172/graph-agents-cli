@@ -191,11 +191,14 @@ combinations, prototype semantics, and what `upgrade` never touches.
    propose that change to the user (it widens access, so it needs their approval and a reviewed
    pull request); never run it on your own.
 6. **Adding functionality to a working agent** follows the same loop: agree the new operations
-   and their access with the user, change the policy with `graph-agents-cli api` (`access`,
-   `allow`; `--dry-run` first, show the diff), write the tool with its `API_CALLS`, `api check`
+   and their access with the user, change the policy with `graph-agents-cli api` (`allow`,
+   `access`; `--dry-run` first, show the diff), write the tool with its `API_CALLS`, `api check`
    (or `lint`), add eval cases and run `eval run`, then a pull request (CODEOWNERS approves
    `api-policy.yaml`), build and deploy dev, staging, prod. The policy is baked into the image,
-   so what passed staging is what reaches production.
+   so what passed staging is what reaches production. On an API without `allowed_operations`
+   (every operation within its methods), `allow` the operations the agent already calls
+   before the new one: the first `allow` creates the list and refuses every call not on it,
+   and `access` alone would open a new method to every operation of the API.
 
 Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
 their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts

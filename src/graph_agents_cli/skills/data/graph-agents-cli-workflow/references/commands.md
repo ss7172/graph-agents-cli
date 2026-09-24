@@ -183,8 +183,9 @@ graph-agents-cli api check
   every operation within `allowed_methods` to the listed ones: the command says so. With
   `openapi:` recorded, `allow` and `deny` by operation id check that the id exists and fill in its
   method and path.
-- `revoke` removes the entries naming the operation (only one method of an entry pinning several
-  when `--method` is given); `--from` picks the list when both match; removing the last
+- `revoke` removes the entries naming the operation; with `--method` only that method goes (an
+  entry pinning several keeps the others, and an entry without `methods` keeps every other
+  method, now listed); `--from` picks the list when both match; removing the last
   `allowed_operations` entry is refused (it would allow every operation).
 - `remove` drops the API (and its token from `secrets.keys` when no other API uses it); the last
   one removes `api-policy.yaml` and the manifest's `api_policy`, so every call is refused.
@@ -192,7 +193,8 @@ graph-agents-cli api check
   operations, limits, openapi, timeouts) and every tool's declared calls with their status and
   hint; `check` is `lint --policy-only` (same exit codes).
 - Exit codes: `0` changed (or nothing to change), `1` `check` found a refused call, `2` usage
-  error, `3` an invalid result (nothing written), an invalid current file, or not in a project.
+  error, `3` an invalid result (nothing written), an invalid current file (`check` and `lint`
+  too), or not in a project.
 ## Evaluate
 
 ```

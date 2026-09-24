@@ -190,8 +190,9 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `api_policy` and `secrets.keys`, `.env.example`, the chart's `values.yaml`), writes
   atomically, says whether it widens or narrows access and how the tools' declared calls are
   affected; `--dry-run` prints the diff only; exit 3 on an invalid result or outside a
-  project. `lint` prints the `graph-agents-cli api` command that would allow each refused
-  call.
+  project. `lint` prints every `graph-agents-cli api` command a refused call needs (the
+  method, a denial, the allow-list), and `lint` and `api check` exit 3 on an invalid
+  `api-policy.yaml` (a configuration error, not a refused call).
 - **Outbound call limits**: optional per-API `limits: {max_calls_per_run, rate_per_minute}`.
   `max_calls_per_run` counts the calls to that API within one agent run (the LangGraph run
   id, else the request's); `rate_per_minute` is a token bucket per process (per replica).
@@ -290,7 +291,8 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 - Images: the fastapi image is multi-stage on `python:3.12.14-slim-bookworm` with a pinned
   uv and no uv in the final image; the server image is `langchain/langgraph-api:0.14.4-py3.12`
   (checked against `uv.lock` at build time) with its unauthenticated meta routes disabled;
-  both run as uid/gid 1000 and work with a read-only root filesystem.
+  both run as uid/gid 1000 and work with a read-only root filesystem. Both make
+  `api-policy.yaml` readable by that user whatever its mode in the working tree.
 - Client `/chat` metadata is kept in the run record only: never written into checkpoints,
   and exported to traces only under `TRACE_CAPTURE=full`.
 - Log warnings print as `Warning: ...` instead of `WARNING:root:...`.

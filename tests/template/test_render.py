@@ -199,8 +199,11 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
         and not (argocd / "uv-langgraph-server.lock").exists()
     )
     assert "python:3.12-slim" in (argocd / "Dockerfile").read_text()
-    # The API policy travels with the fastapi image whenever the project has one.
-    assert "COPY pyproject.toml api-policy.yam[l] ./" in (argocd / "Dockerfile").read_text()
+    # The API policy travels with the fastapi image whenever the project has one,
+    # readable by the image's uid 1000 whatever its mode in the working tree.
+    assert "COPY --chmod=0644 pyproject.toml api-policy.yam[l] ./" in (
+        (argocd / "Dockerfile").read_text()
+    )
     assert "langgraph-api" not in (argocd / "pyproject.toml").read_text()
 
     skip = rendered["fastapi-skip"]
@@ -269,6 +272,8 @@ def test_dockerignore_keeps_secrets_and_state_out_of_the_build_context(
             )
     server = (rendered["server-helm-push"] / "Dockerfile").read_text()
     assert "ADD . /deps/weather-agent" in server
+    # ADD keeps the working tree's modes; the image runs as uid 1000.
+    assert "chmod a+r api-policy.yaml" in server
 
 
 def test_workflows_never_interpolate_untrusted_values_into_shell(rendered: dict[str, Path]) -> None:

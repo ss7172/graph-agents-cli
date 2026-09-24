@@ -270,19 +270,32 @@ class Revocation:
     def describe(self) -> str:
         if self.remaining_methods is None:
             return f"remove {describe_entry(self.entry)}"
-        return f"keep {describe_entry(self.entry)} for {', '.join(self.remaining_methods)} only"
+        named = " ".join(
+            str(self.entry[key]) for key in ("operationId", "path") if self.entry.get(key)
+        )
+        return f"keep {named} for {', '.join(self.remaining_methods)} only"
 
 
-def plan_revocations(entries: Sequence[Mapping[str, Any]], ref: OperationRef) -> list[Revocation]:
-    """What revoking ``ref`` does to each matching entry, last entry first."""
+def plan_revocations(
+    entries: Sequence[Mapping[str, Any]], ref: OperationRef, every_method: Sequence[str]
+) -> list[Revocation]:
+    """What revoking ``ref`` does to each matching entry, last entry first.
+
+    ``--method M --path P`` takes M out of an entry and nothing else. An entry
+    without ``methods`` covers every method, ``every_method`` (the API's
+    allowed methods for an allowed entry, every HTTP method for a denial): it
+    keeps the others, listed explicitly, so revoking GET from a denial of every
+    method never lifts it for DELETE.
+    """
     plans = []
     for index in reversed(matching_indexes(entries, ref)):
         entry = dict(entries[index])
-        methods = [str(m).upper() for m in entry.get("methods") or []]
-        if ref.method is not None and len(methods) > 1:
-            plans.append(Revocation(index, entry, [m for m in methods if m != ref.method]))
-        else:
+        if ref.method is None:
             plans.append(Revocation(index, entry, None))
+            continue
+        methods = [str(m).upper() for m in entry.get("methods") or []] or list(every_method)
+        remaining = [m for m in methods if m != ref.method]
+        plans.append(Revocation(index, entry, remaining or None))
     return plans
 
 

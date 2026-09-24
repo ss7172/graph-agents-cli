@@ -54,6 +54,10 @@ ENV_NO_POLICY_NOTES = [
     "# the APIs tools may call in api-policy.yaml (graph-agents-cli create --api-policy).",
     "# the APIs tools may call with `graph-agents-cli api add` (see README.md).",
 ]
+# The current wording, as a fresh project without a policy has it.
+ENV_NO_POLICY_NOTE = [ENV_NO_POLICY_NOTES[0], ENV_NO_POLICY_NOTES[2]]
+# The line above an API's variables (written by `create` and `api add`).
+ENV_API_HEADER = re.compile(r"^# ([a-z][a-z0-9_]{0,31}) \(auth: [a-z]+\)$")
 LOCAL_BASE_URL = "http://localhost:9000"
 CHART_BASE_URL = "http://CHANGE-ME"
 VALUES_COMMENT = "Base URLs of the APIs in api-policy.yaml (tokens come from the Secret)."
@@ -106,26 +110,39 @@ class Plan:
         return "".join(chunks)
 
     def write(self) -> None:
-        """Write every change atomically (a temporary file renamed over the old one)."""
+        """Write every change atomically (a temporary file renamed over the old one).
+
+        An existing file keeps its mode. A new one gets the mode any new file
+        gets (0666 less the umask), not the 0600 of the temporary file: the
+        images copy the project's files as they are and run as uid 1000, so a
+        private api-policy.yaml would be unreadable there and the agent would
+        refuse every call.
+        """
         for change in self.effective:
             target = self.root / change.path
             if change.after is None:
                 target.unlink(missing_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            mode = target.stat().st_mode & 0o777 if target.exists() else None
+            mode = target.stat().st_mode & 0o777 if target.exists() else _new_file_mode()
             handle, temporary = tempfile.mkstemp(
                 prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
             )
             try:
                 with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
                     stream.write(change.after)
-                if mode is not None:
-                    os.chmod(temporary, mode)
+                os.chmod(temporary, mode)
                 os.replace(temporary, target)
             except BaseException:
                 Path(temporary).unlink(missing_ok=True)
                 raise
+
+
+def _new_file_mode() -> int:
+    """The mode ``open()`` gives a new file: 0666 less the process umask."""
+    umask = os.umask(0o022)  # reading the umask means setting it; restored at once
+    os.umask(umask)
+    return 0o666 & ~umask
 
 
 def _terminated(lines: Any) -> list[str]:
@@ -150,8 +167,10 @@ def print_diff(text: str) -> None:
 
 
 def read_text(path: Path) -> str | None:
+    """The file's text as stored: line endings are kept (a CRLF file stays CRLF)."""
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8", newline="") as stream:
+            return stream.read()
     except FileNotFoundError:
         return None
 
@@ -264,7 +283,15 @@ def env_example_add(plan: Plan, name: str, api: dict[str, Any]) -> None:
     plan.set_text(ENV_EXAMPLE, before, after)
 
 
-def env_example_remove(plan: Plan, name: str, api: dict[str, Any], keep: set[str]) -> None:
+def env_example_remove(
+    plan: Plan, name: str, api: dict[str, Any], keep: set[str], declared: set[str]
+) -> None:
+    """Drop the variables of API ``name`` that no other API uses (``keep``).
+
+    ``declared``: the APIs left. The header line of an API that is gone goes
+    once none of its variables remain (a variable another API shares keeps it),
+    and without any API left the fresh project's "no policy" note comes back.
+    """
     path = plan.root / ENV_EXAMPLE
     before = read_text(path)
     if before is None:
@@ -273,13 +300,49 @@ def env_example_remove(plan: Plan, name: str, api: dict[str, Any], keep: set[str
     names = [n for n in names if n not in keep]
     try:
         names = [n for n in names if n in env_names(before)]
-        if not names:
-            return
-        after = env_remove(before, names, comments=[_env_comment(name, api)])
+        after = before
+        if names:
+            after = env_remove(before, names, comments=[_env_comment(name, api)])
+        after = _drop_orphan_headers(after, declared)
+        if not declared:
+            after = _restore_no_policy_note(after)
     except (EditError, ValueError) as exc:
         plan.left_for_you.append(f"{ENV_EXAMPLE}: remove {', '.join(names)} (not edited: {exc})")
         return
     plan.set_text(ENV_EXAMPLE, before, after)
+
+
+def _drop_orphan_headers(text: str, declared: set[str]) -> str:
+    """``text`` without the headers of undeclared APIs that no longer head a variable."""
+    lines = text.splitlines(keepends=True)
+    kept = []
+    for index, line in enumerate(lines):
+        match = ENV_API_HEADER.match(line.rstrip("\r\n"))
+        if match and match.group(1) not in declared and not _heads_a_variable(lines, index):
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
+def _heads_a_variable(lines: list[str], index: int) -> bool:
+    """True when a variable follows line ``index`` before a blank line or another header."""
+    for line in lines[index + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("# ---") or ENV_API_HEADER.match(stripped):
+            return False
+        if env_names(line):
+            return True
+    return False
+
+
+def _restore_no_policy_note(text: str) -> str:
+    """The Outbound APIs section says again that no policy is declared (when it has none)."""
+    if not any(ENV_SECTION.match(line) for line in text.splitlines()):
+        return text
+    present = {line.strip() for line in text.splitlines()}
+    if ENV_NO_POLICY_NOTE[0] in present:
+        return text
+    return env_insert(text, ENV_NO_POLICY_NOTE, section=ENV_SECTION, before=ENV_BEFORE)
 
 
 # ---------------------------------------------------------------------------

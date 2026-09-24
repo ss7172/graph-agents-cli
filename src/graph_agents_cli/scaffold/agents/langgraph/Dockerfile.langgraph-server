@@ -12,7 +12,8 @@ FROM langchain/langgraph-api:0.14.4-py3.12
 
 # The whole project (minus .dockerignore) is the dependency, so api-policy.yaml,
 # the outbound API policy the API client enforces, is in the image when the
-# project has one.
+# project has one (made readable by uid 1000 below, whatever its mode in the
+# working tree: an unreadable policy refuses every call).
 ADD . /deps/{{cookiecutter.project_name}}
 
 # `uv export` writes the locked versions (with hashes); they are installed
@@ -22,6 +23,7 @@ ADD . /deps/{{cookiecutter.project_name}}
 # stops with the tag to use otherwise). The base image ships uv; nothing is
 # added to it.
 RUN cd /deps/{{cookiecutter.project_name}} \
+ && if [ -f api-policy.yaml ]; then chmod a+r api-policy.yaml; fi \
  && base_api="$(python -c "import importlib.metadata as m; print(m.version('langgraph-api'))")" \
  && uv export --quiet --frozen --no-dev --no-emit-project --no-header -o /tmp/requirements.txt \
  && uv pip install --system --no-cache --compile-bytecode --no-deps \

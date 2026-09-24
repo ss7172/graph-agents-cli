@@ -173,6 +173,36 @@ def test_unsafe_shapes_are_refused_and_nothing_changes() -> None:
         YamlText("a:\n  b: 1\n").delete(("a", "b"))  # the only key of its mapping
 
 
+BLOCK_METHODS = """\
+apis:
+  orders:
+    allowed_methods:
+      - GET     # reads
+      # the write the agent needs
+      - POST    # create
+      - HEAD
+    auth: none
+"""
+
+
+def test_a_block_list_of_scalars_keeps_the_comments_of_the_items_that_stay() -> None:
+    text = YamlText(BLOCK_METHODS)
+    text.set(("apis", "orders", "allowed_methods"), ["GET", "POST", "PUT"])
+    assert text.text == BLOCK_METHODS.replace("      - HEAD\n", "      - PUT\n")
+    # An item that goes takes the comment lines above it; the order is the new one.
+    text.set(("apis", "orders", "allowed_methods"), ["PUT", "GET"])
+    assert text.text == (
+        "apis:\n  orders:\n    allowed_methods:\n"
+        "      - PUT\n"
+        "      - GET     # reads\n"
+        "    auth: none\n"
+    )
+    crlf = YamlText(BLOCK_METHODS.replace("\n", "\r\n"))
+    crlf.set(("apis", "orders", "allowed_methods"), ["GET", "PATCH"])
+    assert "      - GET     # reads\r\n      - PATCH\r\n" in crlf.text
+    assert not re.search(r"[^\r]\n", crlf.text)
+
+
 def test_crlf_files_stay_crlf() -> None:
     text = YamlText(POLICY.replace("\n", "\r\n"))
     text.set(("apis", "orders", "limits"), {"rate_per_minute": 1})

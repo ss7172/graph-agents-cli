@@ -21,7 +21,11 @@ A project is created once per module with the real bundled template
 from __future__ import annotations
 
 import json
+import os
+import re
+import shlex
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -226,6 +230,39 @@ def test_add_copies_an_outside_spec_into_the_project(project: Path, tmp_path: Pa
     assert (project / "openapi/orders/orders-openapi.yaml").read_text() == SPEC
 
 
+def test_new_files_are_readable_by_the_image_user_and_existing_ones_keep_their_mode(
+    project: Path, tmp_path: Path
+) -> None:
+    """The images copy the policy as it is and run as uid 1000: never write it 0600."""
+    spec = tmp_path / "orders-openapi.yaml"
+    spec.write_text(SPEC)
+    previous = os.umask(0o022)
+    try:
+        ok(*ORDERS_ADD, "--openapi", str(spec))
+    finally:
+        os.umask(previous)
+    for created in ("api-policy.yaml", "openapi/orders/orders-openapi.yaml"):
+        assert stat.S_IMODE((project / created).stat().st_mode) == 0o644, created
+    (project / "api-policy.yaml").chmod(0o640)
+    ok("api", "access", "orders", "read-only")
+    assert stat.S_IMODE((project / "api-policy.yaml").stat().st_mode) == 0o640
+
+
+def test_edits_keep_crlf_line_endings(project: Path, tmp_path: Path) -> None:
+    ok(*ORDERS_ADD)
+    path = project / "api-policy.yaml"
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    spec = tmp_path / "orders-openapi.yaml"
+    spec.write_bytes(SPEC.encode().replace(b"\n", b"\r\n"))
+    result = ok("api", "allow", "orders", "listOrders", "--methods", "GET")
+    data = path.read_bytes()
+    assert b"      - operationId: listOrders\r\n" in data
+    assert data.count(b"\n") == data.count(b"\r\n")
+    # The diff shows the entry, not every line rewritten.
+    removed = [line for line in result.output.splitlines() if re.match(r"-[^-]", line)]
+    assert removed == []
+
+
 def test_outside_a_project_every_command_exits_3(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     for args in (ORDERS_ADD, ["api", "show"], ["api", "check"], ["api", "remove", "orders"]):
@@ -261,6 +298,20 @@ def test_access_changes_the_methods_and_says_which_way(project: Path) -> None:
     assert "already allows" in same.output
     text = (project / "api-policy.yaml").read_text()
     assert "# reviewed by the orders team" in text and "# end of orders" in text
+
+
+def test_access_keeps_the_comments_of_a_block_list(project: Path) -> None:
+    ok(*[a if a != "read-write" else "read-only" for a in ORDERS_ADD])
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "    allowed_methods: [GET, HEAD]\n",
+            "    allowed_methods:\n      - GET   # reads\n      - HEAD  # probes\n",
+        )
+    )
+    ok("api", "access", "orders", "custom", "--methods", "GET,PATCH")
+    assert "      - GET   # reads\n      - PATCH\n" in path.read_text()
+    assert policy(project)["orders"]["allowed_methods"] == ["GET", "PATCH"]
 
 
 def test_allow_creates_the_list_and_warns_that_it_narrows(project: Path) -> None:
@@ -369,6 +420,30 @@ def test_revoke_one_method_of_an_entry_keeps_the_others(project: Path) -> None:
     }
 
 
+def test_revoke_one_method_of_an_entry_without_methods_keeps_every_other_method(
+    project: Path,
+) -> None:
+    ok(*ORDERS_ADD)
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text()
+        + "    allowed_operations:\n      - path: /orders\n      - operationId: getOrder\n"
+        + "    denied_operations:\n      - path: /internal/{x}\n"
+    )
+    # A denial of every method: revoking GET keeps it for every other method.
+    lifted = ok("api", "revoke", "orders", "--method", "GET", "--path", "/internal/{x}")
+    assert "only GET is revoked" in lifted.output
+    assert policy(project)["orders"]["denied_operations"] == [
+        {"path": "/internal/{x}", "methods": ["HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]}
+    ]
+    # An allowed entry without methods covers the API's methods: the others stay.
+    ok("api", "revoke", "orders", "--method", "POST", "--path", "/orders", "--from", "allowed")
+    assert policy(project)["orders"]["allowed_operations"][0] == {
+        "path": "/orders",
+        "methods": ["GET", "HEAD", "PUT", "PATCH", "DELETE"],
+    }
+
+
 def test_limits_set_change_and_clear(project: Path) -> None:
     _commented_policy(project)
     raised = ok("api", "limits", "orders", "--max-calls-per-run", "50")
@@ -395,8 +470,11 @@ def test_the_approval_key_is_reserved_and_refused(project: Path) -> None:
         assert "approval gates are not supported yet (planned); remove the approval key" in (
             result.output
         )
-    check = cli("api", "check")
-    assert check.exit_code != 0 and "approval gates are not supported yet" in check.output
+    # An invalid policy is a configuration error for the check too, as for lint.
+    for args in (["api", "check"], ["lint", "--policy-only"]):
+        result = cli(*args)
+        assert result.exit_code == 3, (args, result.output)
+        assert "approval gates are not supported yet" in result.output
 
 
 def test_an_invalid_result_is_refused_and_nothing_is_written(project: Path) -> None:
@@ -438,6 +516,32 @@ def test_remove_keeps_other_apis_and_the_last_one_removes_the_file(project: Path
     assert "Base URLs of the APIs" not in values_text
 
 
+@pytest.mark.parametrize("first", ["orders", "crm"])
+def test_removing_apis_that_share_a_variable_leaves_the_project_as_created(
+    project: Path, first: str
+) -> None:
+    fresh = {
+        name: (project / name).read_text()
+        for name in (
+            ".env.example",
+            "graph-agents-cli-manifest.yaml",
+            "deployment/helm/shop/values.yaml",
+        )
+    }
+    for name in ("orders", "crm"):
+        ok(
+            *("api", "add", name, "--base-url-env", "SHARED_API_BASE_URL", "--auth", "bearer"),
+            *("--token-env", f"{name.upper()}_API_TOKEN", "--access", "read-only"),
+        )
+    ok("api", "remove", first)
+    env_example = (project / ".env.example").read_text()
+    assert "SHARED_API_BASE_URL=" in env_example  # still used by the other API
+    ok("api", "remove", "crm" if first == "orders" else "orders")
+    # No orphaned "# <api> (auth: ...)" header, and the no-policy note is back.
+    for name, text in fresh.items():
+        assert (project / name).read_text() == text, name
+
+
 def test_show_reports_the_effective_policy_and_the_declared_calls(project: Path) -> None:
     ok(*ORDERS_ADD)
     ok("api", "allow", "orders", "listOrders", "--methods", "GET")
@@ -467,3 +571,88 @@ def test_check_is_lint_policy_only(project: Path) -> None:
     lint = cli("lint", "--policy-only")
     assert refused.exit_code == lint.exit_code == 1
     assert "graph-agents-cli api revoke orders listOrders --from denied" in refused.output
+
+
+# ---------------------------------------------------------------------------
+# The documented lifecycle
+# ---------------------------------------------------------------------------
+
+README = Path(__file__).resolve().parents[2] / "README.md"
+LIST_TOOL = """\
+API_CALLS = [
+    {"api": "orders", "method": "GET", "operation_id": "listOrders", "path": "/orders"},
+]
+TOOLS: list = []
+"""
+UPDATE_TOOL = """\
+API_CALLS = [
+    {"api": "orders", "method": "PATCH", "operation_id": "updateOrder", "path": "/orders/{id}"},
+]
+TOOLS: list = []
+"""
+
+
+def _readme_example() -> list[list[str]]:
+    """The `graph-agents-cli api` commands of the README's "working agent" example."""
+    text = README.read_text(encoding="utf-8")
+    section = text.split("Adding functionality to a working agent", 1)[1]
+    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
+    commands = []
+    for line in block.splitlines():
+        if line.startswith("graph-agents-cli api "):
+            commands.append(shlex.split(line.split(" #", 1)[0])[1:])
+    return commands
+
+
+def test_the_readme_example_adds_functionality_without_breaking_the_agent(project: Path) -> None:
+    """Step 1 of the README (read-only, no allow-list, a GET tool), then its worked example."""
+    ok(*[a if a != "read-write" else "read-only" for a in ORDERS_ADD])
+    (project / "app/tools/list_orders.py").write_text(LIST_TOOL)
+    ok("api", "check")
+    commands = _readme_example()
+    assert any(c[:2] == ["api", "access"] for c in commands)
+    for command in commands:
+        result = ok(*command)
+        assert "now refused" not in result.output, (command, result.output)
+        assert "All declared API calls are allowed" in ok("api", "check").output, command
+    (project / "app/tools/update_order.py").write_text(UPDATE_TOOL)
+    assert "All declared API calls are allowed" in ok("api", "check").output
+    orders = policy(project)["orders"]
+    # PATCH reaches the listed operation only.
+    assert orders["allowed_methods"] == ["GET", "HEAD", "PATCH"]
+    assert [e["operationId"] for e in orders["allowed_operations"]] == ["listOrders", "updateOrder"]
+
+
+def test_following_the_check_hint_for_a_denied_call_is_enough(project: Path) -> None:
+    """The method, the denial and the allow-list: the hint names every change needed."""
+    (project / "api-policy.yaml").write_text(
+        "apis:\n"
+        "  orders:\n"
+        "    base_url_env: ORDERS_API_BASE_URL\n"
+        "    auth: none\n"
+        "    allowed_methods: [GET, POST]\n"
+        "    allowed_operations:\n"
+        "      - operationId: listOrders\n"
+        "    denied_operations:\n"
+        "      - operationId: deleteOrder\n"
+    )
+    (project / "app/tools/delete_order.py").write_text(
+        LIST_TOOL.replace('"GET"', '"DELETE"').replace("listOrders", "deleteOrder")
+    )
+    refused = cli("api", "check")
+    assert refused.exit_code == 1, refused.output
+    hints = [
+        line.strip()
+        for line in refused.output.splitlines()
+        if line.strip().startswith("graph-agents-cli api ")
+    ]
+    assert len(hints) == 1, refused.output
+    steps = [re.sub(r" \(.*\)$", "", step) for step in hints[0].split("; then ")]
+    assert steps == [
+        "graph-agents-cli api access orders custom --methods GET,POST,DELETE",
+        "graph-agents-cli api revoke orders deleteOrder --from denied",
+        "graph-agents-cli api allow orders deleteOrder",
+    ]
+    for step in steps:
+        ok(*shlex.split(step)[1:])
+    assert "All declared API calls are allowed" in ok("api", "check").output

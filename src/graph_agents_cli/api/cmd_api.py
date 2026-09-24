@@ -84,9 +84,10 @@ def api_group() -> None:
     """Declare and change the outbound APIs tools may call (api-policy.yaml).
 
     The policy belongs to the project and evolves with the agent: add an API,
-    then widen or narrow its access as tools need it. There is no default access: read-only (GET, HEAD) and read-write (GET, HEAD,
-    POST, PUT, PATCH, DELETE) are written into the file as those methods, and
-    custom takes --methods. Every change is validated with the rules the agent
+    then widen or narrow its access as tools need it. There is no default
+    access: read-only (GET, HEAD) and read-write (GET, HEAD, POST, PUT, PATCH,
+    DELETE) are written into the file as those methods, and custom takes
+    --methods. Every change is validated with the rules the agent
     enforces, keeps comments and key order, prints a unified diff and writes
     atomically; --dry-run prints the diff only. The manifest (api_policy,
     secrets.keys), .env.example and the chart's values.yaml follow the change.
@@ -96,7 +97,7 @@ def api_group() -> None:
       0  changed, or nothing to change
       1  check: a declared call is refused
       2  usage error
-      3  invalid result, invalid api-policy.yaml, or not in a project
+      3  invalid result, invalid api-policy.yaml (check too), or not in a project
     """
 
 
@@ -337,7 +338,7 @@ def _openapi_reference(
     if kept is not None:
         return kept, spec
     target = f"{FALLBACK_DIR}/{name}/{source.name}"
-    text = source.read_text(encoding="utf-8")
+    text = read_text(source) or ""  # copied as stored, line endings included
     existing = read_text(project.root / target)
     if existing is not None and existing != text:
         raise ch.ApiCommandError(
@@ -540,7 +541,7 @@ def cmd_remove(name: str, dry_run: bool) -> None:
     keep = {str(o["base_url_env"]) for o in others} | {
         str(o["token_env"]) for o in others if o.get("token_env")
     }
-    env_example_remove(plan, name, api, keep)
+    env_example_remove(plan, name, api, keep, set(document["apis"]))
     if api["base_url_env"] not in keep:
         values_remove(
             plan, project.config, api["base_url_env"], {str(o["base_url_env"]) for o in others}
@@ -765,8 +766,14 @@ def cmd_revoke(
     project = _load_project()
     api = project.api(name)
     keys = {"allowed": ch.ALLOWED, "denied": ch.DENIED}
+    # What an entry without `methods` covers: an allowed one, the API's methods;
+    # a denial, every method (it keeps denying a method allowed later).
+    every = {
+        "allowed": ch.effective_methods(api["allowed_methods"]),
+        "denied": list(HTTP_METHODS),
+    }
     matches = {
-        label: ch.plan_revocations(api.get(key) or [], ref)
+        label: ch.plan_revocations(api.get(key) or [], ref, every[label])
         for label, key in keys.items()
         if from_list in (None, label)
     }
@@ -814,6 +821,11 @@ def cmd_revoke(
     plan = Plan(project.root)
     plan.set_text(POLICY_FILENAME, project.text, editor.text)
     notes = [f"{key}: {r.describe()}" for r in reversed(revocations)]
+    if any(r.remaining_methods and not r.entry.get("methods") for r in revocations):
+        notes.append(
+            f"an entry without methods covered every method; it now lists the others, so "
+            f"only {ref.method} is revoked"
+        )
     if key == ch.DENIED:
         notes.append("lifting a denial widens access: make sure the operation should be allowed")
     _finish(
