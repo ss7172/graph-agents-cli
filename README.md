@@ -1197,7 +1197,8 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
   open to every authenticated principal: namespace per-user data by principal.
 - **Human-in-the-loop** is wired for the policy's approval gates only: an `interrupt()` of
   your own in the served graph is not exposed over `/chat` (`message.end` has no status for
-  it). `run --mode a2a` prints a gated call and how to resume the task but does not prompt;
+  it). `run --mode a2a` prints a gated call and how to resume the task but does not prompt
+  (and shows its body's numbers as A2A data carries them: `1` reads `1.0`);
   `eval generate` decides `requester` gates as the eval identity and `role:` gates as the
   one principal of `GRAPH_AGENTS_CLI_APPROVER_API_KEY`.
 - `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after

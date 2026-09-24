@@ -55,8 +55,9 @@ from graph_agents_cli.run._signals import shielded, terminate_like_interrupt
 
 DEFAULT_CONCURRENCY = 4
 API_KEY_ENV = "GRAPH_AGENTS_CLI_API_KEY"
-# Decisions on gated calls are sent with this credential when set (an approver
-# other than the eval identity, for role:<name> gates); else as the requester.
+# Decisions on role:<name> gates are sent with this credential when set (an
+# approver other than the eval identity); a gate that lists requester is
+# decided as the eval identity, which started the run.
 APPROVER_KEY_ENV = "GRAPH_AGENTS_CLI_APPROVER_API_KEY"
 
 
@@ -518,9 +519,9 @@ def cmd_generate(
     decided as the case's "approvals" instructions say ({"decision":
     "approve"|"reject", "match": {...}}) and the run continues. A gate no
     instruction matches makes the case an error: generate never approves on
-    its own. Decisions are sent as the eval identity (the requester), or with
-    GRAPH_AGENTS_CLI_APPROVER_API_KEY as a bearer credential when it is set
-    (an approver holding the gate's role).
+    its own. A gate that lists requester is decided as the eval identity (it
+    started the run); any other with GRAPH_AGENTS_CLI_APPROVER_API_KEY as a
+    bearer credential when it is set (a principal holding the gate's role).
 
     \b
     Exit codes:

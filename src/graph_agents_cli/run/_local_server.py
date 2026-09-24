@@ -531,6 +531,11 @@ def _start_server(
     env.setdefault("PYTHONUNBUFFERED", "1")
     # The app reads PORT for its own logging; keep it consistent with --port.
     env["PORT"] = str(port)
+    # The A2A agent card advertises APP_URL, else http://HOST:PORT, and A2A
+    # clients dial what it advertises. `langgraph dev` loads .env over this
+    # environment (the template's .env sets PORT=8000), so name the address
+    # this server listens on unless .env or the environment sets APP_URL.
+    env.setdefault("APP_URL", f"http://127.0.0.1:{port}")
 
     log_file = open(log_path, "a", encoding="utf-8")
     stderr_file = None

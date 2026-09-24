@@ -646,6 +646,8 @@ def test_the_server_gets_env_settings_from_its_start_below_the_shell(started, mo
     assert env["AUTH_POLICY"] == "jwt" and env["APP_ENV"] == "dev"
     assert env["AUTH_JWT_AUDIENCE"] == "from-shell"  # the environment wins, as with load_dotenv
     assert env["PORT"] == "18080"  # the port this run chose
+    # The A2A card advertises where this server listens (langgraph dev loads .env over PORT).
+    assert env["APP_URL"] == "http://127.0.0.1:18080"
     assert "EMPTY" not in env
     assert env["AUTH_JWT_PUBLIC_KEY"].startswith("-----BEGIN PUBLIC KEY-----\\nAAA")
 
@@ -654,3 +656,9 @@ def test_dotenv_settings_tolerates_a_missing_or_broken_file(tmp_path: Path):
     assert ls.dotenv_settings(tmp_path / ".env") == {}
     (tmp_path / ".env").write_bytes(b"\xff\xfe not text")
     assert isinstance(ls.dotenv_settings(tmp_path / ".env"), dict)
+
+
+def test_an_app_url_the_project_sets_is_kept(started, monkeypatch):
+    (started.root / ".env").write_text("APP_URL=https://agent.example\n")
+    ls.ensure_server(started.root, "app", runtime="langgraph-server")
+    assert started.popen_calls[0]["env"]["APP_URL"] == "https://agent.example"

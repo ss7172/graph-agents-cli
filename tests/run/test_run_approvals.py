@@ -378,3 +378,30 @@ def test_verbose_event_lines_are_terminal_safe(chat_server, remote):
     assert result.exit_code == 0, result.output
     assert "\x1b" not in result.output
     assert "look\\x1b[8mup" in result.output
+
+
+def test_an_a2a_endpoint_on_another_origin_is_found():
+    """`run --mode a2a` refuses to dial (and send credentials to) another origin."""
+    from graph_agents_cli.run.cmd_run import foreign_a2a_endpoints
+
+    bindings = ("JSONRPC", "HTTP+JSON")
+    same = [("http://127.0.0.1:18080/a2a/app", "JSONRPC")]
+    assert foreign_a2a_endpoints(same, "http://127.0.0.1:18080", bindings) == []
+    # The default port is the same origin; letter case in the host is too.
+    assert (
+        foreign_a2a_endpoints(
+            [("https://Agent.example/a2a/app", "JSONRPC")], "https://agent.example:443/x", bindings
+        )
+        == []
+    )
+    other = [
+        ("http://127.0.0.1:8000/a2a/app", "JSONRPC"),  # a stale PORT: another local service
+        ("https://evil.example/a2a/app", "HTTP+JSON"),
+        ("http://127.0.0.1:18080/a2a/app", "HTTP+JSON"),
+        ("http://127.0.0.1:9/grpc", "GRPC"),  # a binding the client never uses
+    ]
+    assert foreign_a2a_endpoints(other, "http://127.0.0.1:18080", bindings) == [
+        "http://127.0.0.1:8000/a2a/app",
+        "https://evil.example/a2a/app",
+    ]
+    assert foreign_a2a_endpoints(same, "https://127.0.0.1:18080", bindings) == [same[0][0]]

@@ -39,6 +39,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 
 import click
 import httpx
@@ -65,6 +66,7 @@ from graph_agents_cli._chat_client import (
     ChatHTTPError,
     SseEvent,
     post_chat,
+    redact_credentials,
 )
 from graph_agents_cli._project import (
     chdir_project_root,
@@ -662,6 +664,28 @@ def _a2a_approval(chunk: Any) -> dict[str, Any] | None:
     return find_approval_payload(data)
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    port = parts.port or {"http": 80, "https": 443}.get(scheme)
+    return scheme, (parts.hostname or "").lower(), port
+
+
+def foreign_a2a_endpoints(
+    interfaces: Iterable[tuple[str, str]], base_url: str, bindings: Iterable[str]
+) -> list[str]:
+    """The endpoint URLs an agent card names, for ``bindings``, on another origin than ``base_url``.
+
+    An A2A client dials the URL the card advertises, not the one it fetched
+    the card from; a card naming another scheme, host or port (a stale
+    APP_URL, a PORT the server does not listen on, or a card that lies) would
+    receive the request and its credentials.
+    """
+    wanted = {str(b) for b in bindings}
+    origin = _origin(base_url)
+    return [url for url, binding in interfaces if str(binding) in wanted and _origin(url) != origin]
+
+
 def _query_a2a(
     target: RunTarget,
     prompt: str,
@@ -671,7 +695,7 @@ def _query_a2a(
     display_message: str,
 ) -> RunOutcome:
     try:
-        from a2a.client import ClientConfig, create_client
+        from a2a.client import A2ACardResolver, ClientConfig, create_client
         from a2a.types import Message, Part, Role, SendMessageRequest
         from a2a.utils.constants import (
             PROTOCOL_VERSION_1_0,
@@ -701,21 +725,33 @@ def _query_a2a(
         async with httpx.AsyncClient(
             headers=req_headers, timeout=_chat_client.STREAM_TIMEOUT
         ) as http_client:
+            bindings = [TransportProtocol.JSONRPC, TransportProtocol.HTTP_JSON]
             config = ClientConfig(
                 httpx_client=http_client,
                 # Keep JSONRPC first: the scaffolded A2A endpoint is JSON-RPC.
-                supported_protocol_bindings=[
-                    TransportProtocol.JSONRPC,
-                    TransportProtocol.HTTP_JSON,
-                ],
+                supported_protocol_bindings=bindings,
             )
             try:
-                client = await create_client(target.base_url, config)
+                card = await A2ACardResolver(http_client, target.base_url).get_agent_card()
+                client = await create_client(card, config)
             except Exception as exc:
                 raise click.ClickException(
                     f"Could not resolve an A2A agent at {target.base_url}: {exc}\n"
                     "  If this agent only exposes the chat API, try --mode chat."
                 ) from exc
+            foreign = foreign_a2a_endpoints(
+                ((i.url, i.protocol_binding) for i in card.supported_interfaces),
+                target.base_url,
+                (getattr(b, "value", b) for b in bindings),
+            )
+            if foreign:
+                raise click.ClickException(
+                    f"The agent card at {redact_credentials(target.base_url)} names "
+                    f"{safe_text(foreign[0])} as its A2A endpoint, another origin: the message "
+                    "(and your credentials) is not sent there.\n  The agent advertises APP_URL, "
+                    "else http://HOST:PORT: set APP_URL to the agent's own base URL (locally, "
+                    "check APP_URL and PORT in .env), or pass --url for the agent the card names."
+                )
 
             msg = Message(
                 message_id=str(uuid.uuid4()),

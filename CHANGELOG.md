@@ -610,6 +610,12 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   it failed or was cancelled are expired rather than blocking the thread. The API client
   refuses a `;` in a request path (also percent-encoded): servers that strip path parameters
   would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial.
+- `run --mode a2a` no longer follows an agent card to another origin: A2A clients dial the URL
+  the card advertises, and a stale `APP_URL` or `PORT` (the template's `.env` sets `PORT=8000`,
+  which `langgraph dev` loads over the port it was given) sent the message and its bearer
+  credential to whatever listened there. A card naming another scheme, host or port is refused
+  with nothing sent, and the local server advertises the address it listens on (`APP_URL`,
+  unless `.env` sets one).
 - `setup`, `update`, the `scaffold upgrade` baseline (through `uvx`) and the documented
   install no longer use the unpublished PyPI name `graph-agents-cli`: whoever registered it
   would have had their code run on users' machines. Everything installs from a pinned git tag
