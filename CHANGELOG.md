@@ -275,9 +275,46 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   A call over a limit is refused before it is sent, with a reason the model can read;
   a run's counters are dropped when a `/chat` or A2A run ends, and otherwise (LangGraph
   Server runs included) after an hour without a call.
-- The `approval` key is reserved on an API and on an operation entry for human approval of
-  calls (planned) and refused until then ("approval gates are not supported yet (planned);
-  remove the approval key"), so a policy never counts on a gate that does not exist.
+- **Human approval of calls**: an API's optional `approval` block (`required_for: {methods,
+  operations}`, `approvers: [requester | "role:<name>"]`, `timeout_s` 30-86400, default 900)
+  makes those calls wait for a person. Approval never widens access: a gated call must still be
+  allowed, denials still win, and an `approval` key on an operation entry is refused with a
+  pointer to `approval.required_for.operations` (whose entries hold like denials, whatever
+  label a call gives). The run pauses before sending a gated call: `/chat` ends with
+  `message.end` status `awaiting_approval` and the call (API, method, full path, query, body,
+  operation id, reason, approvers, `expires_at`); `GET /threads/{thread_id}/approvals` lists a
+  thread's approvals; `POST /threads/{thread_id}/approvals/{approval_id}` with `{"decision":
+  "approve"|"reject", "comment"}` decides one (403 for a non-approver, 404, 409 once decided,
+  410 once expired) and streams the resumed run; a new `/chat` message on a paused thread gets
+  409 `approval_pending`; an A2A task goes `input-required` and resumes with a data part
+  carrying the decision. `requester` is the principal who started the run, `role:<name>` any
+  other principal holding the role. An approved call is sent exactly as shown, once; a rejected
+  or expired one never. Approvals are kept in an `approvals` table beside the checkpoints;
+  deleting a thread deletes them.
+- **`graph-agents-cli api approval NAME`** `[--methods M,...|none] [--operations OP,...|none]
+  [--approvers requester,role:NAME] [--timeout-s N] [--remove] [--dry-run]`, with the other `api`
+  commands' validate, diff and atomic-write rules: each option replaces that part of the block,
+  operations are pinned to their method and path from the API's OpenAPI spec, and the command
+  says when a change loosens the gate (a reviewed change) and which declared calls become
+  gated. `lint`, `api check` and `api show` (`--json`: `approval` per API and per call, a
+  `gated` count) list which declared calls wait for whose approval.
+- **`graph-agents-cli approvals list|approve|reject`** for the project's local server or a
+  deployed agent (`--url`), with the credentials `run` sends (`GRAPH_AGENTS_CLI_API_KEY`,
+  `--header`, `--cookie`): `list` shows a thread's approvals, or those on the caller's own
+  threads; `approve` / `reject` show the call, send only the decision and the comment, and
+  stream the resumed run. `run` prints a paused call in full and, on a terminal when the
+  requester is an approver, asks `Approve? [y/N]` and continues; otherwise it prints the
+  decision commands and exits 0 with an "Awaiting approval" line, keeping a one-off local
+  server with the in-memory checkpointer running so the paused run survives.
+- **Eval approvals**: a dataset case declares how a human would decide each gated call it
+  reaches (`"approvals": [{"decision": "approve"|"reject", "match": {"operation_id": ...} |
+  {"method": ..., "path": ...}}]`, optionally with `api`); `eval generate` decides each gate
+  per the first matching instruction and continues the run (a gate no instruction matches is a
+  case error), traces record every gate, and `expect.approvals` (`gated`, `approved`,
+  `rejected`) and `expect.no_approvals` check them. `GRAPH_AGENTS_CLI_APPROVER_API_KEY` sends
+  the decisions as an approver other than the eval identity.
+- `infra check` reports where pending approvals are kept (the `approvals` table of the app
+  database) and warns when `CHECKPOINTER=memory` would lose paused runs on a restart.
 - **Endpoints**: `GET /ready` (readiness: the database is set up and answers within 2 s),
   `GET /metrics` (Prometheus: request count and latency, runs by status, active runs, run
   duration, tokens, database up; optional `METRICS_TOKEN`), `GET /threads` (the caller's
@@ -430,6 +467,10 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 ### Changed
 
+- `run` exits 0 when the run is left awaiting an approval (the "Awaiting approval" line says
+  so) and 1 when the server refuses a decision; streamed agent text and tool output are
+  printed with terminal control characters escaped (line breaks and tabs kept).
+
 - `setup` installs the skills from this repository at the tag of the running release
   (`https://github.com/ss7172/graph-agents-cli#v<version>`; the default branch only for a
   development build), so they cannot drift from the CLI when the default branch moves on;
@@ -550,6 +591,17 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 ### Security
 
+- **Human approval of writes** moved into this release (it was planned for the next one): an
+  instruction planted in upstream data (a customer's order note) made a staff user's agent
+  cancel another customer's order and copy their data, a confused deputy the API policy alone
+  cannot stop because it decides which endpoints a tool may call, not on whose behalf. The
+  `approval` block (see Added) makes a person approve each gated call before it is sent,
+  bound to exactly that request and single-use. It is a per-API choice, never on by default.
+  `run` and `approvals` print the call in full with every control, format and separator
+  character escaped, so nothing the model produced can hide, reorder or fake the call being
+  approved; streamed agent text and tool output can no longer send terminal control sequences
+  (colour, conceal, cursor moves); printed decision commands shell-quote the ids the server
+  sent, and ids reach the approval routes as single URL path segments.
 - `setup`, `update`, the `scaffold upgrade` baseline (through `uvx`) and the documented
   install no longer use the unpublished PyPI name `graph-agents-cli`: whoever registered it
   would have had their code run on users' machines. Everything installs from a pinned git tag

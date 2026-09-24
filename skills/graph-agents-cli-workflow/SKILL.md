@@ -129,8 +129,10 @@ access, per-user identity and roles, safety-critical) gets the full treatment in
    allowed and denied operations): never assume one. Every outbound API is declared in
    `api-policy.yaml` with `graph-agents-cli api add` (see `/graph-agents-cli-langgraph-code`);
    the agent never gets a generic "call any endpoint" tool.
-3. **Safety constraints?** What the agent must NOT do; which tool calls need human approval
-   (LangGraph interrupts); what may leave the network (model egress, traces).
+3. **Safety constraints?** What the agent must NOT do; which API calls need a human's approval
+   before they are sent, and whose (the user confirming their own call, or a second person
+   holding a role: an `approval` block, `graph-agents-cli api approval`); what may leave the
+   network (model egress, traces).
 4. **Model provider?** `openai`, `anthropic`, `gemini`, or `openai-compatible` (on-network servers
    such as vLLM, Ollama, TGI). Selecting a hosted provider sends prompts, tool results, and assembled
    context to that provider; the user must decide that explicitly.
@@ -199,8 +201,9 @@ combinations, prototype semantics, and what `upgrade` never touches.
 6. **Adding functionality to a working agent** follows the same loop: agree the new operations
    and their access with the user, change the policy with `graph-agents-cli api` (`allow`,
    `access`; `--dry-run` first, show the diff), write the tool with its `API_CALLS`, `api check`
-   (or `lint`), add eval cases and run `eval run`, then a pull request (CODEOWNERS approves
-   `api-policy.yaml`), build and deploy dev, staging, prod. The policy is baked into the image,
+   (or `lint`), decide with the user whether the new writes wait for a human (`api approval`;
+   eval cases then say how each gate is decided), add eval cases and run `eval run`, then a pull
+   request (CODEOWNERS approves `api-policy.yaml`), build and deploy dev, staging, prod. The policy is baked into the image,
    so what passed staging is what reaches production. On an API without `allowed_operations`
    (every operation within its methods), `allow` the operations the agent already calls
    before the new one: the first `allow` creates the list and refuses every call not on it,
@@ -291,6 +294,7 @@ policy, hashed principal ids, and run records.
 | "I'll switch to a newer/better model" | The provider and model were chosen deliberately and written to `.env` and the manifest. Changing them without being asked violates code preservation and is an egress decision the user owns. |
 | "I'll add a generic HTTP tool so the agent can call whatever it needs" | `app_utils.api_client` is the only path to external APIs and it enforces `api-policy.yaml`. A generic tool bypasses the policy the team reviewed. |
 | "The tool needs POST, I'll widen the API's access" | Widening access is the user's decision and a reviewed change. Propose the `graph-agents-cli api` command `lint` prints; run it only when asked. |
+| "The approval prompt is in the way, I'll approve it / remove the gate" | Deciding a gated call is the approver's act, and loosening a gate is a reviewed change like widening access. Show the user the call and the `approvals` commands; never decide for them. |
 | "I'll `helm upgrade` / `kubectl apply` directly, it's quicker" | In `argocd` mode the cluster follows `main`; direct changes are drift that self-heal reverts, and they skip the production gate. |
 | "I can skip the scaffold and set up manually" | Manual setup misses the chat API, auth adapter, eval gate, chart, and workflows. Use `create` even for experiments (`--prototype`). |
 

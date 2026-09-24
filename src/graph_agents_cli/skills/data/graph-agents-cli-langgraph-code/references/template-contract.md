@@ -145,14 +145,16 @@ Response: SSE. Each event is `event: <type>\ndata: <json>\n\n`.
 | `message.delta` | `{"text": "..."}` |
 | `tool.call` | `{"id": "...", "name": "...", "args": {...}}` (args omitted when `TRACE_CAPTURE=metadata` and the caller is not the owner; always present to the caller) |
 | `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}`; a failed call adds `"error_id"` and, outside `APP_ENV=dev`, its `result` is `"The tool call did not succeed. Reference: <error_id>."` (the error text is for the model only) |
-| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok\|step_limit"}` |
+| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok\|step_limit\|awaiting_approval"}`; with `awaiting_approval`, also `"approval": {"approval_id", "api", "method", "path", "query", "body", "operation_id", "reason", "approvers", "expires_at"}` |
 | `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
 
 `message.end` has `"status": "ok"`, or `"step_limit"` when the run reached `RECURSION_LIMIT` and
 ended with a reply saying so (the reply is the preceding `message.delta`; the run's work stays in
 the thread). An `error` event replaces `message.end` on failure (`recursion_limit` only when the
-step-limit reply could not be written). There is no status for a paused graph and no
-`metadata.resume` convention. Idle streams get a `: keep-alive` comment every
+step-limit reply could not be written). `"awaiting_approval"` ends a run paused before a call its
+API's `approval` block gates (the `approval` object names the call; body fields on the optional
+redact list are masked); it is resumed by deciding the approval (below), not by a new message.
+Other graph interrupts have no status and no resume convention. Idle streams get a `: keep-alive` comment every
 `SSE_HEARTBEAT_S`. Run records carry `running` while the run is in progress, then `ok`,
 `step_limit`, `error`, `timeout`, `cancelled` (a client disconnect) or `interrupted` (the run
 lost its lease, or its process died; `/metrics` counts the same final statuses). A run stopped
@@ -162,7 +164,8 @@ arguments are not valid JSON runs no tool: it arrives as `tool.call` with `"args
 error `tool.result`, and the model is asked again in the same step (`AnswerInvalidToolCalls`).
 
 Request rules: a second `/chat` on a thread with a run in progress gets 409
-`{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; a message over
+`{"code": "thread_busy"}`, and one on a thread whose run awaits an approval 409
+`{"code": "approval_pending"}`; a body over `MAX_REQUEST_BYTES` gets 413; a message over
 `MAX_MESSAGE_CHARS`, text with an unpaired surrogate, metadata outside the caps (or
 with non-scalar values), `NaN`/`Infinity`, or a `thread_id` outside 1-128 characters of
 `[A-Za-z0-9_.:-]` (a non-UUID under langgraph-server) gets 422, whose `detail` never echoes the
@@ -180,7 +183,9 @@ Other routes:
 - `GET /metrics` -> Prometheus text (no auth unless `METRICS_TOKEN`; 404 when `METRICS_ENABLED=false`)
 - `GET /threads?limit=&offset=&scope=own|all` -> `[{thread_id, owner, created_at, updated_at}]`, most recent first (`thread.list`); `owner` is the hashed principal id; `scope=own` (default) is the caller's threads, a read-across role included; `scope=all` lists every principal's, for a role in `AUTH_READ_ACROSS_ROLES` only (403 otherwise)
 - `GET /threads/{thread_id}/messages` -> ordered messages (ownership enforced); a failed tool call's message carries `error_id` and, outside dev, the same generic text as its `tool.result`
-- `DELETE /threads/{thread_id}` -> 204; the thread, its checkpoints, run records and A2A tasks (owner only; 409 while a run is in progress). Under langgraph-server it is the server's native route
+- `GET /threads/{thread_id}/approvals` -> the thread's approvals (the thread's owner, its approvers, read-across roles): the call, `reason`, `approvers`, `status` (`pending`, `approved`, `rejected`, `expired`), `expires_at`, decision time and comment
+- `POST /threads/{thread_id}/approvals/{approval_id}` with `{"decision": "approve"|"reject", "comment": "..."}` (`approval.decide`: `requester` is the principal who started the run, `role:<x>` any other principal with role x; a requester decides their own call only when `requester` is listed) -> the resumed run as SSE with the events above; 403 not an approver, 404 unknown, 409 not pending, 410 expired
+- `DELETE /threads/{thread_id}` -> 204; the thread, its checkpoints, run records, approvals and A2A tasks (owner only; 409 while a run is in progress). Under langgraph-server it is the server's native route
 - `GET /playground`, `/docs`, `/openapi.json` -> only when `APP_ENV=dev`
 - A2A: card at `/a2a/<agent_directory>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<agent_directory>`;
   the card advertises only the A2A 1.0 JSON-RPC interface (0.3 clients are served on the same URL
@@ -189,7 +194,9 @@ Other routes:
   error (-32602) on both protocol versions, and an unknown task is -32001 on both (no error
   log). `SendMessage` returns the reply as one text part
   of the `response` artifact; streamed, it arrives in chunks, the last with `lastChunk`, and the
-  stored task keeps it as one part
+  stored task keeps it as one part. A gated run moves the task to `input-required` with the
+  approval in a data part; a message on the same task with the data part `{"approval_id": ...,
+  "decision": "approve"|"reject"}` resumes it (same approver rules)
 
 `eval generate` derives `response`, `tool_calls`, `usage`, `latency_ms`, and `status` from these
 events; the A2A executor bridges the same events to task artifacts.
@@ -272,7 +279,14 @@ apis:
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
     limits: {max_calls_per_run: 20, rate_per_minute: 120}         # optional; per run / per replica
-    # approval: reserved (human approval of calls is planned); refused until then
+    approval:                            # optional: calls a human approves before they are sent
+      required_for:                      # methods and/or operations (entry shape above)
+        methods: [POST]
+        operations:
+          - operationId: acknowledgeIncident
+            path: /incidents/{incident_id}/ack
+      approvers: [requester, "role:oncall-lead"]   # requester and/or role:<name>
+      timeout_s: 900                     # 30-86400; then the approval expires (rejected)
 ```
 
 - `get_client(name)` returns a policy-enforcing async client for one declared API. It fails
@@ -298,8 +312,16 @@ apis:
   sending and raise `ApiPolicyError`. A run's counters are dropped when a `/chat` or A2A run
   ends (`end_run`), and otherwise (LangGraph Server runs included) after an hour without a
   call; at most 10 000 runs are tracked.
-- `approval` (on an API or an operation entry) is reserved and refused by the schema ("approval
-  gates are not supported yet (planned); remove the approval key").
+- `approval` (per API): a call `required_for` covers (its method, or an `operations` entry that
+  holds like a denial: the entry's path whatever label the call gives, its operationId, or a
+  call leaving out what the entry knows it by) pauses the run in the client before sending
+  (LangGraph `interrupt()` with the approval; the canonical request is hashed). Approved: the client re-hashes the request it is about to send, refuses
+  it (nothing sent) when it differs, and sends it once. Rejected or expired: nothing is sent and
+  the tool gets a "not approved" error. Only calls the policy allows are gated (approval never
+  widens access). An `approval` key on an operation entry is refused ("not valid on an
+  operation entry; gate the operation with apis.<name>.approval.required_for.operations").
+  The tool re-runs from its start on resume: keep it idempotent up to the call and the request
+  deterministic. Approvals are stored in an `approvals` table beside the checkpoints.
 - Matching: an allowed entry pinning several fields needs all of them to match. Denials win
   and hold on the endpoint: a denial covers every call to a path its `path` covers (with its
   `methods`), whatever `operation_id` the call names, and every call naming its

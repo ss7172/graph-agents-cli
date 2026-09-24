@@ -16,6 +16,8 @@ designated a quality metric). `graph-agents-cli eval metric list` prints the liv
 | `no_tool_calls: true` | the trace has no tool call | answers that must come from the prompt alone |
 | `max_latency_ms: n` | `latency_ms <= n` | latency budget |
 | `max_tokens: n` | `input_tokens + output_tokens <= n` | cost budget |
+| `approvals: [{match, status}]` | each entry matches a distinct gate the run hit (trace `approvals`): `match` by `operation_id` and/or `method` + `path` (template), optional `api`; `status` `gated` (default, any outcome), `approved` or `rejected` | writes that must wait for a human, and how the case decided them |
+| `no_approvals: true` | no call reached an approval gate | injection cases: the planted write never got as far as asking |
 
 All present checks must pass; a failed check marks the case `failed` with a reason.
 
@@ -25,7 +27,7 @@ Modifiers (keys of `expect` that are not checks; `eval metric list` shows them t
 |---|---|---|
 | `ordered` | `false` | `tool_calls` must appear in the listed order |
 | `case_insensitive` | `true` | `contains` / `not_contains` ignore case (casefold); `false` for exact case |
-| `scope` | `final_turn` | on a multi-turn case, `final_turn` reads the final reply and its tool calls, latency and usage; `all_turns` reads every turn: `contains`/`regex` pass when any reply matches, `not_contains` fails when any does, `tool_calls`/`no_tool_calls` read every call in order, `max_latency_ms` bounds each turn, `max_tokens` their sum. `json_schema` always reads the final reply |
+| `scope` | `final_turn` | on a multi-turn case, `final_turn` reads the final reply and its tool calls, latency and usage; `all_turns` reads every turn: `contains`/`regex` pass when any reply matches, `not_contains` fails when any does, `tool_calls`/`no_tool_calls` read every call in order, `approvals`/`no_approvals` every gate, `max_latency_ms` bounds each turn, `max_tokens` their sum. `json_schema` always reads the final reply |
 
 Case-insensitive matching is the safer default for `not_contains`: a refusal check such as
 `not_contains: ["deleted"]` must also fail on "Deleted ORD-1008.".

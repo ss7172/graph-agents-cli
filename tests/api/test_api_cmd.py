@@ -1095,3 +1095,36 @@ def test_approval_notes_a_gate_on_a_method_the_api_does_not_allow(project: Path)
     result = ok("api", "approval", "orders", "--methods", "DELETE", "--approvers", "requester")
     assert "approval never widens access" in " ".join(result.output.split())
     assert policy(project)["orders"]["allowed_methods"] == ["GET", "HEAD"]
+
+
+def _readme_approval_examples() -> list[list[str]]:
+    """The `graph-agents-cli api approval` commands of the README's approval section."""
+    text = README.read_text(encoding="utf-8")
+    section = text.split("### Human approval of calls (`approval`)", 1)[1].split("\n### ", 1)[0]
+    commands = []
+    for block in section.split("```bash\n")[1:]:
+        joined = block.split("```", 1)[0].replace("\\\n", " ")
+        for line in joined.splitlines():
+            line = line.strip()
+            if line.startswith("graph-agents-cli api approval "):
+                commands.append(shlex.split(line.split(" #", 1)[0])[1:])
+    return commands
+
+
+def test_the_readme_approval_examples_work(project: Path) -> None:
+    commands = _readme_approval_examples()
+    assert len(commands) == 2, commands
+    ok(*ORDERS_ADD)
+    ok(
+        *("api", "add", "payments", "--base-url-env", "PAYMENTS_API_BASE_URL"),
+        *("--auth", "none", "--access", "read-write"),
+    )
+    for command in commands:
+        ok(*command)
+    apis = policy(project)
+    assert apis["orders"]["approval"]["approvers"] == ["requester"]
+    assert apis["payments"]["approval"] == {
+        "required_for": {"operations": [{"operationId": "refundPayment"}]},
+        "approvers": ["role:finance-approver"],
+        "timeout_s": 3600,
+    }

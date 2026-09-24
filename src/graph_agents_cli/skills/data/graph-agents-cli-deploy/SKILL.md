@@ -139,9 +139,12 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
    argocd`), metrics-server (only when `hpa.enabled`), the namespace, the image pull secret, the
    app Secret and its required keys, the `jwt` verification settings, the ServiceMonitor's token
    Secret, whether an external DSN requires TLS, every `CHANGE-ME` placeholder (registry, chart
-   image and env, CODEOWNERS, Argo CD `repoURL`), and, when `gh` is logged in, the environment
-   protection, branch protection and (helm-push) `DEPLOY_KUBECONFIG` settings. Nothing is created;
-   install hints are printed for the operator, and every printed command runs as is.
+   image and env, CODEOWNERS, Argo CD `repoURL`), where pending approvals are kept when
+   `api-policy.yaml` gates calls (the `approvals` table of the app database; a warning under
+   `CHECKPOINTER=memory`, which loses paused runs on a restart), and, when `gh` is logged in,
+   the environment protection, branch protection and (helm-push) `DEPLOY_KUBECONFIG` settings.
+   Nothing is created; install hints are printed for the operator, and every printed command
+   runs as is.
 3. **Values:** fill `hostname`, `parentRef`, `tls`, `resources` in `values-<env>.yaml` and review
    `route.publicPaths` (what the Gateway or Ingress publishes). For network isolation copy the
    `networkPolicy` block of `deployment/helm/<name>/examples/networkpolicy.yaml` (DNS, the
