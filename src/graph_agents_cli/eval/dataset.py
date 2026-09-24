@@ -291,6 +291,12 @@ def _validate_expect(expect: dict[str, Any], where: str) -> None:
     if approvals is not None:
         if not isinstance(approvals, list):
             raise EvalConfigError(f"{where}: expect.approvals must be a list of {{match, status}}")
+        if not approvals:
+            # An empty list would check nothing and always pass.
+            raise EvalConfigError(
+                f"{where}: expect.approvals is empty (it would check nothing); list the gated "
+                "calls, or use expect.no_approvals: true"
+            )
         for i, item in enumerate(approvals):
             at = f"{where}: expect.approvals[{i}]"
             if not isinstance(item, dict):

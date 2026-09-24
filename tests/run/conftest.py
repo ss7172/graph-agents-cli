@@ -180,6 +180,17 @@ def _make_handler(server: FakeChatServer) -> type[BaseHTTPRequestHandler]:
                     rows = rows[offset : offset + limit]
                 self._json(status, rows)
                 return
+            if parts.path == "/approvals":
+                query = parse_qs(parts.query)
+                self._json(
+                    *server.book.visible(
+                        self._headers(),
+                        query.get("status", [None])[0],
+                        int(query.get("limit", ["20"])[0]),
+                        int(query.get("offset", ["0"])[0]),
+                    )
+                )
+                return
             match = _APPROVALS_RE.match(parts.path)
             if match:
                 self._json(*server.book.list(unquote(match.group(1)), self._headers()))

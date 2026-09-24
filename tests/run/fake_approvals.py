@@ -18,6 +18,9 @@ It follows the contract the scaffolded runtime implements: a gated call
 pauses the run (``message.end`` with ``status: awaiting_approval`` and the
 ``approval`` payload); ``GET /threads/{thread_id}/approvals`` lists a
 thread's approvals for its owner, its approvers and read-across roles;
+``GET /approvals`` lists across threads the caller's own, the ones naming one
+of its roles and, for a read-across role, every one (``visible_route =
+False`` models an agent without that route: 404);
 ``POST /threads/{thread_id}/approvals/{approval_id}`` takes ``{"decision",
 "comment"}`` and answers 404 (unknown), 403 (not an allowed approver), 410
 (expired), 409 (not pending) or the resumed run as SSE; a new ``/chat``
@@ -107,6 +110,8 @@ class ApprovalBook:
         self.decisions: list[dict[str, Any]] = []
         # Listing shows every approval as pending (a listing read before a decision raced it).
         self.stale_listing = False
+        # GET /approvals exists (False: an agent that lists per thread only, 404).
+        self.visible_route = True
         self.continuation: Callable[[FakeApproval, str], Events] = default_continuation
 
     # -- principals -----------------------------------------------------------
@@ -192,6 +197,32 @@ class ApprovalBook:
                 row["status"] = "pending"
             out.append(row)
         return 200, out
+
+    def visible(
+        self, headers: dict[str, str], status: str | None, limit: int, offset: int
+    ) -> tuple[int, Any]:
+        """GET /approvals: across threads, what the caller may see (newest first)."""
+        if not self.visible_route:
+            return 404, {"detail": "Not Found"}
+        who = self.principal(headers)
+        if who is None:
+            return 401, {"detail": "Unauthorized"}
+        pid, roles = who
+        rows = [
+            a
+            for a in reversed(list(self.approvals.values()))
+            if a.requester == pid
+            or roles & self.read_across_roles
+            or any(x.startswith("role:") and x[len("role:") :] in roles for x in a.approvers)
+        ]
+        out = []
+        for a in rows:
+            row = a.row()
+            if self.stale_listing:
+                row["status"] = "pending"
+            if status is None or row["status"] == status:
+                out.append(row)
+        return 200, out[offset : offset + limit]
 
     def decide(
         self, thread_id: str, approval_id: str, headers: dict[str, str], body: dict[str, Any]

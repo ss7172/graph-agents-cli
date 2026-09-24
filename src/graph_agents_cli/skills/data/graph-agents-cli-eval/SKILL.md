@@ -111,9 +111,10 @@ graph-agents-cli eval metric list [--json]
   generate` decides it as the case's `approvals` instructions say (`[{"decision":
   "approve"|"reject", "match": {"operation_id": ...}}]`, or `match` by `method` and
   `path`), then folds the resumed run into the same turn. A gate no instruction matches makes
-  the case `error`: generate never approves on its own. Decisions go as the eval identity (the
-  requester), or with `GRAPH_AGENTS_CLI_APPROVER_API_KEY` as the bearer when it is set (a
-  principal holding a `role:` gate's role). With `--url` an approved call is sent there for
+  the case `error`: generate never approves on its own. A gate that lists `requester` is
+  decided as the eval identity (the requester); any other with
+  `GRAPH_AGENTS_CLI_APPROVER_API_KEY` as the bearer when it is set (a principal holding the
+  gate's role), so one dataset can mix both. With `--url` an approved call is sent there for
   real, and the warning counts the cases that approve one.
 - `eval grade` runs the deterministic checks in the CLI process first; judge and custom metrics
   then run **inside the project's environment**: the CLI stages `.graph-agents-cli/judge_runner.py`

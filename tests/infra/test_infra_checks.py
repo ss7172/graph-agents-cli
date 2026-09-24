@@ -839,6 +839,14 @@ def test_approval_gates_name_the_approvals_table(project: SimpleNamespace, fake)
     assert "approvals table of the app database (POSTGRES_DSN" in check["detail"]
 
 
+def test_approval_gates_name_the_server_runtimes_table(project: SimpleNamespace, fake):
+    (project.root / "api-policy.yaml").write_text(GATED_POLICY)
+    project.cfg.runtime = "langgraph-server"
+    project.cfg.create_params["runtime"] = "langgraph-server"
+    check = by_name(report_of(invoke("--json")), "approval gates")
+    assert "agent_approvals table of the app database (DATABASE_URI" in check["detail"]
+
+
 def test_approval_gates_warn_with_an_in_memory_checkpointer(project: SimpleNamespace, fake):
     (project.root / "api-policy.yaml").write_text(GATED_POLICY)
     values = project.chart / "values.yaml"

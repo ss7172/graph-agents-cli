@@ -368,6 +368,48 @@ async def test_a_request_changed_after_approval_is_refused(client) -> None:
     assert record is not None and record.status == "approved" and record.used_at is None
 
 
+async def test_an_approval_asked_of_other_approvers_than_the_policy_names_now_sends_nothing(
+    client, tmp_path
+) -> None:
+    end = await _pause(client)
+    assert end["approval"]["approvers"] == ["requester", "role:ops"]
+    # A new image while the call waits: its policy asks for four eyes.
+    _write_policy(tmp_path / "api-policy.yaml", '["role:ops"]')
+    r = await _decide(client, end, "approve")  # allowed by the approvers it was asked of
+    assert r.status_code == 200, r.text
+    result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
+    assert result["is_error"] is True
+    assert SENT == []
+    from {{cookiecutter.agent_directory}}.agent import graph
+
+    state = await graph.aget_state({"configurable": {"thread_id": end["thread_id"]}})
+    tool_message = next(m for m in state.values["messages"] if m.type == "tool")
+    assert "approval gate that has changed" in tool_message.content
+
+
+async def test_approvals_a_failed_run_recorded_do_not_block_the_thread(client, monkeypatch) -> None:
+    record = RUNTIME._record_approvals
+
+    async def record_then_fail(*args: Any, **kwargs: Any) -> Any:
+        await record(*args, **kwargs)
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(RUNTIME, "_record_approvals", record_then_fail)
+    r = await client.post("/chat", json={"message": PROMPT}, headers=_as("alice"))
+    events = parse_sse(r.text)
+    assert events[-1][0] == "error", events
+    thread = events[0][1]["thread_id"]
+    monkeypatch.setattr(RUNTIME, "_record_approvals", record)
+    # Nobody was told about the approval: it is expired, not left pending.
+    listed = (await client.get(f"/threads/{thread}/approvals", headers=_as("alice"))).json()
+    assert [a["status"] for a in listed] == ["expired"]
+    r = await client.post(
+        "/chat", json={"message": "hello", "thread_id": thread}, headers=_as("alice")
+    )
+    assert r.status_code == 200 and parse_sse(r.text)[-1][1]["status"] == "ok"
+    assert SENT == []
+
+
 # --- who decides ---------------------------------------------------------------------
 
 
@@ -775,6 +817,54 @@ async def test_a2a_input_required_round_trip(client) -> None:
     assert len(SENT) == 1 and SENT[0].url.path == "/orders/7/cancel"
     text = "".join(p.get("text", "") for a in finished["artifacts"] for p in a["parts"])
     assert "/orders/7/cancel" in text
+
+
+class NoDecidePolicy(HeaderPolicy):
+    """The header policy, refusing the `approval.decide` action."""
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        if action == "approval.decide":
+            raise HTTPException(403, "approval.decide is not allowed for you")
+
+
+async def test_a2a_decision_needs_the_approval_decide_action(client, monkeypatch) -> None:
+    user = f"ann-{uuid.uuid4().hex[:8]}"
+    sent = await _rpc(
+        client,
+        user,
+        "SendMessage",
+        {"message": {"messageId": "m-1", "role": "ROLE_USER", "parts": [{"text": PROMPT}]}},
+    )
+    task = sent["result"]["task"]
+    approval = _parts_data(task["status"]["message"])["approval"]
+    monkeypatch.setattr(auth_module, "get_policy", lambda: NoDecidePolicy())
+    refused = await _rpc(
+        client,
+        user,
+        "SendMessage",
+        {
+            "message": {
+                "messageId": "m-2",
+                "role": "ROLE_USER",
+                "taskId": task["id"],
+                "contextId": task["contextId"],
+                "parts": [
+                    {"data": {"approval_id": approval["approval_id"], "decision": "approve"}}
+                ],
+            }
+        },
+    )
+    after = refused["result"]["task"]
+    assert after["status"]["state"] == "TASK_STATE_INPUT_REQUIRED", after
+    note = "".join(p.get("text", "") for p in after["status"]["message"]["parts"])
+    assert "approval.decide is not allowed" in note
+    # The HTTP route refuses it the same way; the approval stays pending.
+    paused_on = {"thread_id": task["contextId"], "approval": approval}
+    r = await _decide(client, paused_on, "approve", user)
+    assert r.status_code == 403
+    assert SENT == []
+    record = await RUNTIME.approvals.get(approval["approval_id"])
+    assert record is not None and record.status == "pending"
 
 
 async def test_a2a_decision_by_a_requester_the_policy_does_not_list_is_refused(

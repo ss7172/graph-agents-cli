@@ -81,7 +81,27 @@ def test_list_shows_a_threads_pending_calls_and_how_to_decide_them(chat_server):
     assert req["headers"]["authorization"] == "Bearer alice-token"
 
 
-def test_list_without_a_thread_searches_your_own_threads(chat_server):
+def test_list_without_a_thread_shows_what_you_may_see_across_threads(chat_server):
+    paused(chat_server, "t-1")
+    paused(chat_server, "t-2", path="/orders/ORD-2/cancel")
+    paused(chat_server, "t-bob", requester="bob", path="/orders/ORD-9/cancel")
+    paused(
+        chat_server, "t-carol", requester="carol", approvers=["role:support"],
+        path="/orders/ORD-4/cancel",
+    )  # fmt: skip
+    result = approvals("list", "--url", chat_server.url)
+    assert result.exit_code == 0, result.output
+    assert "ORD-1" in result.output and "ORD-2" in result.output
+    assert "ORD-9" not in result.output  # bob's call, which alice may not decide
+    # Carol's call names alice's role: alice finds it without its thread id.
+    assert "ORD-4" in result.output and "--thread-id t-carol" in result.output
+    assert "another principal's thread" not in result.output
+    (req,) = [r for r in chat_server.requests if r["path"].startswith("/approvals")]
+    assert "status=pending" in req["path"]
+
+
+def test_list_without_a_thread_falls_back_to_your_own_threads(chat_server):
+    chat_server.book.visible_route = False  # an agent that lists per thread only
     paused(chat_server, "t-1")
     paused(chat_server, "t-2", path="/orders/ORD-2/cancel")
     paused(chat_server, "t-bob", requester="bob", path="/orders/ORD-9/cancel")
@@ -90,6 +110,15 @@ def test_list_without_a_thread_searches_your_own_threads(chat_server):
     assert "ORD-1" in result.output and "ORD-2" in result.output
     assert "ORD-9" not in result.output  # bob's thread is not alice's
     assert "another principal's thread" in result.output
+
+
+def test_a_role_approver_decides_without_the_thread_id(chat_server):
+    approval = paused(chat_server, "t-carol", requester="carol", approvers=["role:support"])
+    result = approvals("approve", approval.approval_id, "--url", chat_server.url)
+    assert result.exit_code == 0, result.output
+    (req,) = decisions(chat_server)
+    assert req["path"] == f"/threads/t-carol/approvals/{approval.approval_id}"
+    assert chat_server.book.sent and chat_server.book.decisions[0]["by"] == "alice"
 
 
 def test_list_hides_decided_ones_unless_all_and_prints_json(chat_server):
@@ -171,6 +200,10 @@ def test_a_decision_without_a_thread_finds_the_approval_on_your_threads(chat_ser
 
 def test_an_unknown_approval_is_not_found_and_nothing_is_posted(chat_server):
     paused(chat_server)
+    result = approvals("approve", "nope", "--url", chat_server.url)
+    assert result.exit_code == 1
+    assert "No approval nope on the threads you may see" in result.output
+    chat_server.book.visible_route = False
     result = approvals("approve", "nope", "--url", chat_server.url)
     assert result.exit_code == 1
     assert "No approval nope on your threads" in result.output
@@ -298,13 +331,21 @@ def test_a_thread_deleted_while_its_call_waits_cannot_be_decided(chat_server):
 
 def test_ids_stay_one_path_segment(chat_server):
     paused(chat_server)
-    for bad in ("../../chat", "a/b", "x?decision=approve", "%2e%2e"):
+    for bad in ("../../chat", "a/b", "x?decision=approve", "%2e%2e", ".", ".."):
         url = _chat_client.approval_url(chat_server.url, "t-1", bad)
         assert url.startswith(f"{chat_server.url}/threads/t-1/approvals/")
         assert "/" not in url[len(f"{chat_server.url}/threads/t-1/approvals/") :]
         assert "?" not in url
     with pytest.raises(ValueError):
         _chat_client.approval_url(chat_server.url, "t-1", "")
+    # Dot segments stay segments on the wire too (a client would drop or climb them).
+    for thread_id, approval_id in (("t-1", ".."), ("t-1", "."), ("..", "x"), ("..", "..")):
+        chat_server.requests.clear()
+        with pytest.raises(ChatHTTPError):
+            list(_chat_client.decide_approval(chat_server.url, thread_id, approval_id, "approve"))
+        (sent,) = chat_server.requests
+        assert sent["path"].startswith("/threads/") and "/approvals/" in sent["path"], sent
+        assert sent["path"].count("/") == 4, sent
     result = approvals("approve", "../../chat", "--url", chat_server.url, "--thread-id", "t-1")
     assert result.exit_code == 1
     assert not [r for r in chat_server.requests if r["path"] == "/chat"]

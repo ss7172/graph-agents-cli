@@ -249,12 +249,22 @@ def warn_live_target(
     )
 
 
+# Headers that carry the eval identity's credential: an approver's decisions go without them.
+_CREDENTIAL_HEADERS = frozenset({"authorization", "cookie", "x-api-key"})
+
+
 def decision_headers_for(headers: dict[str, str], env: dict[str, str]) -> dict[str, str] | None:
-    """The headers decisions on gated calls go with: the approver's credential when set."""
+    """The headers decisions on ``role:`` gates go with: the approver's credential when set.
+
+    Only the approver's bearer credential identifies the decider: the eval
+    identity's own credentials (its bearer, cookies, API key header) are left
+    out, so a policy that reads them cannot take the decision as the eval
+    identity. A gate that lists ``requester`` is decided as the eval identity.
+    """
     key = env.get(APPROVER_KEY_ENV, "")
     if not key:
         return None
-    decided = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+    decided = {k: v for k, v in headers.items() if k.lower() not in _CREDENTIAL_HEADERS}
     decided["Authorization"] = f"Bearer {key}"
     return decided
 

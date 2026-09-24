@@ -251,12 +251,18 @@ def record_from_interrupt(
 
 
 def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
-    """The resume value for the interrupt of `record`: `approve`, `reject` or `expired`."""
+    """The resume value for the interrupt of `record`: `approve`, `reject` or `expired`.
+
+    `approvers` are the ones the approval was asked of: the client refuses an
+    approval whose approvers differ from what the policy's gate names when
+    the call is about to be sent.
+    """
     return {
         "type": APPROVAL_DECISION,
         "approval_id": record.approval_id,
         "decision": decision,
         "call_hash": record.call_hash,
+        "approvers": list(record.approvers),
         "comment": record.comment,
     }
 

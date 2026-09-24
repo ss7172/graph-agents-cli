@@ -404,8 +404,9 @@ Approval never widens access: the call must still be allowed, and denials still 
 
 - **Pause.** Before sending a gated call the client builds the canonical request (API, method,
   full path, query, JSON body, operation id), hashes it and calls LangGraph `interrupt()` with
-  the approval (id, the call, the tool and the model's stated reason, approvers,
-  `expires_at`); the run's state stays in the checkpointer. `/chat` ends the stream with
+  the call (the tool and the model's stated reason, approvers, timeout); the runtime records
+  the approval (its id, `expires_at`) when the run pauses, and the run's state stays in the
+  checkpointer. `/chat` ends the stream with
   `message.end` `"status": "awaiting_approval"` and `approval`; a new message on the thread
   gets 409 `{"code": "approval_pending"}`; an A2A task goes `input-required` with the approval
   in a data part.
@@ -418,12 +419,16 @@ Approval never widens access: the call must still be allowed, and denials still 
   list|approve|reject` does the rest (locally or with `--url`). Over A2A, send a message on the
   same task with the data part `{"approval_id": ..., "decision": ...}`.
 - **Binding.** On approve the client recomputes the hash of the request it is about to send and
-  refuses (nothing sent) when it differs; the approved call is sent once. Reject or expiry sends
-  nothing and the tool gets a "not approved" error. The tool re-runs from its start on resume
+  refuses (nothing sent) when it differs, or when the policy's gate now names other approvers
+  than the approval was asked of; the approved call is sent once. Reject or expiry sends
+  nothing and the tool gets a "not approved" error. A tool call sends at most one gated call (a
+  second is refused): give each gated call its own tool call. `client.request(...,
+  redact=["card_number"])` masks fields in the approver's view only (the hash covers the full
+  request). The tool re-runs from its start on resume
   (LangGraph re-executes the interrupted node), hence the rules of section 2: idempotent up to
   the call, deterministic request.
 - **Storage.** An `approvals` table beside the checkpoints (`fastapi`: the checkpointer's
-  Postgres; `langgraph-server`: `DATABASE_URI`), swept for expiry; deleting a thread deletes its
+  Postgres; `langgraph-server`: `agent_approvals` in `DATABASE_URI`), swept for expiry; deleting a thread deletes its
   approvals. Under `CHECKPOINTER=memory` a paused run lives in one process only.
 - **Four-eyes needs per-user principals.** Under `shared-bearer` every caller is the principal
   `shared`, so only `requester` gates can be decided; `role:` approvers need `jwt` (roles from

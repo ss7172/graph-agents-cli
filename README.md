@@ -148,7 +148,7 @@ line naming the file that implements it.
 | `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest's `cli_version` or the install-spec override is the reason) |
 | `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
 | `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL. A bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, not `--header`; the footer names the thread and how to resume it, after an error too; `-v` adds one line per event. A run paused on a gated call prints the call; on a terminal, when the requester is an approver, it asks `Approve? [y/N]` and continues, otherwise it prints the `approvals` commands and exits 0 (see [Human approval of calls](#human-approval-of-calls-approval)) |
-| `approvals list [--thread-id ID] [--all] [--json]` / `approvals approve\|reject APPROVAL_ID [--thread-id ID] [--comment TEXT] [-v]` (each with `[--url URL] [-H]... [--cookie]...`) | List the calls runs are waiting on (a thread's, or those on your own threads), or decide one: the call is shown first, the decision carries only `approve`/`reject` and the comment, and the resumed run streams. Same credentials as `run`; exit 1 when the server refuses (not an approver, already decided, expired, not found) |
+| `approvals list [--thread-id ID] [--all] [--json]` / `approvals approve\|reject APPROVAL_ID [--thread-id ID] [--comment TEXT] [-v]` (each with `[--url URL] [-H]... [--cookie]...`) | List the calls runs are waiting on (a thread's, or every one you may see: your own and the ones a role of yours may decide), or decide one: the call is shown first, the decision carries only `approve`/`reject` and the comment, and the resumed run streams. Same credentials as `run`; exit 1 when the server refuses (not an approver, already decided, expired, not found) |
 | `install [--clean] [--locked]` | `uv sync` the project |
 | `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it; a refused call comes with the `api` command that would allow it) |
 | `api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] [--forward-header H] --access read-only\|read-write\|custom [--methods M,...] [--openapi PATH] [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]` | Declare an outbound API (creates `api-policy.yaml` when absent); `--access` is required, there is no default |
@@ -177,8 +177,8 @@ CLI environment variables: `GRAPH_AGENTS_CLI_INSTALL_SPEC` (install source),
 `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` (no GitHub release check), `GRAPH_AGENTS_CLI_API_KEY`
 (the bearer credential `run` and `eval` send, locally and with `--url`, when no `Authorization`
 header is given: an `API_KEY` or a JWT; it keeps the credential out of argv and shell history),
-`GRAPH_AGENTS_CLI_APPROVER_API_KEY` (the bearer credential `eval generate` decides gated calls
-with, when the eval identity is not an approver), `GRAPH_AGENTS_CLI_RUN_PORT` (port of
+`GRAPH_AGENTS_CLI_APPROVER_API_KEY` (the bearer credential `eval generate` decides `role:`
+gates with; a gate that lists `requester` is decided as the eval identity), `GRAPH_AGENTS_CLI_RUN_PORT` (port of
 the local server `run` and `eval` start), `GRAPH_AGENTS_CLI_DEBUG=1` (tracebacks behind
 one-line errors), `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` (ignore extension overrides; set in
 every generated CI and CD job).
@@ -216,6 +216,7 @@ Two runtimes share the same routes, auth and clients:
 |---|---|---|
 | `POST /chat` | `chat.send` | Body `{"thread_id": "optional", "message": "...", "metadata": {}}`, `Accept: text/event-stream`. Events: `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id, returned in `message.start`); send it to continue one (owner only). A run paused on a gated call ends with `message.end` status `awaiting_approval` and its `approval`; a new message on that thread gets 409 `{"code": "approval_pending"}` until it is decided |
 | `GET /threads/{thread_id}/approvals` | owner, its approvers, read-across roles | The thread's approvals: the call (`api`, `method`, `path`, `query`, `body`, `operation_id`), `reason`, `approvers`, `status` (`pending`, `approved`, `rejected`, `expired`), `expires_at`, decision time and comment |
+| `GET /approvals?status=&limit=&offset=` | any authenticated principal (`approval.read`) | Across threads, newest first: the caller's own approvals, the ones naming one of its roles (it may decide them), and every one for a read-across role; each row carries its `thread_id` |
 | `POST /threads/{thread_id}/approvals/{approval_id}` | an approver (`approval.decide`) | Body `{"decision": "approve"\|"reject", "comment": "..."}`. Resumes the run and streams the rest as `/chat` does; 403 for anyone who is not an approver, 404 unknown, 409 not pending (decided once), 410 expired |
 | `GET /threads` | `thread.list` | The caller's threads, most recent first: `?limit=1..100` (default 20) `&offset=`; `[{thread_id, owner, created_at, updated_at}]`, `owner` being the hashed principal id. `?scope=all` lists every principal's threads, for a role in `AUTH_READ_ACROSS_ROLES` only (403 otherwise); the default `scope=own` lists only the caller's, read-across roles included |
 | `GET /threads/{thread_id}/messages` | `thread.read` | The thread's messages; owner, or a role in `AUTH_READ_ACROSS_ROLES` |
@@ -580,7 +581,9 @@ apis:
   `reject`, or the prompt of `run`); the run resumes and streams the rest.
 - **Binding and single-use.** An approval covers exactly the call shown: the agent hashes the
   request it recorded and refuses to send one that differs (another body, another path), and
-  it sends the approved call once. A rejected or expired call is never sent; the tool gets a
+  it sends the approved call once. The approval also holds only under the gate it was asked
+  under: if the policy's approvers for the call changed while it waited (a new image), the
+  call is refused and the agent asks again. A rejected or expired call is never sent; the tool gets a
   "not approved" error that the model relays. An approval is decided once (409 after that,
   410 once expired), and while one is pending the thread takes no new message (409
   `approval_pending`).
@@ -617,11 +620,11 @@ apis:
   rejects). Without a terminal, or for a call gated for others, it prints the approval id and
   the exact `graph-agents-cli approvals approve` / `reject` commands and exits 0 with an
   "Awaiting approval" line; a one-off local server with the in-memory checkpointer is kept
-  running so the paused run survives. `approvals list` shows what waits on a thread (or on
-  your own threads); the approver of another principal's call needs the thread id, which the
-  requester's `run` printed.
+  running so the paused run survives. `approvals list` shows what waits on a thread, or,
+  without `--thread-id`, every approval you may see (`GET /approvals`: your own, and the ones
+  a role of yours may decide), so a `role:` approver finds the calls waiting for them.
 - **Where approvals live.** In an `approvals` table in the agent's database, beside the
-  checkpoints (`POSTGRES_DSN`; `DATABASE_URI` under `langgraph-server`): the call and its
+  checkpoints (`POSTGRES_DSN`; `agent_approvals` in `DATABASE_URI` under `langgraph-server`): the call and its
   hash, the thread, run and hashed requester, the status, the hashed decider, the comment and
   the expiry. Pending approvals past their expiry are swept and reported as expired; deleting
   a thread deletes its approvals; `/metrics` counts approvals requested, approved, rejected
@@ -630,7 +633,8 @@ apis:
 - **A2A.** A gated run moves the task to `input-required` with a data part holding the
   approval; the client resumes it with a message on the same task carrying the data part
   `{"approval_id": "...", "decision": "approve"}` (or `"reject"`), under the same approver
-  rules.
+  rules and the auth policy's `approval.decide` action. A task belongs to its principal, so
+  only the requester decides over A2A; `role:` approvers use the HTTP routes.
 - **Checks.** `lint`, `api check` and `api show` list which declared calls wait for whose
   approval; eval cases say how to decide each gate (see [Evaluation](#evaluation)).
 
@@ -730,9 +734,10 @@ that metric (a case that does not declare it is not counted as a pass). The
   matches makes the case an error: generate never approves on its own. Traces record every
   gate (`approvals`), and `expect.approvals: [{"match": {...}, "status":
   "gated"|"approved"|"rejected"}]` and `expect.no_approvals: true` check them (an injection
-  case can assert that the planted write never even reached a gate). Decisions go as the
-  eval identity, or as `GRAPH_AGENTS_CLI_APPROVER_API_KEY` when set (a `role:` gate's
-  approver); with `--url`, an approved call is sent there for real.
+  case can assert that the planted write never even reached a gate). A gate that lists
+  `requester` is decided as the eval identity (it started the run); any other as
+  `GRAPH_AGENTS_CLI_APPROVER_API_KEY` when set (a principal holding the gate's role), so one
+  dataset can mix both; with `--url`, an approved call is sent there for real.
 - A multi-turn case with `expect.scope: all_turns` whose trace has no per-turn records (an older
   traces file, an `eval generate` override) is graded on its final turn, and `eval grade` says
   which cases.
@@ -1193,8 +1198,8 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 - **Human-in-the-loop** is wired for the policy's approval gates only: an `interrupt()` of
   your own in the served graph is not exposed over `/chat` (`message.end` has no status for
   it). `run --mode a2a` prints a gated call and how to resume the task but does not prompt;
-  `eval generate` decides gates as the eval identity unless
-  `GRAPH_AGENTS_CLI_APPROVER_API_KEY` names an approver.
+  `eval generate` decides `requester` gates as the eval identity and `role:` gates as the
+  one principal of `GRAPH_AGENTS_CLI_APPROVER_API_KEY`.
 - `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after
   `enhance --runtime`, run `graph-agents-cli install` to bring `uv.lock` up to date; required
   steps are reported only by the enhance that changes the settings.

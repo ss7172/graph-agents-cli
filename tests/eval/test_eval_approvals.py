@@ -185,6 +185,7 @@ def test_valid_instructions_and_expectations_parse() -> None:
             "unknown key(s) always",
         ),
         (None, {"approvals": {"match": {}}}, "expect.approvals must be a list"),
+        (None, {"approvals": []}, "expect.approvals is empty"),
         (None, {"approvals": [{"status": "approved"}]}, "must be an object"),
         (
             None,
@@ -292,6 +293,21 @@ def test_a_refused_decision_is_a_case_error(fake_chat, fake_decide, code, status
         assert "GRAPH_AGENTS_CLI_APPROVER_API_KEY" in trace["error"]
 
 
+def test_a_role_gate_the_approver_key_may_not_decide_says_so(fake_chat, fake_decide) -> None:
+    fake_chat({"cancel it": paused(dict(CANCEL, approvers=["role:ops"]))})
+    decide = fake_decide(refuse=403)
+    trace = run_case(
+        "http://x",
+        case(APPROVE_CANCEL),
+        headers={"Authorization": "Bearer eval-key"},
+        decision_headers={"Authorization": "Bearer ops-key"},
+    )
+    assert decide.calls[0]["headers"] == {"Authorization": "Bearer ops-key"}
+    assert trace["approvals"][0]["status"] == "forbidden"
+    # It names the credential that was refused, not "set the variable" (it is set).
+    assert "the principal of GRAPH_AGENTS_CLI_APPROVER_API_KEY may not decide" in trace["error"]
+
+
 def test_several_gates_in_one_turn_and_a_bound_on_them(fake_chat, fake_decide) -> None:
     fake_chat({"cancel it": paused()})
     second = dict(CANCEL, approval_id="a-2", path="/orders/ORD-2/cancel")
@@ -334,27 +350,47 @@ def test_generate_records_approvals_and_uses_the_approver_credential(
                     "approvals": [{"match": {"operation_id": "cancelOrder"}, "status": "approved"}]
                 },
             },
+            {
+                "id": "confirm",
+                "messages": [{"role": "user", "content": "confirm it"}],
+                "approvals": APPROVE_CANCEL,
+            },
             {"id": "surprise", "messages": [{"role": "user", "content": "surprise"}]},
         ],
     )
-    fake_chat({"cancel it": paused(), "surprise": paused(thread_id="t-2")})
+    four_eyes = dict(CANCEL, approval_id="a-ops", approvers=["role:ops"])
+    fake_chat(
+        {
+            "cancel it": paused(four_eyes),
+            "confirm it": paused(thread_id="t-3"),
+            "surprise": paused(thread_id="t-2"),
+        }
+    )
     decide = fake_decide()
     monkeypatch.setenv("GRAPH_AGENTS_CLI_APPROVER_API_KEY", "ops-key")
     result = runner.invoke(
         cmd_generate,
-        ["--url", "http://agent.example", "--header", "Authorization: Bearer eval-key"],
+        [
+            "--url", "http://agent.example",
+            "--header", "Authorization: Bearer eval-key",
+            "--cookie", "session=eval-session",
+        ],
         catch_exceptions=False,
-    )
+    )  # fmt: skip
     assert result.exit_code == 2, result.output
     out = " ".join(result.output.split())
-    assert "1 case(s) approve gated calls (cancel)" in out
+    assert "2 case(s) approve gated calls (cancel, confirm)" in out
     assert "surprise: error: unexpected approval gate" in out
     traces = {t["case_id"]: t for t in read_traces(project)["traces"]}
-    assert traces["cancel"]["status"] == "ok"
+    assert traces["cancel"]["status"] == "ok" and traces["confirm"]["status"] == "ok"
     assert traces["cancel"]["approvals"][0]["status"] == "approved"
     assert traces["surprise"]["approvals"][0]["status"] == "unexpected"
-    # The decision went as the approver; the chat as the eval identity.
-    assert decide.calls[0]["headers"]["Authorization"] == "Bearer ops-key"
+    calls = {c["approval_id"]: c["headers"] for c in decide.calls}
+    # A role: gate is decided as the approver, without the eval identity's cookie ...
+    assert calls["a-ops"]["Authorization"] == "Bearer ops-key"
+    assert not any(k.lower() == "cookie" for k in calls["a-ops"])
+    # ... and a requester gate as the eval identity, which started the run.
+    assert calls["a-1"]["Authorization"] == "Bearer eval-key"
 
 
 # ---------------------------------------------------------------------------

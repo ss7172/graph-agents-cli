@@ -109,6 +109,22 @@ def test_decide_commands_quote_ids_and_carry_flags():
     assert "Only another principal can decide it" in lines[-1]
 
 
+def test_an_option_like_id_cannot_become_an_option_of_the_printed_command():
+    approval = Approval.from_payload({"approval_id": "--url=http://evil.example"})
+    assert approval is not None
+    lines = awaiting_lines(approval, "t-1", " --header 'Authorization: <redacted>'")
+    approve = shlex.split(lines[1].split(":", 1)[1])
+    reject = shlex.split(lines[2].split(":", 1)[1])
+    for argv in (approve, reject):
+        # Everything after `--` is the APPROVAL_ID argument, never an option.
+        assert argv[-2:] == ["--", "--url=http://evil.example"]
+    assert reject[reject.index("--comment") + 1] == "<why>"
+    # The redacted credential is flagged, and no approvers means none is named.
+    assert "  (re-supply the redacted credential values)" in lines
+    assert "did not say who may decide" in lines[-1]
+    assert "requester is not an approver" not in "\n".join(lines)
+
+
 @pytest.mark.parametrize(
     ("match", "problem"),
     [

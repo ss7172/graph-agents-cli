@@ -958,6 +958,21 @@ def require(action: str) -> Callable[[Request], Awaitable[Principal]]:
     return dependency
 
 
+async def authorize_action(principal: Principal, action: str, resource: str | None = None) -> None:
+    """Authorize `action` for an authenticated principal (as `require`: 403, or 503).
+
+    For decisions taken outside a route of their own, such as an approval
+    decided over A2A: the endpoint authorized `a2a.invoke`, the decision
+    needs `approval.decide` as well.
+    """
+    if action not in ACTIONS:
+        raise ValueError(f"Unknown action {action!r}; expected one of {sorted(ACTIONS)}")
+    try:
+        await get_policy().authorize(principal, action, resource)
+    except (HTTPException, NotImplementedError) as exc:
+        raise _as_http_exception(exc) from exc
+
+
 async def authenticate_and_authorize(
     request: Request, action: str, resource: str | None = None
 ) -> Principal:
@@ -1027,7 +1042,8 @@ def build_sdk_auth() -> Any:
     * a run that carries a `command` (a resume of a paused run) is refused:
       a run paused for the approval of a gated API call resumes only through
       the app's approval routes, which check who may decide (the app's
-      approvals ledger refuses a forged resume anyway).
+      approvals ledger refuses a forged resume anyway). A new run on a thread
+      whose approval is still pending is refused with 409, as `/chat` does.
     * the raw principal id is kept only in the thread metadata, where the
       owner filters need it. The server merges thread metadata into every
       run's metadata (and from there into traced config metadata and
@@ -1193,6 +1209,19 @@ def build_sdk_auth() -> Any:
                 detail="Resuming a run is done through the app's approval routes "
                 "(POST /threads/{thread_id}/approvals/{approval_id}).",
             )
+        thread_id = value.get("thread_id") if isinstance(value, dict) else None
+        if thread_id is not None and not _is_studio(ctx):
+            # Imported here: chat.py imports this module.
+            from {{cookiecutter.agent_directory}}.app_utils.chat import RUNTIME
+
+            if await RUNTIME.pending_approvals(str(thread_id)):
+                # A thread waiting for an approval takes no new run (as /chat's
+                # 409 approval_pending): it would abandon the pending approval.
+                raise Auth.exceptions.HTTPException(
+                    status_code=409,
+                    detail="approval_pending: a gated API call on this thread waits for a "
+                    "decision; decide it first (GET /threads/{thread_id}/approvals).",
+                )
         metadata = _metadata_of(value)
         if value.get("thread_id") is None or value.get("if_not_exists") == "create":
             # The run may create its thread, whose metadata is then the run's

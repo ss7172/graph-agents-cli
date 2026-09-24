@@ -165,12 +165,13 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   start), `3` configuration error. A signal during `run` stops the server it started before
   exiting.
 - `approvals`: the client of the approval routes, for the project's local server (the running
-  one; with none, a temporary one only under a postgres checkpointer, since an in-memory paused
-  run dies with its server) or `--url`, with `run`'s credentials. `list` shows a thread's
-  pending approvals (`--all`: decided ones too), or those on the caller's own threads without
-  `--thread-id`; `approve` / `reject` show the call, send only the decision and `--comment`,
-  and stream the resumed run. An approver of another principal's call needs `--thread-id` (the
-  requester's `run` printed it). Exit `1` when the server refuses: not an approver (403),
+  one; with none, a temporary one under a postgres checkpointer or the `langgraph-server`
+  runtime, since an in-memory `fastapi` paused run dies with its server) or `--url`, with
+  `run`'s credentials. `list` shows a thread's pending approvals (`--all`: decided ones too),
+  or, without `--thread-id`, every one the caller may see (`GET /approvals`: its own and the
+  ones a role of its may decide; an agent without that route: the caller's own threads);
+  `approve` / `reject` show the call, send only the decision and `--comment`, and stream the
+  resumed run. Exit `1` when the server refuses: not an approver (403),
   unknown (404), already decided (409), expired (410). Deciding is the approver's act: never
   approve on the user's behalf.
 - `install`: `uv sync` (`--clean` recreates `.venv`; `--locked` asserts `uv.lock` matches
@@ -281,8 +282,8 @@ a warning names the target (credentials in the URL shown as `***@`, never stored
 results) and the write methods `api-policy.yaml` allows: every tool call runs for real there.
 `eval grade` warns when the agent or the judge ran on the fake model (a met gate is then a
 plumbing check only). A case that reaches a gated call decides it with its `approvals`
-instructions (an unmatched gate is a case error); `GRAPH_AGENTS_CLI_APPROVER_API_KEY` sends the
-decisions as an approver other than the eval identity. Details: `/graph-agents-cli-eval`.
+instructions (an unmatched gate is a case error): a `requester` gate as the eval identity, a
+`role:` gate as `GRAPH_AGENTS_CLI_APPROVER_API_KEY` when set. Details: `/graph-agents-cli-eval`.
 
 ## Deploy
 

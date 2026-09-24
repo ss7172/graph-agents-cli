@@ -188,7 +188,11 @@ def test_a_new_message_on_a_thread_awaiting_approval_says_what_to_do(chat_server
     result = invoke("more", "--url", chat_server.url, "--thread-id", "t-1", env=ALICE)
     assert result.exit_code == 1
     assert "HTTP 409" in result.output
-    assert "decide it first (graph-agents-cli approvals list --thread-id t-1)" in result.output
+    # The hint repeats where the run went, so it points at the same agent.
+    assert (
+        f"decide it first (graph-agents-cli approvals list --thread-id t-1 --url {chat_server.url})"
+        in result.output
+    )
 
 
 def test_a_pause_without_an_approval_id_is_an_error(chat_server, remote):

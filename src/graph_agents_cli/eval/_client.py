@@ -179,9 +179,11 @@ def _consume_turn(
 ) -> dict[str, Any]:
     """Send one user message and fold the stream into a per-turn record.
 
-    A pause on a gated call is decided per ``approvals`` (with
-    ``decision_headers``, else ``headers``) and the continuation is folded
-    into the same record; latency and usage add up over the runs.
+    A pause on a gated call is decided per ``approvals`` and the
+    continuation is folded into the same record; latency and usage add up
+    over the runs. A gate that lists ``requester`` is decided as the eval
+    identity (``headers``: it started the run); any other with
+    ``decision_headers`` (an approver's credential) when given.
     """
     turn: dict[str, Any] = {
         "status": STATUS_MISSING,
@@ -220,7 +222,8 @@ def _consume_turn(
                 end,
                 turn,
                 approvals=approvals,
-                headers=decision_headers or headers,
+                headers=headers,
+                approver_headers=decision_headers,
                 timeout=timeout,
                 case_id=case_id,
             )
@@ -261,10 +264,15 @@ def _resolve_gate(
     *,
     approvals: Sequence[Mapping[str, Any]],
     headers: Mapping[str, str],
+    approver_headers: Mapping[str, str] | None = None,
     timeout: float,
     case_id: str | None,
 ) -> Iterator[Any] | None:
-    """Decide the gate a run paused on; the resumed run's events, or None (turn errored)."""
+    """Decide the gate a run paused on; the resumed run's events, or None (turn errored).
+
+    As the eval identity (``headers``) when the gate lists ``requester``;
+    otherwise as the approver (``approver_headers``) when one is set.
+    """
     approval = Approval.from_payload(end.get("approval"), thread_id=turn["thread_id"])
     if approval is not None and turn["thread_id"]:
         # The decision is about this case's own thread, whatever the payload names.
@@ -293,6 +301,9 @@ def _resolve_gate(
     decision = str(instruction["decision"])
     record["decision"] = decision
     record["match"] = describe_match(instruction["match"])
+    as_approver = approver_headers is not None and not approval.requester_may_decide
+    if as_approver:
+        headers = approver_headers
     try:
         events = _opened(
             _decide(
@@ -315,8 +326,12 @@ def _resolve_gate(
         )
         if exc.status_code == 403:
             turn["error"] += (
-                "; the eval identity is not an approver of this gate (set "
-                "GRAPH_AGENTS_CLI_APPROVER_API_KEY to an approver's credential)"
+                "; the principal of GRAPH_AGENTS_CLI_APPROVER_API_KEY may not decide this gate "
+                "(it needs a role the gate lists, and must not be the eval identity)"
+                if as_approver
+                else "; the eval identity is not an approver of this gate (set "
+                "GRAPH_AGENTS_CLI_APPROVER_API_KEY to the credential of a principal holding a "
+                "role it lists)"
             )
         return None
     record["status"] = APPROVAL_APPROVED if decision == DECISION_APPROVE else APPROVAL_REJECTED

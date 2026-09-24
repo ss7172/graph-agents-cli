@@ -561,7 +561,8 @@ def check_approvals(
 
     A gated call pauses its run until an approver decides; the paused run
     lives in the checkpointer and the approval in the ``approvals`` table of
-    the app database. With the in-memory checkpointer both are lost when the
+    the app database (``agent_approvals`` in ``DATABASE_URI`` under
+    langgraph-server). With the in-memory checkpointer both are lost when the
     pod restarts, and another replica cannot resume them.
     """
     from graph_agents_cli._api_policy import POLICY_FILENAME
@@ -590,13 +591,15 @@ def check_approvals(
                 "in the app database",
             )
         ]
-    where = "DATABASE_URI" if settings.runtime == "langgraph-server" else "POSTGRES_DSN"
+    server = settings.runtime == "langgraph-server"
+    where = "DATABASE_URI" if server else "POSTGRES_DSN"
+    table = "agent_approvals" if server else "approvals"
     return [
         Check(
             name,
             INFO,
             False,
-            f"{apis}; pending and decided approvals are kept in the approvals table of the "
+            f"{apis}; pending and decided approvals are kept in the {table} table of the "
             f"app database ({where}, beside the checkpoints): back it up with them, and keep "
             "its retention in line with RETENTION_DAYS",
         )

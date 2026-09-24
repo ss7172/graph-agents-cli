@@ -317,7 +317,7 @@ async def test_auth_none_sends_no_credential(policy_file: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "item_id", ["1/../../admin", "../admin", "..", ".", "1/extra", "a/b", "a\\b", "", " 1"]
+    "item_id", ["1/../../admin", "../admin", "..", ".", "1/extra", "a/b", "a\\b", "", " 1", "1;x"]
 )
 async def test_path_params_refuse_traversal_before_sending(policy_file: Path, item_id: str) -> None:
     calls: list[httpx.Request] = []
@@ -338,6 +338,10 @@ async def test_path_params_refuse_traversal_before_sending(policy_file: Path, it
         "/items/1%2F..%2F..%2Fadmin",
         "/items//1",
         "/admin",
+        # Path parameters: servers that strip them route these to /items/1.
+        "/items/1;jsessionid=x",
+        "/items/1%3B",
+        "/items/1%3bx",
     ],
 )
 async def test_concrete_paths_are_validated(policy_file: Path, path: str) -> None:

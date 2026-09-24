@@ -265,15 +265,17 @@ request waits for someone who sees exactly what it does.
   `GET /approvals?status=pending` across threads) and decides it
   (`POST /threads/{id}/approvals/{approval_id}`); the run resumes, acting as the requester, and streams
   as `/chat` does. A2A clients see the task move to `input-required` with the approval in a data part and
-  answer on the same task with a data part `{"approval_id": "...", "decision": "approve"}`. The
+  answer on the same task with a data part `{"approval_id": "...", "decision": "approve"}` (the same checks,
+  `approval.decide` included; a task belongs to its principal, so only the requester decides there). The
   playground (`APP_ENV=dev`) shows Approve and Reject buttons. `graph-agents-cli run` and
   `graph-agents-cli approvals list|approve|reject` do the same from the command line.
 - **Bound and single use.** The approval covers the exact request: API, method, URL with the rendered path,
   query, JSON body, operation id and the tool's own headers (a SHA-256 of them). On resume the tool runs
   again and the client sends the request only when it is the same one, then marks the approval used, so it is
-  sent once and never replayed. A rejected or expired approval, or a request that changed, sends nothing
-  and the tool gets an error saying why, which the model relays. A pending approval that expires is
-  closed on the next decision or message on the thread.
+  sent once and never replayed. A rejected or expired approval, a request that changed, or a gate whose
+  approvers changed while the call waited (a new image) sends nothing and the tool gets an error saying
+  why, which the model relays. A pending approval that expires is closed on the next decision or message
+  on the thread; one a failed or cancelled run leaves behind is expired when that run ends.
 - **Writing a tool that makes a gated call.** Make at most one gated call per tool call: on resume the tool
   runs again from its start, so a second gated call in the same tool call is refused after the first was
   sent, and anything the tool does before the gated call runs again (keep other side effects after it).
@@ -288,6 +290,7 @@ request waits for someone who sees exactly what it does.
 - **LangGraph Server.** The run pauses and resumes through the server's own interrupt and resume. The
   server's auth handler refuses a run that carries a `command` (a resume) from outside the app, and the
   client sends only an approval the app recorded as approved, so the native API cannot skip the decision.
+  A new native run on a thread whose approval is pending gets 409, as `/chat` does.
   Resuming needs the in-process loopback (`LANGGRAPH_SERVER_URL` unset, the default).
 {%- endif %}
 
@@ -304,7 +307,7 @@ touch it. There is no default access level: every API lists its methods explicit
 | `graph-agents-cli api deny NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add a `denied_operations` entry (pin the path: it then holds whatever `operation_id` a call gives) |
 | `graph-agents-cli api revoke NAME OPERATION_ID [--from allowed\|denied]` | Remove matching entries |
 | `graph-agents-cli api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none]` | Set or clear limits |
-| `graph-agents-cli api approval NAME [--methods M,...] [--operations OP,...] --approvers requester,role:R [--timeout-s N] [--remove]` | Set or remove the API's `approval` gate |
+| `graph-agents-cli api approval NAME [--methods M,...] [--operations OP,...] [--approvers requester,role:R] [--timeout-s N] [--remove] [--dry-run]` | Set or remove the API's `approval` gate (`--approvers` is required for a new one) |
 | `graph-agents-cli api remove NAME` | Remove an API |
 
 Each command validates the result with the rules the agent enforces, prints a diff (comments and key order

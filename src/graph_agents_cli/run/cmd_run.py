@@ -939,7 +939,12 @@ def _unavailable_hint(body: str, *, remote: bool) -> str:
 
 
 def _http_error_hint(
-    exc: ChatHTTPError, *, remote: bool, thread_id: str | None, policy: str | None = None
+    exc: ChatHTTPError,
+    *,
+    remote: bool,
+    thread_id: str | None,
+    policy: str | None = None,
+    approval_flags: str = "",
 ) -> str:
     if exc.status_code == 401:
         return _auth_hint(policy, remote=remote)
@@ -958,10 +963,10 @@ def _http_error_hint(
     if exc.status_code in (404, 405):
         return "\n  Check that --url points at the app base URL (the chat API is at <url>/chat)."
     if exc.status_code == 409 and APPROVAL_PENDING in (exc.body or ""):
-        where = f" --thread-id {thread_id}" if thread_id else ""
+        where = f" --thread-id {shlex.quote(thread_id)}" if thread_id else ""
         return (
             "\n  A run on this thread is paused on a call waiting for approval: decide it first "
-            f"(graph-agents-cli approvals list{where}), then send the next message."
+            f"(graph-agents-cli approvals list{where}{approval_flags}), then send the next message."
         )
     if exc.status_code == 409:
         return "\n  The thread already has a run in progress; retry when it has finished."
@@ -1303,6 +1308,7 @@ def cmd_run(
                     remote=bool(url),
                     thread_id=thread_id,
                     policy=_project_auth_policy(remote=bool(url)),
+                    approval_flags=_build_resume_flags(url, DEFAULT_RUN_MODE, header, cookie, None),
                 )
                 raise click.ClickException(
                     f"Agent request failed (HTTP {exc.status_code}):\n  {exc.body}{hint}"

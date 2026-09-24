@@ -1033,6 +1033,45 @@ def test_approval_operations_without_a_spec_warn_about_labels(project: Path) -> 
     assert operations[1] == {"operationId": "cancelOrder"}
 
 
+def test_approval_pins_a_label_only_entry_once_the_spec_is_recorded(
+    project: Path, tmp_path: Path
+) -> None:
+    ok(*ORDERS_ADD)
+    ok("api", "approval", "orders", "--operations", "updateOrder", "--approvers", "requester")
+    assert policy(project)["orders"]["approval"]["required_for"]["operations"] == [
+        {"operationId": "updateOrder"}
+    ]
+    # Then the API's openapi spec is recorded (as `api add --openapi` would).
+    (project / "orders-openapi.yaml").write_text(SPEC)
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "    base_url_env: ORDERS_API_BASE_URL",
+            "    base_url_env: ORDERS_API_BASE_URL\n    openapi: orders-openapi.yaml",
+        )
+    )
+    assert policy(project)["orders"]["openapi"] == "orders-openapi.yaml"
+    result = ok("api", "approval", "orders", "--operations", "updateOrder,deleteOrder")
+    text = " ".join(result.output.split())
+    assert "the gate on updateOrder is now pinned to its endpoint" in text
+    assert "knows only the operationId" not in text
+    # Pinning only gates more calls: not a loosening.
+    assert "Loosening an approval gate" not in text
+    assert policy(project)["orders"]["approval"]["required_for"]["operations"] == [
+        # Its methods are kept (none: every method), so every call it gated still waits.
+        {"operationId": "updateOrder", "path": "/orders/{order_id}"},
+        {"operationId": "deleteOrder", "path": "/orders/{order_id}", "methods": ["DELETE"]},
+    ]
+
+
+def test_approval_repeats_the_label_only_note_for_a_kept_entry(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    ok("api", "approval", "orders", "--operations", "updateOrder", "--approvers", "requester")
+    result = ok("api", "approval", "orders", "--operations", "updateOrder,getOrder")
+    text = " ".join(result.output.split())
+    assert "the gate on updateOrder, getOrder knows only the operationId" in text
+
+
 def test_approval_switching_methods_for_operations_and_removing(project: Path) -> None:
     ok(*ORDERS_ADD)
     (project / "app/tools/orders_write.py").write_text(POST_TOOL)

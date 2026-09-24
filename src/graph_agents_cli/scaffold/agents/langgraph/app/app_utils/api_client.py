@@ -998,10 +998,12 @@ def validate_concrete_path(path: str) -> None:
     """Refuse a path that httpx would normalise or a server would resolve elsewhere.
 
     Dot segments (`.`/`..`, also percent-encoded), an encoded slash or
-    backslash inside a segment, empty segments (`//`), and a query or fragment
-    in the path (send them through `params=`) are refused: the policy check
-    would otherwise pass a template while the wire path lands on another
-    endpoint (for example `/items/1/../../admin` -> `/admin`).
+    backslash inside a segment, empty segments (`//`), a `;` (also
+    percent-encoded), and a query or fragment in the path (send them through
+    `params=`) are refused: the policy check would otherwise pass a template
+    while the wire path lands on another endpoint (for example
+    `/items/1/../../admin` -> `/admin`, or `/orders/7/cancel;x=1`, which
+    servers that strip path parameters route to `/orders/7/cancel`).
     """
     if not path.startswith("/"):
         raise ApiPolicyError(f"path {path!r} must start with /.")
@@ -1020,6 +1022,11 @@ def validate_concrete_path(path: str) -> None:
             raise ApiPolicyError(f"path {path!r} contains a dot segment (refused).")
         if "/" in decoded or "\\" in decoded:
             raise ApiPolicyError(f"path {path!r} contains an encoded slash (refused).")
+        if ";" in decoded:
+            raise ApiPolicyError(
+                f"path {path!r} contains ';' (a path parameter, which some servers strip "
+                "before routing): refused."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1792,7 +1799,7 @@ class ApiClient:
         except (RuntimeError, KeyError):
             # Outside an agent run (`get_config` fails): nothing can pause and ask.
             raise outside_run from None
-        return self._check_decision(decision, digest, refuse), digest
+        return self._check_decision(decision, digest, gate.approvers, refuse), digest
 
     async def _use_approval(
         self, approved: tuple[str, str], method: str, what: str, log_fields: Mapping[str, Any]
@@ -1826,8 +1833,19 @@ class ApiClient:
         )
 
     @staticmethod
-    def _check_decision(decision: Any, digest: str, refuse: Callable[..., ApiPolicyError]) -> str:
-        """The approval id of a decision that approves the request `digest`; else raise."""
+    def _check_decision(
+        decision: Any,
+        digest: str,
+        approvers: Iterable[str],
+        refuse: Callable[..., ApiPolicyError],
+    ) -> str:
+        """The approval id of a decision that approves the request `digest`; else raise.
+
+        The approval must also have been asked of the approvers the policy's
+        gate names now: a policy that changed while the call waited (a new
+        image with other approvers) is not satisfied by a decision taken
+        under the old one.
+        """
         if not isinstance(decision, Mapping) or decision.get("type") != APPROVAL_DECISION:
             raise refuse(
                 "needs human approval, and the run was resumed without an approval decision",
@@ -1854,6 +1872,13 @@ class ApiClient:
                 "differs from the request that was approved (it changed after the approval), "
                 "so the approval does not cover it",
                 reason="request differs from the approved one",
+            )
+        asked = decision.get("approvers")
+        if not isinstance(asked, list | tuple) or {str(a) for a in asked} != set(approvers):
+            raise refuse(
+                "was approved under an approval gate that has changed since (its approvers "
+                "differ from the policy's now), so the approval does not cover it; ask again",
+                reason="approval gate changed",
             )
         return approval_id
 

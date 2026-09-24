@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1056,9 +1056,12 @@ def _gate_entries(
     An entry the block already has for an id is kept as it is (with any path
     or methods pinned by hand). With the API's openapi spec a new entry also
     pins the operation's method and path, so the gate holds for every call to
-    that endpoint whatever label a tool gives it.
+    that endpoint whatever label a tool gives it; an entry that knew only the
+    operationId (written before the spec was recorded) gets the path too,
+    keeping its methods (none: every method), so it gates at least what it did.
     """
-    spec = ch.load_spec(project.root, str(api["openapi"])) if api.get("openapi") else None
+    spec_name = str(api.get("openapi") or "")
+    spec = ch.load_spec(project.root, spec_name) if spec_name else None
     entries: list[dict[str, Any]] = []
     notes: list[str] = []
     labels_only: list[str] = []
@@ -1067,7 +1070,25 @@ def _gate_entries(
             (e for e in current if isinstance(e, dict) and e.get("operationId") == op_id), None
         )
         if existing is not None:
+            if existing.get("path") is None and spec is not None:
+                pinned, warnings = ch.build_entry(
+                    ch.OperationRef(operation_id=op_id), [], spec, spec_name
+                )
+                if pinned.get("path") is not None:
+                    pinned.pop("methods", None)
+                    if existing.get("methods") is not None:
+                        pinned["methods"] = list(existing["methods"])
+                    entries.append(pinned)
+                    notes.extend(warnings)
+                    notes.append(
+                        f"the gate on {op_id} is now pinned to its endpoint from the openapi spec "
+                        f"({ch.describe_entry(pinned)}): a call to it under another label waits "
+                        "for approval too"
+                    )
+                    continue
             entries.append(dict(existing))
+            if existing.get("path") is None:
+                labels_only.append(op_id)
             continue
         entry, warnings = ch.build_entry(
             ch.OperationRef(operation_id=op_id), [], spec, str(api.get("openapi") or "")
@@ -1093,6 +1114,28 @@ def _gated_methods(block: dict[str, Any] | None) -> set[str]:
     return set(HTTP_METHODS) if ANY_METHOD in methods else set(methods)
 
 
+def _gate_entry_covers(new: Mapping[str, Any], old: Mapping[str, Any]) -> bool:
+    """Whether gate entry ``new`` gates every call ``old`` did.
+
+    The same entry, or ``old`` (an operationId alone) pinned to its endpoint
+    with no fewer methods: a gate entry fails closed like a denial, so adding
+    a path only gates more calls.
+    """
+    if ch.same_entry(old, new):
+        return True
+    if old.get("path") is not None or old.get("operationId") is None:
+        return False
+    if new.get("operationId") != old.get("operationId"):
+        return False
+    new_methods = new.get("methods")
+    if new_methods is None:
+        return True
+    old_methods = old.get("methods")
+    return old_methods is not None and {str(m).upper() for m in new_methods} >= {
+        str(m).upper() for m in old_methods
+    }
+
+
 def _gate_loosening(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[str]:
     """How the change loosens the gate (effective blocks): empty when it tightens or keeps it.
 
@@ -1110,7 +1153,7 @@ def _gate_loosening(before: dict[str, Any] | None, after: dict[str, Any] | None)
         reasons.append(f"{', '.join(ungated)} calls no longer wait as such")
     old_ops = before["required_for"].get("operations") or []
     new_ops = after["required_for"].get("operations") or []
-    dropped = [o for o in old_ops if not any(ch.same_entry(o, n) for n in new_ops)]
+    dropped = [o for o in old_ops if not any(_gate_entry_covers(n, o) for n in new_ops)]
     if dropped:
         reasons.append(
             "no longer gated as written: " + "; ".join(ch.describe_entry(e) for e in dropped)

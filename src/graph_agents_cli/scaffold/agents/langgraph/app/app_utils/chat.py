@@ -1999,12 +1999,49 @@ class ChatRuntime:
                 reason = f"The tool call did not finish: the run stopped ({status})."
                 jobs.append(self._close_dangling_tool_calls(req, thread_id, reason))
             await asyncio.gather(*jobs)
+            if stopped and not lease.lost and status not in (STATUS_OK, STATUS_AWAITING_APPROVAL):
+                await self._expire_orphaned_approvals(req, thread_id, record.run_id)
         finally:
             await lease.release()
         logger.info(
             "run finished",
             extra={"status": status, "latency_ms": latency_ms, "run_id": record.run_id},
         )
+
+    async def _expire_orphaned_approvals(
+        self, req: ChatRequest, thread_id: str, run_id: str
+    ) -> None:
+        """Expire the thread's pending approvals that nothing waits for (best effort).
+
+        A run that ends without pausing (cancelled, failed, timed out) can
+        leave pending approvals behind: ones it recorded before it was cut
+        short (its client never saw them), or ones of the paused run it
+        resumed whose calls the repair has since answered. Left pending, they
+        would refuse the thread's next message (409 `approval_pending`) until
+        they expire; expired, the next message goes through and the history
+        repair tells the model the call was not approved.
+        """
+        if self.approvals is None or (self.db is not None and not self.db.health.up):
+            return
+        expired = 0
+        try:
+            async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
+                pending = await self.approvals.pending_for_thread(thread_id)
+                if not pending:
+                    return
+                waiting = await self._paused_interrupts(thread_id, req.forward_headers)
+                for item in pending:
+                    if item.run_id == run_id or item.interrupt_id not in waiting:
+                        if await self.approvals.expire(item.approval_id) is not None:
+                            expired += 1
+        except Exception as exc:
+            logger.warning(
+                "could not expire the approvals of a stopped run (%s); they expire on time",
+                type(exc).__name__,
+            )
+        if expired:
+            metrics.observe_approvals("expired", expired)
+            logger.info("expired %d approval(s) left by a stopped run", expired)
 
     def _repairs_after(self, status: str, error: BaseException | None, lease: ThreadLease) -> bool:
         """Whether a stopped run should answer the tool calls it left open.

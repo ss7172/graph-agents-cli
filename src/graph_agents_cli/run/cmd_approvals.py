@@ -21,6 +21,9 @@ client of the chat API's approval routes, locally or against a deployed agent
 (``--url``), with the credentials ``run`` sends:
 
 * ``GET /threads/{thread_id}/approvals`` lists a thread's approvals;
+* ``GET /approvals`` lists, across threads, the ones the caller may see (its
+  own, the ones its roles may decide, every one for a read-across role);
+  against an agent without it, the caller's own threads are searched;
 * ``POST /threads/{thread_id}/approvals/{approval_id}`` decides one and
   streams the resumed run (the same events as ``POST /chat``).
 
@@ -42,7 +45,7 @@ import click
 import httpx
 
 from graph_agents_cli import _chat_client
-from graph_agents_cli._approvals import Approval, awaiting_lines, safe_text
+from graph_agents_cli._approvals import STATUS_PENDING, Approval, awaiting_lines, safe_text
 from graph_agents_cli._chat_client import (
     DECISION_APPROVE,
     DECISION_REJECT,
@@ -73,8 +76,9 @@ from graph_agents_cli.run.cmd_run import (
     render_chat_events,
 )
 
-# Threads `list` / a decision without --thread-id look through: the caller's
-# most recently active ones (GET /threads pages of 100).
+# What `list` / a decision without --thread-id look through: GET /approvals
+# pages of 100 (or, against an agent without that route, the caller's most
+# recently active threads, GET /threads pages of 100).
 THREAD_PAGE = 100
 MAX_THREAD_PAGES = 5
 
@@ -190,10 +194,49 @@ def _own_thread_ids(target: _Target) -> tuple[list[str], bool]:
     return ids, True
 
 
-def _collect(target: _Target, thread_id: str | None) -> tuple[list[Approval], bool]:
-    """Approvals of one thread, or of the caller's own threads; True when the scan was cut."""
+def _visible_approvals(
+    target: _Target, *, pending_only: bool
+) -> tuple[list[Approval], bool] | None:
+    """GET /approvals, page by page: every approval the caller may see; True when cut.
+
+    None when the agent has no such route (404/405 on the first page).
+    """
+    found: list[Approval] = []
+    for page in range(MAX_THREAD_PAGES):
+        try:
+            rows = _chat_client.list_visible_approvals(
+                target.base_url,
+                status=STATUS_PENDING if pending_only else None,
+                headers=target.headers,
+                limit=THREAD_PAGE,
+                offset=page * THREAD_PAGE,
+            )
+        except ChatHTTPError as exc:
+            if page == 0 and exc.status_code in (404, 405):
+                return None
+            raise
+        for row in rows:
+            approval = Approval.from_payload(row)
+            if approval is not None and approval.thread_id:
+                found.append(approval)
+        if len(rows) < THREAD_PAGE:
+            return found, False
+    return found, True
+
+
+class _Collected(NamedTuple):
+    approvals: list[Approval]
+    cut: bool  # more than the pages looked through
+    own_threads_only: bool  # the fallback scan: another principal's thread needs --thread-id
+
+
+def _collect(target: _Target, thread_id: str | None, *, pending_only: bool = False) -> _Collected:
+    """Approvals of one thread, or every one the caller may see (see the module doc)."""
     if thread_id:
-        return _thread_approvals(target, thread_id), False
+        return _Collected(_thread_approvals(target, thread_id), False, False)
+    visible = _visible_approvals(target, pending_only=pending_only)
+    if visible is not None:
+        return _Collected(visible[0], visible[1], False)
     thread_ids, cut = _own_thread_ids(target)
     approvals: list[Approval] = []
     for tid in thread_ids:
@@ -203,7 +246,7 @@ def _collect(target: _Target, thread_id: str | None) -> tuple[list[Approval], bo
             if exc.status_code in (403, 404):  # deleted meanwhile, or not visible: skip it
                 continue
             raise
-    return approvals, cut
+    return _Collected(approvals, cut, True)
 
 
 def _common_options(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -251,7 +294,8 @@ def approvals_group() -> None:
     \b
     Exit codes:
       0  listed, or decided (the resumed run was shown)
-      1  refused: not an allowed approver, already decided, expired, not found
+      1  refused (not an allowed approver, already decided, expired, not
+         found), or the resumed run ended with an error
       2  the agent could not be reached
       3  configuration error (not in a project without --url)
     """
@@ -263,8 +307,9 @@ def approvals_group() -> None:
     "--thread-id",
     default=None,
     help=(
-        "The thread to list. Without it: your own threads (the most recent "
-        f"{THREAD_PAGE * MAX_THREAD_PAGES}); another principal's thread needs its id."
+        "The thread to list. Without it: every approval you may see (your own, the ones "
+        "your roles may decide, all of them for a read-across role; the newest "
+        f"{THREAD_PAGE * MAX_THREAD_PAGES})."
     ),
 )
 @click.option(
@@ -279,12 +324,14 @@ def cmd_list(
     show_all: bool,
     as_json: bool,
 ) -> None:
-    """List pending approvals (a thread's, or those on your own threads)."""
+    """List pending approvals (a thread's, or every one you may see)."""
     try:
         with _target(url, header, cookie) as target:
             flags = target.flags
             try:
-                approvals, cut = _collect(target, thread_id)
+                approvals, cut, own_threads_only = _collect(
+                    target, thread_id, pending_only=not show_all
+                )
             except ChatHTTPError as exc:
                 raise _http_failure(exc, target, "Listing approvals") from exc
             except httpx.TransportError as exc:
@@ -306,7 +353,10 @@ def cmd_list(
         click.echo(json.dumps(payload, indent=2))
         return
     what = "approvals" if show_all else "pending approvals"
-    where = f"thread {safe_text(thread_id)}" if thread_id else "your threads"
+    if thread_id:
+        where = f"thread {safe_text(thread_id)}"
+    else:
+        where = "your threads" if own_threads_only else "the threads you may see"
     if not shown:
         click.echo(f"No {what} on {where}.")
     for approval in shown:
@@ -317,34 +367,39 @@ def cmd_list(
             for line in awaiting_lines(approval, approval.thread_id, flags)[1:3]:
                 click.echo(line)
     if cut:
-        click.secho(
-            f"Only your {THREAD_PAGE * MAX_THREAD_PAGES} most recent threads were searched; "
-            "pass --thread-id for an older one.",
-            fg="yellow",
+        searched = (
+            f"your {THREAD_PAGE * MAX_THREAD_PAGES} most recent threads"
+            if own_threads_only
+            else f"the newest {THREAD_PAGE * MAX_THREAD_PAGES} approvals"
         )
-    if not thread_id:
         click.secho(
-            "Approvals on another principal's thread (a role: approver's) need --thread-id.",
+            f"Only {searched} were searched; pass --thread-id for an older one.", fg="yellow"
+        )
+    if own_threads_only:
+        click.secho(
+            "This agent lists approvals per thread only: one on another principal's thread "
+            "(a role: approver's) needs --thread-id.",
             dim=True,
         )
 
 
 def _find(target: _Target, approval_id: str, thread_id: str | None) -> Approval:
-    approvals, cut = _collect(target, thread_id)
+    approvals, cut, own_threads_only = _collect(target, thread_id)
     for approval in approvals:
         if approval.approval_id == approval_id:
             return approval
-    where = f"thread {safe_text(thread_id)}" if thread_id else "your threads"
-    extra = (
-        ""
-        if thread_id
-        else (
+    if thread_id:
+        where, extra = f"thread {safe_text(thread_id)}", ""
+    elif own_threads_only:
+        where = "your threads"
+        extra = (
             "; an approval on another principal's thread needs --thread-id (the requester's "
             "`run` printed it)"
         )
-    )
+    else:
+        where, extra = "the threads you may see", ""
     if cut:
-        extra += "; only your most recent threads were searched"
+        extra += "; only the most recent ones were searched (pass --thread-id)"
     raise NoPendingRun(f"No approval {safe_text(approval_id)} on {where}{extra}.")
 
 
@@ -437,8 +492,8 @@ def _decision_command(decision: str) -> click.Command:
         "--thread-id",
         default=None,
         help=(
-            "The approval's thread (printed with the approval). Without it, your own "
-            "threads are searched; another principal's call needs it."
+            "The approval's thread (printed with the approval). Without it, every approval "
+            "you may see is searched."
         ),
     )
     @click.option("--comment", default=None, help="Why; recorded with the decision.")

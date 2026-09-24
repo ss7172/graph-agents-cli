@@ -773,7 +773,12 @@ def test_approval_never_widens_access(
 def test_the_runtime_client_refuses_a_gated_call_before_sending(
     runtime: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Until the runtime can pause a run for a decision, a gated call fails closed."""
+    """Outside an agent run nothing can pause for a decision: a gated call fails closed.
+
+    Inside a run the client pauses it for approval instead; the template's own
+    tests (`tests/unit/test_approval_ledger.py`, `tests/integration/test_approvals.py`)
+    cover the pause, the decision and the resume.
+    """
     import asyncio
 
     import httpx

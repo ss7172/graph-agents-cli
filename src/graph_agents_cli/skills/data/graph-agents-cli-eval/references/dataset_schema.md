@@ -71,9 +71,12 @@ Common mistakes:
   `scope: final_turn`: only the final turn's calls are read; use `scope: all_turns`.
 - A case that reaches a gated call without an `approvals` instruction for it: the case errors
   ("unexpected approval gate"); say what a human would decide.
-- A `role:` gate decided as the eval identity: the eval identity is the requester, which may
+- A `role:` gate without an approver credential: the eval identity is the requester, which may
   not decide a gate that lists only `role:` approvers (403, a case error). Set
-  `GRAPH_AGENTS_CLI_APPROVER_API_KEY` to the credential of a principal holding the role.
+  `GRAPH_AGENTS_CLI_APPROVER_API_KEY` to the credential of a principal holding the role; gates
+  that list `requester` are still decided as the eval identity.
+- An empty `expect.approvals` list is refused (it would check nothing); use
+  `expect.no_approvals: true`.
 
 A multi-turn example (two user messages on one thread; the checks read both turns):
 

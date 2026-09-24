@@ -308,6 +308,18 @@ def test_the_server_pauses_a_gated_call_and_sends_it_once_approved(server: Serve
         timeout=30,
     )
     assert r.status_code == 403, r.text
+    # Nor start a new run on it (which would abandon the pending approval): 409, as /chat.
+    r = httpx.post(
+        f"{server.url}/threads/{thread}/runs/wait",
+        json={
+            "assistant_id": "agent",
+            "input": {"messages": [{"role": "user", "content": "hello"}]},
+        },
+        headers=token("alice"),
+        timeout=30,
+    )
+    assert r.status_code == 409, r.text
+    assert "approval_pending" in r.json()["detail"]
     assert server.upstream.sent_to("/orders/11/cancel") == []
     # The requester approves: the run resumes and the call is sent, once.
     r = decide(server, end, "approve", token("alice"))

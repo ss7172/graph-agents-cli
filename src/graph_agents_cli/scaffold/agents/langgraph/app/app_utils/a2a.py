@@ -51,8 +51,9 @@ for approval and a data part `{"type": "approval_request", "approval": {...},
 client answers with a message on the same task whose data part is
 `{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`
 (no text needed): the decision goes through the same checks as `POST
-/threads/{thread_id}/approvals/{approval_id}` (the task's principal is the
-requester, so this works when `requester` is an approver), and the resumed
+/threads/{thread_id}/approvals/{approval_id}`, the auth policy's
+`approval.decide` action included (the task's principal is the requester,
+so this works when `requester` is an approver), and the resumed
 run completes the task or pauses it again. A text message while an approval
 is pending, or a decision refused (not an approver, expired, decided
 already), leaves the task `input-required` with the pending approvals, or
@@ -127,6 +128,7 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import (
     CUSTOM,
     JWT,
     Principal,
+    authorize_action,
     check_startup,
     policy_name,
 )
@@ -873,6 +875,9 @@ class LangGraphAgentExecutor(AgentExecutor):
         lease = None
         if decision is not None:
             try:
+                # The endpoint authorized `a2a.invoke`; deciding needs `approval.decide`
+                # too, as on the HTTP route.
+                await authorize_action(principal, "approval.decide", thread_id)
                 lease, resume, acting = await RUNTIME.decide(
                     principal,
                     thread_id,

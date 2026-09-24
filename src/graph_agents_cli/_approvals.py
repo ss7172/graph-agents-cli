@@ -231,19 +231,35 @@ class Approval:
         return lines
 
 
+# The marker `run` puts where it leaves a credential out of a printed command.
+REDACTED_MARK = "<redacted>"
+
+
 def decide_commands(
-    approval: Approval, thread_id: str, flags: str = "", *, verbs: Sequence[str] = ("approve",)
+    approval: Approval,
+    thread_id: str,
+    flags: str = "",
+    *,
+    verbs: Sequence[str] = ("approve",),
+    options: str = "",
 ) -> list[str]:
     """The ``graph-agents-cli approvals approve|reject ...`` commands that decide ``approval``.
 
     Ids come from the server: they are shell-quoted so a pasted command runs
-    exactly one ``graph-agents-cli`` invocation. ``flags`` (``--url``, headers
-    with credentials redacted) starts with a space when not empty.
+    exactly one ``graph-agents-cli`` invocation, and an id that starts with
+    ``-`` goes after ``--`` so it cannot be read as an option (``--url=...``
+    would send the decision elsewhere). ``flags`` (``--url``, headers with
+    credentials redacted) and ``options`` (``--comment ...``) start with a
+    space when not empty.
     """
-    ids = f"{shlex.quote(approval.approval_id)} --thread-id {shlex.quote(thread_id)}"
+    approval_id = shlex.quote(approval.approval_id)
+    where = f"--thread-id {shlex.quote(thread_id)}{flags}{options}"
     commands = []
     for verb in verbs:
-        commands.append(f"graph-agents-cli approvals {verb} {ids}{flags}")
+        if approval.approval_id.startswith("-"):
+            commands.append(f"graph-agents-cli approvals {verb} {where} -- {approval_id}")
+        else:
+            commands.append(f"graph-agents-cli approvals {verb} {approval_id} {where}")
     return commands
 
 
@@ -254,13 +270,20 @@ def awaiting_lines(approval: Approval, thread_id: str | None, flags: str = "") -
         f"Awaiting approval by {who}: the call was not sent; the run is paused until it is decided."
     ]
     if thread_id:
-        approve, reject = (
-            decide_commands(approval, thread_id, flags, verbs=(verb,))[0]
-            for verb in (DECISION_APPROVE, DECISION_REJECT)
+        (approve,) = decide_commands(approval, thread_id, flags, verbs=(DECISION_APPROVE,))
+        (reject,) = decide_commands(
+            approval, thread_id, flags, verbs=(DECISION_REJECT,), options=' --comment "<why>"'
         )
         lines.append(f"  Approve: {approve}")
-        lines.append(f'  Reject:  {reject} --comment "<why>"')
-        if not approval.requester_may_decide:
+        lines.append(f"  Reject:  {reject}")
+        if REDACTED_MARK in flags:
+            lines.append("  (re-supply the redacted credential values)")
+        if not approval.approvers:
+            lines.append(
+                "  The server did not say who may decide it: an allowed approver runs these "
+                "commands with their own credentials."
+            )
+        elif not approval.requester_may_decide:
             lines.append(
                 "  Only another principal can decide it (requester is not an approver): send "
                 "them these commands; they run them with their own credentials."

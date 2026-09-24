@@ -147,8 +147,14 @@ PLAYGROUND_HTML = """<!doctype html>
       var body = { decision: decision };
       if (comment.value.trim()) body.comment = comment.value.trim();
       var url = '/threads/' + encodeURIComponent(approval.thread_id) + '/approvals/' + encodeURIComponent(approval.approval_id);
-      card.appendChild(el('div', (decision === 'approve' ? 'Approved' : 'Rejected') + ' by you.', 'meta'));
-      run(url, body).then(function (ok) { if (!ok) { approve.disabled = reject.disabled = comment.disabled = false; } });
+      // Said once the server has accepted the decision; a refusal (403, 409, 410) shows its error instead.
+      var note = el('div', (decision === 'approve' ? 'Approving' : 'Rejecting') + '...', 'meta');
+      card.appendChild(note);
+      run(url, body).then(function (ok) {
+        if (ok) { note.textContent = (decision === 'approve' ? 'Approved' : 'Rejected') + ' by you.'; return; }
+        note.remove();
+        approve.disabled = reject.disabled = comment.disabled = false;
+      });
     }
     approve.addEventListener('click', function () { decide('approve'); });
     reject.addEventListener('click', function () { decide('reject'); });

@@ -16,7 +16,7 @@
 
 The server side is ``POST /chat`` streaming server-sent events, ``GET /health``,
 ``GET /threads``, ``GET /threads/{thread_id}/messages`` and the approval routes
-(``GET /threads/{thread_id}/approvals``, ``POST
+(``GET /approvals``, ``GET /threads/{thread_id}/approvals``, ``POST
 /threads/{thread_id}/approvals/{approval_id}``). This module is the only
 client-side implementation of that surface; ``run``, ``approvals`` and
 ``eval generate`` build on it.
@@ -275,11 +275,14 @@ def path_segment(value: str, what: str) -> str:
     """``value`` as one URL path segment: percent-encoded, so no id can reach another route.
 
     An approval id or a thread id comes from a server payload or the command
-    line; ``../chat`` or ``a/b`` must stay one segment of the approval route.
+    line; ``../chat``, ``a/b``, ``.`` or ``..`` must stay one segment of the
+    approval route. Percent-encoding leaves dots alone, and a client drops a
+    ``.``/``..`` segment (or the one before it), so their dots are encoded too.
     """
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{what} must be a non-empty string")
-    return quote(value, safe="")
+    segment = quote(value, safe="")
+    return segment.replace(".", "%2E") if segment in (".", "..") else segment
 
 
 def approval_url(base_url: str, thread_id: str, approval_id: str | None = None) -> str:
@@ -349,6 +352,29 @@ def list_approvals(
     """
     url = approval_url(base_url, thread_id)
     resp = httpx.get(url, headers=dict(headers or {}), timeout=timeout)
+    return _json_list(resp, url, "approvals")
+
+
+def list_visible_approvals(
+    base_url: str,
+    *,
+    status: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """GET ``/approvals``: across threads, the approvals the caller may see (one page).
+
+    The caller's own, the ones naming one of its roles (it may decide them),
+    and every one for a read-across role; each row carries its ``thread_id``.
+    An agent without this route answers 404 or 405 (a :class:`ChatHTTPError`).
+    """
+    url = f"{_normalise_base(base_url)}/approvals"
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status:
+        params["status"] = status
+    resp = httpx.get(url, params=params, headers=dict(headers or {}), timeout=timeout)
     return _json_list(resp, url, "approvals")
 
 
