@@ -126,6 +126,89 @@ def test_repair_works_on_server_dicts() -> None:
     assert set(kept) == {"type", "content", "id", "tool_calls"}
 
 
+# --- repeated tool-call ids ------------------------------------------------------------
+# Models reuse ids across turns: the template's fake model always calls `call_get_weather`,
+# and some providers number the calls of each message `call_0`, `call_1`, ...
+
+
+def turn(text: str, call_ids: list[str], n: int) -> list[Any]:
+    """One healthy turn: the user, a tool call, its results, the reply."""
+    return [
+        human(f"{text}{n}"),
+        ai(call_ids, id=f"ai-{n}"),
+        *(ToolMessage(content=f"r{n}-{c}", tool_call_id=c, id=f"t{n}-{c}") for c in call_ids),
+        AIMessage(content=f"reply {n}", id=f"reply-{n}"),
+    ]
+
+
+def test_healthy_turns_with_repeated_ids_are_never_rewritten() -> None:
+    history = [*turn("sf", ["call_0"], 1), *turn("paris", ["call_0"], 2)]
+    history += turn("both", ["call_0", "call_1"], 3)
+    assert repair_tool_history(history, error_result) is None
+
+
+def test_random_healthy_histories_are_never_rewritten() -> None:
+    """Any mix of turns, ids reused or not, parallel calls or none: nothing to repair."""
+    import random
+
+    rng = random.Random(1234)
+    for _ in range(300):
+        history: list[Any] = []
+        for n in range(rng.randint(1, 6)):
+            width = rng.randint(0, 3)
+            ids = [
+                rng.choice(["call_0", "call_1", "call_get_weather", f"u{n}{i}"])
+                for i in range(width)
+            ]
+            ids = list(dict.fromkeys(ids))
+            if ids:
+                history += turn("q", ids, n)
+            else:
+                history += [human(f"q{n}"), AIMessage(content="plain", id=f"plain-{n}")]
+        assert repair_tool_history(history, error_result) is None, shape(history)
+
+
+def test_a_repeated_id_keeps_every_turns_result_when_the_last_call_is_open() -> None:
+    """The regression: turn 2's result was deleted because turn 1 used the same id."""
+    history = [*turn("sf", ["call_0"], 1), *turn("paris", ["call_0"], 2)]
+    history += [human("again"), ai(["call_0"], id="ai-3")]
+    repair = repair_tool_history(history, error_result)
+    assert repair is not None and repair.append_only
+    assert [m.id for m in repair.messages[: len(history)]] == [m.id for m in history]
+    assert shape(repair.messages[-2:]) == ["ai(call_0)", "tool:call_0:error"]
+    assert [m.content for m in repair.messages if isinstance(m, ToolMessage)][:2] == [
+        "r1-call_0",
+        "r2-call_0",
+    ]
+
+
+def test_a_misplaced_result_goes_back_to_its_own_turn_when_ids_repeat() -> None:
+    first = turn("sf", ["call_0"], 1)
+    # Turn 2's result landed after the next user message; turn 3 reuses the id.
+    history = [
+        *first,
+        human("paris"),
+        ai(["call_0"], id="ai-2"),
+        human("hello?"),
+        ToolMessage(content="late", tool_call_id="call_0", id="late"),
+        *turn("tokyo", ["call_0"], 3),
+    ]
+    repair = repair_tool_history(history, error_result)
+    assert repair is not None and not repair.append_only and repair.added == []
+    ids = [m.id for m in repair.messages]
+    assert ids[ids.index("ai-2") + 1] == "late"
+    assert "t1-call_0" in ids and "t3-call_0" in ids  # the other turns keep theirs
+    assert repair_tool_history(repair.messages, error_result) is None
+
+
+def test_a_later_turns_result_is_never_taken_for_an_earlier_open_call() -> None:
+    history = [human("a"), ai(["call_0"], id="ai-1"), human("b"), *turn("c", ["call_0"], 2)]
+    repair = repair_tool_history(history, error_result)
+    assert repair is not None
+    assert shape(repair.messages)[:3] == ["user", "ai(call_0)", "tool:call_0:error"]
+    assert "t2-call_0" in [m.id for m in repair.messages]
+
+
 # --- step budget -------------------------------------------------------------------------
 
 

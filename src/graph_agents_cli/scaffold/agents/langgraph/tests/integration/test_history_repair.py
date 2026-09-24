@@ -144,3 +144,31 @@ async def test_a_result_written_after_the_next_turn_is_moved_back(
     before = [m.id for m in await history(thread_id)]
     await chat(client, "and again", thread_id)
     assert [m.id for m in await history(thread_id)][: len(before)] == before
+
+
+async def test_turns_that_reuse_a_tool_call_id_keep_every_result(
+    client: httpx.AsyncClient, use_test_tools, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The fake model calls `call_probe` every turn (models may number ids per message):
+    a healthy thread is never rewritten, and each turn keeps its own result."""
+    from langchain_core.tools import tool
+
+    @tool
+    def probe(query: str) -> str:
+        """Test-only tool: reports what it was asked about."""
+        return f"probe reading for {query}"
+
+    use_test_tools(probe)
+    thread_id = str(uuid.uuid4())
+    with caplog.at_level("INFO"):
+        await chat(client, "Run the probe for SF", thread_id)
+        await chat(client, "Run the probe for Paris", thread_id)
+        await chat(client, "thanks", thread_id)
+    messages = await history(thread_id)
+    assert roles(messages) == ["user", "ai(tc)", "tool", "ai"] * 2 + ["user", "ai"]
+    calls = [m.tool_calls[0]["id"] for m in messages if isinstance(m, AIMessage) and m.tool_calls]
+    assert calls[0] == calls[1]  # the same id in both turns
+    results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert results == ["probe reading for SF", "probe reading for Paris"]
+    assert not [r for r in caplog.records if "tool results" in r.getMessage()]
+    assert not [r for r in caplog.records if "tool calls" in r.getMessage()]

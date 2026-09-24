@@ -37,6 +37,7 @@ from fastapi import HTTPException
 
 errors = pytest.importorskip("langgraph_sdk.errors")
 
+from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.chat import (  # noqa: E402
     LANGGRAPH_SERVER,
@@ -77,6 +78,9 @@ class FakeSdk:
         self.state_updates: list[dict[str, Any]] = []
         self.slow_stream = False
         self.stream_error: dict[str, Any] | None = None
+        # Seconds the thread stays busy after the stream's error part (the real
+        # server sends the error before it marks the run done); None: idle at once.
+        self.busy_after_error_s: float | None = None
         # The message types of the thread when each run stream started.
         self.history_at_stream: list[list[Any]] = []
         self.threads_by_id: dict[str, dict[str, Any]] = {
@@ -105,6 +109,23 @@ class FakeSdk:
             },
             {"type": "ai", "id": "m4", "content": "It is sunny."},
         ]
+
+    def apply(self, values: Any) -> None:
+        """Apply a state update as LangGraph Server does.
+
+        The server turns each message dict into a message with langchain's
+        coercion (a dict it cannot read is a 400) and merges them with
+        `add_messages` (a remove-all marker replaces the history).
+        """
+        from langchain_core.messages import convert_to_messages
+        from langgraph.graph.message import add_messages
+
+        try:
+            update = convert_to_messages((values or {}).get("messages", []))
+        except ValueError as exc:
+            raise sdk_error(errors.BadRequestError, 400, str(exc)) from exc
+        merged = add_messages(convert_to_messages(self.messages), update)
+        self.messages = [m.model_dump(exclude_none=True) for m in merged]
 
     def get_client(
         self, *, url: str | None = None, headers: dict[str, str] | None = None, **_: Any
@@ -163,13 +184,7 @@ class FakeSdk:
 
             async def update_state(self, thread_id: str, values: Any, **kwargs: Any) -> None:
                 sdk.state_updates.append({"thread_id": thread_id, "values": values, **kwargs})
-                # Apply it as the server's `add_messages` would: a remove-all
-                # marker replaces the history, other messages are appended.
-                for message in (values or {}).get("messages", []):
-                    if message.get("type") == "remove" and message.get("id") == "__remove_all__":
-                        sdk.messages = []
-                    else:
-                        sdk.messages = [*sdk.messages, message]
+                sdk.apply(values)
 
         class _Runs:
             async def stream(
@@ -179,6 +194,12 @@ class FakeSdk:
                 sdk.history_at_stream.append([m.get("type") for m in sdk.messages])
                 yield SimpleNamespace(event="metadata", data={"run_id": "srv-run-1", "attempt": 1})
                 if sdk.stream_error is not None:
+                    if sdk.busy_after_error_s is not None:
+                        thread = sdk.threads_by_id[thread_id]
+                        thread["status"] = "busy"
+                        asyncio.get_running_loop().call_later(
+                            sdk.busy_after_error_s, thread.__setitem__, "status", "idle"
+                        )
                     yield SimpleNamespace(event="error", data=sdk.stream_error)
                     return
                 if sdk.slow_stream:
@@ -574,10 +595,30 @@ async def test_a_result_after_the_next_turn_is_moved_back_before_the_run(server)
     assert events[-1][0] == "message.end"
     (update,) = sdk.state_updates
     rewritten = update["values"]["messages"]
-    assert rewritten[0] == {"type": "remove", "id": "__remove_all__"}
+    assert rewritten[0] == {"type": "remove", "id": "__remove_all__", "content": ""}
     assert [m["id"] for m in rewritten[1:]] == ["m1", "m2", "t1", "m9"]
     assert "usage_metadata" not in rewritten[2]  # only keys the server reads back as-is
     assert sdk.history_at_stream == [["human", "ai", "tool", "human"]]
+    assert [m["id"] for m in sdk.messages[:4]] == ["m1", "m2", "t1", "m9"]
+
+
+async def test_a_healthy_thread_with_repeated_tool_call_ids_is_never_rewritten(server) -> None:
+    """Models reuse ids across turns (`call_0` in every message): each turn's result stays."""
+    rt, sdk = server
+    human, call, result, reply = sdk.messages
+    sdk.messages = [
+        human,
+        call,
+        result,
+        reply,
+        {"type": "human", "id": "m5", "content": "and in Paris?"},
+        {**call, "id": "m6"},
+        {**result, "id": "m7", "content": "rainy"},
+        {"type": "ai", "id": "m8", "content": "It is rainy."},
+    ]
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+    assert sdk.state_updates == []
 
 
 async def test_a_thread_busy_with_a_native_run_is_left_alone(server) -> None:
@@ -600,6 +641,30 @@ async def test_the_step_limit_ends_a_server_run_with_a_reply(server) -> None:
     assert update["values"]["messages"][-1]["content"] == events[1][1]["text"]
     record = await rt.runs.get(events[0][1]["run_id"])
     assert record is not None and record.status == "step_limit"
+
+
+async def test_the_step_limit_reply_waits_for_the_server_to_mark_the_run_done(server) -> None:
+    """The server streams the recursion error before the thread stops being busy."""
+    rt, sdk = server
+    sdk.stream_error = {"error": "GraphRecursionError", "message": "..."}
+    sdk.busy_after_error_s = 0.3
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end" and events[-1][1]["status"] == "step_limit"
+    assert sdk.state_updates and sdk.state_updates[-1]["as_node"] == "model"
+
+
+async def test_a_thread_that_stays_busy_ends_the_run_with_the_recursion_error(
+    server, monkeypatch
+) -> None:
+    rt, sdk = server
+    monkeypatch.setattr(chat_module, "SERVER_IDLE_WAIT_S", 0.2)
+    sdk.stream_error = {"error": "GraphRecursionError", "message": "..."}
+    sdk.busy_after_error_s = 30
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "error" and events[-1][1]["code"] == "recursion_limit"
+    assert sdk.state_updates == []  # nothing written to a thread another run holds
+    record = await rt.runs.get(events[0][1]["run_id"])
+    assert record is not None and record.status == "error"
 
 
 async def test_list_and_delete_threads_through_the_server(server, monkeypatch) -> None:

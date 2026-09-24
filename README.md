@@ -279,12 +279,17 @@ Behaviour:
   with `PRINCIPAL_HASH_SALT` when set). Every response carries `X-Request-ID` (a valid one
   from the caller is echoed). The app does not log credentials, messages or tool arguments:
   access lines keep the path and drop the query string, the HTTP client libraries (`httpx`,
-  `httpcore`) log at WARNING only because their INFO lines carry full outbound URLs, and the
-  API client logs each outbound call by API, method, operation id and path template (never
-  the query, the concrete path or the body). Python warnings are JSON records too, with the
+  `httpcore`, and `httpx2`/`httpcore2` of the model SDKs) log at WARNING only because their
+  INFO lines carry full outbound URLs, and the API client logs each outbound call by API,
+  method, operation id and path template (never the query, the concrete path or the body).
+  Python warnings are JSON records too, with the
   values pydantic warnings echo redacted. An unexpected error's exception and traceback are
   logged under its `error_id`. `LOG_LEVEL=DEBUG` also enables third-party debug output, which
-  can include message content: keep it for local debugging.
+  can include message content: keep it for local debugging. Under `langgraph-server` the
+  server formats its own lines (its `LOG_JSON` and `LOG_LEVEL`; `LOG_FORMAT` and the
+  per-record ids above are fastapi-only) and the app applies the same rules to them: the
+  server's access lines (`langgraph_api.server`) lose their `query_string` field, the HTTP
+  client libraries log at WARNING only, and warnings are captured with those values redacted.
 - **Settings from `.env`** apply to what the app fixes when it is imported (the A2A card and
   its auth scheme, `/docs`, CORS, the startup auth check) as well as to everything else: the
   app reads `.env` first, below the process environment.

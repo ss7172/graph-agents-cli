@@ -63,6 +63,13 @@ import httpx
 import yaml
 
 logger = logging.getLogger(__name__)
+# This module logs each outbound call itself (API, method, operation, status);
+# the HTTP client's own INFO lines would add the full URL with its values.
+# Here as well as in the logging setup (`telemetry.QUIET_LOGGERS`, the same
+# names): under langgraph-server the graph can run in a process that never
+# loads the app.
+for _name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 POLICY_PATH_ENV = "API_POLICY_PATH"
 

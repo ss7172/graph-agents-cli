@@ -77,9 +77,10 @@ def test_http_client_url_lines_stay_out_of_info_logs(json_logging, capsys) -> No
         'HTTP Request: GET http://orders.test/orders?customer=alice "HTTP/1.1 200 OK"'
     )
     logging.getLogger("httpcore.connection").info("connect_tcp.started host='orders.test'")
+    logging.getLogger("httpx2").info('HTTP Request: POST http://model.test/v1/chat?k=v "200"')
     logging.getLogger("httpx").warning("kept: a warning")
     err = capsys.readouterr().err
-    assert "customer=alice" not in err and "connect_tcp" not in err
+    assert "customer=alice" not in err and "connect_tcp" not in err and "k=v" not in err
     assert [r["message"] for r in _records(err)] == ["kept: a warning"]
 
 
@@ -111,6 +112,84 @@ def test_the_value_a_serializer_warning_echoes_is_redacted() -> None:
     message = record.getMessage()
     assert "secret-TAIL" not in message and "principal_id" not in message
     assert "input_value=<redacted>, input_type=AgentContext]" in message
+
+
+def test_the_api_client_quiets_the_same_loggers() -> None:
+    """`api_client` quiets them itself (a graph process may never load the app)."""
+    import inspect
+
+    from {{cookiecutter.agent_directory}}.app_utils import api_client
+
+    names = str(telemetry.QUIET_LOGGERS).replace("'", '"')
+    assert names in inspect.getsource(api_client)
+
+
+# --- langgraph-server: the server's own lines follow the same rules ------------------------
+
+
+@pytest.fixture
+def server_logging() -> Iterator[logging.Logger]:
+    access = logging.getLogger(telemetry.SERVER_ACCESS_LOGGER)
+    saved_filters = list(access.filters)
+    quiet = {name: logging.getLogger(name).level for name in telemetry.QUIET_LOGGERS}
+    for name in telemetry.QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    telemetry.setup_server_logging()
+    yield access
+    logging.captureWarnings(False)
+    access.filters = saved_filters
+    for name, value in quiet.items():
+        logging.getLogger(name).setLevel(value)
+
+
+def test_the_server_access_line_loses_its_query_string(server_logging) -> None:
+    """LangGraph Server logs a structlog event dict per request, query string included."""
+    event = {
+        "event": "GET /threads 401 3ms",
+        "path": "/threads",
+        "status": 401,
+        "query_string": "access_token=LGQSCANARY-1&x=1",
+    }
+    record = logging.LogRecord(
+        telemetry.SERVER_ACCESS_LOGGER, logging.WARNING, __file__, 1, event, None, None
+    )
+    assert all(f.filter(record) for f in server_logging.filters)
+    assert record.msg == {k: v for k, v in event.items() if k != "query_string"}
+    assert "query_string" in event  # the server's own dict is left alone
+    telemetry.setup_server_logging()  # idempotent
+    assert sum(isinstance(f, telemetry.ServerAccessLogFilter) for f in server_logging.filters) == 1
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
+
+
+def test_the_rendered_server_line_holds_no_query_value(server_logging) -> None:
+    """End to end with structlog configured the way LangGraph Server configures it."""
+    structlog = pytest.importorskip("structlog")
+    import io
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+        )
+    )
+    server_logging.addHandler(handler)
+    try:
+        log = structlog.wrap_logger(
+            server_logging,
+            processors=[structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+            wrapper_class=structlog.stdlib.BoundLogger,
+        )
+        log.warning("GET /threads 401 3ms", path="/threads", query_string="access_token=CANARY-9")
+    finally:
+        server_logging.removeHandler(handler)
+    line = json.loads(stream.getvalue())
+    assert line["event"] == "GET /threads 401 3ms" and line["path"] == "/threads"
+    assert "CANARY-9" not in stream.getvalue() and "query_string" not in line
 
 
 # A tool with the unparameterised `ToolRuntime` makes pydantic warn with the run

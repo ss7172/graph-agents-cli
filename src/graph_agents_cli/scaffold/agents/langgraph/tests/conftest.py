@@ -99,7 +99,7 @@ def build_test_graph(tools: Sequence[Any]) -> Any:
         model=get_model(),
         tools=list(tools),
         system_prompt=agent.SYSTEM_PROMPT,
-        middleware=[agent.SurfaceApiErrors()],
+        middleware=agent.middleware(),
         context_schema=agent.AgentContext,
         name="test-agent",
     ).with_config({"recursion_limit": recursion_limit()})

@@ -150,10 +150,18 @@ at startup):
   unreachable database answers 503 within a few seconds and logs one line.
 - **Retention:** `RETENTION_DAYS=N` deletes threads idle for more than N days (hourly; 0 keeps
   everything).
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+- **Logging:** LangGraph Server formats the lines (its `LOG_JSON` and `LOG_LEVEL`). Its access
+  lines lose their `query_string` field; outbound API calls are logged by API, method,
+  operation id and path template, never their values (`httpx` and `httpcore` log at WARNING
+  only); warnings are records too, with the values pydantic echoes redacted.
+{%- else %}
 - **Logging:** JSON lines outside `APP_ENV=dev` (`LOG_FORMAT`, `LOG_LEVEL`) with request id, run
   id, thread id and a hashed principal (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set). Access
   lines drop query strings; outbound API calls are logged by API, method, operation id and path
-  template, never their values; warnings are JSON records too.
+  template, never their values (`httpx` and `httpcore` log at WARNING only); warnings are JSON
+  records too, with the values pydantic echoes redacted.
+{%- endif %}
 - **CORS:** off unless `CORS_ALLOW_ORIGINS` lists origins.
 - **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`);
   connections get `connect_timeout=5` and TCP keepalives unless the DSN sets them. The app

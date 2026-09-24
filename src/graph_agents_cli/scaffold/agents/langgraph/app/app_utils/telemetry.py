@@ -15,23 +15,32 @@
 
 """Logging and tracing setup.
 
-Logging (`setup_logging()`, fastapi runtime; LangGraph Server configures its
-own): one handler on the root logger, level `LOG_LEVEL` (default INFO),
-format `LOG_FORMAT=json|text` (default `json`, `text` under `APP_ENV=dev`).
-Every record carries the request id, and inside a run the run id, the thread
-id and the hashed principal, from context variables set by the HTTP
-middleware and the chat runtime. Nothing logs headers, bodies or credentials:
+Logging (`setup_logging()`, fastapi runtime): one handler on the root
+logger, level `LOG_LEVEL` (default INFO), format `LOG_FORMAT=json|text`
+(default `json`, `text` under `APP_ENV=dev`). Every record carries the
+request id, and inside a run the run id, the thread id and the hashed
+principal, from context variables set by the HTTP middleware and the chat
+runtime. Nothing logs headers, bodies or credentials:
 
 * uvicorn's access lines keep the path and drop the query string (a client
   that puts a token in the URL, `?access_token=...`, never gets it logged);
-* the HTTP client libraries (`httpx`, `httpcore`) log at WARNING only, since
-  their INFO lines carry every outbound URL with its query and path values
-  (tool arguments, customer ids); `app_utils.api_client` logs each outbound
-  call itself with the API, method, operation id and path template instead;
+* the HTTP client libraries (`httpx`, `httpcore`, and `httpx2`/`httpcore2`
+  that model provider SDKs use) log at WARNING only, since their INFO lines
+  carry every outbound URL with its query and path values (tool arguments,
+  customer ids); `app_utils.api_client` logs each outbound call itself with
+  the API, method, operation id and path template instead;
 * Python warnings are captured into the same handler (one JSON record each,
   logger `py.warnings`), and the value a pydantic serializer warning echoes
   (`input_value=...`, which can be a run context holding a forwarded
   credential) is redacted.
+
+LangGraph Server configures its own handlers, format and level (its
+`LOG_LEVEL`, `LOG_JSON`). Under `langgraph-server`, `setup_server_logging()`
+applies the same three rules to them: the server's access lines
+(`langgraph_api.server`) lose their `query_string` field, the HTTP client
+libraries log at WARNING only (`quiet_client_loggers()`; `api_client`
+does the same when imported, in every process that runs the graph), and
+warnings are captured with their values redacted.
 
 Tracing: explicit opt-in, LangSmith or OpenTelemetry.
 
@@ -214,8 +223,42 @@ class WarningRedactionFilter(logging.Filter):
         return True
 
 
-# Loggers whose INFO lines carry full outbound URLs (query and path values).
-QUIET_LOGGERS = ("httpx", "httpcore")
+# Loggers whose INFO lines carry full outbound URLs (query and path values):
+# httpx, and httpx2, which the model provider SDKs use.
+QUIET_LOGGERS = ("httpx", "httpcore", "httpx2", "httpcore2")
+# LangGraph Server's access logger (a structlog event dict per request).
+SERVER_ACCESS_LOGGER = "langgraph_api.server"
+
+
+class ServerAccessLogFilter(logging.Filter):
+    """Drop the query string from LangGraph Server's access lines.
+
+    The server logs each request through structlog with a `query_string`
+    field holding the raw query (credentials a client put in the URL
+    included). Its records carry the event dict as `msg`; the field is
+    removed before any handler formats it. The line's text holds the path only.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        event = record.msg
+        if isinstance(event, dict) and "query_string" in event:
+            record.msg = {k: v for k, v in event.items() if k != "query_string"}
+        return True
+
+
+def quiet_client_loggers() -> None:
+    """`QUIET_LOGGERS` at WARNING: their INFO lines carry full outbound URLs."""
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def setup_server_logging() -> None:
+    """langgraph-server: the logging rules of `setup_logging()` on the server's own handlers."""
+    _add_filter_once(logging.getLogger(SERVER_ACCESS_LOGGER), ServerAccessLogFilter)
+    _add_filter_once(logging.getLogger("uvicorn.access"), AccessLogFilter)
+    quiet_client_loggers()
+    logging.captureWarnings(True)
+    _add_filter_once(logging.getLogger("py.warnings"), WarningRedactionFilter)
 
 
 def setup_logging() -> None:
@@ -237,8 +280,7 @@ def setup_logging() -> None:
         uv_logger.handlers = []
         uv_logger.propagate = True
     _add_filter_once(logging.getLogger("uvicorn.access"), AccessLogFilter)
-    for name in QUIET_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    quiet_client_loggers()
     # Warnings become records of this handler (JSON under LOG_FORMAT=json)
     # instead of raw multi-line text on stderr.
     logging.captureWarnings(True)

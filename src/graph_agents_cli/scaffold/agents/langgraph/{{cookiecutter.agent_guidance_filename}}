@@ -27,8 +27,9 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
    (subpackages included) declares `API_CALLS` as one literal list (empty when it calls no
    external API) and reaches an external API only through `get_client("<api>")` of
    `{{cookiecutter.agent_directory}}/app_utils/api_client.py`, which enforces `api-policy.yaml` and fails closed.
-   Keep `graph` unbound (no checkpointer) and keep its `recursion_limit` config and
-   `SurfaceApiErrors` middleware.
+   Keep `graph` unbound (no checkpointer) and keep its `recursion_limit` config and its
+   middleware (`SurfaceApiErrors`, and `UntrustedToolResults`, which fences tool results as
+   untrusted data).
 2. Try it: `cp .env.example .env` and `graph-agents-cli login --write-env` once, then
    `graph-agents-cli playground` (the app with `/playground`), or `graph-agents-cli run "prompt"`. `graph-agents-cli playground --graph` opens
    LangGraph Studio against the graph directly (bypasses the auth policy).

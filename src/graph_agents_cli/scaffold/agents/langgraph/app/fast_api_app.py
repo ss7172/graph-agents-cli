@@ -97,12 +97,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 # `.env` first, below the process environment (as `load_dotenv()` does): the
 # modules imported next, and this one, read settings as they load (A2A_NAME,
 # the A2A card's auth scheme, APP_ENV for the docs, CORS_ALLOW_ORIGINS).
+# PYTHON_DOTENV_DISABLED switches it off, as it does `load_dotenv()`: the
+# project's tests set it so a developer's `.env` never reaches them.
 os.environ.update(
     {
         key: value
         for key, value in dotenv_values().items()
         if value is not None and key not in os.environ
     }
+    if os.environ.get("PYTHON_DOTENV_DISABLED", "").strip().lower()
+    not in {"1", "true", "t", "yes", "y"}
+    else {}
 )
 
 from {{cookiecutter.agent_directory}}.app_utils.a2a import (
@@ -163,6 +168,7 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     log_format,
     log_level,
     setup_logging,
+    setup_server_logging,
     setup_telemetry,
     trace_capture,
 )
@@ -181,11 +187,14 @@ logger = logging.getLogger(__name__)
 if detect_runtime() == FASTAPI:
     # Now rather than in the lifespan: what is logged before it (the A2A
     # card's APP_URL warning below, uvicorn's startup lines) follows
-    # LOG_FORMAT too. LangGraph Server configures logging itself. A bad
-    # LOG_LEVEL or LOG_FORMAT is left to the lifespan's settings check, which
-    # reports every bad setting at once.
+    # LOG_FORMAT too. A bad LOG_LEVEL or LOG_FORMAT is left to the lifespan's
+    # settings check, which reports every bad setting at once.
     with contextlib.suppress(SettingsError):
         setup_logging()
+else:
+    # LangGraph Server configures logging itself; keep query strings and
+    # outbound URLs out of its lines.
+    setup_server_logging()
 
 
 @asynccontextmanager
@@ -205,7 +214,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         )
     )
     if RUNTIME.runtime == FASTAPI:
-        setup_logging()  # LangGraph Server configures logging itself
+        setup_logging()
+    else:
+        setup_server_logging()  # LangGraph Server configures logging itself
     setup_telemetry()
     await RUNTIME.start()
     try:

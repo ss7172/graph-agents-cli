@@ -22,9 +22,17 @@ attaches the checkpointer under the fastapi runtime and LangGraph Server owns
 it under langgraph-server. Replacing `create_agent` with an explicit
 `StateGraph` is a one-file change: keep exporting `graph`.
 
-The graph's default step limit is `RECURSION_LIMIT` (default 25 super-steps,
-about a dozen model/tool round trips), so a run that loops stops with
-`GraphRecursionError` instead of calling the model thousands of times.
+The graph's step limit is `RECURSION_LIMIT` (default 50 super-steps: two to
+answer plus two per sequential tool call, so 24 calls), so a run that loops
+stops instead of calling the model thousands of times. The server ends such a
+run with a reply saying so and `message.end` status `step_limit`; its work
+stays in the thread.
+
+`middleware()` is the agent's middleware: `SurfaceApiErrors` turns API-policy
+refusals and failed API calls into tool errors the model reads, and
+`UntrustedToolResults` fences every tool result the model reads as untrusted
+data. The graph is the same under both runtimes (LangGraph Server loads it
+from `langgraph.json`), so both apply everywhere.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import ApiCallError, ApiPolicyError
+from {{cookiecutter.agent_directory}}.app_utils.content import UntrustedToolResults
 from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
 from {{cookiecutter.agent_directory}}.tools import get_tools
@@ -47,8 +56,8 @@ load_dotenv()
 
 # The second paragraph is the prompt-level half of the defence against
 # instructions planted in tool results (a customer's note, an upstream error
-# body); `app_utils.content.UntrustedToolResults` fences those results in
-# <tool_output> tags. Neither is a guarantee: write tools must still check
+# body); `UntrustedToolResults` (in `middleware()` below) fences those results
+# in <tool_output> tags. Neither is a guarantee: write tools must still check
 # who asked for what (`app_utils.api_client.require_user_mentioned`,
 # `require_owner`), and the API should authorize the user itself where it can.
 SYSTEM_PROMPT = (
@@ -70,7 +79,9 @@ class AgentContext:
 
     principal_id: str = "anonymous"
     roles: list[str] = field(default_factory=list)
-    attributes: dict[str, Any] = field(default_factory=dict)
+    # Out of repr: it can hold forwarded credentials (`attributes["credentials"]`),
+    # and a repr ends up in warnings and tracebacks.
+    attributes: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 def _tool_error(request: Any, exc: Exception) -> ToolMessage:
@@ -104,11 +115,16 @@ class SurfaceApiErrors(AgentMiddleware):
             return _tool_error(request, exc)
 
 
+def middleware() -> list[AgentMiddleware]:
+    """The agent's middleware (new instances): keep both when you add your own."""
+    return [SurfaceApiErrors(), UntrustedToolResults()]
+
+
 graph: CompiledStateGraph = create_agent(
     model=get_model(),
     tools=get_tools(),
     system_prompt=SYSTEM_PROMPT,
-    middleware=[SurfaceApiErrors()],
+    middleware=middleware(),
     context_schema=AgentContext,
     name="{{cookiecutter.project_name}}",
 ).with_config({"recursion_limit": recursion_limit()})

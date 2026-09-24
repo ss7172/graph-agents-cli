@@ -513,38 +513,92 @@ def repair_tool_history(
     """The history with every tool call followed by its result, or None when it already is.
 
     Model providers reject an assistant message whose tool calls are not
-    answered right after it, and a tool result that answers no call. Each
-    call's result (wherever it sits) is moved right after the call, a call
-    with no result gets `make_result(call)` (an error result), and results
-    that answer no call are dropped.
+    answered right after it, and a tool result that answers no call. Calls
+    and results are paired by position, turn by turn, since tool-call ids
+    repeat across turns (a model may number its calls `call_0`, `call_1`, ...
+    in every message):
+
+    * a call's result is a tool message with its id in the block of tool
+      messages right after the call's assistant message; these are kept
+      where they are, in their order;
+    * a call without one takes the first unclaimed tool message with its id
+      that sits after the call and before the next assistant message that
+      makes a call with the same id (a result a crash or an old repair left
+      behind a later message), moved right after the call;
+    * a call with neither gets `make_result(call)` (an error result);
+    * a tool message no call claims is dropped.
+
+    A history in which every call is answered right after it, and every tool
+    message answers a call, is returned as None and never rewritten.
     """
-    results: dict[str, Any] = {}
-    for m in messages:
-        if _is_tool(m):
-            results.setdefault(str(_get(m, "tool_call_id") or ""), m)
+    count = len(messages)
+
+    def call_ids(m: Any) -> list[str]:
+        ids: list[str] = []
+        for call in _get(m, "tool_calls") or []:
+            call_id = str(_get(call, "id") or "")
+            if call_id not in ids:
+                ids.append(call_id)
+        return ids
+
+    def result_id(m: Any) -> str:
+        return str(_get(m, "tool_call_id") or "")
+
+    # Pass 1: the results that answer an assistant message right after it.
+    claimed: set[int] = set()
+    direct: dict[int, list[int]] = {}  # assistant index -> indexes of its direct results
+    for i, m in enumerate(messages):
+        if not _is_ai(m):
+            continue
+        pending = set(call_ids(m))
+        block: list[int] = []
+        j = i + 1
+        while j < count and _is_tool(messages[j]):
+            if result_id(messages[j]) in pending:
+                pending.discard(result_id(messages[j]))
+                block.append(j)
+                claimed.add(j)
+            j += 1
+        direct[i] = block
+
+    def later_result(i: int, call_id: str) -> int | None:
+        """An unclaimed result for `call_id` after message i, before the id is called again."""
+        for k in range(i + 1, count):
+            m = messages[k]
+            if _is_ai(m) and call_id in call_ids(m):
+                return None
+            if _is_tool(m) and k not in claimed and result_id(m) == call_id:
+                return k
+        return None
+
+    # Pass 2: rebuild, each assistant message followed by its results.
     out: list[Any] = []
     added: list[Any] = []
-    placed: set[str] = set()
-    for m in messages:
+    for i, m in enumerate(messages):
         if _is_tool(m):
-            continue
+            continue  # placed after its call below, or dropped
         out.append(m)
         if not _is_ai(m):
             continue
-        for call in _get(m, "tool_calls") or []:
-            call_id = str(_get(call, "id") or "")
-            if call_id in placed:
+        answered = {result_id(messages[k]) for k in direct[i]}
+        out.extend(messages[k] for k in direct[i])
+        calls = {str(_get(c, "id") or ""): c for c in _get(m, "tool_calls") or []}
+        for call_id in call_ids(m):
+            if call_id in answered:
                 continue
-            placed.add(call_id)
-            if call_id in results:
-                out.append(results[call_id])
+            k = later_result(i, call_id)
+            if k is not None:
+                claimed.add(k)
+                out.append(messages[k])
             else:
-                result = make_result(call)
+                result = make_result(calls[call_id])
                 out.append(result)
                 added.append(result)
-    if [id(m) for m in out] == [id(m) for m in messages]:
+    if len(out) == count and all(a is b for a, b in zip(out, messages, strict=True)):
         return None
-    append_only = [id(m) for m in out[: len(messages)]] == [id(m) for m in messages]
+    append_only = len(out) >= count and all(
+        a is b for a, b in zip(out[:count], messages, strict=True)
+    )
     return HistoryRepair(messages=out, added=added, append_only=append_only)
 
 
@@ -563,6 +617,17 @@ def _server_message(m: Any) -> dict[str, Any]:
     elif _is_tool(m):
         keep.extend(("tool_call_id", "status", "artifact"))
     return {k: m[k] for k in keep if m.get(k) is not None}
+
+
+# The remove-everything marker of LangGraph's `add_messages` reducer
+# (`langgraph.graph.message.REMOVE_ALL_MESSAGES`).
+REMOVE_ALL_MESSAGES = "__remove_all__"
+# How long a step-limit reply waits for the server to mark our run done.
+SERVER_IDLE_WAIT_S = 3.0
+
+
+def _server_busy(thread: Any) -> bool:
+    return isinstance(thread, Mapping) and thread.get("status") == "busy"
 
 
 def thread_busy_error() -> dict[str, Any]:
@@ -1461,7 +1526,6 @@ class ChatRuntime:
             return await self._server_repair_history(req, thread_id, reason, final_text)
         from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
         from langgraph.constants import END
-        from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
         from {{cookiecutter.agent_directory}}.agent import graph
 
@@ -1510,7 +1574,11 @@ class ChatRuntime:
     ) -> int:
         client = self._sdk_client(req.forward_headers)
         thread = await client.threads.get(thread_id)
-        if isinstance(thread, Mapping) and thread.get("status") == "busy":
+        if final_text is not None and _server_busy(thread):
+            # Ending our own run at the step limit: the server sends the run's
+            # error before it marks the run done and the thread idle.
+            thread = await self._server_wait_idle(client, thread_id, SERVER_IDLE_WAIT_S)
+        if _server_busy(thread):
             # A run owns the thread (one started through the server's own API,
             # or ours still winding down): its open tool calls are its own.
             if final_text is not None:
@@ -1542,7 +1610,9 @@ class ChatRuntime:
                 list(repair.added)
                 if repair.append_only
                 else [
-                    {"type": "remove", "id": "__remove_all__"},
+                    # The server turns each dict back into a message and needs a
+                    # `content` on every one, a RemoveMessage's included.
+                    {"type": "remove", "id": REMOVE_ALL_MESSAGES, "content": ""},
                     *(_server_message(m) for m in repair.messages),
                 ]
             )
@@ -1553,6 +1623,15 @@ class ChatRuntime:
         as_node = "model" if final_text is not None else "tools"
         await client.threads.update_state(thread_id, {"messages": update}, as_node=as_node)
         return len(repair.added) if repair is not None else 0
+
+    async def _server_wait_idle(self, client: Any, thread_id: str, timeout_s: float) -> Any:
+        """The server thread once it is no longer busy, or as it is after `timeout_s`."""
+        deadline = time.monotonic() + timeout_s
+        thread = await client.threads.get(thread_id)
+        while _server_busy(thread) and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            thread = await client.threads.get(thread_id)
+        return thread
 
     async def _end_at_step_limit(
         self, req: ChatRequest, thread_id: str, lease: ThreadLease

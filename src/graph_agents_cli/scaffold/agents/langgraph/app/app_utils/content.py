@@ -103,9 +103,17 @@ def fence_tool_output(content: Any, *, name: str | None, status: str | None) -> 
     return f"{opening}{closing}"
 
 
-def is_fenced(content: Any) -> bool:
-    text = content if isinstance(content, str) else content_to_text(content)
-    return text.startswith(f"<{TOOL_OUTPUT_TAG} ")
+# Set on the fenced copy the model reads (never on the thread's state). Whether
+# a result is already fenced is known from this mark, never from its text: a
+# tool result is text an upstream controls, and one that starts like a fence
+# would otherwise reach the model unfenced, with the attributes it chose.
+FENCED_MARK = "graph_agents_fenced"
+
+
+def is_fenced(message: Any) -> bool:
+    """Whether `message` is a copy `fence_tool_messages` made (by its mark, not its text)."""
+    metadata = getattr(message, "response_metadata", None)
+    return isinstance(metadata, Mapping) and metadata.get(FENCED_MARK) is True
 
 
 def unfence_tool_output(text: str) -> str:
@@ -117,15 +125,20 @@ def unfence_tool_output(text: str) -> str:
 
 
 def fence_tool_messages(messages: list[Any]) -> list[Any]:
-    """`messages` with every tool result fenced (a new list; the originals are untouched)."""
+    """`messages` with every tool result fenced (a new list; the originals are untouched).
+
+    Every `ToolMessage` is fenced, whatever its text looks like; only the
+    copies this function made (marked out of band) are left as they are.
+    """
     out: list[Any] = []
     for message in messages:
-        if isinstance(message, ToolMessage) and not is_fenced(message.content):
+        if isinstance(message, ToolMessage) and not is_fenced(message):
             message = message.model_copy(
                 update={
                     "content": fence_tool_output(
                         message.content, name=message.name, status=message.status
-                    )
+                    ),
+                    "response_metadata": {**message.response_metadata, FENCED_MARK: True},
                 }
             )
         out.append(message)
