@@ -55,6 +55,9 @@ from graph_agents_cli.run._signals import shielded, terminate_like_interrupt
 
 DEFAULT_CONCURRENCY = 4
 API_KEY_ENV = "GRAPH_AGENTS_CLI_API_KEY"
+# Decisions on gated calls are sent with this credential when set (an approver
+# other than the eval identity, for role:<name> gates); else as the requester.
+APPROVER_KEY_ENV = "GRAPH_AGENTS_CLI_APPROVER_API_KEY"
 
 
 def _start_local_server(project_root: Path, meta: dict[str, Any]) -> tuple[str, Callable[[], None]]:
@@ -128,6 +131,7 @@ def _dispatch(
     concurrency: int,
     timeout: float,
     console: Console,
+    decision_headers: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run every case in parallel; input order is preserved in the result."""
     traces: list[dict[str, Any] | None] = [None] * len(cases)
@@ -135,7 +139,12 @@ def _dispatch(
     def _one(index: int, case: EvalCase) -> tuple[int, dict[str, Any]]:
         try:
             return index, run_case(
-                base_url, case, headers=headers, metadata=metadata, timeout=timeout
+                base_url,
+                case,
+                headers=headers,
+                metadata=metadata,
+                timeout=timeout,
+                decision_headers=decision_headers,
             )
         except Exception as exc:  # a worker crash still yields a trace
             trace = empty_trace(case.id)
@@ -240,6 +249,21 @@ def warn_live_target(
     )
 
 
+def decision_headers_for(headers: dict[str, str], env: dict[str, str]) -> dict[str, str] | None:
+    """The headers decisions on gated calls go with: the approver's credential when set."""
+    key = env.get(APPROVER_KEY_ENV, "")
+    if not key:
+        return None
+    decided = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+    decided["Authorization"] = f"Bearer {key}"
+    return decided
+
+
+def approving_cases(cases: list[EvalCase]) -> list[str]:
+    """Ids of the cases whose approvals instructions approve a gated call."""
+    return [c.id for c in cases if any(i["decision"] == "approve" for i in c.approvals)]
+
+
 def _print_incomplete_summary(traces: list[dict[str, Any]], *, remote: bool = False) -> None:
     bad = [t for t in traces if t["status"] != STATUS_OK]
     click.echo("", err=True)
@@ -300,6 +324,7 @@ def generate_traces(
         if local_key:
             env[API_KEY_ENV] = local_key
     headers = build_case_headers(header, cookie, session_token, env=env)
+    decision_headers = decision_headers_for(headers, env)
 
     console.print(
         f"Running [cyan]{len(ds.cases)}[/cyan] case(s) from "
@@ -314,6 +339,13 @@ def generate_traces(
             base_url = url.rstrip("/")
             console.print(f"Target: [cyan]{escape(display_url(base_url))}[/cyan]")
             warn_live_target(console, base_url, project_root, len(ds.cases))
+            approving = approving_cases(ds.cases)
+            if approving:
+                console.print(
+                    f"[yellow]{len(approving)} case(s) approve gated calls "
+                    f"({escape(', '.join(approving[:5]))}{', ...' if len(approving) > 5 else ''})"
+                    ": those calls are sent there as approved.[/yellow]"
+                )
         else:
             console.print("Starting the local server...")
             base_url, teardown = _start_local_server(project_root, meta)
@@ -328,6 +360,7 @@ def generate_traces(
                 concurrency=concurrency,
                 timeout=timeout,
                 console=console,
+                decision_headers=decision_headers,
             )
         finally:
             teardown()
@@ -470,6 +503,14 @@ def cmd_generate(
     With --url every tool the agent calls runs for real in that environment
     (a warning names the target first): cases that create, change or delete
     data do so there. Use a dedicated test identity and data you can reset.
+
+    A call the API policy gates (an approval block) pauses the run; it is
+    decided as the case's "approvals" instructions say ({"decision":
+    "approve"|"reject", "match": {...}}) and the run continues. A gate no
+    instruction matches makes the case an error: generate never approves on
+    its own. Decisions are sent as the eval identity (the requester), or with
+    GRAPH_AGENTS_CLI_APPROVER_API_KEY as a bearer credential when it is set
+    (an approver holding the gate's role).
 
     \b
     Exit codes:

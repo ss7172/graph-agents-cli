@@ -22,14 +22,22 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
+
+from .fake_approvals import ApprovalBook
+
+_APPROVALS_RE = re.compile(r"^/threads/([^/]+)/approvals$")
+_DECISION_RE = re.compile(r"^/threads/([^/]+)/approvals/([^/]+)$")
+_THREAD_RE = re.compile(r"^/threads/([^/]+)$")
 
 Script = list[tuple[str, Any]] | Callable[[dict[str, Any]], list[tuple[str, Any]]]
 
@@ -98,6 +106,8 @@ class FakeChatServer:
         # Close the connection after this many body bytes of POST /chat (a server
         # that dies mid-stream); 0 closes it before any response is sent.
         self.drop_after_bytes: int | None = None
+        # The approval routes (tests/run/fake_approvals.py).
+        self.book = ApprovalBook()
 
     def events_for(self, body: dict[str, Any]) -> list[tuple[str, Any]]:
         if callable(self.script):
@@ -134,8 +144,46 @@ def _make_handler(server: FakeChatServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def _headers(self) -> dict[str, str]:
+            return {k.lower(): v for k, v in self.headers.items()}
+
+        def _stream(self, payload: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            for i in range(0, len(payload), 64):
+                self.wfile.write(payload[i : i + 64])
+                self.wfile.flush()
+
+        def do_DELETE(self) -> None:
+            self._record()
+            match = _THREAD_RE.match(urlsplit(self.path).path)
+            if not match:
+                self._json(404, {"detail": "not found"})
+                return
+            status = server.book.delete_thread(unquote(match.group(1)), self._headers())
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self) -> None:
             self._record()
+            parts = urlsplit(self.path)
+            if parts.path == "/threads":
+                status, rows = server.book.list_threads(self._headers())
+                if status == 200:
+                    query = parse_qs(parts.query)
+                    offset = int(query.get("offset", ["0"])[0])
+                    limit = int(query.get("limit", ["20"])[0])
+                    rows = rows[offset : offset + limit]
+                self._json(status, rows)
+                return
+            match = _APPROVALS_RE.match(parts.path)
+            if match:
+                self._json(*server.book.list(unquote(match.group(1)), self._headers()))
+                return
             if self.path == "/health":
                 self._json(200, server.health)
                 return
@@ -159,8 +207,24 @@ def _make_handler(server: FakeChatServer) -> type[BaseHTTPRequestHandler]:
             except json.JSONDecodeError:
                 body = {"_raw": raw.decode("utf-8", "replace")}
             self._record(body)
+            match = _DECISION_RE.match(urlsplit(self.path).path)
+            if match:
+                status, answer = server.book.decide(
+                    unquote(match.group(1)), unquote(match.group(2)), self._headers(), body
+                )
+                if status == 200:
+                    self._stream(render_sse(answer))
+                else:
+                    self._json(status, answer)
+                return
             if self.path != "/chat":
                 self._json(404, {"detail": "not found"})
+                return
+            if body.get("thread_id") and server.book.pending_on(body["thread_id"]):
+                self._json(
+                    409,
+                    {"code": "approval_pending", "detail": "a call on this thread awaits approval"},
+                )
                 return
             if server.status != 200:
                 data = server.error_body.encode("utf-8")

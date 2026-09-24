@@ -26,6 +26,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from graph_agents_cli._approvals import call_matches, describe_match
 from graph_agents_cli.eval.dataset import SCOPE_ALL_TURNS
 
 CHECK_DESCRIPTIONS: dict[str, str] = {
@@ -50,6 +51,11 @@ CHECK_DESCRIPTIONS: dict[str, str] = {
         "usage.input_tokens + usage.output_tokens is at or below the limit "
         "(summed over the turns with scope all_turns)."
     ),
+    "approvals": (
+        "The listed calls (match: operation_id and/or method + path, optional api) hit an "
+        "approval gate, each with its status: gated (any outcome), approved or rejected."
+    ),
+    "no_approvals": "No call hit an approval gate.",
 }
 
 # Keys of `expect` that change how checks read the trace; they are not checks.
@@ -58,8 +64,8 @@ MODIFIER_DESCRIPTIONS: dict[str, str] = {
     "case_insensitive": "contains / not_contains ignore case (default true).",
     "scope": (
         "final_turn (default): checks read the final turn of a multi-turn case; all_turns: "
-        "every turn's replies, tool calls, latency and tokens (json_schema always reads the "
-        "final reply)."
+        "every turn's replies, tool calls, latency, tokens and approval gates (json_schema "
+        "always reads the final reply)."
     ),
 }
 
@@ -323,6 +329,50 @@ def check_tool_calls(
     return True, ""
 
 
+# An `expect.approvals` status -> the recorded gate statuses it accepts.
+_APPROVAL_OUTCOMES: dict[str, tuple[str, ...] | None] = {
+    "gated": None,  # the call hit the gate, however it ended
+    "approved": ("approved",),
+    "rejected": ("rejected",),
+}
+
+
+def _describe_approval(record: dict[str, Any]) -> str:
+    call = f"{record.get('method') or '?'} {record.get('path') or '?'}"
+    if record.get("operation_id"):
+        call = f"{record['operation_id']} {call}"
+    return f"{call} ({record.get('status') or 'undecided'})"
+
+
+def check_approvals(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> CheckResult:
+    """Every expected gate matches a distinct recorded one with an accepted status."""
+    remaining = list(actual)
+    for exp in expected:
+        status = exp.get("status", "gated")
+        accepted = _APPROVAL_OUTCOMES.get(status)
+        for i, record in enumerate(remaining):
+            if call_matches(exp["match"], record) and (
+                accepted is None or record.get("status") in accepted
+            ):
+                del remaining[i]
+                break
+        else:
+            recorded = ", ".join(_describe_approval(r) for r in actual) or "none"
+            return False, (
+                f"expected {describe_match(exp['match'])} to be {status} at an approval gate; "
+                f"gates hit: {recorded}"
+            )
+    return True, ""
+
+
+def check_no_approvals(actual: list[dict[str, Any]]) -> CheckResult:
+    if actual:
+        return False, "calls hit an approval gate: " + ", ".join(
+            _describe_approval(r) for r in actual
+        )
+    return True, ""
+
+
 def check_no_tool_calls(actual: list[dict[str, Any]]) -> CheckResult:
     if actual:
         return False, "unexpected tool calls: " + ", ".join(str(c.get("name")) for c in actual)
@@ -399,6 +449,10 @@ def declared_checks(expect: dict[str, Any]) -> list[str]:
         names.append("max_latency_ms")
     if expect.get("max_tokens") is not None:
         names.append("max_tokens")
+    if expect.get("approvals") is not None:
+        names.append("approvals")
+    if expect.get("no_approvals"):
+        names.append("no_approvals")
     return names
 
 
@@ -420,7 +474,8 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
     ``expect.scope`` picks what they read on a multi-turn case: the final turn
     (``final_turn``, the default; the trace's top-level fields) or every turn
     (``all_turns``: every reply, every tool call in order, each turn's latency,
-    the summed tokens). ``json_schema`` always reads the final reply.
+    the summed tokens, every approval gate). ``json_schema`` always reads the
+    final reply.
 
     A check that raises is reported as failed with the exception text, so a bad
     expectation never aborts grading.
@@ -435,11 +490,13 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
         tool_calls = trace.get("tool_calls") or []
         latency = trace.get("latency_ms")
         usage = trace.get("usage")
+        approvals = trace.get("approvals") or []
     else:
         response = [_text(t.get("response")) for t in turns]
         tool_calls = [c for t in turns for c in (t.get("tool_calls") or [])]
         latency = [t.get("latency_ms") for t in turns]
         usage = [t.get("usage") for t in turns]
+        approvals = [a for t in turns for a in (t.get("approvals") or [])]
     fold = bool(expect.get("case_insensitive", True))
     runners: dict[str, Callable[[], CheckResult]] = {
         "contains": lambda: check_contains(expect["contains"], response, case_insensitive=fold),
@@ -454,6 +511,8 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
         "no_tool_calls": lambda: check_no_tool_calls(tool_calls),
         "max_latency_ms": lambda: check_max_latency_ms(expect["max_latency_ms"], latency),
         "max_tokens": lambda: check_max_tokens(expect["max_tokens"], usage),
+        "approvals": lambda: check_approvals(expect["approvals"], approvals),
+        "no_approvals": lambda: check_no_approvals(approvals),
     }
     results: dict[str, dict[str, Any]] = {}
     for name in declared_checks(expect):

@@ -805,3 +805,51 @@ def test_check_helpers():
         "localhost:5000"
     )
     assert checks._names({"items": [{"metadata": {"name": "a"}}, "junk"]}) == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# approval gates: where pending approvals live
+# ---------------------------------------------------------------------------
+
+GATED_POLICY = """\
+apis:
+  orders:
+    base_url_env: ORDERS_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST]
+    approval:
+      required_for: {methods: [POST]}
+      approvers: [requester, "role:ops"]
+"""
+
+
+def test_no_approval_check_without_a_gated_api(project: SimpleNamespace, fake):
+    report = report_of(invoke("--json"))
+    assert not any(c["name"] == "approval gates" for c in report["checks"])
+    (project.root / "api-policy.yaml").write_text(GATED_POLICY.split("    approval:")[0])
+    report = report_of(invoke("--json"))
+    assert not any(c["name"] == "approval gates" for c in report["checks"])
+
+
+def test_approval_gates_name_the_approvals_table(project: SimpleNamespace, fake):
+    (project.root / "api-policy.yaml").write_text(GATED_POLICY)
+    check = by_name(report_of(invoke("--json")), "approval gates")
+    assert check["status"] == "info" and check["required"] is False
+    assert "orders (requester, role:ops)" in check["detail"]
+    assert "approvals table of the app database (POSTGRES_DSN" in check["detail"]
+
+
+def test_approval_gates_warn_with_an_in_memory_checkpointer(project: SimpleNamespace, fake):
+    (project.root / "api-policy.yaml").write_text(GATED_POLICY)
+    values = project.chart / "values.yaml"
+    values.write_text(values.read_text() + "  CHECKPOINTER: memory\n")
+    check = by_name(report_of(invoke("--json")), "approval gates")
+    assert check["status"] == "warn"
+    assert "a restart loses them" in check["detail"]
+    assert "CHECKPOINTER=postgres" in check["hint"]
+
+
+def test_an_invalid_policy_is_left_to_lint(project: SimpleNamespace, fake):
+    (project.root / "api-policy.yaml").write_text(GATED_POLICY.replace("requester", "admin"))
+    report = report_of(invoke("--json"))
+    assert not any(c["name"] == "approval gates" for c in report["checks"])

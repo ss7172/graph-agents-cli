@@ -537,6 +537,72 @@ def _metrics_token_checks(
     ]
 
 
+def _gated_apis(policy_path: Path) -> list[str]:
+    """``name (approvers)`` of each API whose valid policy has an approval block."""
+    from graph_agents_cli._api_policy import APPROVAL_KEY, ApiPolicyFileError, load_policy_document
+
+    if not policy_path.is_file():
+        return []
+    try:
+        document = load_policy_document(policy_path)
+    except ApiPolicyFileError:
+        return []  # `lint` reports an invalid policy
+    return [
+        f"{name} ({', '.join(str(a) for a in api[APPROVAL_KEY].get('approvers') or [])})"
+        for name, api in document["apis"].items()
+        if isinstance(api, dict) and api.get(APPROVAL_KEY) is not None
+    ]
+
+
+def check_approvals(
+    settings: DeploySettings, values: dict[str, Any], project_root: Path | None = None
+) -> list[Check]:
+    """Where pending approvals are kept, when api-policy.yaml gates any call.
+
+    A gated call pauses its run until an approver decides; the paused run
+    lives in the checkpointer and the approval in the ``approvals`` table of
+    the app database. With the in-memory checkpointer both are lost when the
+    pod restarts, and another replica cannot resume them.
+    """
+    from graph_agents_cli._api_policy import POLICY_FILENAME
+
+    gated = _gated_apis((project_root or Path.cwd()) / POLICY_FILENAME)
+    if not gated:
+        return []
+    name = "approval gates"
+    apis = f"api-policy.yaml gates calls of {'; '.join(gated)}"
+    memory = (
+        settings.runtime != "langgraph-server"
+        and not _enabled(values, "postgresql", "enabled")
+        and str(_preflight.chart_env(values).get("CHECKPOINTER") or "postgres").strip().lower()
+        == "memory"
+    )
+    if memory:
+        return [
+            Check(
+                name,
+                WARN,
+                False,
+                f"{apis}; with CHECKPOINTER=memory a paused run and its pending approval live "
+                "in one pod's memory: a restart loses them and another replica cannot resume "
+                "them",
+                "set CHECKPOINTER=postgres: the paused runs and the approvals table then live "
+                "in the app database",
+            )
+        ]
+    where = "DATABASE_URI" if settings.runtime == "langgraph-server" else "POSTGRES_DSN"
+    return [
+        Check(
+            name,
+            INFO,
+            False,
+            f"{apis}; pending and decided approvals are kept in the approvals table of the "
+            f"app database ({where}, beside the checkpoints): back it up with them, and keep "
+            "its retention in line with RETENTION_DAYS",
+        )
+    ]
+
+
 def _codeowners_placeholders() -> list[str]:
     path = Path(".github") / "CODEOWNERS"
     if not path.is_file():
@@ -1084,6 +1150,7 @@ def run_checks(
     else:
         report.checks.append(Check("cluster", SKIP, False, "pass --env to check the cluster"))
     report.checks += check_placeholders(settings, values, env)
+    report.checks += check_approvals(settings, values)
     report.checks += check_github(settings)
     if profile == DISCONNECTED:
         report.checks += check_disconnected(settings, values)

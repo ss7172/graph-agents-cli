@@ -137,13 +137,17 @@ async for event in runnable.astream_events(
 The app applies `TRACE_CAPTURE` before emitting `args` and `result` to a non-owner. Nodes should
 not `print` or log prompt text; the telemetry layer handles capture.
 
-## Human-in-the-loop (interrupts): not implemented in this milestone
+## Human-in-the-loop (interrupts)
 
-The LangGraph pattern is below for reference. **The scaffolded chat API does not expose it:**
-`message.end` carries `status: "ok"` (or `"step_limit"`), there is no status for a paused graph
-and no `metadata.resume` request convention, so a graph that calls `interrupt()` stalls the `/chat`
-stream. Use interrupts only under `playground --graph` (LangGraph Studio) until the template adds
-the convention; keep approval steps out of the served graph.
+For API calls, use the policy's approval gate: `graph-agents-cli api approval NAME ...` makes the
+API client itself call `interrupt()` before a gated call, `/chat` ends with `message.end` status
+`awaiting_approval`, and `POST /threads/{thread_id}/approvals/{approval_id}` resumes the run (see
+SKILL.md section 5). Nothing in the graph changes.
+
+The general LangGraph pattern is below for reference. **The scaffolded chat API does not expose
+your own interrupts:** there is no status for a graph paused elsewhere and no `metadata.resume`
+request convention, so a node that calls `interrupt()` outside the API client stalls the `/chat`
+stream. Use such interrupts only under `playground --graph` (LangGraph Studio).
 
 ```python
 from langgraph.types import interrupt, Command
@@ -159,9 +163,11 @@ def confirm_action(state: State):
 ```
 
 - Requires a checkpointer (any); the thread pauses at the interrupt and is resumed with
-  `graph.invoke(Command(resume="approve"), config)` on the same `thread_id`.
-- Not wired to `/chat`: the app does not report a paused graph and does not translate a
-  request `metadata.resume` into `Command(resume=...)`. Adding that is a scaffolding change to
+  `graph.invoke(Command(resume="approve"), config)` on the same `thread_id`. On resume the
+  interrupted node runs again from its start (`interrupt()` then returns the resume value), so
+  the code before it must be safe to repeat.
+- Not wired to `/chat` outside the API client's approval gate: the app does not report such a
+  paused graph and does not translate a request `metadata.resume` into `Command(resume=...)`. Adding that is a scaffolding change to
   `app/app_utils/chat.py` and `fast_api_app.py`, which `upgrade` 3-way merges; ask before doing it.
 - `interrupt_before=["tools"]` at compile time pauses before every tool call; same caveat.
 

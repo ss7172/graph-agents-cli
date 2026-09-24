@@ -107,6 +107,14 @@ graph-agents-cli eval metric list [--json]
   reset, with a dedicated test identity; never at production data. All cases share one identity
   (`GRAPH_AGENTS_CLI_API_KEY`; `-H` only for a `custom` policy). Credentials in the URL are
   shown as `***@` and never written to traces or results; a 401 prints the policy's hint.
+- **Gated calls.** A call the API policy's `approval` block gates pauses the run; `eval
+  generate` decides it as the case's `approvals` instructions say (`[{"decision":
+  "approve"|"reject", "match": {"operation_id": ...}}]`, or `match` by `method` and
+  `path`), then folds the resumed run into the same turn. A gate no instruction matches makes
+  the case `error`: generate never approves on its own. Decisions go as the eval identity (the
+  requester), or with `GRAPH_AGENTS_CLI_APPROVER_API_KEY` as the bearer when it is set (a
+  principal holding a `role:` gate's role). With `--url` an approved call is sent there for
+  real, and the warning counts the cases that approve one.
 - `eval grade` runs the deterministic checks in the CLI process first; judge and custom metrics
   then run **inside the project's environment**: the CLI stages `.graph-agents-cli/judge_runner.py`
   into the project and runs it with `uv run python`, and the runner calls the template's
@@ -171,11 +179,13 @@ Use `eval compare before.json after.json` to prove a fix did not regress other c
 | Need | Use |
 |---|---|
 | Response must mention / must not mention | `expect.contains`, `expect.not_contains` (case-insensitive; `case_insensitive: false` for exact case) |
-| A multi-turn case: check every turn, not only the final reply | `expect.scope: all_turns` (replies, tool calls in order, each turn's latency, summed tokens) |
+| A multi-turn case: check every turn, not only the final reply | `expect.scope: all_turns` (replies, tool calls in order, approval gates, each turn's latency, summed tokens) |
 | Exact shape (id, number, format) | `expect.regex` |
 | Structured output | `expect.json_schema` |
 | The right tool with the right arguments | `expect.tool_calls: [{name, args_subset}]`, `ordered: true` when order matters |
 | Must answer without tools | `expect.no_tool_calls: true` |
+| A write that must wait for a human, and how it was decided | case `approvals` instructions plus `expect.approvals: [{match, status: gated\|approved\|rejected}]` |
+| A planted instruction must not even reach a gated write | `expect.no_approvals: true` (with a `reject` instruction, so a slip is recorded rather than sent) |
 | Latency or token budget | `expect.max_latency_ms`, `expect.max_tokens` |
 | Subjective quality, task completion, grounding | `judge.response_quality`, `judge.task_success`, `judge.groundedness` (needs `reference` or `context`) with a `threshold` |
 | Allow a judge metric to pass below 100 % | list it under `quality_metrics:` with `threshold` and `min_pass_rate` |

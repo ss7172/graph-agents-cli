@@ -48,7 +48,7 @@ metadata:
 | File | Contents |
 |---|---|
 | `references/template-contract.md` | File layout, env contract (every setting and its default), chat SSE API and error events, routes (`/ready`, `/metrics`, `/threads`), request rules, auth policy interface, API client, manifest, exactly as the template implements them |
-| `references/langgraph.md` | `create_agent`, `StateGraph`/`MessagesState`, tools, checkpointers and `thread_id`, streaming, interrupts (not wired to `/chat` in this milestone), subgraphs, testing with the `fake` provider |
+| `references/langgraph.md` | `create_agent`, `StateGraph`/`MessagesState`, tools, checkpointers and `thread_id`, streaming, interrupts (the policy's approval gate is the one wired to `/chat`), subgraphs, testing with the `fake` provider |
 | `references/langchain-models.md` | `init_chat_model` provider switching, provider env variables, tool-capable open models, the judge configuration |
 
 ---
@@ -114,8 +114,8 @@ Rules:
   refuses the thread's later turns), and the last two keep text that tools return from acting
   as instructions (section 2a). An explicit `StateGraph` needs the same: pass the middleware
   to your model node's wrapper, or answer `AIMessage.invalid_tool_calls` yourself.
-- Move to an explicit `StateGraph` when the conversation has fixed stages, branching, a
-  human-approval step, or subgraphs. `references/langgraph.md` has the pattern; keep the same
+- Move to an explicit `StateGraph` when the conversation has fixed stages, branching, or
+  subgraphs (a human approval of an API call needs no graph change: section 5). `references/langgraph.md` has the pattern; keep the same
   export and stay unbound.
 
 ## 2. Tools and the `API_CALLS` declaration
@@ -256,6 +256,14 @@ when the project declares an API policy):
   or `custom`): the upstream then authorizes each call as the user, so the agent can never do
   more than the user could. A shared `auth: bearer` service token can act on every record, and
   all per-user checks then live in your tool code (section 2a).
+- A call the API's `approval` block gates (`required_for.methods` or `.operations`) pauses the
+  run inside the client, before anything is sent, until an approver decides (section 5). The
+  tool needs no code for it: an approved call returns its response as usual; a rejected or
+  expired one raises a "not approved" error the model relays (let it propagate). Because
+  the run resumes by running the tool again from its start, keep a gated tool idempotent up
+  to the call (no other write before it) and build the request deterministically (no
+  timestamp or random id in the body or path): the approved request is hashed, and a resumed
+  call that differs from it is refused, never sent.
 - No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS`; `lint`
   then prints the `graph-agents-cli api` command that would allow it (`api allow` with the
   call's method and path, or `api access` for a new method). Propose it to the user: widening access is their decision and a
@@ -300,15 +308,21 @@ call, not on whose behalf. What the template does, and what your tools must do:
   (or the same one with `confirmed=True`) acts only when the user's latest message holds that
   confirmation: `require_user_mentioned("ORD-1001", runtime)` checks it. A bare "yes" names no
   record, so `require_user_mentioned` would refuse it; ask for the id (or check a confirmation
-  code the first step returned) rather than weakening the check. This works over `/chat` and A2A
-  today; LangGraph `interrupt()` does not (section 5).
+  code the first step returned) rather than weakening the check. It needs no API support,
+  but it trusts the user to read the summary; the approval gate below shows the exact call.
+- **Gate the writes that matter** (`graph-agents-cli api approval`, section 5): the run
+  pauses before the call and a person sees the exact request (which record, which body)
+  before it is sent: `requester` confirmation for a user's own writes, `role:<name>`
+  approvers (a second person) for actions one person should not take alone. An injected
+  instruction can no longer act silently; propose the gate to the user (it is a policy
+  change they review), never add it unasked.
 
 Residual risk: none of this makes a model immune to instructions in data, and the helpers check
 ids, not intent: data copied from a record the user did not name into one they did is caught
-only by checking the reads too. Human approval of writes (an `approval` gate on API calls) is
-the planned control; until it exists, give staff roles read access by default and write tools
-only where the checks above apply, and add eval cases with planted instructions
-(`/graph-agents-cli-eval`).
+only by checking the reads too, and an approval gate is only as good as the person reading the
+call. Give staff roles read access by default, gate their write tools, and add eval cases with
+planted instructions (`/graph-agents-cli-eval`: `expect.no_approvals` asserts the planted
+write never reached a gate).
 
 ## 3. Checkpointers, threads, and run records
 
@@ -378,19 +392,48 @@ result; the next run answers it with an error result right after the call, so th
 valid for the model provider. Long tools must finish well inside `RUN_TIMEOUT_S`, or raise it
 deliberately in `.env` and the chart values.
 
-## 5. Human-in-the-loop with interrupts (not implemented in this milestone)
+## 5. Human approval of API calls (the policy's gate) and other interrupts
 
-LangGraph's `interrupt()` (or `interrupt_before=[...]` at compile time) pauses a thread until it
-is resumed with `Command(resume=...)`. **The scaffolded chat API does not expose this yet:**
-`message.end` carries `"status": "ok"` (or `"step_limit"`; an `error` event replaces it on
-failure), there is no status for a paused graph (the run record status `interrupted` means the
-run was stopped by a lost lease or a dead process, not a LangGraph interrupt) and no
-`metadata.resume` request convention, so a graph that interrupts
-stalls the `/chat` stream instead of pausing cleanly. Until the template wires it, keep approval
-steps out of the served graph (the two-step confirmation of section 2a, or gate the action in the
-client application) and use interrupts only in `playground --graph` (LangGraph Studio) for
-graph debugging. `references/langgraph.md` shows the LangGraph pattern for when the convention is
-added.
+The human-in-the-loop the template wires is the API policy's **approval gate**: an API's
+`approval` block names the calls a person must approve (`required_for.methods` /
+`.operations`), who may (`approvers`: `requester` and/or `role:<name>`) and for how long
+(`timeout_s`, 30-86400, default 900). Set it with `graph-agents-cli api approval NAME
+--methods POST,DELETE --approvers requester` (or `--operations cancelOrder`, `--approvers
+role:ops`, `--remove`); `lint`, `api check` and `api show` list which declared calls it gates.
+Approval never widens access: the call must still be allowed, and denials still win.
+
+- **Pause.** Before sending a gated call the client builds the canonical request (API, method,
+  full path, query, JSON body, operation id), hashes it and calls LangGraph `interrupt()` with
+  the approval (id, the call, the tool and the model's stated reason, approvers,
+  `expires_at`); the run's state stays in the checkpointer. `/chat` ends the stream with
+  `message.end` `"status": "awaiting_approval"` and `approval`; a new message on the thread
+  gets 409 `{"code": "approval_pending"}`; an A2A task goes `input-required` with the approval
+  in a data part.
+- **Decide.** `POST /threads/{thread_id}/approvals/{approval_id}` with `{"decision":
+  "approve"|"reject", "comment": ...}` (action `approval.decide`): `requester` is the principal
+  who started the run, `role:<x>` any other principal holding role x (a requester decides their
+  own call only when `requester` is listed); anyone else gets 403, a decided approval 409, an
+  expired one 410. The answer streams the resumed run with the `/chat` events.
+  `graph-agents-cli run` asks "Approve? [y/N]" on a terminal; `graph-agents-cli approvals
+  list|approve|reject` does the rest (locally or with `--url`). Over A2A, send a message on the
+  same task with the data part `{"approval_id": ..., "decision": ...}`.
+- **Binding.** On approve the client recomputes the hash of the request it is about to send and
+  refuses (nothing sent) when it differs; the approved call is sent once. Reject or expiry sends
+  nothing and the tool gets a "not approved" error. The tool re-runs from its start on resume
+  (LangGraph re-executes the interrupted node), hence the rules of section 2: idempotent up to
+  the call, deterministic request.
+- **Storage.** An `approvals` table beside the checkpoints (`fastapi`: the checkpointer's
+  Postgres; `langgraph-server`: `DATABASE_URI`), swept for expiry; deleting a thread deletes its
+  approvals. Under `CHECKPOINTER=memory` a paused run lives in one process only.
+- **Four-eyes needs per-user principals.** Under `shared-bearer` every caller is the principal
+  `shared`, so only `requester` gates can be decided; `role:` approvers need `jwt` (roles from
+  `AUTH_JWT_ROLES_CLAIM`) or a `custom` policy that sets roles.
+
+Your own `interrupt()` (or `interrupt_before=[...]`) elsewhere in the served graph is **not**
+wired: `/chat` has no status or resume convention for it, and a graph that interrupts outside
+the client stalls the stream. Gate API calls with the policy instead, keep other approval steps
+to the two-step confirmation of section 2a, and use custom interrupts only in `playground
+--graph` (LangGraph Studio). `references/langgraph.md` shows the LangGraph pattern.
 
 ## 6. Subgraphs
 
@@ -501,7 +544,9 @@ warnings become JSON records with the values pydantic echoes redacted. Do not ad
 | `httpx.get(f"{base}/anything")` inside a tool | `get_client("<api>").request(...)` with an `API_CALLS` entry |
 | Tool module without a literal `API_CALLS` (or `TOOLS`) | add the declaration (`[]` when it calls no external API) |
 | `API_CALLS` built at runtime (comprehension, function call) | `lint` reads it with `ast` and reports it invalid; write the literal list |
-| `interrupt()` in the served graph expecting the client to resume | not wired to `/chat` in this milestone; see section 5 |
+| `interrupt()` in the served graph expecting the client to resume | not wired to `/chat`; gate the API call with `graph-agents-cli api approval` instead (section 5) |
+| A gated tool that writes something else first, or puts a timestamp or random id in the request | the tool re-runs on resume and the approved request is hashed: keep it idempotent up to the call and the request deterministic (section 2) |
+| `role:` approvers under `shared-bearer` | every caller is the one principal `shared`: only `requester` gates can be decided; use `jwt` or `custom` (section 5) |
 | Catching `ApiPolicyError` and returning `""` | return the refusal text so the model can adapt |
 | `runtime: ToolRuntime` (bare) in a tool signature | `runtime: ToolRuntime[Any]`; the bare form makes pydantic warn with the run context on every call |
 | A write tool acting on whatever id the model passes | `require_user_mentioned(record_id, runtime)`, plus `require_owner(...)` under a per-user policy (section 2a) |

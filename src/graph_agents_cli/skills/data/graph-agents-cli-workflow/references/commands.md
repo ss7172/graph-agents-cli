@@ -123,6 +123,9 @@ graph-agents-cli playground [--port INTEGER] [--graph] [--no-open]
 graph-agents-cli run MESSAGE [--mode chat|a2a] [--url TEXT] [--thread-id TEXT]
   [-H/--header 'Key: Value']... [--cookie name=value]... [-f/--file FILE]...
   [--start-server] [--stop-server] [--port INTEGER] [-v/--verbose]
+graph-agents-cli approvals list [--thread-id TEXT] [--all] [--json] [--url TEXT] [-H]... [--cookie]...
+graph-agents-cli approvals approve|reject APPROVAL_ID [--thread-id TEXT] [--comment TEXT] [-v]
+  [--url TEXT] [-H]... [--cookie]...
 graph-agents-cli install [--clean] [--locked]
 graph-agents-cli lint [--fix] [--policy-only]
 graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
@@ -150,9 +153,26 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   re-supply them. A turn silent for 600 s is reported as "no event from the agent" and leaves the
   server running (a one-off server is still stopped). `--mode a2a` needs the optional `a2a` extra
   (the hint prints the `uv tool install` command) and fails with a one-line hint before any server
-  starts when it is absent. Exit codes: `0` answered, `1` the agent refused or reported an error,
-  `2` the agent could not be reached or went silent (or the local server could not start), `3`
-  configuration error. A signal during `run` stops the server it started before exiting.
+  starts when it is absent. A run that pauses on a gated call (the API's `approval` block)
+  prints the call in full (control characters escaped, never cut); on a terminal, when the
+  requester is an approver, it asks `Approve? [y/N]` (Enter rejects) and streams the rest;
+  otherwise (no terminal, a `role:` gate, `--mode a2a`) it prints the approval id and the exact
+  `approvals approve` / `reject` commands and exits 0 with an "Awaiting approval" line, keeping
+  a one-off local server with the in-memory checkpointer running. Streamed agent text and tool
+  output are printed with terminal control characters escaped. Exit codes: `0` answered or
+  awaiting an approval, `1` the agent refused or reported an error, or the server refused a
+  decision, `2` the agent could not be reached or went silent (or the local server could not
+  start), `3` configuration error. A signal during `run` stops the server it started before
+  exiting.
+- `approvals`: the client of the approval routes, for the project's local server (the running
+  one; with none, a temporary one only under a postgres checkpointer, since an in-memory paused
+  run dies with its server) or `--url`, with `run`'s credentials. `list` shows a thread's
+  pending approvals (`--all`: decided ones too), or those on the caller's own threads without
+  `--thread-id`; `approve` / `reject` show the call, send only the decision and `--comment`,
+  and stream the resumed run. An approver of another principal's call needs `--thread-id` (the
+  requester's `run` printed it). Exit `1` when the server refuses: not an approver (403),
+  unknown (404), already decided (409), expired (410). Deciding is the approver's act: never
+  approve on the user's behalf.
 - `install`: `uv sync` (`--clean` recreates `.venv`; `--locked` asserts `uv.lock` matches
   `pyproject.toml`) plus re-materialising vendored extensions.
 - `lint`: `ruff check` and `ruff format --check` (`--fix` applies both) plus the static
@@ -181,6 +201,8 @@ graph-agents-cli api allow NAME (OPERATION_ID [--method M --path P] | --method M
 graph-agents-cli api deny NAME (OPERATION_ID [--method M --path P] | --method M --path P) [--dry-run]
 graph-agents-cli api revoke NAME (OPERATION_ID | --method M --path P) [--from allowed|denied] [--dry-run]
 graph-agents-cli api limits NAME [--max-calls-per-run N|none] [--rate-per-minute N|none] [--dry-run]
+graph-agents-cli api approval NAME [--methods M,...|none] [--operations OP,...|none]
+  [--approvers requester,role:NAME,...] [--timeout-s N] [--remove] [--dry-run]
 graph-agents-cli api remove NAME [--dry-run]
 graph-agents-cli api show [NAME] [--json]
 graph-agents-cli api check
@@ -211,9 +233,21 @@ graph-agents-cli api check
   `allowed_operations` entry is refused (it would allow every operation).
 - `remove` drops the API (and its token from `secrets.keys` when no other API uses it); the last
   one removes `api-policy.yaml` and the manifest's `api_policy`, so every call is refused.
+- `approval` sets the calls that wait for a human before they are sent: `--methods` (every
+  call with them; `"*"` for all), `--operations` (operation ids; pinned to their method and
+  path from the API's `openapi:` spec), `--approvers` (`requester`, the principal who started
+  the run, and/or `role:<name>`, another principal holding it: four-eyes without `requester`,
+  which needs the `jwt` or `custom` auth policy), `--timeout-s` (30-86400, default 900),
+  `--remove`. Each option given replaces that part of the block; `--approvers` is required for
+  a new one. It says which declared calls become gated, and whether the change tightens the
+  gate (safe) or loosens it (fewer gated calls, a new approver, a longer timeout, removal: a
+  reviewed change, like widening access). Approval never widens access; a gate on a method the
+  API does not allow is noted. Propose gates for write tools; never loosen one unasked.
 - `show` prints the effective policy per API (auth, methods and preset, allowed and denied
-  operations, limits, openapi, timeouts) and every tool's declared calls with their status and
-  hint; `check` is `lint --policy-only` (same exit codes).
+  operations, limits, openapi, timeouts, approval) and every tool's declared calls with their
+  status, hint and approvers when gated (`--json`: `approval` per API and per call, a `gated`
+  count); `check` is `lint --policy-only` (same exit codes; gated calls are listed, not
+  violations).
 - Exit codes: `0` changed (or nothing to change), `1` `check` found a refused call, `2` usage
   error, `3` an invalid result (nothing written), an invalid current file (`check` and `lint`
   too), or not in a project.
@@ -246,7 +280,9 @@ project needs a token, e.g. from `auth dev-token`); a 401 prints the policy's hi
 a warning names the target (credentials in the URL shown as `***@`, never stored in traces or
 results) and the write methods `api-policy.yaml` allows: every tool call runs for real there.
 `eval grade` warns when the agent or the judge ran on the fake model (a met gate is then a
-plumbing check only). Details: `/graph-agents-cli-eval`.
+plumbing check only). A case that reaches a gated call decides it with its `approvals`
+instructions (an unmatched gate is a case error); `GRAPH_AGENTS_CLI_APPROVER_API_KEY` sends the
+decisions as an approver other than the eval identity. Details: `/graph-agents-cli-eval`.
 
 ## Deploy
 

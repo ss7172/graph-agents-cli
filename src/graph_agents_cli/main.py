@@ -488,6 +488,11 @@ main.add_lazy_command(
     "Run the agent with a single prompt (non-interactive).",
 )
 main.add_lazy_command(
+    "approvals",
+    "graph_agents_cli.run.cmd_approvals:approvals_group",
+    "List and decide the gated API calls agent runs are waiting on.",
+)
+main.add_lazy_command(
     "lint",
     "graph_agents_cli.dev.cmd_lint:cmd_lint",
     "Run code quality checks and the API-policy check.",

@@ -169,9 +169,10 @@ the byte identity and feeds the same valid and invalid policies and calls to bot
 To change a rule: edit the CLI copy, copy the whole block into the template, and add cases to
 the parity test. Keep the block free of Jinja and of imports the template does not have, and
 fail closed: an ambiguous or unknown input is an error, never an allow. The block holds the
-schema (including `limits` and the reserved `approval` key, refused until approval gates
-exist) and the matching rules; stateful enforcement (the per-run call counts and the
-per-process rate buckets of `limits`) lives outside it, in the runtime only.
+schema (including `limits` and the `approval` block) and the matching rules, `gated()`
+included (which allowed calls wait for whose approval); stateful enforcement (the per-run call
+counts and the per-process rate buckets of `limits`, pausing a gated call and binding its
+approval) lives outside it, in the runtime only.
 
 ### `graph-agents-cli api` and comment-preserving edits
 
