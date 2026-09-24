@@ -20,14 +20,21 @@ and `threads`), `DATABASE_URI` under langgraph-server (table `agent_runs`, so
 nothing collides with the server's own schema). Otherwise they live in a
 bounded in-process dict (the newest `MEMORY_RUNS_CAP` records).
 
+A run's record is written when it starts, with status `running`, and
+updated when it ends (`ok`, `step_limit`, `error`, `timeout`, `cancelled` or
+`interrupted`). A run whose process died (a crash, an OOM kill, a lost node, a
+rollout that ran out of grace) never updates its record: `RunStore.reconcile`
+marks such records `interrupted` once the run's lease on its thread has
+expired (see `run_locks.py`), at startup and every minute.
+
 Records always hold the `metadata` capture set plus the caller's (capped)
 `/chat` metadata, and hold request/response content only under
-`TRACE_CAPTURE=full`. The schema is created at startup with `CREATE ... IF NOT
-EXISTS` / `ADD COLUMN IF NOT EXISTS` under a Postgres advisory lock, so
-replicas starting together do not race and an existing database is upgraded
-in place (the index added to an existing `threads` table is built
-concurrently, without blocking writes). `RETENTION_DAYS` (see `chat.py`)
-purges the records of idle threads.
+`TRACE_CAPTURE=full`. The schema is created with `CREATE ... IF NOT EXISTS` /
+`ADD COLUMN IF NOT EXISTS` under a Postgres advisory lock, so replicas
+starting together do not race and an existing database is upgraded in place
+(indexes added to existing `threads` and `runs` tables are built concurrently,
+without blocking writes). `RETENTION_DAYS` (see `chat.py`) purges the records
+of idle threads.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from __future__ import annotations
 import json
 import os
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -43,7 +50,9 @@ from typing import Any
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
     MEMORY,
     POSTGRES,
+    DbHealth,
     checkpointer_kind,
+    is_connection_error,
     open_pool,
     postgres_dsn,
     schema_lock,
@@ -51,7 +60,13 @@ from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
 
 RUNS_TABLE = "runs"
 SERVER_RUNS_TABLE = "agent_runs"
+LOCKS_TABLE = "thread_locks"
+SERVER_LOCKS_TABLE = "agent_thread_locks"
 MEMORY_RUNS_CAP = 10_000
+
+# Run statuses owned by the store (the others are set by `chat.py`).
+RUN_RUNNING = "running"
+RUN_INTERRUPTED = "interrupted"
 
 # Table names are constants of this module, never caller input.
 RUNS_DDL = """
@@ -71,6 +86,22 @@ CREATE TABLE IF NOT EXISTS {runs} (
 );
 ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS metadata JSONB;
 CREATE INDEX IF NOT EXISTS {runs}_thread_id_idx ON {runs} (thread_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS {runs}_running_idx ON {runs} (created_at)
+    WHERE status = 'running';
+"""
+
+# One row per thread with a run in progress: the replica holding it (`owner`),
+# a fencing token that changes whenever the thread changes hands, and the
+# lease expiry the holder keeps pushing forward (see `run_locks.py`).
+LOCKS_DDL = """
+CREATE TABLE IF NOT EXISTS {locks} (
+    thread_id   TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    token       BIGINT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    acquired_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE SEQUENCE IF NOT EXISTS {locks}_token_seq;
 """
 
 THREADS_DDL = """
@@ -100,6 +131,15 @@ def is_postgres_url(url: str | None) -> bool:
     return bool(url) and str(url).strip().lower().startswith(("postgres://", "postgresql://"))
 
 
+class StorageNotReady(RuntimeError):
+    """The app's database is not set up yet (it has been unreachable since startup)."""
+
+
+def is_database_unavailable(exc: BaseException) -> bool:
+    """True when `exc` means the database cannot be reached (a 503, not a 500)."""
+    return isinstance(exc, StorageNotReady) or is_connection_error(exc)
+
+
 @dataclass
 class RunRecord:
     run_id: str
@@ -123,7 +163,8 @@ class Database:
     """The memory/postgres switch shared by the run and thread stores.
 
     Under postgres one connection pool serves the app tables and (fastapi)
-    the checkpointer; see `checkpointer.open_pool` for its health check and sizing.
+    the checkpointer; see `checkpointer.open_pool` for its health check and
+    sizing. `health` tracks whether the database answered at last contact.
     """
 
     def __init__(
@@ -132,12 +173,15 @@ class Database:
         dsn: str | None = None,
         *,
         runs_table: str = RUNS_TABLE,
+        locks_table: str = LOCKS_TABLE,
         with_threads: bool = True,
     ) -> None:
         self.kind = kind
         self.dsn = dsn
         self.runs_table = runs_table
+        self.locks_table = locks_table
         self.with_threads = with_threads
+        self.health = DbHealth()
         self.pool: Any = None
         self._pool_cm: Any = None
 
@@ -158,27 +202,58 @@ class Database:
         `langgraph dev` sets `DATABASE_URI=:memory:`; only a postgres URL is a database.
         """
         uri = (os.environ.get("DATABASE_URI") or "").strip()
+        tables = {"runs_table": SERVER_RUNS_TABLE, "locks_table": SERVER_LOCKS_TABLE}
         if is_postgres_url(uri):
-            return cls(POSTGRES, uri, runs_table=SERVER_RUNS_TABLE, with_threads=False)
-        return cls(MEMORY, runs_table=SERVER_RUNS_TABLE, with_threads=False)
+            return cls(POSTGRES, uri, with_threads=False, **tables)
+        return cls(MEMORY, with_threads=False, **tables)
 
     @property
     def is_postgres(self) -> bool:
         return self.kind == POSTGRES
 
     async def open(self) -> None:
-        if not self.is_postgres:
-            return
-        self._pool_cm = open_pool(self.dsn or "")
-        self.pool = await self._pool_cm.__aenter__()
+        """Open the pool and set up the schema at once (see `open_pool` and `setup`)."""
+        await self.open_pool()
         try:
-            ddl = RUNS_DDL.format(runs=self.runs_table) + (THREADS_DDL if self.with_threads else "")
-            async with schema_lock(self.dsn or ""), self.pool.connection() as conn:
-                for statement in _statements(ddl):
-                    await conn.execute(statement)
+            await self.setup()
         except BaseException:
             await self.close()
             raise
+
+    async def open_pool(self) -> None:
+        """Open the connection pool without waiting for the database (postgres only).
+
+        A DSN that does not parse raises `SettingsError`; an unreachable
+        database does not: the pool connects once the database answers.
+        """
+        if not self.is_postgres or self.pool is not None:
+            return
+        self._pool_cm = open_pool(self.dsn or "", self.health)
+        self.pool = await self._pool_cm.__aenter__()
+
+    def ddl(self) -> str:
+        return (
+            RUNS_DDL.format(runs=self.runs_table)
+            + LOCKS_DDL.format(locks=self.locks_table)
+            + (THREADS_DDL if self.with_threads else "")
+        )
+
+    async def setup(self, extra: Callable[[], Awaitable[None]] | None = None) -> None:
+        """Create or upgrade the app tables, then run `extra` (the saver's own setup).
+
+        Both run under the schema lock, so replicas starting together take
+        turns. Raises while the database is unreachable; the caller retries.
+        """
+        if not self.is_postgres:
+            return
+        if self.pool is None:
+            raise StorageNotReady("the database pool is not open")
+        async with schema_lock(self.dsn or "", health=self.health):
+            async with self.pool.connection() as conn:
+                for statement in _statements(self.ddl()):
+                    await conn.execute(statement)
+            if extra is not None:
+                await extra()
 
     async def close(self) -> None:
         cm, self._pool_cm = self._pool_cm, None
@@ -193,19 +268,30 @@ class Database:
         await self.fetchone("SELECT 1 AS ok")
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
-        async with self.pool.connection() as conn:
-            await conn.execute(sql, params)
+        await self._run(sql, params, None)
 
     async def fetchone(self, sql: str, params: Sequence[Any] = ()) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
-            cur = await conn.execute(sql, params)
-            row = await cur.fetchone()
-            return dict(row) if row is not None else None
+        row = await self._run(sql, params, "one")
+        return dict(row) if row is not None else None
 
     async def fetchall(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
+        return [dict(r) for r in await self._run(sql, params, "all")]
+
+    async def _run(self, sql: str, params: Sequence[Any], fetch: str | None) -> Any:
+        if self.pool is None:
+            raise StorageNotReady("the database pool is not open")
         async with self.pool.connection() as conn:
-            cur = await conn.execute(sql, params)
-            return [dict(r) for r in await cur.fetchall()]
+            try:
+                cur = await conn.execute(sql, params)
+                if fetch == "one":
+                    return await cur.fetchone()
+                if fetch == "all":
+                    return await cur.fetchall()
+                return None
+            except Exception as exc:
+                if getattr(conn, "broken", False) or getattr(conn, "closed", False):
+                    self.health.mark_down(exc)
+                raise
 
 
 def _statements(ddl: str) -> list[str]:
@@ -223,14 +309,68 @@ class RunStore:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.table = db.runs_table
+        self.locks_table = db.locks_table
         self._memory: OrderedDict[str, RunRecord] = OrderedDict()
+
+    async def start(self, run: RunRecord) -> None:
+        """Record a run as it starts (status `running`); `record` writes how it ended."""
+        run.status = RUN_RUNNING
+        if not self.db.is_postgres:
+            self._remember(run)
+            return
+        await self.db.execute(
+            f"""
+            INSERT INTO {self.table} (run_id, thread_id, principal_hash, model, status,
+                metadata, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (run_id) DO NOTHING
+            """,
+            (
+                run.run_id,
+                run.thread_id,
+                run.principal_hash,
+                run.model,
+                run.status,
+                _json(run.metadata),
+                run.created_at,
+            ),
+        )
+
+    async def reconcile(self, grace_s: float) -> list[str]:
+        """Mark `running` records whose run is gone as `interrupted`; return their run ids.
+
+        A run holds a lease on its thread for as long as it runs, so a
+        `running` record older than `grace_s` whose thread has no live lease
+        belongs to a process that died before it could record how the run
+        ended. Replicas may reconcile at the same time: each record is updated
+        once (the second update no longer matches `status = 'running'`).
+        """
+        if not self.db.is_postgres:
+            return []
+        rows = await self.db.fetchall(
+            f"""
+            UPDATE {self.table} AS r
+               SET status = %s, error_type = COALESCE(r.error_type, 'ProcessLost')
+             WHERE r.status = %s
+               AND r.created_at < now() - make_interval(secs => %s)
+               AND NOT EXISTS (
+                   SELECT 1 FROM {self.locks_table} AS l
+                    WHERE l.thread_id = r.thread_id AND l.expires_at > now())
+            RETURNING r.run_id
+            """,
+            (RUN_INTERRUPTED, RUN_RUNNING, float(grace_s)),
+        )
+        return [r["run_id"] for r in rows]
+
+    def _remember(self, run: RunRecord) -> None:
+        self._memory[run.run_id] = run
+        self._memory.move_to_end(run.run_id)
+        while len(self._memory) > MEMORY_RUNS_CAP:
+            self._memory.popitem(last=False)
 
     async def record(self, run: RunRecord) -> None:
         if not self.db.is_postgres:
-            self._memory[run.run_id] = run
-            self._memory.move_to_end(run.run_id)
-            while len(self._memory) > MEMORY_RUNS_CAP:
-                self._memory.popitem(last=False)
+            self._remember(run)
             return
         await self.db.execute(
             f"""

@@ -76,6 +76,9 @@ class FakeSdk:
         self.searches: list[dict[str, Any]] = []
         self.state_updates: list[dict[str, Any]] = []
         self.slow_stream = False
+        self.stream_error: dict[str, Any] | None = None
+        # The message types of the thread when each run stream started.
+        self.history_at_stream: list[list[Any]] = []
         self.threads_by_id: dict[str, dict[str, Any]] = {
             THREAD: {
                 "thread_id": THREAD,
@@ -160,13 +163,24 @@ class FakeSdk:
 
             async def update_state(self, thread_id: str, values: Any, **kwargs: Any) -> None:
                 sdk.state_updates.append({"thread_id": thread_id, "values": values, **kwargs})
+                # Apply it as the server's `add_messages` would: a remove-all
+                # marker replaces the history, other messages are appended.
+                for message in (values or {}).get("messages", []):
+                    if message.get("type") == "remove" and message.get("id") == "__remove_all__":
+                        sdk.messages = []
+                    else:
+                        sdk.messages = [*sdk.messages, message]
 
         class _Runs:
             async def stream(
                 self, thread_id: str, assistant_id: str, **kwargs: Any
             ) -> AsyncIterator[Any]:
                 sdk.streams.append({"thread_id": thread_id, "assistant_id": assistant_id, **kwargs})
+                sdk.history_at_stream.append([m.get("type") for m in sdk.messages])
                 yield SimpleNamespace(event="metadata", data={"run_id": "srv-run-1", "attempt": 1})
+                if sdk.stream_error is not None:
+                    yield SimpleNamespace(event="error", data=sdk.stream_error)
+                    return
                 if sdk.slow_stream:
                     await asyncio.sleep(30)
                 yield SimpleNamespace(
@@ -283,7 +297,7 @@ async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_event
         "updates",
     ]
     assert stream["multitask_strategy"] == "reject" and stream["on_disconnect"] == "cancel"
-    assert stream["config"] == {"recursion_limit": 25}
+    assert stream["config"] == {"recursion_limit": 50}
     # The server persists run context and metadata: no credentials, no raw
     # principal id in metadata, no client metadata under metadata capture.
     assert stream["context"] == {
@@ -537,11 +551,55 @@ async def test_a_stopped_run_gets_its_open_tool_calls_answered(server, monkeypat
     sdk.messages = sdk.messages[:2]  # the assistant's tool call, no result yet
     monkeypatch.setenv("RUN_TIMEOUT_S", "0.2")
     await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    # Answered before the run started, right after the call; nothing left for the end.
     (update,) = sdk.state_updates
     assert update["as_node"] == "tools"
     (patch,) = update["values"]["messages"]
     assert patch["tool_call_id"] == "c1" and patch["status"] == "error"
     assert "did not finish" in patch["content"]
+    assert sdk.history_at_stream == [["human", "ai", "tool"]]
+
+
+async def test_a_result_after_the_next_turn_is_moved_back_before_the_run(server) -> None:
+    """The shape older versions left on the server: every later turn got a provider 400."""
+    rt, sdk = server
+    human, call = sdk.messages[:2]
+    sdk.messages = [
+        human,
+        {**call, "usage_metadata": {"input_tokens": 1}, "invalid_tool_calls": []},
+        {"type": "human", "id": "m9", "content": "hello?"},
+        {"type": "tool", "id": "t1", "tool_call_id": "c1", "name": "get_weather", "content": "x"},
+    ]
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert events[-1][0] == "message.end"
+    (update,) = sdk.state_updates
+    rewritten = update["values"]["messages"]
+    assert rewritten[0] == {"type": "remove", "id": "__remove_all__"}
+    assert [m["id"] for m in rewritten[1:]] == ["m1", "m2", "t1", "m9"]
+    assert "usage_metadata" not in rewritten[2]  # only keys the server reads back as-is
+    assert sdk.history_at_stream == [["human", "ai", "tool", "human"]]
+
+
+async def test_a_thread_busy_with_a_native_run_is_left_alone(server) -> None:
+    """Its open tool call belongs to the run in progress: never answer it for that run."""
+    rt, sdk = server
+    sdk.messages = sdk.messages[:2]
+    sdk.threads_by_id[THREAD]["status"] = "busy"
+    await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert sdk.state_updates == []
+
+
+async def test_the_step_limit_ends_a_server_run_with_a_reply(server) -> None:
+    rt, sdk = server
+    sdk.stream_error = {"error": "GraphRecursionError", "message": "..."}
+    events = await _events(rt, OWNER, ChatRequest(message="x", thread_id=THREAD), THREAD)
+    assert [e for e, _ in events] == ["message.start", "message.delta", "message.end"]
+    assert events[-1][1]["status"] == "step_limit"
+    (update,) = sdk.state_updates
+    assert update["as_node"] == "model"
+    assert update["values"]["messages"][-1]["content"] == events[1][1]["text"]
+    record = await rt.runs.get(events[0][1]["run_id"])
+    assert record is not None and record.status == "step_limit"
 
 
 async def test_list_and_delete_threads_through_the_server(server, monkeypatch) -> None:

@@ -27,19 +27,13 @@ API called from outside; the app's loopback SDK calls bypass them).
 Only the owner may continue (write to) or delete a thread. Roles listed in
 `AUTH_READ_ACROSS_ROLES` may additionally *read* other principals' threads.
 
-`ThreadLocks` allows one run per thread at a time: a second run on a busy
-thread raises `ThreadBusy` (HTTP 409 `{"code": "thread_busy"}`) instead of
-racing the first one on the same checkpoint. The lock is in-process, plus a
-Postgres session advisory lock (on one dedicated connection per process)
-when the app has a Postgres database, so replicas exclude each other too. A
-transaction-pooling proxy (for example PgBouncer in transaction mode) does
-not keep session locks; point `POSTGRES_DSN` at Postgres or a session-mode pool.
+One run per thread (`ThreadLocks`, `ThreadBusy`: HTTP 409 `{"code":
+"thread_busy"}`) lives in `run_locks.py`: in-process locks plus Postgres
+leases that every replica honours; the names are re-exported here.
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -51,18 +45,25 @@ from fastapi import HTTPException
 
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, utcnow_iso
+from {{cookiecutter.agent_directory}}.app_utils.run_locks import (
+    THREAD_BUSY,
+    LeaseLost,
+    ThreadBusy,
+    ThreadLease,
+    ThreadLocks,
+)
+
+__all__ = [
+    "THREAD_BUSY",
+    "LeaseLost",
+    "ThreadBusy",
+    "ThreadLease",
+    "ThreadLocks",
+    "ThreadRecord",
+    "ThreadStore",
+]
 
 logger = logging.getLogger(__name__)
-
-THREAD_BUSY = "thread_busy"
-
-
-class ThreadBusy(Exception):
-    """The thread already has a run in progress (HTTP 409 `thread_busy`)."""
-
-    def __init__(self, thread_id: str) -> None:
-        super().__init__("This thread already has a run in progress.")
-        self.thread_id = thread_id
 
 
 @dataclass
@@ -277,143 +278,3 @@ class ThreadStore:
             self._memory.pop(thread_id, None)
             return
         await self.db.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
-
-
-# ---------------------------------------------------------------------------
-# One run per thread
-# ---------------------------------------------------------------------------
-
-# Namespaces the advisory-lock keys of this app (other users of the same
-# database pick other keys).
-_LOCK_NAMESPACE = b"graph-agents:thread-run:"
-
-
-def advisory_key(thread_id: str) -> int:
-    """A signed 64-bit Postgres advisory-lock key for a thread id."""
-    digest = hashlib.sha256(_LOCK_NAMESPACE + thread_id.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big", signed=True)
-
-
-class ThreadLease:
-    """A held run lock on one thread; `release()` is idempotent."""
-
-    def __init__(self, locks: ThreadLocks, thread_id: str) -> None:
-        self._locks = locks
-        self.thread_id = thread_id
-        self.released = False
-
-    async def release(self) -> None:
-        if self.released:
-            return
-        self.released = True
-        await self._locks._release(self.thread_id)
-
-
-class ThreadLocks:
-    """In-process run locks, plus Postgres advisory locks when `dsn` is set."""
-
-    def __init__(self, dsn: str | None = None) -> None:
-        self.dsn = dsn
-        self._held: set[str] = set()
-        self._pending: set[str] = set()
-        self._conn: Any = None
-        self._conn_lock = asyncio.Lock()
-        self._closed = False
-
-    @property
-    def held(self) -> frozenset[str]:
-        return frozenset(self._held)
-
-    async def acquire(self, thread_id: str) -> ThreadLease:
-        """Take the thread's run lock or raise `ThreadBusy`."""
-        if thread_id in self._held or thread_id in self._pending:
-            raise ThreadBusy(thread_id)
-        self._pending.add(thread_id)  # no await since the check: atomic in this process
-        try:
-            if self.dsn and not self._closed and not await self._pg_try_lock(thread_id):
-                raise ThreadBusy(thread_id)
-            self._held.add(thread_id)
-        finally:
-            self._pending.discard(thread_id)
-        return ThreadLease(self, thread_id)
-
-    async def _release(self, thread_id: str) -> None:
-        self._held.discard(thread_id)
-        if not self.dsn or self._closed:
-            return
-        try:
-            await self._pg_execute("SELECT pg_advisory_unlock(%s)", advisory_key(thread_id))
-        except Exception:
-            # The connection was dropped, which released every lock it held:
-            # reconnect now, which re-takes the locks of the runs still going.
-            logger.warning("could not release a thread's run lock; reconnecting", exc_info=True)
-            async with self._conn_lock:
-                try:
-                    await self._connection()
-                except Exception:
-                    logger.warning("the run-lock connection is down; retrying on next use")
-
-    async def close(self) -> None:
-        self._closed = True
-        await self._reset()
-        self._held.clear()
-
-    # -- Postgres -----------------------------------------------------------
-
-    async def _pg_try_lock(self, thread_id: str) -> bool:
-        row = await self._pg_execute(
-            "SELECT pg_try_advisory_lock(%s) AS locked", advisory_key(thread_id), retry=True
-        )
-        return bool(row and row[0])
-
-    async def _pg_execute(self, sql: str, key: int, *, retry: bool = False) -> Any:
-        async with self._conn_lock:
-            for attempt in (1, 2):
-                conn = await self._connection()
-                try:
-                    cur = await conn.execute(sql, (key,))
-                    return await cur.fetchone()
-                except Exception:
-                    await self._reset_locked()
-                    if attempt == 2 or not retry:
-                        raise
-                except BaseException:
-                    # Cancelled mid-statement: whether the lock was taken is
-                    # unknown, so drop the session (and with it every lock it
-                    # holds; the next use re-takes the ones still held).
-                    await self._reset_locked()
-                    raise
-        return None
-
-    async def _connection(self) -> Any:
-        if self._conn is not None and not self._conn.closed:
-            return self._conn
-        import psycopg
-
-        conn = await psycopg.AsyncConnection.connect(self.dsn or "", autocommit=True)
-        try:
-            # A new session holds nothing: re-take the locks of the runs in progress.
-            for thread_id in list(self._held):
-                cur = await conn.execute(
-                    "SELECT pg_try_advisory_lock(%s)", (advisory_key(thread_id),)
-                )
-                row = await cur.fetchone()
-                if not (row and row[0]):
-                    logger.warning("a run lock was taken by another replica while reconnecting")
-        except BaseException:
-            await conn.close()
-            raise
-        self._conn = conn
-        return conn
-
-    async def _reset(self) -> None:
-        async with self._conn_lock:
-            await self._reset_locked()
-
-    async def _reset_locked(self) -> None:
-        conn, self._conn = self._conn, None
-        if conn is not None:
-            try:
-                await conn.close()
-            except Exception:
-                logger.debug("closing the lock connection failed", exc_info=True)

@@ -27,9 +27,14 @@ Per process (scrape every replica):
   `http_request_duration_seconds{method, route}`: every HTTP request, labelled
   by the route template (`/threads/{thread_id}/messages`), never the raw path;
   a streamed `/chat` counts until its last event.
-* `agent_runs_total{status}`: finished runs by status (`ok`, `error`,
-  `timeout`, `cancelled`); `agent_active_runs`: runs in progress;
+* `agent_runs_total{status}`: finished runs by status (`ok`, `step_limit`,
+  `error`, `timeout`, `cancelled`, `interrupted`). `interrupted` counts the
+  runs this replica stopped because it lost its lease on the thread, plus the
+  runs of dead processes it found and closed (each counted once across the
+  replicas, see `RunStore.reconcile`); `agent_active_runs`: runs in progress;
   `agent_run_duration_seconds`; `agent_tokens_total{kind}` (input/output).
+* `agent_database_up`: 1 while the database answered at last contact, 0 while
+  it is known to be unreachable (always 1 without a database).
 
 Metrics live in a registry of their own, so nothing else in the process
 (libraries, a reloaded module) can add or duplicate series. Labels never carry
@@ -69,11 +74,17 @@ HTTP_LATENCY = Histogram(
 )
 RUNS = Counter(
     "agent_runs_total",
-    "Finished agent runs by status (ok, error, timeout, cancelled).",
+    "Finished agent runs by status (ok, step_limit, error, timeout, cancelled, interrupted).",
     ["status"],
     registry=REGISTRY,
 )
 ACTIVE_RUNS = Gauge("agent_active_runs", "Agent runs in progress.", registry=REGISTRY)
+DATABASE_UP = Gauge(
+    "agent_database_up",
+    "1 while the database answered at last contact, 0 while it is known to be unreachable.",
+    registry=REGISTRY,
+)
+DATABASE_UP.set(1)
 RUN_LATENCY = Histogram(
     "agent_run_duration_seconds",
     "Agent run duration.",
@@ -146,3 +157,13 @@ def observe_run(status: str, seconds: float, input_tokens: int, output_tokens: i
         TOKENS.labels("input").inc(input_tokens)
     if output_tokens:
         TOKENS.labels("output").inc(output_tokens)
+
+
+def observe_interrupted_runs(count: int) -> None:
+    """Runs of a dead process, found `running` and closed as `interrupted`."""
+    if count:
+        RUNS.labels("interrupted").inc(count)
+
+
+def observe_database(up: bool) -> None:
+    DATABASE_UP.set(1 if up else 0)

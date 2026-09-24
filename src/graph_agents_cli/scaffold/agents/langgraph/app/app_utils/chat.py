@@ -33,20 +33,36 @@ Both runtimes apply the same rules:
   `ThreadBusy` (HTTP 409 `{"code": "thread_busy"}` on `/chat`). Deleting a
   thread (and the retention purge) takes the same lock, and a run checks the
   thread's owner again once it holds it, so a turn is never written to a
-  thread that has no owner (fastapi).
-* Guardrails: `RUN_TIMEOUT_S` cancels a run (status `timeout`),
-  `RECURSION_LIMIT` caps graph steps, a client that disconnects cancels its
-  run (status `cancelled`), and `SSE_HEARTBEAT_S` keeps idle streams alive.
+  thread that has no owner (fastapi). Across replicas the lock is a lease
+  (`run_locks.py`): a run whose lease cannot be renewed is stopped (status
+  `interrupted`) and its checkpoint writes are refused (fastapi).
+* A valid history: model providers reject an assistant tool call that is not
+  followed by its result. A run cut short (a timeout, a disconnect, a crash, a
+  database outage, an OOM kill) can leave one, so every run first answers the
+  open tool calls of its thread with an error result placed right after the
+  call (and puts misplaced results back in place), before its own turn.
+* Guardrails: `RUN_TIMEOUT_S` cancels a run (status `timeout`), a client that
+  disconnects cancels its run (status `cancelled`), and `SSE_HEARTBEAT_S`
+  keeps idle streams alive. `RECURSION_LIMIT` caps graph steps: a run that
+  reaches it ends with a final message saying so (`message.end` status
+  `step_limit`) and keeps what it did in the thread.
 * Errors reach clients as a generic message with an `error_id`; the detail
   goes to the log under that id (and to the event under `APP_ENV=dev` only).
+  An unreachable database is a 503 (or an `unavailable` event) after a few
+  seconds, logged as one line without a traceback.
 * Client metadata is kept in the run record and, under `TRACE_CAPTURE=full`
   only, in traces under `client_metadata` (never over the server-set
   `thread_id`, `run_id`, `principal_hash`); it is not written into checkpoints.
-* Run records are durable in Postgres when the runtime has one (see `db.py`),
-  and `RETENTION_DAYS` purges threads idle longer than that. Under
-  langgraph-server the server's own `DELETE /threads/{id}` removes the
-  thread's run records too (`forget_thread_runs`, called by
-  `middleware.ThreadDeleteHookMiddleware`).
+* Run records are durable in Postgres when the runtime has one (see `db.py`):
+  written as `running` when a run starts and updated when it ends; a run that
+  never ended (its process died) is marked `interrupted` by the next
+  reconciliation (every minute, on any replica). `RETENTION_DAYS` purges
+  threads idle longer than that. Under langgraph-server the server's own
+  `DELETE /threads/{id}` removes the thread's run records too
+  (`forget_thread_runs`, called by `middleware.ThreadDeleteHookMiddleware`).
+* Startup does not wait for the database: the app starts, `/ready` answers
+  503 and the schema setup is retried in the background until the database
+  answers; requests meanwhile get 503.
 """
 
 from __future__ import annotations
@@ -58,7 +74,8 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections import deque
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -69,26 +86,36 @@ from fastapi import HTTPException
 from {{cookiecutter.agent_directory}}.app_utils import metrics
 from {{cookiecutter.agent_directory}}.app_utils.api_client import end_run as end_api_run
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
-from {{cookiecutter.agent_directory}}.app_utils.checkpointer import checkpointer_kind, get_checkpointer
+from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
+    checkpointer_kind,
+    get_checkpointer,
+    postgres_saver,
+)
 from {{cookiecutter.agent_directory}}.app_utils.content import content_to_text
 from {{cookiecutter.agent_directory}}.app_utils.db import (
+    RUN_INTERRUPTED,
     Database,
     RunRecord,
     RunStore,
+    StorageNotReady,
     capture_full,
+    is_database_unavailable,
     is_postgres_url,
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import (
     recursion_limit,
     retention_days,
     run_timeout_s,
+    sequential_tool_calls,
     sse_heartbeat_s,
+    steps_for_tool_calls,
     valid_thread_id,
 )
 from {{cookiecutter.agent_directory}}.app_utils.model import model_label
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     THREAD_BUSY,
+    LeaseLost,
     ThreadBusy,
     ThreadLease,
     ThreadLocks,
@@ -115,11 +142,13 @@ EVENT_ERROR = "error"
 # Internal: sent as an SSE comment line, ignored by A2A.
 EVENT_HEARTBEAT = "heartbeat"
 
-# Run statuses in run records and metrics.
+# Run statuses in run records and metrics (`running` while a run is in progress).
 STATUS_OK = "ok"
+STATUS_STEP_LIMIT = "step_limit"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
 STATUS_CANCELLED = "cancelled"
+STATUS_INTERRUPTED = RUN_INTERRUPTED
 
 # Error codes clients see in `error` events.
 CODE_RUN_FAILED = "run_failed"
@@ -137,6 +166,31 @@ RETENTION_INTERVAL_S = 3600.0
 RETENTION_FIRST_DELAY_S = 60.0
 RETENTION_BATCH = 500
 RETENTION_MAX_BATCHES = 20
+
+# Runs of dead processes are closed (`interrupted`) this often, by every replica.
+RECONCILE_INTERVAL_S = 60.0
+# A `running` record younger than this is never reconciled (clock skew margin).
+RECONCILE_GRACE_S = 60.0
+# Final run records that could not be written are retried (at most this many kept).
+MAX_UNRECORDED_RUNS = 1000
+# Database setup at startup: retried with this back-off while the database is down.
+INIT_RETRY_FIRST_S = 0.5
+INIT_RETRY_MAX_S = 2.0
+# Each bookkeeping step after a run (history repair, run record) is bounded.
+FINISH_STEP_TIMEOUT_S = 5.0
+# How long the end of a run waits for its cancelled graph to stop.
+PUMP_STOP_WAIT_S = 1.0
+
+# Error results for tool calls a run left open, by why they were left open.
+OPEN_CALL_INTERRUPTED = (
+    "The tool call did not finish: the run was interrupted before its result was saved."
+)
+OPEN_CALL_STEP_LIMIT = "The tool call did not run: the run reached its step limit."
+STEP_LIMIT_MESSAGE = (
+    "I had to stop before finishing: this request needs more steps than one run may take "
+    "({limit}). What I did so far is kept in this conversation, so you can ask me to "
+    "continue, or narrow the request."
+)
 
 
 def detect_runtime() -> str:
@@ -186,13 +240,44 @@ def new_error_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
+def _first_line(exc: BaseException) -> str:
+    text = str(exc).strip()
+    return text.splitlines()[0][:300] if text else ""
+
+
 def unavailable(what: str, exc: BaseException) -> HTTPException:
-    """A 503 whose detail names an error id, never the exception text (logged instead)."""
+    """A 503 whose detail names an error id, never the exception text (logged instead).
+
+    An unreachable database is expected during an outage: one WARNING line,
+    no traceback. Anything else is logged as an ERROR with its traceback.
+    """
     error_id = new_error_id()
-    logger.error(
-        "%s unavailable (error_id=%s): %s", what, error_id, type(exc).__name__, exc_info=exc
-    )
+    if is_database_unavailable(exc):
+        logger.warning(
+            "%s unavailable (error_id=%s): %s: %s",
+            what,
+            error_id,
+            type(exc).__name__,
+            _first_line(exc),
+        )
+    else:
+        logger.error(
+            "%s unavailable (error_id=%s): %s", what, error_id, type(exc).__name__, exc_info=exc
+        )
     return HTTPException(status_code=503, detail=f"{what} unavailable. Reference: {error_id}.")
+
+
+@contextlib.contextmanager
+def database_errors() -> Iterator[None]:
+    """Turn an unreachable database inside the block into a 503 with an error id."""
+    try:
+        yield
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if is_database_unavailable(exc):
+            raise unavailable("Database", exc) from exc
+        raise
 
 
 def validate_thread_id(thread_id: str, runtime: str) -> str:
@@ -393,16 +478,106 @@ def serialize_message(m: Any, *, include_tool_args: bool = True) -> dict[str, An
 
 
 def dangling_tool_calls(messages: list[Any]) -> list[Any]:
-    """Tool calls of the last assistant message that have no tool result yet."""
-    answered = {str(_get(m, "tool_call_id")) for m in messages if _is_tool(m)}
-    for m in reversed(messages):
-        if _is_ai(m):
-            return [c for c in _get(m, "tool_calls") or [] if str(_get(c, "id")) not in answered]
+    """Tool calls of the last assistant message with no result right after it.
+
+    Only results that directly follow the call count: a result placed after
+    a later message does not make the history valid for model providers.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if _is_ai(messages[i]):
+            answered = set()
+            for m in messages[i + 1 :]:
+                if not _is_tool(m):
+                    break
+                answered.add(str(_get(m, "tool_call_id")))
+            return [
+                c
+                for c in _get(messages[i], "tool_calls") or []
+                if str(_get(c, "id")) not in answered
+            ]
     return []
+
+
+@dataclass
+class HistoryRepair:
+    """A tool-call history put right: see `repair_tool_history`."""
+
+    messages: list[Any]  # the whole corrected history
+    added: list[Any]  # error results created for calls that had none
+    append_only: bool  # `messages` is the old history plus `added` at its end
+
+
+def repair_tool_history(
+    messages: list[Any], make_result: Callable[[Any], Any]
+) -> HistoryRepair | None:
+    """The history with every tool call followed by its result, or None when it already is.
+
+    Model providers reject an assistant message whose tool calls are not
+    answered right after it, and a tool result that answers no call. Each
+    call's result (wherever it sits) is moved right after the call, a call
+    with no result gets `make_result(call)` (an error result), and results
+    that answer no call are dropped.
+    """
+    results: dict[str, Any] = {}
+    for m in messages:
+        if _is_tool(m):
+            results.setdefault(str(_get(m, "tool_call_id") or ""), m)
+    out: list[Any] = []
+    added: list[Any] = []
+    placed: set[str] = set()
+    for m in messages:
+        if _is_tool(m):
+            continue
+        out.append(m)
+        if not _is_ai(m):
+            continue
+        for call in _get(m, "tool_calls") or []:
+            call_id = str(_get(call, "id") or "")
+            if call_id in placed:
+                continue
+            placed.add(call_id)
+            if call_id in results:
+                out.append(results[call_id])
+            else:
+                result = make_result(call)
+                out.append(result)
+                added.append(result)
+    if [id(m) for m in out] == [id(m) for m in messages]:
+        return None
+    append_only = [id(m) for m in out[: len(messages)]] == [id(m) for m in messages]
+    return HistoryRepair(messages=out, added=added, append_only=append_only)
+
+
+def _server_message(m: Any) -> dict[str, Any]:
+    """A server state message as a dict the server turns back into the same message.
+
+    The server rebuilds messages from dicts by their known keys and puts any
+    other key into `additional_kwargs`; only the keys that matter for the
+    history are kept.
+    """
+    if not isinstance(m, Mapping):
+        return m
+    keep = ["type", "content", "id", "name", "additional_kwargs", "response_metadata"]
+    if _is_ai(m):
+        keep.append("tool_calls")
+    elif _is_tool(m):
+        keep.extend(("tool_call_id", "status", "artifact"))
+    return {k: m[k] for k in keep if m.get(k) is not None}
 
 
 def thread_busy_error() -> dict[str, Any]:
     return {"code": THREAD_BUSY, "message": "This thread already has a run in progress."}
+
+
+def _lease_lost(exc: BaseException | None) -> LeaseLost | None:
+    """The `LeaseLost` behind `exc` (itself, or what it was raised from), if any."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, LeaseLost):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
 
 
 def _is_recursion_error(exc: BaseException) -> bool:
@@ -437,6 +612,7 @@ class _Pump:
 
     def __init__(self, source: AsyncIterator[Any]) -> None:
         self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=64)
+        self._interrupted: BaseException | None = None
         self._task = asyncio.ensure_future(self._run(source))
 
     async def _run(self, source: AsyncIterator[Any]) -> None:
@@ -450,20 +626,40 @@ class _Pump:
             return
         await self._queue.put((_DONE, None))
 
+    def interrupt(self, exc: BaseException) -> None:
+        """Stop the source now; the consumer's next `next()` fails with `exc`."""
+        if self._interrupted is not None:
+            return
+        self._interrupted = exc
+        self.cancel()
+        with contextlib.suppress(asyncio.QueueFull):  # a full queue wakes nobody anyway
+            self._queue.put_nowait((_FAILED, exc))
+
     async def next(self, timeout: float) -> tuple[str, Any]:
+        if self._interrupted is not None:
+            return _FAILED, self._interrupted
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout)
+            item = await asyncio.wait_for(self._queue.get(), timeout)
         except TimeoutError:
             return _IDLE, None
+        if self._interrupted is not None:
+            return _FAILED, self._interrupted
+        return item
+
+    @property
+    def task(self) -> asyncio.Future[None]:
+        return self._task
 
     def cancel(self) -> None:
         if not self._task.done():
             self._task.cancel()
 
-    async def close(self) -> None:
+    async def close(self, timeout: float = 10) -> bool:
+        """Cancel the source and wait up to `timeout` s for it to stop; True when it has."""
         self.cancel()
         if not self._task.done():
-            await asyncio.wait({self._task}, timeout=10)
+            await asyncio.wait({self._task}, timeout=timeout)
+        return self._task.done()
 
 
 class ChatRuntime:
@@ -477,42 +673,67 @@ class ChatRuntime:
         self.locks: ThreadLocks = ThreadLocks()
         self._exit: AsyncExitStack | None = None
         self._retention_task: asyncio.Task[None] | None = None
+        self._init_task: asyncio.Task[None] | None = None
+        self._maintenance_task: asyncio.Task[None] | None = None
+        self._saver: Any = None
+        # Final run records whose write failed, retried by the maintenance loop.
+        self._unrecorded: deque[RunRecord] = deque(maxlen=MAX_UNRECORDED_RUNS)
+        self._was_ready: bool | None = None
         self.started = False
+        # True from startup until the database schema is set up (postgres).
+        self.initialising = False
 
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
+        """Bind storage and start the background work; never waits for the database.
+
+        Configuration errors (an unknown `CHECKPOINTER`, a missing or
+        unparsable DSN) stop startup. An unreachable database does not: the
+        schema setup is retried in the background (`initialising`), `/ready`
+        answers 503 and requests get 503 until it succeeds.
+        """
         if self.started:
             return
         self.runtime = detect_runtime()
         self._exit = AsyncExitStack()
         try:
             if self.runtime == FASTAPI:
-                from {{cookiecutter.agent_directory}}.agent import graph
-
                 self.db = Database.from_env()
-                await self.db.open()
-                self._exit.push_async_callback(self.db.close)
-                saver = await self._exit.enter_async_context(get_checkpointer(self.db.pool))
-                graph.checkpointer = saver
             else:
                 # The server binds persistence; run records go to its Postgres
                 # (DATABASE_URI) when it has one.
                 self.db = Database.for_server()
-                await self.db.open()
-                self._exit.push_async_callback(self.db.close)
-            self.locks = ThreadLocks(self.db.dsn if self.db.is_postgres else None)
+            await self.db.open_pool()
+            self._exit.push_async_callback(self.db.close)
+            self.locks = ThreadLocks(
+                self.db.dsn if self.db.is_postgres else None,
+                table=self.db.locks_table,
+                health=self.db.health,
+            )
             self._exit.push_async_callback(self.locks.close)
+            if self.runtime == FASTAPI:
+                from {{cookiecutter.agent_directory}}.agent import graph
+
+                if self.db.is_postgres:
+                    # Set up with the app tables once the database answers.
+                    self._saver = postgres_saver(self.db.pool, fence=self.locks.fence)
+                else:
+                    self._saver = await self._exit.enter_async_context(get_checkpointer())
+                graph.checkpointer = self._saver
             self.runs = RunStore(self.db)
             self.threads = ThreadStore(self.db)
-            days = retention_days()
-            if days > 0:
-                self._retention_task = asyncio.create_task(self._retention_loop(days))
         except BaseException:
             await self._exit.aclose()
             self._exit = None
             raise
         self.started = True
+        self._check_step_budget()
+        if self.db.is_postgres:
+            self.initialising = True
+            self._init_task = asyncio.create_task(self._initialise(), name="database-setup")
+        else:
+            self._storage_ready()
         logger.info(
             "chat runtime started: runtime=%s checkpointer=%s retention_days=%s",
             self.runtime,
@@ -520,34 +741,154 @@ class ChatRuntime:
             retention_days(),
         )
 
+    async def _initialise(self) -> None:
+        """Set up the schema, retrying with back-off until the database answers."""
+        assert self.db is not None
+        extra = self._saver.setup if self.runtime == FASTAPI and self.db.is_postgres else None
+        delay = INIT_RETRY_FIRST_S
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                await self.db.setup(extra)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if attempt == 1 or attempt % 30 == 0:  # about once a minute
+                    if is_database_unavailable(exc):
+                        logger.warning(
+                            "database not reachable yet (%s: %s); not ready, retrying every %g s",
+                            type(exc).__name__,
+                            _first_line(exc),
+                            INIT_RETRY_MAX_S,
+                        )
+                    else:
+                        logger.error("database setup failed; retrying", exc_info=exc)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, INIT_RETRY_MAX_S)
+        self.initialising = False
+        if attempt > 1:
+            logger.info("database set up after %d attempts", attempt)
+        self._storage_ready()
+
+    def _storage_ready(self) -> None:
+        """Start the background work that needs the database."""
+        days = retention_days()
+        if days > 0:
+            self._retention_task = asyncio.create_task(self._retention_loop(days))
+        if self.db is not None and self.db.is_postgres:
+            self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+
     async def stop(self) -> None:
-        task, self._retention_task = self._retention_task, None
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        tasks = [self._init_task, self._maintenance_task, self._retention_task]
+        self._init_task = self._maintenance_task = self._retention_task = None
+        for task in tasks:
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(t for t in tasks if t is not None), return_exceptions=True)
         if self._exit is not None:
             await self._exit.aclose()
             self._exit = None
         self.started = False
+        self.initialising = False
 
     def checkpointer_kind(self) -> str:
         if self.runtime == LANGGRAPH_SERVER:
             return "postgres" if is_postgres_url(os.environ.get("DATABASE_URI")) else "memory"
         return checkpointer_kind()
 
+    def _check_step_budget(self) -> None:
+        """Warn when an API's `max_calls_per_run` cannot be reached within `RECURSION_LIMIT`."""
+        try:
+            from {{cookiecutter.agent_directory}}.app_utils.api_client import load_policy
+
+            policy = load_policy()
+        except Exception:  # no or invalid policy: reported where it is used
+            return
+        limit = recursion_limit()
+        fits = sequential_tool_calls(limit)
+        for name, settings in sorted(policy.apis.items()):
+            max_calls = (settings.get("limits") or {}).get("max_calls_per_run")
+            if isinstance(max_calls, int) and max_calls > fits:
+                logger.warning(
+                    "RECURSION_LIMIT=%d allows about %d sequential tool calls per run, fewer "
+                    "than limits.max_calls_per_run=%d of API %r: runs stop at the step limit "
+                    "first. Set RECURSION_LIMIT to at least %d, or lower the API's limit.",
+                    limit,
+                    fits,
+                    max_calls,
+                    name,
+                    steps_for_tool_calls(max_calls),
+                )
+
+    def _require_storage(self) -> None:
+        """503 while the database is not set up yet (startup during an outage)."""
+        if not self.started or self.initialising:
+            raise unavailable("Database", StorageNotReady("the database is not set up yet"))
+
     async def ready(self, timeout: float = 2.0) -> bool:
         """True when the runtime's storage answers a trivial query within `timeout` seconds."""
-        if not self.started or self.db is None:
-            return False
-        try:
-            async with asyncio.timeout(timeout):
-                await self.db.ping()
-                if self.runtime == LANGGRAPH_SERVER:
-                    await self._sdk_client({}).assistants.search(limit=1)
-        except Exception as exc:
-            logger.warning("readiness check failed: %s", type(exc).__name__)
-            return False
-        return True
+        ok = False
+        reason = "starting"
+        if self.started and self.db is not None and not self.initialising:
+            try:
+                async with asyncio.timeout(timeout):
+                    await self.db.ping()
+                    if self.runtime == LANGGRAPH_SERVER:
+                        await self._sdk_client({}).assistants.search(limit=1)
+                ok = True
+            except Exception as exc:
+                reason = type(exc).__name__
+        elif self.initialising:
+            reason = "the database is not set up yet"
+        if ok != self._was_ready:  # log changes only, not every probe
+            if ok:
+                logger.info("ready")
+            else:
+                logger.warning("not ready: %s", reason)
+        self._was_ready = ok
+        return ok
+
+    async def _maintenance_loop(self) -> None:
+        """Every `RECONCILE_INTERVAL_S`: write failed run records, close runs of dead processes."""
+        failing = False
+        while True:
+            try:
+                await self.reconcile_runs()
+                if failing:
+                    failing = False
+                    logger.info("run reconciliation works again")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not failing:  # once per outage, not every round
+                    failing = True
+                    logger.warning(
+                        "run reconciliation failed (%s); retrying every %g s",
+                        type(exc).__name__,
+                        RECONCILE_INTERVAL_S,
+                    )
+            await asyncio.sleep(RECONCILE_INTERVAL_S)
+
+    async def reconcile_runs(self, grace_s: float | None = None) -> list[str]:
+        """Write run records that failed earlier, then mark runs of dead processes `interrupted`."""
+        if self.runs is None:
+            return []
+        grace_s = RECONCILE_GRACE_S if grace_s is None else grace_s
+        while self._unrecorded:
+            record = self._unrecorded[0]
+            await self.runs.record(record)
+            self._unrecorded.popleft()
+        run_ids = await self.runs.reconcile(grace_s)
+        if run_ids:
+            metrics.observe_interrupted_runs(len(run_ids))
+            logger.warning(
+                "%d runs never finished (their process stopped); recorded as interrupted: %s",
+                len(run_ids),
+                ", ".join(run_ids[:20]),
+            )
+        return run_ids
 
     # -- threads -----------------------------------------------------------
 
@@ -555,6 +896,7 @@ class ChatRuntime:
         """The thread id for this request, after the ownership check (403 before streaming)."""
         if req.thread_id is not None:
             req.thread_id = validate_thread_id(req.thread_id, self.runtime)
+        self._require_storage()
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_resolve_thread(principal, req)
         thread_id = req.thread_id or str(uuid.uuid4())
@@ -599,6 +941,7 @@ class ChatRuntime:
         langgraph-server the server keeps thread and state together: a run on
         a deleted thread fails there with 404.)
         """
+        self._require_storage()
         try:
             lease = await self.locks.acquire(thread_id)
         except ThreadBusy:
@@ -622,10 +965,12 @@ class ChatRuntime:
         forward_headers: Mapping[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """The caller's threads (every thread for a read-across role), most recent first."""
+        self._require_storage()
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_list_threads(principal, limit, offset, forward_headers or {})
         assert self.threads is not None
-        records = await self.threads.list_for(principal, limit=limit, offset=offset)
+        with database_errors():
+            records = await self.threads.list_for(principal, limit=limit, offset=offset)
         return [r.public() for r in records]
 
     async def delete_thread(
@@ -642,12 +987,15 @@ class ChatRuntime:
         have been deleted, and its id claimed by someone else, in between.
         """
         thread_id = validate_thread_id(thread_id, self.runtime)
+        self._require_storage()
         headers = forward_headers or {}
-        self._assert_deletable(principal, await self._thread_record(thread_id, headers))
+        with database_errors():
+            self._assert_deletable(principal, await self._thread_record(thread_id, headers))
         lease = await self.acquire_thread(thread_id)
         try:
-            self._assert_deletable(principal, await self._thread_record(thread_id, headers))
-            await self._delete_thread_data(thread_id, headers)
+            with database_errors():
+                self._assert_deletable(principal, await self._thread_record(thread_id, headers))
+                await self._delete_thread_data(thread_id, headers)
         finally:
             await lease.release()
         logger.info("thread deleted", extra={"thread_id": thread_id})
@@ -821,6 +1169,9 @@ class ChatRuntime:
         (`/chat` does, to answer 409 before streaming); otherwise it is taken
         here and a busy thread yields a single `thread_busy` error event. The
         lock is released when the run ends, however it ends.
+
+        The run is recorded (`running`) before it starts: a run that cannot be
+        recorded does not start (an `unavailable` error event).
         """
         if lease is None:
             try:
@@ -833,6 +1184,42 @@ class ChatRuntime:
                 yield EVENT_ERROR, {"code": code, "message": str(exc.detail)}
                 return
         run_id = str(uuid.uuid4())
+        bind_log_context(run_id=run_id, thread_id=thread_id, principal_hash=principal.hashed_id())
+        record = RunRecord(
+            run_id=run_id,
+            thread_id=thread_id,
+            principal_hash=principal.hashed_id(),
+            model=model_label(),
+            status=STATUS_OK,
+            metadata=dict(req.metadata) or None,
+        )
+        try:
+            if self.runs is not None:
+                async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
+                    await self.runs.start(record)
+        except Exception as exc:
+            # Not recorded, not run: every run that starts leaves a record.
+            await lease.release()
+            error_id = new_error_id()
+            logger.log(
+                logging.WARNING if is_database_unavailable(exc) else logging.ERROR,
+                "run not started: its run record could not be written (error_id=%s): %s: %s",
+                error_id,
+                type(exc).__name__,
+                _first_line(exc),
+                exc_info=None if is_database_unavailable(exc) else exc,
+            )
+            yield (
+                EVENT_ERROR,
+                {
+                    "code": CODE_UNAVAILABLE,
+                    "message": f"The run could not start: the database is unavailable. "
+                    f"Reference: {error_id}.",
+                    "error_id": error_id,
+                    "run_id": run_id,
+                },
+            )
+            return
         loop = asyncio.get_running_loop()
         started = time.perf_counter()
         deadline = loop.time() + run_timeout_s()
@@ -841,16 +1228,20 @@ class ChatRuntime:
         status = STATUS_OK
         error: BaseException | None = None
         error_event: dict[str, Any] | None = None
+        final_text: str | None = None
         pump: _Pump | None = None
-        bind_log_context(run_id=run_id, thread_id=thread_id, principal_hash=principal.hashed_id())
         metrics.ACTIVE_RUNS.inc()
         try:
             yield EVENT_START, {"thread_id": thread_id, "run_id": run_id}
+            lease.check()
             if self.runtime == LANGGRAPH_SERVER:
                 source = self._server_events(principal, req, thread_id, run_id, state)
             else:
                 source = self._local_events(principal, req, thread_id, run_id)
             pump = _Pump(source)
+            # A lease lost mid-run (this replica cannot confirm it still owns
+            # the thread) stops the run now, not at its next write.
+            lease.on_lost(lambda: pump.interrupt(LeaseLost(thread_id, lease.lost_reason or "lost")))
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
@@ -884,9 +1275,18 @@ class ChatRuntime:
             logger.info("run cancelled: the client went away")
             raise
         except Exception as exc:
-            status = STATUS_ERROR
             error = exc
-            error_event = self._error_event(exc, run_id)
+            if _lease_lost(exc) is not None:
+                status = STATUS_INTERRUPTED
+            elif _is_recursion_error(exc):
+                if pump is not None:
+                    await pump.close()  # the graph has stopped; make sure before writing
+                final_text = await self._end_at_step_limit(req, thread_id, lease)
+                status = STATUS_STEP_LIMIT if final_text is not None else STATUS_ERROR
+            else:
+                status = STATUS_ERROR
+            if final_text is None:
+                error_event = self._error_event(exc, run_id)
         finally:
             if pump is not None:
                 pump.cancel()
@@ -897,7 +1297,7 @@ class ChatRuntime:
             end_api_run(run_id)
             finish = asyncio.ensure_future(
                 self._finish_run(
-                    principal, req, thread_id, run_id, state, status, error, latency_ms, pump, lease
+                    principal, req, record, state, status, error, latency_ms, pump, lease
                 )
             )
             # Shielded: the record and the lock release complete even when the
@@ -906,6 +1306,8 @@ class ChatRuntime:
         if error_event is not None:
             yield EVENT_ERROR, error_event
             return
+        if final_text is not None:
+            yield EVENT_DELTA, {"text": final_text}
         yield (
             EVENT_END,
             {
@@ -916,7 +1318,7 @@ class ChatRuntime:
                     "output_tokens": state.output_tokens,
                 },
                 "latency_ms": latency_ms,
-                "status": STATUS_OK,
+                "status": status,
             },
         )
 
@@ -928,12 +1330,31 @@ class ChatRuntime:
             logger.info("run refused: the thread is busy")
             return {**thread_busy_error(), "run_id": run_id}
         error_id = new_error_id()
+        lost = _lease_lost(exc)
         if _is_recursion_error(exc):
             logger.warning("run reached the recursion limit (error_id=%s)", error_id)
             event: dict[str, Any] = {
                 "code": CODE_RECURSION,
                 "message": f"The run reached the step limit ({recursion_limit()} steps) and "
                 f"was stopped. Reference: {error_id}.",
+            }
+        elif lost is not None:
+            logger.warning("run stopped (error_id=%s): %s", error_id, lost)
+            event = {
+                "code": CODE_UNAVAILABLE,
+                "message": "The run was stopped: it could no longer confirm it was the only "
+                f"run on this thread. Reference: {error_id}.",
+            }
+        elif is_database_unavailable(exc):
+            logger.warning(
+                "run failed: the database is unavailable (error_id=%s): %s: %s",
+                error_id,
+                type(exc).__name__,
+                _first_line(exc),
+            )
+            event = {
+                "code": CODE_UNAVAILABLE,
+                "message": f"The run failed: the database is unavailable. Reference: {error_id}.",
             }
         else:
             logger.error("run failed (error_id=%s)", error_id, exc_info=exc)
@@ -950,8 +1371,7 @@ class ChatRuntime:
         self,
         principal: Principal,
         req: ChatRequest,
-        thread_id: str,
-        run_id: str,
+        record: RunRecord,
         state: _RunState,
         status: str,
         error: BaseException | None,
@@ -959,85 +1379,212 @@ class ChatRuntime:
         pump: _Pump | None,
         lease: ThreadLease,
     ) -> None:
+        """Bookkeeping after a run, each step bounded: the client's last event is not held up."""
+        thread_id = record.thread_id
         try:
-            if pump is not None:
-                await pump.close()
-            if status in (STATUS_TIMEOUT, STATUS_CANCELLED) and self.runtime == LANGGRAPH_SERVER:
+            if pump is not None and not await pump.close(PUMP_STOP_WAIT_S):
+                # Still stopping (it waits for writes in flight, which the lease
+                # fence refuses): the thread stays busy until it has stopped,
+                # but the client need not wait for it.
+                lease.hold_until(pump.task)
+            if (
+                status in (STATUS_TIMEOUT, STATUS_CANCELLED, STATUS_INTERRUPTED)
+                and self.runtime == LANGGRAPH_SERVER
+            ):
                 await self._cancel_server_run(req, thread_id, state)
-            if status != STATUS_OK:
-                await self._close_dangling_tool_calls(req, thread_id, status)
-            await self._record_run(
-                principal, req, thread_id, run_id, state, status, error, latency_ms
-            )
+            jobs = [self._record_run(principal, req, record, state, status, error, latency_ms)]
+            stopped = pump is None or pump.task.done()
+            # A graph still stopping could write after the repair: the next run repairs then.
+            if stopped and self._repairs_after(status, error, lease):
+                reason = f"The tool call did not finish: the run stopped ({status})."
+                jobs.append(self._close_dangling_tool_calls(req, thread_id, reason))
+            await asyncio.gather(*jobs)
         finally:
             await lease.release()
         logger.info(
             "run finished",
-            extra={"status": status, "latency_ms": latency_ms, "run_id": run_id},
+            extra={"status": status, "latency_ms": latency_ms, "run_id": record.run_id},
         )
 
+    def _repairs_after(self, status: str, error: BaseException | None, lease: ThreadLease) -> bool:
+        """Whether a stopped run should answer the tool calls it left open.
+
+        Not after a clean end, not when the run never started (the thread was
+        busy: the open calls belong to the run in progress) and not when this
+        process no longer owns the thread.
+        """
+        if status in (STATUS_OK, STATUS_STEP_LIMIT, STATUS_INTERRUPTED) or lease.lost:
+            return False
+        if error is None:
+            return True
+        return not (isinstance(error, ThreadBusy) or http_status(error) == 409)
+
     async def _close_dangling_tool_calls(
-        self, req: ChatRequest, thread_id: str, status: str
+        self, req: ChatRequest, thread_id: str, reason: str
     ) -> None:
-        """Answer the tool calls a stopped run left open, so the thread stays usable.
+        """Answer the tool calls a stopped run left open, so the thread stays usable (best effort).
 
         A run cut short between the model's tool call and the tool's result
         leaves an assistant message whose tool calls have no results; model
         providers reject such a history on the next turn. Each open call gets
-        an error result saying the run stopped (best effort, under the run lock).
+        an error result right after it. The next run repairs anything this
+        misses (for example when the database is down right now).
         """
-        content = f"The tool call did not finish: the run stopped ({status})."
-        try:
-            if self.runtime == LANGGRAPH_SERVER:
-                client = self._sdk_client(req.forward_headers)
-                snapshot = await client.threads.get_state(thread_id)
-                values = snapshot.get("values") if isinstance(snapshot, Mapping) else None
-                open_calls = dangling_tool_calls((values or {}).get("messages") or [])
-                if open_calls:
-                    patches = [
-                        {
-                            "type": "tool",
-                            "content": content,
-                            "tool_call_id": str(_get(c, "id")),
-                            "name": str(_get(c, "name") or ""),
-                            "status": "error",
-                        }
-                        for c in open_calls
-                    ]
-                    await client.threads.update_state(
-                        thread_id, {"messages": patches}, as_node="tools"
-                    )
-            else:
-                from langchain_core.messages import ToolMessage
-
-                from {{cookiecutter.agent_directory}}.agent import graph
-
-                config = {"configurable": {"thread_id": thread_id}}
-                snapshot = await graph.aget_state(config)
-                open_calls = dangling_tool_calls((snapshot.values or {}).get("messages") or [])
-                if open_calls:
-                    patches = [
-                        ToolMessage(
-                            content=content,
-                            tool_call_id=str(_get(c, "id")),
-                            name=str(_get(c, "name") or ""),
-                            status="error",
-                        )
-                        for c in open_calls
-                    ]
-                    as_node = "tools" if "tools" in graph.nodes else None
-                    await graph.aupdate_state(config, {"messages": patches}, as_node=as_node)
-        except Exception:
-            logger.warning("could not close the tool calls of a stopped run", exc_info=True)
+        if self.db is not None and not self.db.health.up:
+            logger.info("the database is down: the next run answers the open tool calls")
             return
-        if open_calls:
-            logger.info("closed %d tool calls left open by a stopped run", len(open_calls))
+        try:
+            async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
+                closed = await self._repair_history(req, thread_id, reason)
+        except Exception as exc:
+            logger.warning(
+                "could not close the tool calls of a stopped run (%s); the next run will",
+                type(exc).__name__,
+            )
+            return
+        if closed:
+            logger.info("closed %d tool calls left open by a stopped run", closed)
+
+    async def _repair_history(
+        self, req: ChatRequest, thread_id: str, reason: str, final_text: str | None = None
+    ) -> int:
+        """Put the thread's tool-call history right, then add `final_text` as the last reply.
+
+        Every tool call gets its result right after it (an error result saying
+        `reason` when it has none) and results that answer no call go; see
+        `repair_tool_history`. Only the owner of the thread's run lease writes
+        (fastapi: the checkpointer's fence). Returns how many open calls got a
+        result. Under langgraph-server a thread with a run in progress (started
+        through the server's own API) is left alone.
+        """
+        if self.runtime == LANGGRAPH_SERVER:
+            return await self._server_repair_history(req, thread_id, reason, final_text)
+        from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+        from langgraph.constants import END
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        from {{cookiecutter.agent_directory}}.agent import graph
+
+        def error_result(call: Any) -> Any:
+            return ToolMessage(
+                content=reason,
+                tool_call_id=str(_get(call, "id") or ""),
+                name=str(_get(call, "name") or ""),
+                status="error",
+                id=str(uuid.uuid4()),
+            )
+
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = await graph.aget_state(config)
+        if snapshot.tasks:
+            # A step that never finished (the process stopped mid-step): the
+            # state shown includes what its tasks already wrote, but an update
+            # is applied to the last checkpoint without them. Make them part
+            # of the thread first, as the next run's input would.
+            await graph.aupdate_state(config, None, as_node=END)
+            snapshot = await graph.aget_state(config)
+        messages = list((snapshot.values or {}).get("messages") or [])
+        repair = repair_tool_history(messages, error_result)
+        update: list[Any] = []
+        if repair is not None:
+            update = (
+                list(repair.added)
+                if repair.append_only
+                else [RemoveMessage(id=REMOVE_ALL_MESSAGES), *repair.messages]
+            )
+        if final_text is not None:
+            update.append(AIMessage(content=final_text, id=str(uuid.uuid4())))
+        if not update:
+            return 0
+        if final_text is not None and "model" in graph.nodes:
+            as_node: str | None = "model"
+        else:
+            as_node = "tools" if "tools" in graph.nodes else None
+        await graph.aupdate_state(config, {"messages": update}, as_node=as_node)
+        if repair is not None and not repair.append_only:
+            logger.warning("moved misplaced tool results back after their calls")
+        return len(repair.added) if repair is not None else 0
+
+    async def _server_repair_history(
+        self, req: ChatRequest, thread_id: str, reason: str, final_text: str | None
+    ) -> int:
+        client = self._sdk_client(req.forward_headers)
+        thread = await client.threads.get(thread_id)
+        if isinstance(thread, Mapping) and thread.get("status") == "busy":
+            # A run owns the thread (one started through the server's own API,
+            # or ours still winding down): its open tool calls are its own.
+            if final_text is not None:
+                raise ThreadBusy(thread_id)
+            return 0
+        snapshot = await client.threads.get_state(thread_id)
+        if isinstance(snapshot, Mapping) and snapshot.get("tasks"):
+            # Writes of a step that never finished: part of the thread first
+            # (see `_repair_history`).
+            await client.threads.update_state(thread_id, None, as_node="__end__")
+            snapshot = await client.threads.get_state(thread_id)
+        values = snapshot.get("values") if isinstance(snapshot, Mapping) else None
+        messages = list((values or {}).get("messages") or [])
+
+        def error_result(call: Any) -> dict[str, Any]:
+            return {
+                "type": "tool",
+                "content": reason,
+                "tool_call_id": str(_get(call, "id") or ""),
+                "name": str(_get(call, "name") or ""),
+                "status": "error",
+                "id": str(uuid.uuid4()),
+            }
+
+        repair = repair_tool_history(messages, error_result)
+        update: list[Any] = []
+        if repair is not None:
+            update = (
+                list(repair.added)
+                if repair.append_only
+                else [
+                    {"type": "remove", "id": "__remove_all__"},
+                    *(_server_message(m) for m in repair.messages),
+                ]
+            )
+        if final_text is not None:
+            update.append({"type": "ai", "content": final_text, "id": str(uuid.uuid4())})
+        if not update:
+            return 0
+        as_node = "model" if final_text is not None else "tools"
+        await client.threads.update_state(thread_id, {"messages": update}, as_node=as_node)
+        return len(repair.added) if repair is not None else 0
+
+    async def _end_at_step_limit(
+        self, req: ChatRequest, thread_id: str, lease: ThreadLease
+    ) -> str | None:
+        """End a run that reached `RECURSION_LIMIT` with a final reply saying so.
+
+        The thread keeps everything the run did (its open tool calls get an
+        error result), then the reply; the client gets the reply and
+        `message.end` with status `step_limit`. None when that cannot be
+        written: the run then ends with the `recursion_limit` error.
+        """
+        text = STEP_LIMIT_MESSAGE.format(limit=recursion_limit())
+        try:
+            lease.check()
+            async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
+                await self._repair_history(req, thread_id, OPEN_CALL_STEP_LIMIT, final_text=text)
+        except Exception as exc:
+            logger.warning("could not end the run with a step-limit reply (%s)", type(exc).__name__)
+            return None
+        logger.warning(
+            "run reached the step limit (%d steps); ended it with a reply", recursion_limit()
+        )
+        return text
 
     async def _local_events(
         self, principal: Principal, req: ChatRequest, thread_id: str, run_id: str
     ) -> AsyncIterator[tuple[str, Any]]:
         from {{cookiecutter.agent_directory}}.agent import AgentContext, graph
 
+        # A run cut short earlier (a crash, an outage) may have left tool calls
+        # without results: answer them before this run appends its turn.
+        await self._repair_before_run(req, thread_id)
         config = {
             "configurable": {"thread_id": thread_id},
             "run_id": uuid.UUID(run_id),
@@ -1059,12 +1606,30 @@ class ChatRuntime:
         ):
             yield mode, data
 
+    async def _repair_before_run(self, req: ChatRequest, thread_id: str) -> None:
+        """Repair the thread's history before a run appends to it.
+
+        Under fastapi a failure fails the run (its database is this app's).
+        Under langgraph-server the repair is best effort: the server may be
+        reached through a client that cannot read the state.
+        """
+        try:
+            closed = await self._repair_history(req, thread_id, OPEN_CALL_INTERRUPTED)
+        except Exception as exc:
+            if self.runtime == FASTAPI:
+                raise
+            logger.warning(
+                "could not check the thread's tool calls before the run: %s", type(exc).__name__
+            )
+            return
+        if closed:
+            logger.warning("answered %d tool calls an interrupted run left open", closed)
+
     async def _record_run(
         self,
         principal: Principal,
         req: ChatRequest,
-        thread_id: str,
-        run_id: str,
+        record: RunRecord,
         state: _RunState,
         status: str,
         error: BaseException | None,
@@ -1080,11 +1645,11 @@ class ChatRuntime:
                 "tool_calls": state.tool_calls,
                 "error": str(error) if error else None,
             }
-        record = RunRecord(
-            run_id=run_id,
-            thread_id=thread_id,
+        final = RunRecord(
+            run_id=record.run_id,
+            thread_id=record.thread_id,
             principal_hash=principal.hashed_id(),
-            model=model_label(),
+            model=record.model,
             status=status,
             input_tokens=state.input_tokens,
             output_tokens=state.output_tokens,
@@ -1092,11 +1657,22 @@ class ChatRuntime:
             error_type=type(error).__name__ if error else None,
             metadata=dict(req.metadata) or None,
             payload=payload,
+            created_at=record.created_at,
         )
+        if self.db is not None and not self.db.health.up:
+            # Known down: do not hold the reply up; the maintenance loop writes it.
+            self._unrecorded.append(final)
+            logger.warning("the run record is written once the database is back")
+            return
         try:
-            await self.runs.record(record)
-        except Exception:  # a failed run record must not break the reply
-            logger.exception("could not write the run record")
+            async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
+                await self.runs.record(final)
+        except Exception as exc:  # a failed run record must not break the reply
+            self._unrecorded.append(final)
+            logger.warning(
+                "could not write the run record (%s); retrying in the background",
+                type(exc).__name__,
+            )
 
     # -- reading a thread ----------------------------------------------------
 
@@ -1107,10 +1683,12 @@ class ChatRuntime:
         forward_headers: Mapping[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         thread_id = validate_thread_id(thread_id, self.runtime)
+        self._require_storage()
         if self.runtime == LANGGRAPH_SERVER:
             return await self._server_messages(principal, thread_id, forward_headers or {})
         assert self.threads is not None
-        record = await self.threads.get(thread_id)
+        with database_errors():
+            record = await self.threads.get(thread_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Unknown thread.")
         assert_access(principal, record)
@@ -1118,7 +1696,8 @@ class ChatRuntime:
         include_args = is_owner(principal, record) or capture_full()
         from {{cookiecutter.agent_directory}}.agent import graph
 
-        snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        with database_errors():
+            snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
         values = snapshot.values if snapshot is not None else {}
         return [
             serialize_message(m, include_tool_args=include_args) for m in values.get("messages", [])
@@ -1194,6 +1773,8 @@ class ChatRuntime:
         run_id: str,
         state: _RunState,
     ) -> AsyncIterator[tuple[str, Any]]:
+        # As under fastapi: answer tool calls an interrupted run left open first.
+        await self._repair_before_run(req, thread_id)
         client = self._sdk_client(req.forward_headers)
         metadata = {
             **trace_metadata(thread_id, run_id, principal, req.metadata),

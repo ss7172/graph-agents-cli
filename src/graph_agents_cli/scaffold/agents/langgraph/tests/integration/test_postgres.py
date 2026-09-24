@@ -130,6 +130,9 @@ async def test_an_older_schema_is_migrated_in_place(dsn: str) -> None:
 
 
 async def test_the_run_lock_spans_replicas(dsn: str) -> None:
+    db = Database(POSTGRES, dsn)
+    await db.open()  # creates the lease table
+    await db.close()
     replica_a, replica_b = ThreadLocks(dsn), ThreadLocks(dsn)
     try:
         lease = await replica_a.acquire("t1")

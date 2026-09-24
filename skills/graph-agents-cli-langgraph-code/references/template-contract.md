@@ -12,8 +12,9 @@ scaffolding files implement them.
 │   ├── fast_api_app.py          # exports `app`: /chat SSE, A2A, /health, /ready, /metrics, /threads, /playground (dev only), policy middleware, checkpointer binding
 │   ├── app_utils/
 │   │   ├── model.py             # get_model(), get_judge_model() via init_chat_model (timeout, retries); FakeChatModel (provider `fake`)
-│   │   ├── chat.py              # the single invocation path shared by /chat, A2A and the playground: run lock (409), timeouts, error events, run records, retention
-│   │   ├── checkpointer.py      # memory | postgres from CHECKPOINTER (fastapi only); one health-checked pool per process
+│   │   ├── chat.py              # the single invocation path shared by /chat, A2A and the playground: run lock (409), history repair, timeouts, step limit, error events, run records, retention
+│   │   ├── checkpointer.py      # memory | postgres from CHECKPOINTER (fastapi only); one health-checked pool per process, connect/keepalive defaults, lease-fenced saver
+│   │   ├── run_locks.py         # one run per thread: in-process locks plus Postgres leases (owner, fencing token, expiry) renewed by a heartbeat
 │   │   ├── auth.py              # Principal (hashed_id(), public_attributes()), AuthPolicy, SharedBearerPolicy, JwtPolicy, check_startup(), require(), `auth` for langgraph.json
 │   │   ├── threads.py           # thread ownership table (fastapi) / thread metadata (langgraph-server)
 │   │   ├── api_client.py        # get_client(), ApiClient, ApiPolicy, ApiPolicyError, ApiCallError; enforces api-policy.yaml
@@ -21,7 +22,7 @@ scaffolding files implement them.
 │   │   ├── metrics.py           # Prometheus registry for /metrics (METRICS_TOKEN)
 │   │   ├── middleware.py        # request id and JSON logging, body size cap, CORS, auth-error and thread-delete hooks (langgraph-server)
 │   │   ├── telemetry.py         # opt-in tracing, capture policy
-│   │   ├── db.py                # run records (`runs` table under postgres; `agent_runs` under langgraph-server), schema setup under an advisory lock
+│   │   ├── db.py                # run records (`runs` table under postgres; `agent_runs` under langgraph-server; `running` until they end, reconciled to `interrupted`), lease table, schema setup under an advisory lock
 │   │   ├── content.py           # message content helpers
 │   │   ├── playground.py        # the /playground page (APP_ENV=dev only)
 │   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events; tasks per principal, A2A_TASK_TTL_S
@@ -98,7 +99,7 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `AUTH_READ_ACROSS_ROLES` | chart | comma-separated roles allowed to read (never write) others' threads; empty default |
 | `AUTH_ADMIN_ROLES` | chart | langgraph-server: roles allowed to manage assistants, crons and the store; empty = nobody |
 | `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
-| `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (25) | `.env` / chart | run guardrails |
+| `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (50) | `.env` / chart | run guardrails |
 | `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
 | `RETENTION_DAYS` (0) | `.env` / chart | purge threads idle longer than N days, hourly; 0 keeps everything |
 | `LOG_LEVEL` (INFO), `LOG_FORMAT` (`json`, `text` under dev) | `.env` / chart | structured logs with request id, run id, thread id, hashed principal |
@@ -138,14 +139,19 @@ Response: SSE. Each event is `event: <type>\ndata: <json>\n\n`.
 | `message.delta` | `{"text": "..."}` |
 | `tool.call` | `{"id": "...", "name": "...", "args": {...}}` (args omitted when `TRACE_CAPTURE=metadata` and the caller is not the owner; always present to the caller) |
 | `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}` |
-| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok"}` |
+| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok\|step_limit"}` |
 | `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
 
-`"status": "ok"` is the only `message.end` status in this milestone (an `error` event replaces
-`message.end` on failure); there is no `interrupted` status and no `metadata.resume` convention.
-Idle streams get a `: keep-alive` comment every `SSE_HEARTBEAT_S`. Run records (and `/metrics`)
-carry the run status `ok`, `error`, `timeout` or `cancelled` (a client disconnect cancels the
-run); a stopped run answers its open tool calls with an error result so the next turn is valid.
+`message.end` has `"status": "ok"`, or `"step_limit"` when the run reached `RECURSION_LIMIT` and
+ended with a reply saying so (the reply is the preceding `message.delta`; the run's work stays in
+the thread). An `error` event replaces `message.end` on failure (`recursion_limit` only when the
+step-limit reply could not be written). There is no status for a paused graph and no
+`metadata.resume` convention. Idle streams get a `: keep-alive` comment every
+`SSE_HEARTBEAT_S`. Run records carry `running` while the run is in progress, then `ok`,
+`step_limit`, `error`, `timeout`, `cancelled` (a client disconnect) or `interrupted` (the run
+lost its lease, or its process died; `/metrics` counts the same final statuses). A run stopped
+mid tool call leaves a call without a result: the next run answers it with an error result
+right after the call before adding its turn, so the thread stays valid.
 
 Request rules: a second `/chat` on a thread with a run in progress gets 409
 `{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; metadata outside the caps (or

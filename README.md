@@ -194,31 +194,50 @@ Two runtimes share the same routes, auth and clients:
 | `GET /threads/{thread_id}/messages` | `thread.read` | The thread's messages; owner, or a role in `AUTH_READ_ACROSS_ROLES` |
 | `DELETE /threads/{thread_id}` | `thread.delete` | Deletes the thread, its checkpoints and run records (owner only): 204, or 403, 404, 409 (a run in progress), 422. Under `langgraph-server` this is the server's own route, with the same owner rule |
 | `GET /health` | none | Liveness, process only: `{"status": "ok", "runtime", "checkpointer"}` |
-| `GET /ready` | none | Readiness: 200 `{"status": "ready"}` when the database (and run store) answer within 2 s, else 503 `{"status": "not_ready"}` |
-| `GET /metrics` | none, or `METRICS_TOKEN` | Prometheus text (`METRICS_ENABLED`, default true): `http_requests_total`, `http_request_duration_seconds`, `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`, `agent_tokens_total`. With `METRICS_TOKEN` set, only `Authorization: Bearer <METRICS_TOKEN>` is answered |
+| `GET /ready` | none | Readiness: 200 `{"status": "ready"}` when the database (and run store) is set up and answers within 2 s, else 503 `{"status": "not_ready"}` |
+| `GET /metrics` | none, or `METRICS_TOKEN` | Prometheus text (`METRICS_ENABLED`, default true): `http_requests_total`, `http_request_duration_seconds`, `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`, `agent_tokens_total`, `agent_database_up`. With `METRICS_TOKEN` set, only `Authorization: Bearer <METRICS_TOKEN>` is answered |
 | `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them |
 | `GET /playground`, `/docs`, `/openapi.json` | none | Only under `APP_ENV=dev` |
 
 Behaviour:
 
 - **One run per thread.** A second `/chat` on a thread with a run in progress gets 409
-  `{"code": "thread_busy"}` (an in-process lock, plus a Postgres advisory lock across
-  replicas under `postgres`).
+  `{"code": "thread_busy"}` (an in-process lock, plus a lease row in Postgres across replicas
+  under `postgres`). The holder renews its leases every 5 s; a replica lost without closing
+  its connections (a node failure, a partition, an OOM kill) frees its threads 30 s later,
+  and a dropped database session (a Postgres restart or failover) keeps the lease. A run
+  whose lease cannot be renewed is stopped (status `interrupted`) before it writes, so two
+  replicas never run one thread at once.
 - **Limits.** Bodies over `MAX_REQUEST_BYTES` (1 MiB) get 413; `/chat` metadata beyond
   `MAX_METADATA_KEYS` (16) keys or `MAX_METADATA_VALUE_CHARS` (256), or with non-scalar
   values, gets 422. Thread ids are 1-128 characters of `[A-Za-z0-9_.:-]` (UUIDs under
   `langgraph-server`).
 - **Timeouts.** A run is cancelled after `RUN_TIMEOUT_S` (300; status `timeout`); each model
-  request has `MODEL_TIMEOUT_S` (60; 0 = provider default) and `MODEL_MAX_RETRIES` (2); a run
-  stops after `RECURSION_LIMIT` (25) graph steps. Idle SSE streams get a `: keep-alive`
-  comment every `SSE_HEARTBEAT_S` (15). A client disconnect cancels the run (status
-  `cancelled`). A stopped run answers its open tool calls with an error so the thread's
-  next turn is valid.
+  request has `MODEL_TIMEOUT_S` (60; 0 = provider default) and `MODEL_MAX_RETRIES` (2). Idle
+  SSE streams get a `: keep-alive` comment every `SSE_HEARTBEAT_S` (15). A client disconnect
+  cancels the run (status `cancelled`).
+- **Step limit.** A run may take `RECURSION_LIMIT` (50) graph steps: two to answer and two
+  more per tool call made after the previous one returned, so 24 sequential tool calls.
+  A run that reaches it ends with a reply saying so and `message.end` status `step_limit`
+  (not an `error`); everything it did stays in the thread, so "continue" picks up with a
+  fresh budget. The app warns at startup when an API's `limits.max_calls_per_run` cannot be
+  reached within the limit.
+- **A valid history after any stop.** Model providers reject a tool call without its result.
+  A timeout, a disconnect, a crash, an OOM kill or a database outage can leave one, so every
+  run first answers its thread's open tool calls with an error result placed right after
+  the call (and moves misplaced results back) before it adds its turn.
 - **Errors.** The SSE `error` event is `{"code", "message", "error_id", "run_id"}` with `code`
-  one of `run_failed`, `timeout`, `recursion_limit`, `thread_busy`, `unavailable`,
-  `forbidden`. An unhandled error answers 500 `{"detail": "Internal server error. Reference:
-  <id>.", "error_id": ...}`; the detail is only in the server log under that id (and in the
-  event's `detail` under `APP_ENV=dev`).
+  one of `run_failed`, `timeout`, `recursion_limit` (only when the step-limit reply cannot be
+  written), `thread_busy`, `unavailable`, `forbidden`. An unhandled error answers 500
+  `{"detail": "Internal server error. Reference: <id>.", "error_id": ...}`; the detail is only
+  in the server log under that id (and in the event's `detail` under `APP_ENV=dev`). An
+  unreachable database answers 503 with a reference within a few seconds (2 s once the app
+  knows it is down) and logs one WARNING line, no traceback.
+- **Run records.** Every run is recorded when it starts (`running`) and updated when it ends:
+  `ok`, `step_limit`, `error`, `timeout`, `cancelled` or `interrupted` (stopped because its
+  lease was lost, or its process died: records left `running` by a dead process are marked
+  `interrupted` within about a minute of its lease expiring, and counted in
+  `agent_runs_total{status="interrupted"}`).
 - **Retention.** `RETENTION_DAYS=N` (0, the default, keeps everything) deletes threads idle
   for more than N days, with their checkpoints and run records, in an hourly best-effort
   pass on every replica. Idleness is re-checked under the thread's lock.
@@ -234,8 +253,12 @@ Behaviour:
   prompts, completions, tool I/O and the client's `/chat` metadata. Client metadata is kept
   in the run record and never written into checkpoints.
 - **Database.** One connection pool per process (`DB_POOL_MIN_SIZE` 1, `DB_POOL_MAX_SIZE` 10),
-  health-checked on checkout, so a Postgres restart heals itself. Schema changes run at
-  startup under an advisory lock, so replicas can start together.
+  health-checked on checkout. Every connection gets `connect_timeout=5` and TCP keepalives
+  (client and server side) unless the DSN sets them, so a dead database or node is noticed
+  in seconds, not minutes or hours, and the app is ready again seconds after Postgres is.
+  A replica that starts while Postgres is unreachable stays up, answers `/ready` 503 (and
+  requests 503) and sets up its schema once Postgres answers, instead of crash-looping.
+  Schema changes run under an advisory lock, so replicas can start together.
 
 Every setting has a default in code and is documented in the generated `.env.example`. A
 guardrail, limit, pool, logging, metrics, `TRACE_CAPTURE` or `A2A_TASK_TTL_S` value that does
@@ -819,8 +842,9 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
   (N replicas allow N times the rate), and `max_calls_per_run` is counted in the process that
   runs the run; neither is shared across replicas. Rely on the upstream API's own quota for a
   global cap.
-- **Run lock across replicas** uses Postgres session advisory locks: one extra connection per
-  replica, and it does not hold behind a transaction-mode connection pooler.
+- **Run lock across replicas** is a lease with a 30 s expiry: a thread whose run was on a
+  replica that died (not one that shut down cleanly) answers 409 `thread_busy` for up to
+  30 s. Each replica keeps one extra connection for its leases.
 - **Concurrent deploys to one release.** `deploy` refuses while another helm operation holds
   the release, but two narrow races remain. If this run's helm fails before recording a
   revision (a render error) just as another deploy records a revision that has already

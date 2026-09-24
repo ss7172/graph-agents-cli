@@ -93,12 +93,17 @@ in checkpoint metadata (the server injects it); `/chat` runs carry only the hash
 ## Run records
 
 Besides traces, the app writes one run record per `/chat` call: run id, thread id, hashed
-principal, model, token counts, latency, status (`ok`, `error`, `timeout`, `cancelled`), error
-type, the client's `/chat` metadata; payload (prompt, completion, tool I/O) only under
-`TRACE_CAPTURE=full`.
+principal, model, token counts, latency, status, error type, the client's `/chat` metadata;
+payload (prompt, completion, tool I/O) only under `TRACE_CAPTURE=full`. The record is written
+when the run starts (`running`) and updated when it ends: `ok`, `step_limit` (the run reached
+`RECURSION_LIMIT` and ended with a reply saying so), `error`, `timeout`, `cancelled` (the client
+left) or `interrupted` (the run lost its lease on the thread, or its process died: a crash, an
+OOM kill, a lost node, a rollout that ran out of grace). Records a dead process left `running`
+are marked `interrupted` (`error_type` `ProcessLost`) by any replica within about a minute of
+the run's 30 s lease expiring, so crashes can be counted and audited.
 
-- `CHECKPOINTER=postgres`: durable rows in the agent-owned database (`runs` table, created at
-  startup under an advisory lock).
+- `CHECKPOINTER=postgres`: durable rows in the agent-owned database (`runs` table, created
+  under an advisory lock).
 - `CHECKPOINTER=memory`: in-process, served to the `/playground` page while the process lives,
   lost on restart. Local development needs no database.
 - Under `langgraph-server`, the app keeps its records in an `agent_runs` table in the server's
@@ -116,8 +121,10 @@ type, the client's `/chat` metadata; payload (prompt, completion, tool I/O) only
   app does not log credentials, messages or tool arguments.
 - **Metrics:** `GET /metrics` serves Prometheus text (`METRICS_ENABLED`, default true):
   `http_requests_total` and `http_request_duration_seconds` (by method, route, status),
-  `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`,
-  `agent_tokens_total`. It is unauthenticated unless `METRICS_TOKEN` is set (then the scraper
+  `agent_runs_total` (by status; `interrupted` also counts the dead processes' runs a replica
+  closed, once across replicas), `agent_active_runs`, `agent_run_duration_seconds`,
+  `agent_tokens_total`, `agent_database_up` (0 while the database is known to be unreachable).
+  It is unauthenticated unless `METRICS_TOKEN` is set (then the scraper
   sends `Authorization: Bearer <token>`), and the chart never publishes it on the Gateway or
   Ingress. Scrape it with `metrics.serviceMonitor.enabled` (Prometheus Operator; add
   `metrics.serviceMonitor.bearerToken.enabled` when `METRICS_TOKEN` is set, so it sends the
@@ -125,8 +132,12 @@ type, the client's `/chat` metadata; payload (prompt, completion, tool I/O) only
   it in that Prometheus's scrape job). Under `langgraph dev` the server's own `/metrics` answers instead;
   the server image disables it so the app's is served.
 - **Health:** `GET /health` is liveness (the process answers); `GET /ready` is readiness (the
-  database answers within 2 s, else 503). Useful alerts: `/ready` failing, a rising
-  `agent_runs_total{status!="ok"}`, `agent_active_runs` near capacity.
+  database is set up and answers within 2 s, else 503). A pod started during a database outage
+  stays up and unready, and is ready again seconds after the database is. During an outage
+  requests get 503 within a few seconds and each logs one WARNING line (`Database unavailable
+  (error_id=...)`), without a traceback. Useful alerts: `/ready` failing,
+  `agent_database_up == 0`, a rising `agent_runs_total{status!="ok"}` (notably `interrupted`
+  and `step_limit`), `agent_active_runs` near capacity.
 
 ## What is never captured by default
 

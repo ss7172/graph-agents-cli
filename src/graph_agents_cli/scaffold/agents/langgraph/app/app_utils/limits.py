@@ -23,12 +23,21 @@ environment on every call, which keeps them easy to override in tests.
 | Variable                   | Default | Meaning                                              |
 |----------------------------|---------|------------------------------------------------------|
 | `RUN_TIMEOUT_S`            | 300     | wall-clock limit of one run; the run is cancelled    |
-| `RECURSION_LIMIT`          | 25      | LangGraph super-steps per run (model + tool steps)   |
+| `RECURSION_LIMIT`          | 50      | LangGraph super-steps per run (model + tool steps)   |
 | `MAX_REQUEST_BYTES`        | 1048576 | request body cap (413 above it)                      |
 | `MAX_METADATA_KEYS`        | 16      | keys in a `/chat` `metadata` object (422 above it)   |
 | `MAX_METADATA_VALUE_CHARS` | 256     | characters per metadata key and string value (422)   |
 | `SSE_HEARTBEAT_S`          | 15      | idle seconds before a `: keep-alive` SSE comment     |
 | `RETENTION_DAYS`           | 0       | purge threads idle longer than this (0 = keep all)   |
+
+A run of the template's agent needs two steps to answer at all and two more
+for each tool call made after the previous one returned (the model step that
+asks for it, then the tool step), so `RECURSION_LIMIT` = 50 leaves room for 24
+sequential tool calls in one run (`sequential_tool_calls`). A run that
+reaches it ends with a final message saying so (`message.end` status
+`step_limit`) and keeps everything it did in the thread, so "continue" picks
+up where it stopped; `chat.py` warns at startup when an API's
+`limits.max_calls_per_run` cannot be reached within the limit.
 
 Thread ids are 1-128 letters, digits or `_ . : -` (`THREAD_ID_PATTERN`).
 """
@@ -42,7 +51,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 RUN_TIMEOUT_S = ("RUN_TIMEOUT_S", 300.0)
-RECURSION_LIMIT = ("RECURSION_LIMIT", 25)
+RECURSION_LIMIT = ("RECURSION_LIMIT", 50)
 MAX_REQUEST_BYTES = ("MAX_REQUEST_BYTES", 1_048_576)
 MAX_METADATA_KEYS = ("MAX_METADATA_KEYS", 16)
 MAX_METADATA_VALUE_CHARS = ("MAX_METADATA_VALUE_CHARS", 256)
@@ -103,6 +112,16 @@ def run_timeout_s() -> float:
 def recursion_limit() -> int:
     """LangGraph's per-run step limit (`GraphRecursionError` beyond it)."""
     return _int(RECURSION_LIMIT, minimum=1)
+
+
+def sequential_tool_calls(steps: int) -> int:
+    """How many tool calls, one after another, fit in `steps` graph steps with a final answer."""
+    return max(0, (steps - 2) // 2)
+
+
+def steps_for_tool_calls(calls: int) -> int:
+    """The `RECURSION_LIMIT` that fits `calls` sequential tool calls and a final answer."""
+    return 2 * calls + 2
 
 
 def max_request_bytes() -> int:

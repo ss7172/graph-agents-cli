@@ -104,8 +104,9 @@ rendered pod passes the `restricted` Pod Security Standard. Both images (`Docker
 ## Probes
 
 Liveness and startup ask `/health` (the process answers); readiness asks `/ready` (the database
-and run store answer within 2 s), so a pod that loses its database leaves the Service endpoints
-instead of being restarted. Tune `probes.<kind>.{path,periodSeconds,timeoutSeconds,failureThreshold}`.
+and run store are set up and answer within 2 s), so a pod that loses its database leaves the
+Service endpoints instead of being restarted, and a pod that starts before its database (a first
+install, a node drain during an outage) waits unready instead of crash-looping. Tune `probes.<kind>.{path,periodSeconds,timeoutSeconds,failureThreshold}`.
 
 ## Traffic entry and TLS
 
@@ -155,8 +156,10 @@ The dev database password lives in `<name>-postgresql-auth`, created once by the
 across upgrades (`helm lookup`), uninstalls and Argo CD syncs (the Applications ignore its data).
 The agent's database is agent-owned: its own credentials, migrations, backups, quotas. Never point
 it at another application's operational database. Postgres `max_connections` must cover
-replicas x (`DB_POOL_MAX_SIZE` + 1): the extra connection per replica holds the cross-replica run
-lock (session advisory locks, so no transaction-mode PgBouncer in front).
+replicas x (`DB_POOL_MAX_SIZE` + 1): the extra connection per replica renews the cross-replica
+run leases (rows with a 30 s expiry, so a replica lost with its node frees its threads 30 s
+later, and a database restart drops no lease). Connections get `connect_timeout=5` and TCP
+keepalives unless the DSN sets them.
 
 ## Scaling and availability
 
