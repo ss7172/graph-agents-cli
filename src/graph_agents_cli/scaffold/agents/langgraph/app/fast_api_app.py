@@ -133,17 +133,17 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     detect_runtime,
     dev_mode,
     forward_header_names,
+    log_unavailable,
     new_error_id,
     select_forward_headers,
-    log_unavailable,
     sse_encode,
     unavailable,
     unavailable_detail,
     validate_thread_id,
 )
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import pool_sizes
-from {{cookiecutter.agent_directory}}.app_utils.db import StorageNotReady, is_database_unavailable
 from {{cookiecutter.agent_directory}}.app_utils.content import client_message, client_tool_result
+from {{cookiecutter.agent_directory}}.app_utils.db import StorageNotReady, is_database_unavailable
 from {{cookiecutter.agent_directory}}.app_utils.limits import (
     THREAD_ID_PATTERN,
     SettingsError,

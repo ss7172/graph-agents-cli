@@ -92,9 +92,7 @@ def _is_app_setting(name: str) -> bool:
     if name.startswith("TEST_"):
         return False
     return (
-        name in _PROVIDER_VARIABLES
-        or name in _APP_VARIABLES
-        or name.startswith(_SETTING_PREFIXES)
+        name in _PROVIDER_VARIABLES or name in _APP_VARIABLES or name.startswith(_SETTING_PREFIXES)
     )
 
 

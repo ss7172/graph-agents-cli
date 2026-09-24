@@ -294,19 +294,36 @@ _LEGACY_MESSAGE = (
     ("body", "code"),
     [
         # A JSON-escaped method name (PHP's json_encode writes `message\/send`).
-        ('{"jsonrpc": "2.0", "id": 9, "method": "message\\/send", "params": {"message": '
-         + _LEGACY_MESSAGE % '""' + "}}", -32602),
-        ('{"jsonrpc": "2.0", "id": 9, "method": "message\\/stream", "params": {"message": '
-         + _LEGACY_MESSAGE % json.dumps("x" * 40_000) + "}}", -32602),
+        (
+            '{"jsonrpc": "2.0", "id": 9, "method": "message\\/send", "params": {"message": '
+            + _LEGACY_MESSAGE % '""'
+            + "}}",
+            -32602,
+        ),
+        (
+            '{"jsonrpc": "2.0", "id": 9, "method": "message\\/stream", "params": {"message": '
+            + _LEGACY_MESSAGE % json.dumps("x" * 40_000)
+            + "}}",
+            -32602,
+        ),
         # Text that is not valid Unicode: an unpaired surrogate.
-        ('{"jsonrpc": "2.0", "id": 9, "method": "message/send", "params": {"message": '
-         + _LEGACY_MESSAGE % '"SECRETTEXT-03 \\ud800"' + "}}", -32602),
+        (
+            '{"jsonrpc": "2.0", "id": 9, "method": "message/send", "params": {"message": '
+            + _LEGACY_MESSAGE % '"SECRETTEXT-03 \\ud800"'
+            + "}}",
+            -32602,
+        ),
         # A message the SDK's own 0.3 model refuses (no messageId).
-        ('{"jsonrpc": "2.0", "id": 9, "method": "message/send", "params": {"message": '
-         '{"kind": "message", "role": "user", "parts": [{"kind": "text", '
-         '"text": "SECRETTEXT-03"}]}}}', -32602),
-        ('{"jsonrpc": "2.0", "id": 9, "method": "tasks/get", "params": {"idd": "SECRETTEXT-03"}}',
-         -32602),
+        (
+            '{"jsonrpc": "2.0", "id": 9, "method": "message/send", "params": {"message": '
+            '{"kind": "message", "role": "user", "parts": [{"kind": "text", '
+            '"text": "SECRETTEXT-03"}]}}}',
+            -32602,
+        ),
+        (
+            '{"jsonrpc": "2.0", "id": 9, "method": "tasks/get", "params": {"idd": "SECRETTEXT-03"}}',
+            -32602,
+        ),
     ],
     ids=["escaped-send-empty", "escaped-stream-too-long", "surrogate", "no-message-id", "bad-get"],
 )

@@ -465,7 +465,9 @@ def legacy_request_error(payload: Any) -> dict[str, Any] | None:
     except Exception as exc:
         errors = exc.errors() if hasattr(exc, "errors") else []
         places = [".".join(str(p) for p in error.get("loc", ())) for error in errors]
-        rules = [f"{place}: {error.get('msg')}" for place, error in zip(places, errors)]
+        rules = [
+            f"{place}: {error.get('msg')}" for place, error in zip(places, errors, strict=True)
+        ]
         in_params = bool(places) and all(p == "params" or p.startswith("params.") for p in places)
         return {
             "code": JSONRPC_INVALID_PARAMS if in_params else JSONRPC_INVALID_REQUEST,
