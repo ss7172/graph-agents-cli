@@ -57,7 +57,7 @@ from ..utils.build_record import (
 )
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.merge import is_fetchable_version, run_create_command, run_three_way_merge
-from ..utils.upgrade import update_cli_metadata
+from ..utils.upgrade import compare_all_files, update_cli_metadata
 from ..utils.version import (
     INSTALL_SPEC_ENV,
     PACKAGE_NAME,
@@ -146,6 +146,50 @@ def _print_unrecorded_build(metadata: ProjectConfig, version: str, current_id: s
             "cached build). Check with --dry-run: with the right build, only files you "
             "edited are listed under 'Will preserve' or as conflicts.[/dim]"
         )
+
+
+# A named baseline whose snapshot differs from the project in more scaffolding
+# files than this, where the new templates keep the baseline's content, is
+# probably not the build that created the project.
+_SUSPECT_MIN_FILES = 5
+
+
+def _warn_if_not_the_projects_build(
+    project_dir: pathlib.Path,
+    old_dir: pathlib.Path,
+    new_dir: pathlib.Path,
+    agent_directory: str,
+) -> None:
+    """Warn when a ``--baseline-ref`` build looks like the wrong one.
+
+    With the build that created the project, the scaffolding files listed as
+    "you modified, template unchanged" are the ones the developer edited. A
+    later build as the baseline puts most untouched files there instead (the
+    project still has the older content, and the baseline and the new templates
+    agree), and the upgrade would silently keep that older content.
+    """
+    results = [
+        r
+        for r in compare_all_files(project_dir, old_dir, new_dir, agent_directory)
+        if r.category == "scaffolding"
+    ]
+    kept = [r.path for r in results if r.preserve_type == "gacli_unchanged"]
+    compared = kept + [
+        r.path
+        for r in results
+        if r.action in ("auto_update", "conflict", "merge") or r.preserve_type == "already_current"
+    ]
+    if len(kept) < _SUSPECT_MIN_FILES or len(kept) * 2 <= len(compared):
+        return
+    sample = ", ".join(kept[:4]) + (", ..." if len(kept) > 4 else "")
+    console.print(
+        f"[yellow]⚠️  {len(kept)} of {len(compared)} template files differ from this "
+        f"baseline where the new templates keep its content ({escape(sample)}), so they would "
+        "keep what they have now (listed as 'you modified, template unchanged'). With the "
+        "build that created the project, only files you edited are listed there: if you did "
+        "not edit these, the baseline is not that build (a later one?); try an earlier "
+        "commit.[/yellow]"
+    )
 
 
 def _recorded_build_source(
@@ -462,14 +506,17 @@ def upgrade(
             console.print(
                 f"[yellow]⚠️  {escape(message)} Using it, as --baseline-ref asks.[/yellow]"
             )
-        if baseline_ref is not None and template_digest(old_dir) == digests["new"]:
+        if baseline_ref is None:
+            return
+        if template_digest(old_dir) == digests["new"]:
             console.print(
                 f"[yellow]⚠️  The baseline ({escape(baseline_label or '')}) renders the same "
-                "files as this "
-                f"build ({current.id}) for this project's settings, so nothing can be upgraded "
-                "from it. If it is not the build that created the project, name that build "
-                "instead.[/yellow]"
+                f"files as this build ({current.id}) for this project's settings, so nothing "
+                "can be upgraded from it. If it is not the build that created the project, "
+                "name that build instead.[/yellow]"
             )
+            return
+        _warn_if_not_the_projects_build(project_dir, old_dir, new_dir, agent_directory)
 
     def _record_new_build(proj_dir: pathlib.Path, lang: str) -> None:
         # The manifest is rewritten (without its comments) only when the version changes.

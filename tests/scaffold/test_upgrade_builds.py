@@ -416,6 +416,47 @@ def test_baseline_ref_that_renders_this_build_says_nothing_can_come_from_it(
     assert "renders the same files as this build" in " ".join(result.output.split())
 
 
+def test_a_later_build_named_as_the_baseline_is_flagged(
+    run_create: CreateRunner, uvx: FakeUvx
+) -> None:
+    """The project has older content in files the named build and this one agree on."""
+    project = _project(run_create)
+    build_record.write_build_record(project, None)
+    older = [
+        p.relative_to(project).as_posix()
+        for p in sorted(project.rglob("*"))
+        if p.is_file()
+        and p.suffix in (".py", ".yaml", ".md", ".json", "")
+        and build_record.MANIFEST_FILENAME not in p.name
+        and not p.relative_to(project).as_posix().startswith(("app/agent.py", "app/tools"))
+        and "values-" not in p.name
+        and p.name not in ("pyproject.toml", "README.md", ".env.example")
+    ][:6]
+    assert len(older) == 6, older
+    for rel in older:
+        (project / rel).write_text((project / rel).read_text() + "\n# as an older build had it\n")
+
+    def later(snapshot: pathlib.Path) -> None:
+        (snapshot / "README.md").write_text("# the named build's README\n")
+
+    uvx.render = later
+    result = _upgrade(project, "--baseline-ref", "main", "--dry-run")
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())
+    assert "6 of 7 template files differ from this baseline" in out
+    assert "the baseline is not that build" in out
+
+    # The right build (it rendered what the project has) raises no such warning.
+    def right(snapshot: pathlib.Path) -> None:
+        for rel in older:
+            (snapshot / rel).write_text((project / rel).read_text())
+
+    uvx.render = right
+    result = _upgrade(project, "--baseline-ref", "main", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "is not that build" not in result.output
+
+
 def test_baseline_ref_and_baseline_current_exclude_each_other(run_create: CreateRunner) -> None:
     project = _project(run_create)
     result = CliRunner().invoke(
