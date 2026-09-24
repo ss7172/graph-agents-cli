@@ -839,6 +839,18 @@ def test_approval_gates_name_the_approvals_table(project: SimpleNamespace, fake)
     assert "approvals table of the app database (POSTGRES_DSN" in check["detail"]
 
 
+def test_approval_gates_name_every_approver_of_a_list_of_rules(project: SimpleNamespace, fake):
+    (project.root / "api-policy.yaml").write_text(
+        GATED_POLICY.split("    approval:")[0]
+        + "    approval:\n"
+        + "      - {required_for: {operations: [{operationId: cancelOrder}]}, "
+        + "approvers: [requester]}\n"
+        + '      - {required_for: {methods: [POST]}, approvers: ["role:admin", requester]}\n'
+    )
+    check = by_name(report_of(invoke("--json")), "approval gates")
+    assert "orders (requester, role:admin)" in check["detail"]
+
+
 def test_approval_gates_name_the_server_runtimes_table(project: SimpleNamespace, fake):
     (project.root / "api-policy.yaml").write_text(GATED_POLICY)
     project.cfg.runtime = "langgraph-server"

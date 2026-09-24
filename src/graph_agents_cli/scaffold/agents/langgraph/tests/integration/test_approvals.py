@@ -31,7 +31,7 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -237,9 +237,11 @@ async def client(
     reset_policy_cache()
 
 
-async def _pause(client: httpx.AsyncClient, user: str = "alice") -> dict[str, Any]:
+async def _pause(
+    client: httpx.AsyncClient, user: str = "alice", message: str = PROMPT
+) -> dict[str, Any]:
     """Start a run that pauses before the gated call; the `message.end` event."""
-    r = await client.post("/chat", json={"message": PROMPT}, headers=_as(user))
+    r = await client.post("/chat", json={"message": message}, headers=_as(user))
     assert r.status_code == 200, r.text
     events = parse_sse(r.text)
     names = [e for e, _ in events]
@@ -564,6 +566,106 @@ async def test_four_eyes_the_requester_cannot_approve_their_own_call(client, tmp
     assert r.status_code == 403
     r = await _decide(client, end, "approve", user="carol", roles="ops")
     assert r.status_code == 200 and len(SENT) == 1
+
+
+# One API, other approvers for other calls: the requester confirms updates and
+# cancellations, and a second person holding role:admin approves new orders.
+RULES_POLICY = """
+apis:
+  shop:
+    base_url_env: SHOP_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST, PATCH]
+    approval:
+      - required_for:
+          operations:
+            - {operationId: updateOrder, path: "/orders/{order_id}", methods: [PATCH]}
+            - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+        approvers: [requester]
+      - required_for:
+          operations:
+            - {operationId: createOrder, path: /orders, methods: [POST]}
+        approvers: ["role:admin"]
+        timeout_s: 3600
+"""
+
+
+@tool
+async def place_order(item: str, runtime: ToolRuntime[Any]) -> str:
+    """Place a new purchase of an item."""
+    context = getattr(runtime, "context", None)
+    SEEN_BY_TOOL.append(str(getattr(context, "principal_id", "")))
+    client = get_client("shop", context=context, transport=httpx.MockTransport(_upstream))
+    return json.dumps(
+        await client.post("/orders", operation_id="createOrder", json_body={"item": item})
+    )
+
+
+@tool
+async def amend_order(order_id: str, runtime: ToolRuntime[Any]) -> str:
+    """Amend an existing purchase with a gift note."""
+    context = getattr(runtime, "context", None)
+    client = get_client("shop", context=context, transport=httpx.MockTransport(_upstream))
+    data = await client.patch(
+        "/orders/{order_id}",
+        operation_id="updateOrder",
+        path_params={"order_id": order_id},
+        json_body={"note": "gift"},
+    )
+    return json.dumps(data)
+
+
+async def test_each_call_waits_for_the_approvers_of_the_rule_that_gates_it(
+    client, tmp_path, use_test_tools
+) -> None:
+    (tmp_path / "api-policy.yaml").write_text(RULES_POLICY, encoding="utf-8")
+    reset_policy_cache()
+    use_test_tools(cancel_order, place_order, amend_order)
+    admin = ("root", "admin")
+
+    # An update: the requester's rule. Neither another user nor an admin decides it.
+    end = await _pause(client, message="Amend the gift note for 7")
+    approval = end["approval"]
+    assert (approval["operation_id"], approval["approvers"]) == ("updateOrder", ["requester"])
+    for user, roles in (("bob", "user"), admin):
+        r = await _decide(client, end, "approve", user=user, roles=roles)
+        assert r.status_code == 403 and r.json()["code"] == "not_an_approver", (user, r.text)
+    assert SENT == []
+    r = await _decide(client, end, "approve")
+    assert r.status_code == 200, r.text
+    assert [(s.method, s.url.path) for s in SENT] == [("PATCH", "/orders/7")]
+
+    # A cancellation: the requester's rule too; an admin may not decide it either.
+    end = await _pause(client)
+    assert end["approval"]["approvers"] == ["requester"]
+    r = await _decide(client, end, "reject", user=admin[0], roles=admin[1])
+    assert r.status_code == 403
+    r = await _decide(client, end, "reject", comment="changed my mind")
+    assert r.status_code == 200 and len(SENT) == 1
+
+    # A new order: role:admin's rule, with its own expiry. The requester may not approve
+    # it, even holding the role (four eyes); another admin may.
+    end = await _pause(client, message="Place a new one for WIDGET-1")
+    approval = end["approval"]
+    assert (approval["operation_id"], approval["approvers"]) == ("createOrder", ["role:admin"])
+    assert approval["body"] == {"item": "WIDGET-1"}
+    lifetime = datetime.fromisoformat(approval["expires_at"]) - datetime.fromisoformat(
+        approval["created_at"]
+    )
+    assert lifetime == timedelta(seconds=3600)
+    for user, roles in (("alice", "user"), ("alice", "admin"), ("bob", "ops")):
+        r = await _decide(client, end, "approve", user=user, roles=roles)
+        assert r.status_code == 403, (user, roles, r.text)
+    listed = await client.get("/approvals?status=pending", headers=_as(*admin))
+    assert approval["approval_id"] in [a["approval_id"] for a in listed.json()]
+    r = await _decide(client, end, "approve", user=admin[0], roles=admin[1])
+    assert r.status_code == 200, r.text
+    assert [(s.method, s.url.path) for s in SENT] == [("PATCH", "/orders/7"), ("POST", "/orders")]
+    assert json.loads(SENT[-1].content) == {"item": "WIDGET-1"}
+    assert SEEN_BY_TOOL[-1] == "alice"  # the resumed run still acts as the requester
+    record = await RUNTIME.approvals.get(approval["approval_id"])
+    assert record is not None and record.approvers == ["role:admin"]
+    assert record.decided_by == Principal(id="root").hashed_id()
 
 
 async def test_listing_follows_who_may_see(client, monkeypatch) -> None:

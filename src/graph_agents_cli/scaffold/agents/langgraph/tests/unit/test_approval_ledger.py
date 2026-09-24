@@ -778,6 +778,82 @@ async def test_an_approval_still_covers_its_call_under_a_gate_with_the_same_appr
     assert (await store.get(record.approval_id)).used_at is not None
 
 
+# --- a list of approval rules: the rule that gates the call names who decides ----------
+
+RULES_POLICY = """
+apis:
+  shop:
+    base_url_env: SHOP_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST]
+    approval:
+      - required_for:
+          operations:
+            - {operationId: createOrder, path: /orders, methods: [POST]}
+        approvers: ["role:admin"]
+        timeout_s: 3600
+      - required_for:
+          operations:
+            - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+        approvers: [requester]
+        timeout_s: 120
+"""
+
+
+async def test_the_approval_is_asked_of_the_rule_that_gates_the_call(
+    graph, store, tmp_path
+) -> None:
+    _change_policy(tmp_path, RULES_POLICY)
+    interrupt, record = await _pause(graph, "t1", store)
+    value = interrupt.value
+    assert (value["approvers"], value["timeout_s"]) == (["requester"], 120)
+    assert value["rule"].startswith("approval[1].required_for.operations (operationId=cancelOrder")
+    # The record keeps those approvers, and they decide: the requester, not an admin.
+    assert record.approvers == ["requester"]
+    assert record.expires_at - record.created_at == timedelta(seconds=120)
+    assert may_decide(ALICE, ALICE.id, record.approvers)
+    assert not may_decide(Principal(id="root", roles=["admin"]), ALICE.id, record.approvers)
+    decided = await _decided(store, record, "approve")
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert [(r.method, r.url.path) for r in SENT] == [("POST", "/orders/7/cancel")]
+
+
+async def test_a_rule_added_after_the_one_that_gated_the_call_keeps_its_approval(
+    graph, store, tmp_path
+) -> None:
+    _change_policy(tmp_path, RULES_POLICY)
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, "approve")
+    # A later rule covering the call too never applies to it: the approval still holds.
+    _change_policy(
+        tmp_path,
+        RULES_POLICY + '      - {required_for: {methods: [POST]}, approvers: ["role:ops"]}\n',
+    )
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert [(r.method, r.url.path) for r in SENT] == [("POST", "/orders/7/cancel")]
+
+
+async def test_rules_that_now_hand_the_call_to_other_approvers_void_its_approval(
+    graph, store, tmp_path
+) -> None:
+    """Bound at pause time: the approvers of the rule that gated the call then."""
+    _change_policy(tmp_path, RULES_POLICY)
+    interrupt, record = await _pause(graph, "t1", store)
+    decided = await _decided(store, record, "approve")
+    # A new image: a POST rule for role:admin now comes first and covers the call.
+    _change_policy(
+        tmp_path,
+        RULES_POLICY.replace(
+            "    approval:\n",
+            '    approval:\n      - {required_for: {methods: [POST]}, approvers: ["role:admin"]}\n',
+        ),
+    )
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert "approval gate that has changed since" in await _last_tool_result(graph, "t1")
+    assert SENT == []
+    assert (await store.get(record.approval_id)).used_at is None
+
+
 async def test_a_call_a_decision_stopped_stays_stopped_in_its_tool_call(
     graph, store, tmp_path
 ) -> None:

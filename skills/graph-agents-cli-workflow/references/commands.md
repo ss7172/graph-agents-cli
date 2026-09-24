@@ -206,7 +206,7 @@ graph-agents-cli api deny NAME (OPERATION_ID [--method M --path P] | --method M 
 graph-agents-cli api revoke NAME (OPERATION_ID | --method M --path P) [--from allowed|denied] [--dry-run]
 graph-agents-cli api limits NAME [--max-calls-per-run N|none] [--rate-per-minute N|none] [--dry-run]
 graph-agents-cli api approval NAME [--methods M,...|none] [--operations OP,...|none]
-  [--approvers requester,role:NAME,...] [--timeout-s N] [--remove] [--dry-run]
+  [--approvers requester,role:NAME,...] [--timeout-s N] [--add-rule | --rule N] [--remove] [--dry-run]
 graph-agents-cli api remove NAME [--dry-run]
 graph-agents-cli api show [NAME] [--json]
 graph-agents-cli api check
@@ -247,11 +247,23 @@ graph-agents-cli api check
   gate (safe) or loosens it (fewer gated calls, a new approver, a longer timeout, removal: a
   reviewed change, like widening access). Approval never widens access; a gate on a method the
   API does not allow is noted. Propose gates for write tools; never loosen one unasked.
+- Other approvers for other calls of one API: `approval --add-rule` (with `--approvers` and
+  `--methods`/`--operations`) appends a rule, turning the block into a list of rules (comments
+  kept); it never loosens the gate. A call is gated by the first rule in file order that covers
+  it, with that rule's approvers; later rules that also cover it do not apply. `--rule N`
+  changes, or with `--remove` removes, rule N (`approval[N]`, from 0, as `show` numbers them);
+  on a list of several rules a command without `--add-rule` or `--rule` is refused (exit 2),
+  and `--remove` alone removes every rule. It says which declared calls get other approvers,
+  and when a rule that now covers more takes calls from a later rule with other approvers (a
+  loosening). Replacing a single block's operations and approvers at once also prints the
+  `--add-rule` command that would keep the old gate.
 - `show` prints the effective policy per API (auth, methods and preset, allowed and denied
   operations, limits, openapi, timeouts, approval) and every tool's declared calls with their
-  status, hint and approvers when gated (`--json`: `approval` per API and per call, a `gated`
-  count); `check` is `lint --policy-only` (same exit codes; gated calls are listed, not
-  violations).
+  status, hint and approvers when gated, and the rule that gates each (`--json`: `approval`
+  and `approval_rules` per API, `approval` per call with `rule`, `rule_index` and
+  `also_covered_by`, a `gated` count); `check` is `lint --policy-only` (same exit codes; gated
+  calls are listed, not violations; calls several rules cover and rules that never apply are
+  noted).
 - Exit codes: `0` changed (or nothing to change), `1` `check` found a refused call, `2` usage
   error, `3` an invalid result (nothing written), an invalid current file (`check` and `lint`
   too), or not in a project.

@@ -290,6 +290,18 @@ apis:
       timeout_s: 900                     # 30-86400; then the approval expires (rejected)
 ```
 
+`approval` may instead be a non-empty list of rules, each of the shape above; the first rule
+in file order whose `required_for` covers a call gates it, with that rule's approvers:
+
+```yaml
+    approval:
+      - required_for: {operations: [{operationId: acknowledgeIncident}]}
+        approvers: [requester]
+      - required_for: {methods: [POST]}  # every other POST: a second person
+        approvers: ["role:oncall-lead"]
+        timeout_s: 3600
+```
+
 - `get_client(name)` returns a policy-enforcing async client for one declared API. It fails
   closed: no file, an invalid file or an undeclared API raise `ApiPolicyError`; there is no
   unrestricted fallback. `request(method, path, operation_id=None, path_params=None, params=None,
@@ -313,10 +325,14 @@ apis:
   sending and raise `ApiPolicyError`. A run's counters are dropped when a `/chat` or A2A run
   ends (`end_run`), and otherwise (LangGraph Server runs included) after an hour without a
   call; at most 10 000 runs are tracked.
-- `approval` (per API): a call `required_for` covers (its method, or an `operations` entry that
-  holds like a denial: the entry's path whatever label the call gives, its operationId, or a
-  call leaving out what the entry knows it by) pauses the run in the client before sending
-  (LangGraph `interrupt()` with the approval; the canonical request is hashed). Approved: the client re-hashes the request it is about to send, refuses
+- `approval` (per API, one rule or a list of rules): a call `required_for` covers (its method,
+  or an `operations` entry that holds like a denial: the entry's path whatever label the call
+  gives, its operationId, or a call leaving out what the entry knows it by) pauses the run in
+  the client before sending (LangGraph `interrupt()` with the approval; the canonical request
+  is hashed). With a list, the first rule in file order that covers the call (the path sent,
+  or the template it was rendered from) gates it: its approvers are the ones the approval is
+  asked of, recorded with it and deciding it; later rules that also cover the call do not
+  apply to it (`gated()` returns the rule's `index`, and `also` for the later ones). Approved: the client re-hashes the request it is about to send, refuses
   it (nothing sent) when it differs, and sends it once. Rejected or expired: nothing is sent and
   the tool gets a "not approved" error. A decision is bound to its call (API, method, path) on
   resume, whatever the policy says about gating it by then: a rejected or expired call is never

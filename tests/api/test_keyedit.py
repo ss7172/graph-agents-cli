@@ -257,6 +257,64 @@ def test_crlf_files_stay_crlf() -> None:
     assert "\r\n" in text.text and not re.search(r"[^\r]\n", text.text)
 
 
+GATED = """\
+apis:
+  orders:
+    auth: none
+    approval:                      # who confirms writes
+      # the one rule so far
+      required_for:
+        operations:
+          - operationId: cancelOrder   # a customer's own orders
+      approvers: [requester]
+    # end of orders
+"""
+
+
+def test_a_mapping_becomes_the_only_item_of_a_list_with_its_comments() -> None:
+    text = YamlText(GATED)
+    rule = {"required_for": {"operations": [{"operationId": "cancelOrder"}]}}
+    text.wrap_in_list(("apis", "orders", "approval"))
+    assert text.text == (
+        "apis:\n"
+        "  orders:\n"
+        "    auth: none\n"
+        "    approval:                      # who confirms writes\n"
+        "      # the one rule so far\n"
+        "      - required_for:\n"
+        "          operations:\n"
+        "            - operationId: cancelOrder   # a customer's own orders\n"
+        "        approvers: [requester]\n"
+        "    # end of orders\n"
+    )
+    assert yaml.safe_load(text.text)["apis"]["orders"]["approval"] == [
+        {**rule, "approvers": ["requester"]}
+    ]
+    # A second rule then goes after it, at the list's indentation.
+    text.append(("apis", "orders", "approval"), {"required_for": {"methods": ["POST"]}})
+    assert text.text.endswith(
+        "        approvers: [requester]\n"
+        "      - required_for:\n"
+        "          methods: [POST]\n"
+        "    # end of orders\n"
+    )
+
+
+def test_a_one_line_mapping_moves_to_its_own_item_line() -> None:
+    line = "    approval: {required_for: {methods: [POST]}, approvers: [x]}  # c"
+    text = YamlText(f"apis:\n  a:\n{line}\n")
+    text.wrap_in_list(("apis", "a", "approval"))
+    key_line = "    approval:".ljust(line.index("# c")) + "# c"  # the comment keeps its column
+    assert text.text == (
+        f"apis:\n  a:\n{key_line}\n      - {{required_for: {{methods: [POST]}}, approvers: [x]}}\n"
+    )
+    for shape in ("[1]", "1", "{}"):
+        other = YamlText(f"apis:\n  a:\n    approval: {shape}\n")
+        with pytest.raises(EditError):
+            other.wrap_in_list(("apis", "a", "approval"))
+        assert other.text == f"apis:\n  a:\n    approval: {shape}\n"
+
+
 ENV = """\
 # --- Auth ----
 API_KEY=

@@ -411,6 +411,15 @@ The human-in-the-loop the template wires is the API policy's **approval gate**: 
 role:ops`, `--remove`); `lint`, `api check` and `api show` list which declared calls it gates.
 Approval never widens access: the call must still be allowed, and denials still win.
 
+When calls of one API need different approvers (the requester confirms updates, a `role:admin`
+approves new orders), make `approval` a list of rules of the same shape: `graph-agents-cli api
+approval orders --operations updateOrder,cancelOrder --approvers requester`, then `graph-agents-cli
+api approval orders --add-rule --operations createOrder --approvers role:admin`. The **first**
+rule in file order whose `required_for` covers a call gates it, with that rule's approvers
+(recorded with the approval: they decide it); later rules that also cover it do not apply.
+`--rule N` changes or removes rule N (`approval[N]`, from 0, as `api show` numbers them). Never
+declare the API twice or change tool code to split approvers.
+
 - **Pause.** Before sending a gated call the client builds the canonical request (API, method,
   full path, query, JSON body, operation id), hashes it and calls LangGraph `interrupt()` with
   the call (the tool and the model's stated reason, approvers, timeout); the runtime records
@@ -428,8 +437,9 @@ Approval never widens access: the call must still be allowed, and denials still 
   list|approve|reject` does the rest (locally or with `--url`). Over A2A, send a message on the
   same task with the data part `{"approval_id": ..., "decision": ...}`.
 - **Binding.** On approve the client recomputes the hash of the request it is about to send and
-  refuses (nothing sent) when it differs, or when the policy's gate now names other approvers
-  than the approval was asked of; the approved call is sent once. Reject or expiry sends
+  refuses (nothing sent) when it differs, or when the policy's gate (the rule that gates the
+  call now) names other approvers than the approval was asked of; the approved call is sent
+  once. Reject or expiry sends
   nothing and the tool gets a "not approved" error. A tool call sends at most one gated call (a
   second is refused): give each gated call its own tool call. `client.request(...,
   redact=["card_number"])` masks fields in the approver's view only (the hash covers the full

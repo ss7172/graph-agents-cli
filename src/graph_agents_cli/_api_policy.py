@@ -32,6 +32,9 @@ at the project root::
           approvers: [requester]         # and/or role:<name>
           timeout_s: 900                 # optional, 30-86400
 
+``approval`` may also be a list of rules of that shape (different approvers
+for different calls); the first rule in file order that covers a call gates it.
+
 The schema rules and the matching rules live in the block between the
 ``SHARED API POLICY RULES`` markers. The scaffolded runtime
 (``app_utils/api_client.py``) carries a byte-identical copy of that block, so
@@ -103,9 +106,13 @@ _REQUIRED_FOR_KEYS = ("methods", "operations")
 # An API's `approval` block names the calls a human must approve before they are
 # sent (`required_for`), who may approve them (`approvers`) and how long a
 # pending approval waits before it expires, which rejects the call
-# (`timeout_s`). It never widens access: a gated call must still be allowed,
-# and denials still win. It belongs to the API only: on an operation entry the
-# key is refused, with a pointer to `approval.required_for.operations`.
+# (`timeout_s`). It is one such rule (a mapping), or a non-empty list of rules
+# of that same shape when different calls need different approvers: a call is
+# gated by the FIRST rule, in file order, whose `required_for` covers it, and a
+# later rule that also covers it does not apply to it. It never widens access:
+# a gated call must still be allowed, and denials still win. It belongs to the
+# API only: on an operation entry the key is refused, with a pointer to
+# `approval.required_for.operations`.
 APPROVAL_KEY = "approval"
 REQUESTER_APPROVER = "requester"  # the principal who started the run confirms
 ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
@@ -362,7 +369,25 @@ def _limits_errors(where: str, value: Any) -> list[str]:
 
 
 def _approval_errors(api_where: str, value: Any) -> list[str]:
+    """Errors of an API's `approval`: one rule (a mapping), or a non-empty list of rules."""
     where = f"{api_where}.{APPROVAL_KEY}"
+    if isinstance(value, list):
+        if not value:
+            return [f"{where}: must not be empty; omit the key when no call needs approval"]
+        errors: list[str] = []
+        for index, rule in enumerate(value):
+            errors.extend(_approval_rule_errors(f"{where}[{index}]", rule, api_where))
+        return errors
+    if not isinstance(value, Mapping):
+        return [
+            f"{where}: must be a mapping with required_for and approvers, or a non-empty "
+            "list of such mappings (rules; the first that covers a call gates it)"
+        ]
+    return _approval_rule_errors(where, value, api_where)
+
+
+def _approval_rule_errors(where: str, value: Any, api_where: str) -> list[str]:
+    """Errors of one approval rule (``where``: ``apis.<name>.approval`` or ``...approval[i]``)."""
     if not isinstance(value, Mapping):
         return [f"{where}: must be a mapping with required_for and approvers"]
     errors = [
@@ -679,12 +704,58 @@ def refusal_reason(
 class ApprovalGate:
     """The human approval an API's policy requires before a call is sent (``gated``)."""
 
-    # "requester" and/or "role:<name>" entries, in the policy's order.
+    # "requester" and/or "role:<name>" entries of the rule that gates the call,
+    # in the policy's order.
     approvers: tuple[str, ...]
     # Seconds a pending approval waits for a decision; then it expires (= rejected).
     timeout_s: int
-    # The approval.required_for rule that gates the call, for messages.
+    # The rule and the part of its required_for that gates the call, for messages
+    # ("approval.required_for.methods ['POST']", "approval[1].required_for.operations (...)").
     rule: str
+    # The gating rule's index when `approval` is a list of rules; None for one mapping.
+    index: int | None = None
+    # Later rules that also cover the call; they do not apply to it (the first one does).
+    also: tuple[int, ...] = ()
+
+
+def approval_rules(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """An API's approval rules in file order: none, its one ``approval`` mapping, or its list."""
+    approval = api.get(APPROVAL_KEY)
+    if approval is None:
+        return []
+    return list(approval) if isinstance(approval, list) else [approval]
+
+
+def approval_rule_label(api: Mapping[str, Any], index: int) -> str:
+    """``approval`` for an API's one approval mapping, ``approval[<index>]`` in a list of rules."""
+    if isinstance(api.get(APPROVAL_KEY), list):
+        return f"{APPROVAL_KEY}[{index}]"
+    return APPROVAL_KEY
+
+
+def rule_covers(
+    rule: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+) -> str | None:
+    """Which part of one approval rule's ``required_for`` covers the call, or None.
+
+    ``required_for.methods`` covers a call with one of its methods (``["*"]``:
+    every method). An entry of ``required_for.operations`` covers a call as a
+    denial does (``denial_match``: fail closed), not as an allow.
+    """
+    required_for = rule.get("required_for") or {}
+    method = method.upper()
+    methods = [str(m).upper() for m in required_for.get("methods") or []]
+    if ANY_METHOD in methods or method in methods:
+        return f"required_for.methods {methods}"
+    for entry in required_for.get("operations") or []:
+        unnamed = denial_match(entry, method, operation_id or None, path or None)
+        if unnamed is None:
+            continue
+        part = f"required_for.operations ({describe_operation(entry)})"
+        if unnamed:
+            part += f": the call names no {unnamed}, so it cannot be ruled out"
+        return part
+    return None
 
 
 def gated(
@@ -692,50 +763,56 @@ def gated(
     method: str,
     operation_id: str | None = None,
     path: str | None = None,
+    *,
+    template: str | None = None,
 ) -> ApprovalGate | None:
     """The approval the API's policy (a validated one) requires before the call, or None.
 
     Ask it only about a call ``refusal_reason`` allows: approval never widens
     access, so a refused call stays refused whatever its gate, and denials
-    still win. The call is gated when ``approval.required_for.methods`` holds
-    its method (``["*"]``: every method), or when an entry of
-    ``approval.required_for.operations`` covers it. Such an entry fails
-    closed, as a denial does (``denial_match``), not as an allow: with its
-    ``methods`` (when pinned) covering the call's method, its ``path`` gates
-    every call to that path whatever operation id the call names, its
+    still win. A rule covers the call when its ``required_for.methods`` holds
+    the call's method (``["*"]``: every method), or when an entry of its
+    ``required_for.operations`` covers it (``rule_covers``). Such an entry
+    fails closed, as a denial does (``denial_match``), not as an allow: with
+    its ``methods`` (when pinned) covering the call's method, its ``path``
+    gates every call to that path whatever operation id the call names, its
     ``operationId`` gates the calls that name it, and a call that leaves out
     what the entry knows the operation by is gated too. Paths are compared
     normalised and ignoring letter case, and a literal segment also covers its
-    dot-suffixed spellings (``cancel.json``, ``cancel.``), as for a denial. At
-    runtime, ask with the path that is sent (and with the template too, when
-    there is one: gated if either is).
+    dot-suffixed spellings (``cancel.json``, ``cancel.``), as for a denial.
+
+    ``approval`` is one rule, or a list of rules: the FIRST rule in file order
+    that covers the call gates it, with that rule's approvers and timeout, and
+    the later rules that also cover it are listed in ``also`` (they do not
+    apply to it). At runtime, ask with the path that is sent and, when there
+    is one, the ``template`` it was rendered from: a rule covers the call when
+    it covers either.
     """
-    approval = api.get(APPROVAL_KEY)
-    if approval is None:
+    rules = approval_rules(api)
+    if not rules:
         return None
-    required_for = approval.get("required_for") or {}
     method = method.upper()
     operation_id = operation_id or None
     path = path or None
-    rule = None
-    methods = [str(m).upper() for m in required_for.get("methods") or []]
-    if ANY_METHOD in methods or method in methods:
-        rule = f"approval.required_for.methods {methods}"
-    else:
-        for entry in required_for.get("operations") or []:
-            unnamed = denial_match(entry, method, operation_id, path)
-            if unnamed is None:
-                continue
-            rule = f"approval.required_for.operations ({describe_operation(entry)})"
-            if unnamed:
-                rule += f": the call names no {unnamed}, so it cannot be ruled out"
-            break
-    if rule is None:
+    template = template or None
+    covering: list[tuple[int, str]] = []
+    for index, rule in enumerate(rules):
+        part = rule_covers(rule, method, operation_id, path)
+        if part is None and template is not None:
+            part = rule_covers(rule, method, operation_id, template)
+        if part is not None:
+            covering.append((index, part))
+    if not covering:
         return None
+    index, part = covering[0]
+    rule = rules[index]
+    listed = isinstance(api.get(APPROVAL_KEY), list)
     return ApprovalGate(
-        approvers=tuple(str(a) for a in approval.get("approvers") or ()),
-        timeout_s=int(approval.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
-        rule=rule,
+        approvers=tuple(str(a) for a in rule.get("approvers") or ()),
+        timeout_s=int(rule.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
+        rule=f"{approval_rule_label(api, index)}.{part}",
+        index=index if listed else None,
+        also=tuple(i for i, _ in covering[1:]),
     )
 
 
@@ -882,17 +959,8 @@ class ExampleCall:
 _PLACEHOLDER_NAME_RE = re.compile(r"\{([^/{}]+)\}")
 
 
-def effective_approval(api: Mapping[str, Any]) -> dict[str, Any] | None:
-    """An API's ``approval`` block (the API must be valid) with its default filled in, or None.
-
-    ``{"required_for": {"methods": [...], "operations": [...]}, "approvers": [...],
-    "timeout_s": N}``; ``required_for`` holds only the keys the policy sets,
-    methods upper-cased.
-    """
-    approval = api.get(APPROVAL_KEY)
-    if approval is None:
-        return None
-    required_for = approval["required_for"]
+def _effective_rule(rule: Mapping[str, Any]) -> dict[str, Any]:
+    required_for = rule["required_for"]
     effective: dict[str, Any] = {}
     if "methods" in required_for:
         effective["methods"] = [str(m).upper() for m in required_for["methods"]]
@@ -900,46 +968,156 @@ def effective_approval(api: Mapping[str, Any]) -> dict[str, Any] | None:
         effective["operations"] = [dict(entry) for entry in required_for["operations"]]
     return {
         "required_for": effective,
-        "approvers": [str(a) for a in approval["approvers"]],
-        "timeout_s": int(approval.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
+        "approvers": [str(a) for a in rule["approvers"]],
+        "timeout_s": int(rule.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
     }
 
 
-def gate_payload(gate: ApprovalGate | None) -> dict[str, Any] | None:
-    """A gate as JSON-ready data (``api show --json``), or None."""
-    if gate is None:
-        return None
-    return {"approvers": list(gate.approvers), "timeout_s": gate.timeout_s, "rule": gate.rule}
+def effective_approval(api: Mapping[str, Any]) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """An API's ``approval`` (the API must be valid) with defaults filled in, or None.
 
-
-def describe_gate(gate: ApprovalGate) -> str:
-    """``requester, role:ops (approval.required_for.methods ['POST']; expires after 900 s)``."""
-    return f"{', '.join(gate.approvers)} ({gate.rule}; expires after {gate.timeout_s} s)"
-
-
-def approval_notes(name: str, api: Mapping[str, Any]) -> list[str]:
-    """What an API's valid ``approval`` block names that its policy never allows.
-
-    Approval never widens access, so a gate on a method outside
-    ``allowed_methods`` changes nothing: those calls stay refused.
+    Shaped as the file writes it: one rule ``{"required_for": {"methods": [...],
+    "operations": [...]}, "approvers": [...], "timeout_s": N}``, or a list of
+    such rules; ``required_for`` holds only the keys the policy sets, methods
+    upper-cased.
     """
     approval = api.get(APPROVAL_KEY)
     if approval is None:
-        return []
-    allowed = [str(m).upper() for m in api.get("allowed_methods") or []]
-    if ANY_METHOD in allowed:
-        return []
-    required_for = approval["required_for"]
-    named = [str(m).upper() for m in required_for.get("methods") or []]
-    for entry in required_for.get("operations") or []:
-        named.extend(str(m).upper() for m in entry.get("methods") or [])
-    outside = [m for m in dict.fromkeys(named) if m != ANY_METHOD and m not in allowed]
-    if not outside:
-        return []
+        return None
+    if isinstance(approval, list):
+        return [_effective_rule(rule) for rule in approval]
+    return _effective_rule(approval)
+
+
+def effective_approval_rules(api: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every approval rule of a valid API in file order, defaults filled in (empty: none).
+
+    Each is ``_effective_rule``'s mapping plus ``rule``, its name in messages:
+    ``approval`` for the one mapping, ``approval[<index>]`` in a list.
+    """
     return [
-        f"apis.{name}.approval gates {', '.join(outside)}, which allowed_methods does not "
-        "allow: approval never widens access, so those calls stay refused"
+        {"rule": approval_rule_label(api, index), **_effective_rule(rule)}
+        for index, rule in enumerate(approval_rules(api))
     ]
+
+
+def gate_payload(gate: ApprovalGate | None) -> dict[str, Any] | None:
+    """A gate as JSON-ready data (``api show --json``), or None.
+
+    ``rule_index`` is the gating rule's index in a list of rules (None for one
+    mapping); ``also_covered_by`` names the later rules that also cover the
+    call, which do not apply to it.
+    """
+    if gate is None:
+        return None
+    return {
+        "approvers": list(gate.approvers),
+        "timeout_s": gate.timeout_s,
+        "rule": gate.rule,
+        "rule_index": gate.index,
+        "also_covered_by": [f"{APPROVAL_KEY}[{i}]" for i in gate.also],
+    }
+
+
+def describe_gate(gate: ApprovalGate) -> str:
+    """``requester, role:ops (approval.required_for.methods ['POST']; expires after 900 s)``.
+
+    With overlapping rules it also names the later ones that cover the call
+    and says they do not apply (the first rule in file order gates it).
+    """
+    also = ""
+    if gate.also:
+        later = ", ".join(f"{APPROVAL_KEY}[{i}]" for i in gate.also)
+        also = f"; also covered by {later}, which does not apply: the first rule gates the call"
+    return f"{', '.join(gate.approvers)} ({gate.rule}; expires after {gate.timeout_s} s{also})"
+
+
+def _rule_methods(rule: Mapping[str, Any]) -> set[str]:
+    """The methods one rule's ``required_for.methods`` gates outright (``"*"``: every one)."""
+    methods = {str(m).upper() for m in (rule.get("required_for") or {}).get("methods") or []}
+    return set(HTTP_METHODS) if ANY_METHOD in methods else methods
+
+
+def _entry_covers(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> bool:
+    """Whether gate entry ``earlier`` covers every call gate entry ``later`` covers.
+
+    Entries cover calls as denials do (``denial_match``): with the same
+    operationId and path, the one pinning at least the other's methods (none:
+    every method) covers the same calls, and more.
+    """
+    if earlier.get("operationId") != later.get("operationId"):
+        return False
+    paths = [earlier.get("path"), later.get("path")]
+    if (paths[0] is None) != (paths[1] is None):
+        return False
+    if paths[0] is not None and normalize_path(str(paths[0])) != normalize_path(str(paths[1])):
+        return False
+    if not earlier.get("methods"):
+        return True
+    if not later.get("methods"):
+        return False
+    return {str(m).upper() for m in earlier["methods"]} >= {
+        str(m).upper() for m in later["methods"]
+    }
+
+
+def rule_never_applies(api: Mapping[str, Any], index: int) -> bool:
+    """Whether every call approval rule ``index`` covers is covered by an earlier rule.
+
+    The first rule in file order that covers a call gates it, so such a rule
+    never gates anything: its approvers never decide a call. Sound, not
+    complete: True only when earlier methods, or equal or wider earlier
+    entries, provably cover each part of it.
+    """
+    rules = approval_rules(api)
+    if not 0 < index < len(rules):
+        return False
+    earlier = rules[:index]
+    methods = set().union(*(_rule_methods(r) for r in earlier))
+    rule = rules[index]
+    if not _rule_methods(rule) <= methods:
+        return False
+    earlier_entries = [
+        entry for r in earlier for entry in (r.get("required_for") or {}).get("operations") or []
+    ]
+    for entry in (rule.get("required_for") or {}).get("operations") or []:
+        pinned = {str(m).upper() for m in entry.get("methods") or []} or set(HTTP_METHODS)
+        if pinned <= methods or any(_entry_covers(e, entry) for e in earlier_entries):
+            continue
+        return False
+    return True
+
+
+def approval_notes(name: str, api: Mapping[str, Any]) -> list[str]:
+    """What an API's valid ``approval`` names that can never take effect.
+
+    Approval never widens access, so a gate on a method outside
+    ``allowed_methods`` changes nothing: those calls stay refused. In a list
+    of rules, a rule whose every call an earlier rule covers first never
+    gates anything (rules apply in file order).
+    """
+    notes: list[str] = []
+    allowed = [str(m).upper() for m in api.get("allowed_methods") or []]
+    for index, rule in enumerate(approval_rules(api)):
+        label = approval_rule_label(api, index)
+        if ANY_METHOD not in allowed:
+            required_for = rule["required_for"]
+            named = [str(m).upper() for m in required_for.get("methods") or []]
+            for entry in required_for.get("operations") or []:
+                named.extend(str(m).upper() for m in entry.get("methods") or [])
+            outside = [m for m in dict.fromkeys(named) if m != ANY_METHOD and m not in allowed]
+            if outside:
+                notes.append(
+                    f"apis.{name}.{label} gates {', '.join(outside)}, which allowed_methods does "
+                    "not allow: approval never widens access, so those calls stay refused"
+                )
+        if rule_never_applies(api, index):
+            notes.append(
+                f"apis.{name}.{label} never gates a call: an earlier rule covers every call it "
+                "covers, and the first rule in file order gates a call. Move it above that rule, "
+                "narrow the earlier rule, or remove it"
+            )
+    return notes
 
 
 def read_policy_document(path: str | Path | None) -> dict[str, Any] | None:

@@ -297,13 +297,30 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `langgraph-server`; under the local `langgraph dev`, in `.langgraph_api/agent_approvals.json`
   beside its threads, so both survive a restart or a hot reload); deleting a thread deletes
   them.
+- **Approval rules: other approvers for other calls of one API.** `approval` may also be a
+  non-empty list of rules of the same shape (each with its own `required_for`, `approvers`,
+  `timeout_s`), so one API can have the requester confirm updates and cancellations while a
+  `role:admin` approves new orders, without declaring the API twice. A call is gated by the
+  first rule in file order whose `required_for` covers it, with that rule's approvers and
+  expiry; later rules that also cover it do not apply to it. The approvers recorded with a
+  pending approval, who decide it, are those of the rule that gated the call when it paused,
+  and an approved call is sent only while the rule that gates it then names the same
+  approvers. A single mapping keeps its meaning; every rule of a list is validated in full
+  (errors name `approval[N]`), fail-closed matching and "approval never widens access" hold
+  per rule, and an operation-level `approval` key stays invalid. The CLI and the runtime share
+  the rules byte for byte.
 - **`graph-agents-cli api approval NAME`** `[--methods M,...|none] [--operations OP,...|none]
-  [--approvers requester,role:NAME] [--timeout-s N] [--remove] [--dry-run]`, with the other `api`
-  commands' validate, diff and atomic-write rules: each option replaces that part of the block,
-  operations are pinned to their method and path from the API's OpenAPI spec, and the command
-  says when a change loosens the gate (a reviewed change) and which declared calls become
-  gated. `lint`, `api check` and `api show` (`--json`: `approval` per API and per call, a
-  `gated` count) list which declared calls wait for whose approval.
+  [--approvers requester,role:NAME] [--timeout-s N] [--add-rule | --rule N] [--remove]
+  [--dry-run]`, with the other `api` commands' validate, diff and atomic-write rules: each
+  option replaces that part of the rule, operations are pinned to their method and path from
+  the API's OpenAPI spec, and the command says when a change loosens the gate (a reviewed
+  change), which declared calls become gated and which get other approvers. `--add-rule`
+  appends a rule (turning a single block into a list, comments kept), `--rule N` changes or
+  removes rule N, and a command on a list of several rules without either is refused.
+  `lint`, `api check` and `api show` (`--json`: `approval` and `approval_rules` per API;
+  `approval` per call with its `rule`, `rule_index` and `also_covered_by`; a `gated` count)
+  list which declared calls wait for whose approval and by which rule, count calls several
+  rules cover, and note a rule that never applies.
 - **`graph-agents-cli approvals list|approve|reject`** for the project's local server or a
   deployed agent (`--url`), with the credentials `run` sends (`GRAPH_AGENTS_CLI_API_KEY`,
   `--header`, `--cookie`): `list` shows a thread's approvals, or every one the caller may see

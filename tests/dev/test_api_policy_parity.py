@@ -127,6 +127,31 @@ VALID = [
         "apis:\n  c:\n    base_url_env: C\n    auth: none\n    allowed_methods: [POST]\n"
         "    approval: {required_for: {methods: [post]}, approvers: [requester, requester]}\n"
     ),
+    # approval as a list of rules (different approvers for different calls)
+    (
+        "apis:\n  orders:\n    base_url_env: ORDERS_URL\n    auth: none\n"
+        "    allowed_methods: [GET, POST, PATCH]\n"
+        "    approval:\n"
+        "      - required_for:\n          operations:\n"
+        "            - operationId: updateOrder\n              path: /orders/{order_id}\n"
+        "              methods: [PATCH]\n"
+        "            - operationId: cancelOrder\n              path: /orders/{order_id}/cancel\n"
+        "              methods: [POST]\n"
+        "        approvers: [requester]\n"
+        "      - required_for:\n          operations:\n"
+        "            - {operationId: createOrder, path: /orders, methods: [POST]}\n"
+        "        approvers: ['role:admin']\n        timeout_s: 3600\n"
+    ),
+    (
+        "apis:\n  one:\n    base_url_env: O\n    auth: none\n    allowed_methods: [POST]\n"
+        "    approval:\n      - {required_for: {methods: [POST]}, approvers: [requester]}\n"
+        # overlapping rules are allowed: the first that covers a call gates it
+        "  two:\n    base_url_env: T\n    auth: none\n    allowed_methods: ['*']\n"
+        "    approval:\n"
+        "      - {required_for: {methods: ['*']}, approvers: ['role:ops'], timeout_s: 30}\n"
+        "      - {required_for: {methods: [DELETE]}, approvers: [requester]}\n"
+        "      - required_for: {methods: [DELETE]}\n        approvers: [requester]\n"
+    ),
     # whitespace inside a segment (not at an end) is kept, also encoded
     (
         "apis:\n  d:\n    base_url_env: D\n    auth: none\n    allowed_methods: [GET]\n"
@@ -281,8 +306,42 @@ INVALID = [
                 f"{{required_for: {{methods: [POST]}}, approvers: [requester], timeout_s: {t}}}"
                 for t in ("29", "86401", "0", "-900", "true", "900.0", "'900'", "", "1e3")
             ),
+            # a list of rules: non-empty, and every rule the mapping's shape, in full
+            "[]",
+            "[{}]",
+            "[null]",
+            "[requester]",
+            "[[{required_for: {methods: [POST]}, approvers: [requester]}]]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, 3]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, []]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, "
+            "{required_for: {methods: [DELETE]}}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, "
+            "{approvers: ['role:admin']}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, "
+            "{required_for: {}, approvers: ['role:admin']}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, "
+            "{required_for: {methods: [DELETE]}, approvers: []}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester]}, "
+            "{required_for: {methods: [DELETE]}, approvers: [admin]}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester], rule: 1}]",
+            "[{required_for: {methods: [POST]}, approvers: [requester], timeout_s: 29}]",
+            "[{required_for: {methods: [POST], operations: []}, approvers: [requester]}]",
+            "[{required_for: {operations: [{operationId: x, approval: {approvers: "
+            "['role:admin']}}]}, approvers: [requester]}]",
+            "[{required_for: {operations: [{path: /x/cancel%20}]}, approvers: [requester]}]",
+            "[{required_for: {methods: ['*', POST]}, approvers: [requester]}]",
+            # the list is the approval itself: no wrapper key, no rules under a mapping
+            "{rules: [{required_for: {methods: [POST]}, approvers: [requester]}]}",
+            "{required_for: [{methods: [POST]}], approvers: [requester]}",
+            "{required_for: {methods: [POST]}, approvers: [requester], "
+            "also: [{required_for: {methods: [DELETE]}, approvers: ['role:admin']}]}",
         ]
     ),
+    # an operation entry still takes no approval key, as a list of rules neither
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    allowed_operations:\n      - operationId: createOrder\n        approval:\n"
+    "          - {required_for: {methods: [POST]}, approvers: ['role:admin']}\n",
 ]
 
 
@@ -338,7 +397,8 @@ def test_approval_errors_name_the_rule() -> None:
         return cli.policy_errors({"apis": {"a": {**api, "approval": approval}}})
 
     assert errors("required") == [
-        "apis.a.approval: must be a mapping with required_for and approvers"
+        "apis.a.approval: must be a mapping with required_for and approvers, or a non-empty "
+        "list of such mappings (rules; the first that covers a call gates it)"
     ]
     assert errors({}) == [
         "apis.a.approval.required_for: required (the methods and/or operations it gates)",
@@ -371,6 +431,50 @@ def test_approval_errors_name_the_rule() -> None:
     ]
     assert errors({"required_for": {"methods": ["*", "POST"]}, "approvers": ["requester"]}) == [
         'apis.a.approval.required_for.methods: "*" must be the only entry when present'
+    ]
+
+
+def test_approval_rule_list_errors_name_the_rule_by_its_index(runtime: ModuleType) -> None:
+    """Each rule of a list is checked in full, and its errors say which rule (from 0)."""
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["POST", "DELETE"]}
+    good = {"required_for": {"methods": ["POST"]}, "approvers": ["requester"]}
+
+    def errors(approval: Any) -> list[str]:
+        document = {"apis": {"a": {**api, "approval": approval}}}
+        found = cli.policy_errors(document)
+        assert _runtime_errors(runtime, document) == found
+        return found
+
+    assert errors([]) == [
+        "apis.a.approval: must not be empty; omit the key when no call needs approval"
+    ]
+    assert errors([good, "requester"]) == [
+        "apis.a.approval[1]: must be a mapping with required_for and approvers"
+    ]
+    assert errors([good, [good]]) == [
+        "apis.a.approval[1]: must be a mapping with required_for and approvers"
+    ]
+    assert errors([good, {"required_for": {"methods": ["DELETE"]}}]) == [
+        'apis.a.approval[1].approvers: required (a list of "requester" and/or "role:<name>")'
+    ]
+    assert errors(
+        [
+            {**good, "timeout": 60},
+            {"required_for": {"operations": [{"operationId": "x", "approval": True}]}},
+            {"required_for": {"methods": ["DELETE"]}, "approvers": ["admin"], "timeout_s": 5},
+        ]
+    ) == [
+        "apis.a.approval[0]: unknown key 'timeout'",
+        "apis.a.approval[1].required_for.operations[0].approval: not valid on an operation "
+        "entry; gate the operation with apis.a.approval.required_for.operations",
+        'apis.a.approval[1].approvers: required (a list of "requester" and/or "role:<name>")',
+        "apis.a.approval[2].approvers[0]: 'admin' is not an approver (\"requester\", or "
+        '"role:<name>" with a role name of 1-256 characters without spaces or commas)',
+        "apis.a.approval[2].timeout_s: must be an integer from 30 to 86400 (seconds)",
+    ]
+    # A mapping keeps its meaning: its errors do not gain an index.
+    assert errors({"required_for": {"methods": ["POST"]}}) == [
+        'apis.a.approval.approvers: required (a list of "requester" and/or "role:<name>")'
     ]
 
 
@@ -820,7 +924,9 @@ GATE_CALLS = [
 
 
 def _gate_fields(gate: Any) -> tuple[Any, ...] | None:
-    return None if gate is None else (gate.approvers, gate.timeout_s, gate.rule)
+    if gate is None:
+        return None
+    return (gate.approvers, gate.timeout_s, gate.rule, gate.index, gate.also)
 
 
 @pytest.mark.parametrize(("method", "operation_id", "path", "is_gated", "fragment"), GATE_CALLS)
@@ -853,10 +959,120 @@ def test_gate_defaults_and_apis_without_a_gate(runtime: ModuleType) -> None:
             ("role:four-eyes",),
             side.DEFAULT_APPROVAL_TIMEOUT_S,
             "approval.required_for.methods ['*']",
+            None,  # one approval mapping: no rule index
+            (),
         )
         assert side.DEFAULT_APPROVAL_TIMEOUT_S == 900
         assert side.gated(GATES["apis"]["open"], "POST", "createOrder", "/orders") is None
         assert side.gated(POLICY["apis"]["a"], "POST", None, "/search") is None
+
+
+# --- a list of approval rules: the first rule in file order that covers a call gates it ---
+
+RULES = yaml.safe_load(
+    "apis:\n"
+    "  orders:\n"
+    "    base_url_env: ORDERS_URL\n"
+    "    auth: none\n"
+    "    allowed_methods: ['*']\n"
+    "    approval:\n"
+    "      - required_for:\n"
+    "          operations:\n"
+    "            - {operationId: updateOrder, path: '/orders/{order_id}', methods: [PATCH]}\n"
+    "            - {operationId: cancelOrder, path: '/orders/{order_id}/cancel', methods: [POST]}\n"
+    "        approvers: [requester]\n"
+    "      - required_for:\n"
+    "          operations:\n"
+    "            - {operationId: createOrder, path: /orders, methods: [POST]}\n"
+    "        approvers: ['role:admin']\n"
+    "        timeout_s: 3600\n"
+    "      - required_for: {methods: [POST, DELETE]}\n"
+    "        approvers: ['role:ops']\n"
+    "        timeout_s: 60\n"
+)
+REQUESTER = (0, ("requester",), 900)
+ADMIN = (1, ("role:admin",), 3600)
+OPS = (2, ("role:ops",), 60)
+
+RULE_CALLS = [
+    # (method, operation_id, path, template, (index, approvers, timeout_s), also, fragment)
+    ("PATCH", "updateOrder", "/orders/7", None, REQUESTER, (), "approval[0].required_for.op"),
+    ("POST", "cancelOrder", "/orders/7/cancel", None, REQUESTER, (2,), "operationId=cancelOrder"),
+    # createOrder has its own approvers; the POST rule after it covers it too, but never applies.
+    ("POST", "createOrder", "/orders", None, ADMIN, (2,), "approval[1].required_for.operations"),
+    # Each rule's entries hold like denials: the path under another label, the label on
+    # another path, other spellings, and a call that leaves out what an entry knows it by.
+    ("POST", "placeOrder", "/orders", None, ADMIN, (2,), "operationId=createOrder"),
+    ("POST", "createOrder", "/elsewhere", None, ADMIN, (2,), "operationId=createOrder"),
+    ("post", None, "/ORDERS/", None, ADMIN, (2,), "path=/orders"),
+    ("POST", "createOrder", "/orders.json", None, ADMIN, (2,), "operationId=createOrder"),
+    ("PATCH", "renameOrder", "/Orders/7/", None, REQUESTER, (), "operationId=updateOrder"),
+    ("POST", "archiveOrder", None, None, REQUESTER, (1, 2), "names no path, so it cannot be"),
+    # The later method rule gates what no earlier rule covers.
+    ("POST", "refundOrder", "/orders/7/refund", None, OPS, (), "approval[2].required_for.methods"),
+    ("DELETE", "deleteOrder", "/orders/7", None, OPS, (), "approval[2].required_for.methods"),
+    ("GET", "getOrder", "/orders/7", None, None, (), None),
+    ("PATCH", "updateOrder", "/customers/7", None, REQUESTER, (), "operationId=updateOrder"),
+    ("PUT", "updateOrder", "/orders/7", None, None, (), None),
+    # With a template, a rule covers the call when it covers the path sent or the
+    # template: the first such rule gates it, even when a later rule covers the path sent.
+    ("POST", "x", "/v2/7/cancel", "/orders/{order_id}/cancel", REQUESTER, (2,), "path=/orders/"),
+    ("POST", "x", "/v2/orders", "/orders", ADMIN, (2,), "operationId=createOrder"),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "operation_id", "path", "template", "expected", "also", "fragment"), RULE_CALLS
+)
+def test_the_first_rule_that_covers_a_call_gates_it_on_both_sides(
+    runtime: ModuleType,
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    template: str | None,
+    expected: tuple[Any, ...] | None,
+    also: tuple[int, ...],
+    fragment: str | None,
+) -> None:
+    api = RULES["apis"]["orders"]
+    assert cli.policy_errors(RULES) == []
+    gate = cli.gated(api, method, operation_id, path, template=template)
+    assert _gate_fields(gate) == _gate_fields(
+        runtime.gated(api, method, operation_id, path, template=template)
+    )
+    policy = runtime.ApiPolicy.from_dict(RULES)
+    assert _gate_fields(gate) == _gate_fields(
+        policy.gate("orders", method, operation_id, path, template=template)
+    )
+    if expected is None:
+        assert gate is None
+    else:
+        assert gate is not None
+        assert (gate.index, gate.approvers, gate.timeout_s) == expected
+        assert gate.also == also
+        assert fragment in gate.rule and gate.rule.startswith(f"approval[{gate.index}].")
+    assert cli.refusal_reason(api, method, operation_id, path) is None
+
+
+def test_rule_order_decides_and_a_one_rule_list_means_the_mapping(runtime: ModuleType) -> None:
+    api = RULES["apis"]["orders"]
+    for side in (cli, runtime):
+        # Reversed, the POST rule comes first and gates createOrder for role:ops.
+        reordered = {**api, "approval": list(reversed(api["approval"]))}
+        gate = side.gated(reordered, "POST", "createOrder", "/orders")
+        assert (gate.index, gate.approvers, gate.also) == (0, ("role:ops",), (1,))
+        # A list of one rule gates exactly what that rule as a mapping does, with the
+        # same approvers; only its name in messages differs.
+        for rule in api["approval"]:
+            mapping, listed = {**api, "approval": rule}, {**api, "approval": [rule]}
+            for method, operation_id, path, template, *_ in RULE_CALLS:
+                one = side.gated(mapping, method, operation_id, path, template=template)
+                other = side.gated(listed, method, operation_id, path, template=template)
+                assert (one is None) is (other is None)
+                if one is not None:
+                    assert (one.approvers, one.timeout_s) == (other.approvers, other.timeout_s)
+                    assert (one.index, other.index) == (None, 0)
+                    assert one.rule == other.rule.replace("approval[0]", "approval", 1)
 
 
 GATE_EVERYTHING = {
@@ -867,8 +1083,13 @@ GATE_EVERYTHING = {
     "approvers": ["requester", "role:anyone"],
     "timeout_s": 86400,
 }
+GATE_EVERYTHING_RULES = [
+    {"required_for": {"operations": [{"operationId": "anything"}]}, "approvers": ["role:x"]},
+    GATE_EVERYTHING,
+]
 
 
+@pytest.mark.parametrize("approval", [GATE_EVERYTHING, GATE_EVERYTHING_RULES])
 @pytest.mark.parametrize(
     ("api", "calls"),
     [
@@ -878,10 +1099,10 @@ GATE_EVERYTHING = {
     ],
 )
 def test_approval_never_widens_access(
-    runtime: ModuleType, api: dict[str, Any], calls: list[tuple[Any, ...]]
+    runtime: ModuleType, api: dict[str, Any], calls: list[tuple[Any, ...]], approval: Any
 ) -> None:
     """A gate on every call changes no allow or refusal, on either side: denials still win."""
-    with_gate = {**api, "approval": GATE_EVERYTHING}
+    with_gate = {**api, "approval": approval}
     assert cli.policy_errors({"apis": {"x": with_gate}}) == []
     policy = runtime.ApiPolicy.from_dict({"apis": {"x": with_gate}})
     refused = 0
@@ -943,3 +1164,40 @@ def test_the_runtime_client_refuses_a_gated_call_before_sending(
 
     asyncio.run(calls())
     assert [(r.method, r.url.path) for r in sent] == [("GET", "/items/1"), ("POST", "/orders")]
+
+
+def test_the_runtime_client_asks_the_approvers_of_the_rule_that_gates_the_call(
+    runtime: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a list of rules, a gated call is held for the approvers of its first covering rule."""
+    import asyncio
+
+    import httpx
+
+    sent: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: sent.append(request) or httpx.Response(200, json={"ok": True})
+    )
+    monkeypatch.setenv("ORDERS_URL", "http://orders.test")
+    client = runtime.ApiClient(runtime.ApiPolicy.from_dict(RULES), "orders", transport=transport)
+
+    async def calls() -> None:
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.post("/orders", operation_id="createOrder", json_body={"sku": "A-1"})
+        assert "needs human approval (role:admin)" in str(exc.value)
+        assert exc.value.reason.startswith("approval required by approval[1].required_for")
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.patch(
+                "/orders/{order_id}",
+                operation_id="updateOrder",
+                path_params={"order_id": "7"},
+                json_body={"note": "gift"},
+            )
+        assert "needs human approval (requester)" in str(exc.value)
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.delete("/orders/{order_id}", path_params={"order_id": "7"})
+        assert "needs human approval (role:ops)" in str(exc.value)
+        assert await client.get("/orders/7", operation_id="getOrder") == {"ok": True}
+
+    asyncio.run(calls())
+    assert [(r.method, r.url.path) for r in sent] == [("GET", "/orders/7")]

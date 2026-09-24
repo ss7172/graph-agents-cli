@@ -55,13 +55,17 @@ from graph_agents_cli._api_policy import (
     REQUESTER_APPROVER,
     ROLE_APPROVER_PREFIX,
     approval_notes,
+    approval_rule_label,
+    approval_rules,
     denial_match,
     effective_approval,
+    effective_approval_rules,
     ensure_no_legacy_api_policy,
     forward_runtime_problem,
     gate_payload,
     parse_policy_yaml,
     policy_errors,
+    rule_never_applies,
     summarize,
 )
 from graph_agents_cli._click import LazyGroup
@@ -110,7 +114,8 @@ def api_group() -> None:
 
     `api approval` makes chosen calls wait for a human approval before they
     are sent (requester confirmation, or role:<name> approvers for a second
-    person's review); approval never widens access.
+    person's review; --add-rule gives other calls of the API other
+    approvers); approval never widens access.
 
     \b
     Exit codes:
@@ -284,20 +289,41 @@ def _call_effects(
         now_result = policy_check.check_call(call, after, specs_after)
         was, now = was_result.status, now_result.status
         label = f"{call.tool}: {call.method} {call.operation}"
-        gate = now_result.gate
-        waits = f" (approvers: {', '.join(gate.approvers)})" if gate is not None else ""
+        gate, old_gate = now_result.gate, was_result.gate
+        waits = f" (approvers: {', '.join(gate.approvers)}{_rule_of(gate)})" if gate else ""
         if was == policy_check.STATUS_ALLOWED and now != policy_check.STATUS_ALLOWED:
             lines.append(f"now refused: {label}")
         elif was != policy_check.STATUS_ALLOWED and now == policy_check.STATUS_ALLOWED:
             lines.append(f"now allowed: {label}{waits}")
-        elif now == policy_check.STATUS_ALLOWED and gate is not None and was_result.gate is None:
+        elif now == policy_check.STATUS_ALLOWED and gate is not None and old_gate is None:
             lines.append(f"now gated: {label}{waits}")
-        elif now == policy_check.STATUS_ALLOWED and gate is None and was_result.gate is not None:
+        elif now == policy_check.STATUS_ALLOWED and gate is None and old_gate is not None:
             lines.append(f"no longer gated: {label} (sent without an approval)")
+        elif (
+            now == policy_check.STATUS_ALLOWED
+            and gate is not None
+            and old_gate is not None
+            and set(gate.approvers) != set(old_gate.approvers)
+        ):
+            gained = [a for a in gate.approvers if a not in old_gate.approvers]
+            kind = f"new approver(s) {', '.join(gained)}" if gained else "fewer approvers"
+            lines.append(
+                f"approvers change ({kind}): {label}: now {', '.join(gate.approvers)}"
+                f"{_rule_of(gate)}, was {', '.join(old_gate.approvers)}{_rule_of(old_gate)}"
+            )
     return lines
 
 
-_EFFECT_STYLES = {"now refused": "red", "no longer gated": "yellow"}
+def _rule_of(gate: Any) -> str:
+    """``; rule approval[1]`` when the gate comes from a list of approval rules, else ``""``."""
+    return f"; rule {APPROVAL_KEY}[{gate.index}]" if gate.index is not None else ""
+
+
+_EFFECT_STYLES = {
+    "now refused": "red",
+    "no longer gated": "yellow",
+    "approvers change (new": "yellow",
+}
 
 
 def _finish(
@@ -312,11 +338,13 @@ def _finish(
     notes: list[str] | None = None,
     next_steps: bool = True,
     verdict: tuple[str, str] | None = None,
+    effects: list[str] | None = None,
 ) -> None:
     """Show the change and write it. ``widens=None``: the change allows nothing yet.
 
     ``verdict`` (text, style) replaces the line saying whether access widens:
     ``api approval`` changes who waits for a human, not what is allowed.
+    ``effects``: the change's effect on the declared calls, when already computed.
     """
     console = Console()
     if not plan.effective:
@@ -328,7 +356,8 @@ def _finish(
     click.echo()
     for note in notes or []:
         console.print(f"Note: {escape(note)}", style="yellow", highlight=False)
-    effects = _call_effects(project, before, after, api)
+    if effects is None:
+        effects = _call_effects(project, before, after, api)
     if effects:
         console.print("Effect on the calls your tools declare:")
         for line in effects:
@@ -1107,7 +1136,7 @@ def _gate_entries(
     return entries, notes
 
 
-def _gated_methods(block: dict[str, Any] | None) -> set[str]:
+def _gated_methods(block: Mapping[str, Any] | None) -> set[str]:
     if not block:
         return set()
     methods = [str(m).upper() for m in block["required_for"].get("methods") or []]
@@ -1136,8 +1165,8 @@ def _gate_entry_covers(new: Mapping[str, Any], old: Mapping[str, Any]) -> bool:
     }
 
 
-def _gate_loosening(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[str]:
-    """How the change loosens the gate (effective blocks): empty when it tightens or keeps it.
+def _gate_loosening(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> list[str]:
+    """How the change loosens one rule (effective rules): empty when it tightens or keeps it.
 
     Loosening: a call that waited may go out without a human (a method or an
     operation no longer gated, the block removed), someone new may approve, or
@@ -1168,6 +1197,66 @@ def _gate_loosening(before: dict[str, Any] | None, after: dict[str, Any] | None)
     return reasons
 
 
+def _entry_methods(entry: Mapping[str, Any]) -> set[str]:
+    """The methods a gate entry covers (none pinned: every method)."""
+    return {str(m).upper() for m in entry.get("methods") or []} or set(HTTP_METHODS)
+
+
+def _newly_covered(
+    before: Mapping[str, Any] | None, after: Mapping[str, Any]
+) -> tuple[set[str], list[Mapping[str, Any]]]:
+    """What rule ``after`` gates that ``before`` did not: methods, and operation entries."""
+    methods = _gated_methods(after) - _gated_methods(before)
+    old_ops = (before or {}).get("required_for", {}).get("operations") or []
+    entries = [
+        entry
+        for entry in after["required_for"].get("operations") or []
+        if not _entry_methods(entry) <= _gated_methods(before)
+        and not any(_gate_entry_covers(old, entry) for old in old_ops)
+    ]
+    return methods, entries
+
+
+def _may_overlap(
+    methods: set[str], entries: list[Mapping[str, Any]], rule: Mapping[str, Any]
+) -> bool:
+    """Whether a call gated by ``methods`` or ``entries`` may also be one ``rule`` covers.
+
+    Conservative: entries overlap unless their methods are disjoint.
+    """
+    rule_methods = _gated_methods(rule)
+    rule_entries = rule["required_for"].get("operations") or []
+    covered = set(methods) | {m for e in entries for m in _entry_methods(e)}
+    if covered & rule_methods:
+        return True
+    return any(covered & _entry_methods(e) for e in rule_entries)
+
+
+def _order_loosening(
+    rules: list[dict[str, Any]], index: int, before: Mapping[str, Any] | None
+) -> list[str]:
+    """Calls rule ``index`` now covers first that a later rule, with other approvers, gated.
+
+    The first rule in file order that covers a call gates it, so a rule that
+    starts covering more takes those calls from the rules after it: whoever it
+    names and they do not may then decide them.
+    """
+    after = rules[index]
+    methods, entries = _newly_covered(before, after)
+    if not methods and not entries:
+        return []
+    reasons = []
+    for later in rules[index + 1 :]:
+        gained = [a for a in after["approvers"] if a not in later["approvers"]]
+        if gained and _may_overlap(methods, entries, later):
+            reasons.append(
+                f"{after['rule']} now comes first for calls {later['rule']} may have gated "
+                f"(approved by {', '.join(later['approvers'])}): {', '.join(gained)} may decide "
+                "them"
+            )
+    return reasons
+
+
 def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
     roles = [a for a in approvers if a.startswith(ROLE_APPROVER_PREFIX)]
     notes = []
@@ -1189,6 +1278,49 @@ def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
             "principal); use the jwt or custom policy for per-user principals and roles"
         )
     return notes
+
+
+def _rules_listing(api: Mapping[str, Any]) -> str:
+    """Each approval rule of ``api`` on its own line: ``  approval[1]: ...; approved by ...``."""
+    return "\n".join(
+        f"  {rule['rule']}: {_describe_rule(rule)}" for rule in effective_approval_rules(api)
+    )
+
+
+def _add_rule_command(
+    name: str,
+    methods: str | None,
+    operations: str | None,
+    approvers: list[str],
+    timeout_s: int | None,
+) -> str:
+    """The ``api approval --add-rule`` command that gates the given calls for ``approvers``."""
+    parts = ["graph-agents-cli", "api", "approval", name, "--add-rule"]
+    if methods is not None and methods.strip().lower() != "none":
+        parts += ["--methods", methods]
+    if operations is not None and operations.strip().lower() != "none":
+        parts += ["--operations", operations]
+    parts += ["--approvers", ",".join(approvers)]
+    if timeout_s is not None:
+        parts += ["--timeout-s", str(timeout_s)]
+    return " ".join(parts)
+
+
+def _edit_rule(
+    editor: YamlText, base: tuple[Any, ...], old: Mapping[str, Any], new: Mapping[str, Any]
+) -> None:
+    """Rewrite approval rule ``old`` at ``base`` into ``new``, key by key (comments stay)."""
+    old_rf, new_rf = old["required_for"], new["required_for"]
+    # New keys first: a mapping must keep a key while another is deleted.
+    for key in ("methods", "operations"):
+        if key in new_rf and old_rf.get(key) != new_rf[key]:
+            editor.set((*base, "required_for", key), new_rf[key])
+    for key in ("methods", "operations"):
+        if key not in new_rf and key in old_rf:
+            editor.delete((*base, "required_for", key))
+    for key in ("approvers", "timeout_s"):
+        if key in new and old.get(key) != new[key]:
+            editor.set((*base, key), new[key])
 
 
 @api_group.command("approval")
@@ -1230,11 +1362,35 @@ def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
     ),
 )
 @click.option(
+    "--add-rule",
+    "add_rule",
+    is_flag=True,
+    default=False,
+    help=(
+        "Add a rule after the existing ones, for calls other approvers decide (needs "
+        "--approvers, and --methods and/or --operations)."
+    ),
+)
+@click.option(
+    "--rule",
+    "rule_index",
+    type=click.IntRange(min=0),
+    default=None,
+    metavar="N",
+    help=(
+        "Change, or --remove, rule N of a list of rules: approval[N], numbered from 0 in file "
+        "order as `api show` prints them (0 is also a single approval block)."
+    ),
+)
+@click.option(
     "--remove",
     "remove",
     is_flag=True,
     default=False,
-    help="Remove the approval block: the API's calls are sent without waiting for a human.",
+    help=(
+        "Remove the approval block, every rule of it (the API's calls are sent without waiting "
+        "for a human), or with --rule N that one rule."
+    ),
 )
 @_dry_run_option
 def cmd_approval(
@@ -1243,6 +1399,8 @@ def cmd_approval(
     operations: str | None,
     approvers: str | None,
     timeout_s: int | None,
+    add_rule: bool,
+    rule_index: int | None,
     remove: bool,
     dry_run: bool,
 ) -> None:
@@ -1256,15 +1414,32 @@ def cmd_approval(
     the call shown, once; rejecting or expiry sends nothing.
 
     \b
-    Each option given replaces that part of the block and keeps the rest:
+    Each option given replaces that part of the rule and keeps the rest:
       --methods POST,DELETE        every call with those methods
       --operations cancelOrder     calls to those operations
-      --approvers requester        who decides (required for a new block)
+      --approvers requester        who decides (required for a new rule)
       --timeout-s 900              how long a pending approval waits
+
+    \b
+    Different approvers for different calls: add a rule, and name one to
+    change or remove by its number (api show lists them):
+      --add-rule --operations createOrder --approvers role:admin
+      --rule 1 --approvers role:admin,role:ops
+      --rule 1 --remove
+    The approval block then holds a list of rules, and a call is gated by the
+    FIRST rule in file order that covers it, with that rule's approvers; a
+    later rule that also covers it does not apply to it (lint and api show
+    name the rule each declared call waits for).
     """
     changing = (methods, operations, approvers, timeout_s)
+    if add_rule and rule_index is not None:
+        raise click.UsageError(
+            "--add-rule adds a new rule and --rule N changes an existing one: give one of them"
+        )
+    if remove and add_rule:
+        raise click.UsageError("--remove and --add-rule: give one of them")
     if remove and any(option is not None for option in changing):
-        raise click.UsageError("--remove takes no other option")
+        raise click.UsageError("--remove takes no other option (but --rule N)")
     if not remove and all(option is None for option in changing):
         raise click.UsageError(
             "give --methods and/or --operations, --approvers, --timeout-s, or --remove"
@@ -1276,19 +1451,56 @@ def cmd_approval(
     if operations is not None and operations.strip().lower() != "none":
         operation_ids = _parse_operation_ids(operations)
     approver_list = _parse_approvers(approvers) if approvers is not None else None
+    if add_rule:
+        if approver_list is None:
+            raise click.UsageError("--add-rule needs --approvers (requester and/or role:<name>)")
+        if new_methods is None and operation_ids is None:
+            raise click.UsageError(
+                "--add-rule needs --methods and/or --operations (the calls the new rule gates)"
+            )
 
     project = _load_project()
     api = project.api(name)
-    current = effective_approval(api)
     raw = api.get(APPROVAL_KEY)
-    notes: list[str] = []
-    if remove:
-        if raw is None:
-            Console().print(f"{name} has no approval block: no call waits for an approval.")
-            return
-        new_block = None
+    rules = approval_rules(api)
+    listed = isinstance(raw, list)
+    before_rules = effective_approval_rules(api)
+    if remove and raw is None:
+        Console().print(f"{name} has no approval block: no call waits for an approval.")
+        return
+    if add_rule:
+        index = len(rules)
+    elif rule_index is not None:
+        if not rules:
+            raise ch.ApiCommandError(
+                f"{name} has no approval rules: add one without --rule (the first rule is the "
+                "approval block itself)"
+            )
+        if rule_index >= len(rules):
+            raise ch.ApiCommandError(
+                f"{name} has {len(rules)} approval rule(s), so --rule takes 0 to "
+                f"{len(rules) - 1}:\n{_rules_listing(api)}"
+            )
+        index = rule_index
+    elif listed and len(rules) > 1 and not remove:
+        raise click.UsageError(
+            f"{name}'s approval is a list of {len(rules)} rules: name the one to change with "
+            "--rule N, add one with --add-rule, or remove them all with --remove:\n"
+            f"{_rules_listing(api)}"
+        )
     else:
-        required_for = dict(raw["required_for"]) if raw is not None else {}
+        index = 0
+    whole = remove and (rule_index is None or len(rules) == 1)
+    becomes_list = listed or (add_rule and raw is not None)
+    label = f"{APPROVAL_KEY}[{index}]" if becomes_list else APPROVAL_KEY
+    rule_flag = f" --rule {index}" if listed else ""
+    old_rule = rules[index] if index < len(rules) else None
+    notes: list[str] = []
+    new_rule: dict[str, Any] | None
+    if remove:
+        new_rule = None
+    else:
+        required_for = dict(old_rule["required_for"]) if old_rule is not None else {}
         if methods is not None:
             if new_methods is None:
                 required_for.pop("methods", None)
@@ -1304,66 +1516,130 @@ def cmd_approval(
                 required_for["operations"] = entries
                 notes.extend(entry_notes)
         required_for = {k: required_for[k] for k in ("methods", "operations") if k in required_for}
+        what = "approval block" if label == APPROVAL_KEY else f"approval rule {label}"
         if not required_for:
             raise ch.ApiCommandError(
-                f"the approval block of {name} would gate nothing (it needs --methods and/or "
-                f"--operations); remove it with `graph-agents-cli api approval {name} --remove`"
+                f"the {what} of {name} would gate nothing (it needs --methods and/or "
+                f"--operations); remove it with `graph-agents-cli api approval {name}{rule_flag} "
+                "--remove`"
             )
-        if approver_list is None and raw is None:
+        if approver_list is None and old_rule is None:
             raise click.UsageError(
                 "--approvers is required for a new approval block (requester and/or role:<name>)"
             )
-        new_block = {
+        new_rule = {
             "required_for": required_for,
-            "approvers": approver_list if approver_list is not None else list(raw["approvers"]),
+            "approvers": (
+                approver_list if approver_list is not None else list(old_rule["approvers"])
+            ),
         }
         if timeout_s is not None:
-            new_block["timeout_s"] = timeout_s
-        elif raw is not None and "timeout_s" in raw:
-            new_block["timeout_s"] = raw["timeout_s"]
-        if raw is not None and new_block == dict(raw):
-            Console().print(f"{name}'s approval block already says that.")
+            new_rule["timeout_s"] = timeout_s
+        elif old_rule is not None and "timeout_s" in old_rule:
+            new_rule["timeout_s"] = old_rule["timeout_s"]
+        if old_rule is not None and new_rule == dict(old_rule):
+            Console().print(f"{name}'s {what} already says that.")
+            return
+        same = next((i for i, rule in enumerate(rules) if dict(rule) == new_rule), None)
+        if add_rule and same is not None:
+            Console().print(
+                f"{name} already has that approval rule ({approval_rule_label(api, same)})."
+            )
             return
 
     document = copy.deepcopy(project.document)
     assert document is not None
-    if new_block is None:
-        document["apis"][name].pop(APPROVAL_KEY)
+    target = document["apis"][name]
+    if new_rule is None:
+        if whole:
+            target.pop(APPROVAL_KEY)
+        else:
+            del target[APPROVAL_KEY][index]
+    elif add_rule and raw is not None:
+        target[APPROVAL_KEY] = [*rules, new_rule] if listed else [target[APPROVAL_KEY], new_rule]
+    elif listed:
+        target[APPROVAL_KEY][index] = new_rule
     else:
-        document["apis"][name][APPROVAL_KEY] = new_block
+        target[APPROVAL_KEY] = new_rule
     _validate(project, document)
-    after_effective = effective_approval(document["apis"][name])
+    after_rules = effective_approval_rules(target)
     editor = project.editor()
     base = ("apis", name, APPROVAL_KEY)
 
     def apply() -> None:
-        if new_block is None:
-            editor.delete(base)
-            return
-        if raw is None:
-            editor.set(base, new_block, after=_after(api, APPROVAL_KEY), block=True)
-            return
-        old_rf, new_rf = raw["required_for"], new_block["required_for"]
-        # New keys first: a mapping must keep a key while another is deleted.
-        for key in ("methods", "operations"):
-            if key in new_rf and old_rf.get(key) != new_rf[key]:
-                editor.set((*base, "required_for", key), new_rf[key])
-        for key in ("methods", "operations"):
-            if key not in new_rf and key in old_rf:
-                editor.delete((*base, "required_for", key))
-        for key in ("approvers", "timeout_s"):
-            if key in new_block and raw.get(key) != new_block[key]:
-                editor.set((*base, key), new_block[key])
+        if new_rule is None:
+            if whole:
+                editor.delete(base)
+            else:
+                editor.remove_item(base, index)
+        elif raw is None:
+            editor.set(base, new_rule, after=_after(api, APPROVAL_KEY), block=True)
+        elif add_rule:
+            if not listed:
+                editor.wrap_in_list(base)
+            editor.append(base, new_rule)
+        else:
+            assert old_rule is not None
+            _edit_rule(editor, (*base, index) if listed else base, old_rule, new_rule)
 
-    _edit(apply, f"set apis.{name}.approval to {new_block}")
+    _edit(apply, f"set apis.{name}.{label} to {new_rule}")
     plan = Plan(project.root)
     plan.set_text(POLICY_FILENAME, project.text, editor.text)
-    if new_block is not None:
-        notes.extend(approval_notes(name, document["apis"][name]))
-        notes.extend(_approver_notes(project, new_block["approvers"]))
-    else:
+
+    if new_rule is None and whole:
+        loosening = _gate_loosening(before_rules[0], None)
         notes.append(f"calls to {name} are sent without waiting for a human approval")
-    loosening = _gate_loosening(current, after_effective)
+    elif new_rule is None:
+        loosening = (
+            []
+            if rule_never_applies(api, index)
+            else [
+                f"{label} is removed: the calls it gated first now wait for a later rule's "
+                "approvers, or for no one"
+            ]
+        )
+        notes.append(
+            f"{label} is removed; the rules after it move up one place"
+            if index < len(after_rules)
+            else f"{label} is removed"
+        )
+        notes.extend(approval_notes(name, target))
+    else:
+        before = before_rules[index] if old_rule is not None else None
+        loosening = [
+            f"{label}: {reason}" if becomes_list else reason
+            for reason in _gate_loosening(before, after_rules[index])
+        ]
+        loosening.extend(_order_loosening(after_rules, index, before))
+        notes.extend(approval_notes(name, target))
+        notes.extend(
+            f"{label}: {note}" if becomes_list else note
+            for note in _approver_notes(project, new_rule["approvers"])
+        )
+        if (
+            not add_rule
+            and before is not None
+            and approver_list is not None
+            and set(approver_list) != set(before["approvers"])
+            # The edit also drops calls the rule gated (its approvers and expiry aside).
+            and _gate_loosening(
+                before,
+                {
+                    **after_rules[index],
+                    "approvers": before["approvers"],
+                    "timeout_s": before["timeout_s"],
+                },
+            )
+        ):
+            notes.append(
+                f"this gives the {what} other approvers and drops calls it gated: to keep those "
+                f"with {', '.join(before['approvers'])} and gate the calls you named for "
+                f"{', '.join(approver_list)}, add a rule instead: "
+                + _add_rule_command(name, methods, operations, approver_list, timeout_s)
+            )
+    effects = _call_effects(project, project.document, document, name)
+    if any(line.startswith("approvers change (new") for line in effects):
+        loosening.append("a declared call gets new approver(s) (see above)")
     verdict = (
         (
             f"This loosens the approval gate on {name} ({'; '.join(loosening)}). "
@@ -1388,6 +1664,7 @@ def cmd_approval(
         notes=notes,
         next_steps=False,
         verdict=verdict,
+        effects=effects,
     )
 
 
@@ -1419,8 +1696,12 @@ def _effective(name: str, api: dict[str, Any]) -> dict[str, Any]:
         "openapi": api.get("openapi"),
         "timeouts_ms": timeouts,
         "pagination": api.get("pagination"),
-        # None: no call waits for a human approval.
+        # None: no call waits for a human approval. One rule (a mapping), or a
+        # list of rules as the file writes it.
         "approval": effective_approval(api),
+        # Every rule in file order, with its name in messages ("approval", or
+        # "approval[N]" in a list): the first that covers a call gates it.
+        "approval_rules": effective_approval_rules(api),
     }
 
 
@@ -1515,7 +1796,7 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
         rows.append(
             ("pagination", f"{pagination['page_size_param']} <= {pagination['max_page_size']}")
         )
-    rows.append(("approval", _describe_approval(api["approval"])))
+    rows.append(("approval", _describe_approval(api["approval_rules"])))
     table = Table(title=f"API {api['name']}", show_header=False, title_justify="left")
     table.add_column(style="bold", no_wrap=True)
     table.add_column(overflow="fold")
@@ -1524,11 +1805,9 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
     print_table(console, table)
 
 
-def _describe_approval(approval: dict[str, Any] | None) -> str:
+def _describe_rule(rule: Mapping[str, Any]) -> str:
     """``POST, DELETE and operations cancelOrder any method; approved by requester; ...``."""
-    if approval is None:
-        return "none (no call waits for a human approval)"
-    required_for = approval["required_for"]
+    required_for = rule["required_for"]
     gates = []
     if "methods" in required_for:
         methods = required_for["methods"]
@@ -1538,9 +1817,23 @@ def _describe_approval(approval: dict[str, Any] | None) -> str:
             "operations " + "; ".join(ch.describe_entry(e) for e in required_for["operations"])
         )
     return (
-        f"{' and '.join(gates)}; approved by {', '.join(approval['approvers'])}; "
-        f"expires after {approval['timeout_s']} s (approval never widens access)"
+        f"{' and '.join(gates)}; approved by {', '.join(rule['approvers'])}; "
+        f"expires after {rule['timeout_s']} s"
     )
+
+
+def _describe_approval(rules: list[dict[str, Any]]) -> str:
+    """One rule on a line, ``approval[N]: ...`` for each rule of a list, and how they apply."""
+    if not rules:
+        return "none (no call waits for a human approval)"
+    if len(rules) == 1 and rules[0]["rule"] == APPROVAL_KEY:
+        return f"{_describe_rule(rules[0])} (approval never widens access)"
+    lines = [f"{rule['rule']}: {_describe_rule(rule)}" for rule in rules]
+    lines.append(
+        "a call waits for the first rule in file order that covers it (approval never widens "
+        "access)"
+    )
+    return "\n".join(lines)
 
 
 @api_group.command("check")

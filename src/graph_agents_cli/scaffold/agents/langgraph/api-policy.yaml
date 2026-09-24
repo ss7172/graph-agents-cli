@@ -52,3 +52,5 @@ apis:
     #       - operationId: updateOrder
     #   approvers: [requester]              # "requester" and/or "role:<name>" (four eyes)
     #   timeout_s: 900                      # 30..86400; unanswered in time = rejected
+    # (or a list of such rules, for other approvers on other calls: the first rule
+    # that covers a call gates it; `graph-agents-cli api approval --add-rule`)
