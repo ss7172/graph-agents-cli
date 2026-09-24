@@ -525,10 +525,13 @@ shared byte-for-byte and a test keeps the copies in sync):
   which servers that route format suffixes or drop a trailing dot send to the same endpoint);
   an allow never matches that way. A `;` in a concrete path is refused (servers that strip
   path parameters would route around a denial or a gate), and so is a segment with a control
-  character or with whitespace at either end, also percent-encoded (`cancel%20`, `7%00`:
-  servers that trim segments or end a path at a NUL route those elsewhere); `lint` refuses
-  the same in declared paths. Pass model input as `path_params` of a declared template (each
-  value is encoded as one segment; `.`, `..` and `/` are refused), never as part of a
+  character, with whitespace at either end or next to a dot, also percent-encoded
+  (`cancel%20`, `cancel%20.json`, `cancel%20%2e`, `7%00`: servers that trim segments, trim
+  the name before a format suffix, strip trailing dots and spaces, or end a path at a NUL
+  route those elsewhere). `lint` refuses the same in declared paths, and also an encoded
+  slash, backslash, `;` or dot segment (`cancel%2F`, `cancel%5C`, `cancel%3B`, `%2e%2e`),
+  which the client never sends. Pass model input as `path_params` of a declared template
+  (each value is encoded as one segment; `.`, `..` and `/` are refused), never as part of a
   concrete path.
 - The page-size parameter is capped in every spelling and shape of the query; redirects are
   not followed.
@@ -660,7 +663,15 @@ apis:
   the expiry. Pending approvals past their expiry are swept and reported as expired; deleting
   a thread deletes its approvals; `/metrics` counts approvals requested, approved, rejected
   and expired. With `CHECKPOINTER=memory` a paused run lives in one process only: a restart
-  loses it (`infra check` warns).
+  loses it (`infra check` warns). The local `langgraph dev` server (what `run`, `playground`
+  and `eval` start under `langgraph-server`) keeps its threads in `.langgraph_api/` of the
+  project across a restart or a hot reload (a code change), and the approvals with them, in
+  `.langgraph_api/agent_approvals.json` (mode 0600): each change is written before it takes
+  effect, so a restart or a reload keeps every binding above. A file that cannot be read
+  stops the server's startup, and while one cannot be written nothing gated or bound is sent.
+  Delete `.langgraph_api/` to reset both; the scaffold's `.gitignore` and `.dockerignore`
+  keep it out of git and images. With no local server running, `approvals` starts a
+  temporary one there, as for `fastapi` with the postgres checkpointer.
 - **A2A.** A gated run moves the task to `input-required` with a data part holding the
   approval; the client resumes it with a message on the same task carrying the data part
   `{"approval_id": "...", "decision": "approve"}` (or `"reject"`), under the same approver
@@ -764,8 +775,13 @@ that metric (a case that does not declare it is not counted as a pass). The
   first matching instruction decides each gate and the run continues. A gate no instruction
   matches makes the case an error: generate never approves on its own, and it rejects that
   gate (and one whose decision the server refused) so an eval run leaves no approval pending
-  to block its thread or be approved later; the trace records how (`approvals[].cleanup`),
-  and a gate it may not reject either is named in the case error. Traces record every
+  to block its thread or be approved later. A gate it may not reject (a `role:` gate without
+  `GRAPH_AGENTS_CLI_APPROVER_API_KEY`, or with a credential that may not decide it) goes
+  with the case's thread, which the eval identity deletes (deleting a thread deletes its
+  approvals). The trace records how (`approvals[].cleanup`: `rejected`, `not_pending`,
+  `thread_deleted`, or `left_pending` when the thread could not be deleted either, which the
+  case error names: it waits until it expires, unless an approver approves or rejects it
+  first). Traces record every
   gate (`approvals`), and `expect.approvals: [{"match": {...}, "status":
   "gated"|"approved"|"rejected"}]` and `expect.no_approvals: true` check them (an injection
   case can assert that the planted write never even reached a gate). A gate that lists

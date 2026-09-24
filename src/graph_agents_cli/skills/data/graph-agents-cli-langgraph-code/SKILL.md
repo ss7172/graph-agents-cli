@@ -230,7 +230,8 @@ when the project declares an API policy):
   literal segment's dot-suffixed spellings (`cancel.json`, `cancel.`). Pass `path` as the declared
   template and the values in `path_params`; a concrete path is validated (no dot segments,
   encoded slashes, empty segments, `;`, query or fragment, and no control character or
-  whitespace at either end of a segment, also percent-encoded: `cancel%20`, `7%00`). A base URL with a path prefix works (the
+  whitespace at either end of a segment or next to a dot, also percent-encoded: `cancel%20`,
+  `cancel%20.json`, `7%00`; `lint` refuses the same in declared paths). A base URL with a path prefix works (the
   path is joined under it), `pagination.max_page_size` is enforced (every value of the
   parameter, in any letter case and any `params` shape), redirects are never followed.
   Let the errors propagate: the scaffolded `agent.py` middleware turns them into a
@@ -437,7 +438,10 @@ Approval never widens access: the call must still be allowed, and denials still 
   the call, deterministic request.
 - **Storage.** An `approvals` table beside the checkpoints (`fastapi`: the checkpointer's
   Postgres; `langgraph-server`: `agent_approvals` in `DATABASE_URI`), swept for expiry; deleting a thread deletes its
-  approvals. Under `CHECKPOINTER=memory` a paused run lives in one process only.
+  approvals. Under `CHECKPOINTER=memory` a paused run lives in one process only. The local
+  `langgraph dev` keeps its threads in `.langgraph_api/` across a restart or a hot reload,
+  and the approvals with them (`.langgraph_api/agent_approvals.json`, written before each
+  change takes effect); delete the directory to reset both, and keep it out of git.
 - **Four-eyes needs per-user principals.** Under `shared-bearer` every caller is the principal
   `shared`, so only `requester` gates can be decided; `role:` approvers need `jwt` (roles from
   `AUTH_JWT_ROLES_CLAIM`) or a `custom` policy that sets roles.

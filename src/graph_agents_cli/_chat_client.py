@@ -397,6 +397,25 @@ def list_threads(
     return _json_list(resp, url, "threads")
 
 
+def delete_thread(
+    base_url: str,
+    thread_id: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float = 30.0,
+) -> None:
+    """DELETE ``/threads/{thread_id}``: the thread with its runs and its approvals.
+
+    Only its owner may. Raises :class:`ChatHTTPError` on any status but 2xx
+    (a 404 too: the route may be missing as well as the thread), and lets
+    transport errors propagate.
+    """
+    url = f"{_normalise_base(base_url)}/threads/{path_segment(thread_id, 'thread id')}"
+    resp = httpx.delete(url, headers=dict(headers or {}), timeout=timeout)
+    if resp.status_code >= 300:
+        raise ChatHTTPError(resp.status_code, resp.text, url)
+
+
 def get_health(
     base_url: str,
     *,

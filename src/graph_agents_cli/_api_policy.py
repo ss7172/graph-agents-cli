@@ -73,6 +73,7 @@ ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
 _PATH_SEGMENT_RE = re.compile(r"^(?:[^/?#\s{}]|\{[A-Za-z_][A-Za-z0-9_]*\})+$")
 _PLACEHOLDER_SPLIT_RE = re.compile(r"(\{[^/{}]+\})")
+_SPACE_BY_DOT_RE = re.compile(r"\s\.|\.\s")
 
 _ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 _UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -437,16 +438,28 @@ def _approvers_errors(where: str, value: Any) -> list[str]:
 def segment_text_problem(text: str) -> str | None:
     """Why a path segment's text (percent-decoded) is refused, or None.
 
-    A control character anywhere (``%00``: servers that end a path at a NUL
-    route it to the part before) and whitespace at either end (``cancel%20``:
-    servers that trim path segments route it to ``cancel``) would send a call
-    to an endpoint other than the one the policy judged. Whitespace inside a
-    segment (``red%20shirt``) is kept: trimming does not touch it.
+    Each of these would send a call to an endpoint other than the one the
+    policy judged: a control character anywhere (``%00``: servers that end a
+    path at a NUL route it to the part before); whitespace at either end
+    (``cancel%20``: servers that trim path segments route it to ``cancel``)
+    or next to a dot (``cancel%20.json``, ``cancel%20%2e``: servers that
+    trim the name before a format suffix, or strip trailing dots and spaces,
+    route it to ``cancel``); a backslash or a slash (``%5C``, ``%2F``:
+    servers that decode them before routing split the segment); a ``;``
+    (``%3B``: servers that strip path parameters route ``cancel;x`` to
+    ``cancel``). Whitespace elsewhere in a segment (``red%20shirt``) is kept:
+    trimming does not touch it.
     """
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
         return "holds a control character (also percent-encoded, such as %00)"
     if text[:1].isspace() or text[-1:].isspace():
         return "starts or ends with whitespace (also percent-encoded, such as %20)"
+    if _SPACE_BY_DOT_RE.search(text):
+        return "has whitespace next to a dot (also percent-encoded, such as cancel%20.json)"
+    if "/" in text or "\\" in text:
+        return "holds a backslash or a percent-encoded slash (%5C, %2F)"
+    if ";" in text:
+        return "holds ';' (also percent-encoded, %3B), which some servers strip with what follows"
     return None
 
 
@@ -455,9 +468,11 @@ def path_template_problem(path: Any) -> str | None:
 
     A template starts with ``/``; each segment holds literal characters and
     ``{name}`` placeholders only (no query, fragment, spaces, empty, ``.`` or
-    ``..`` segments), and no control characters or whitespace at either end
-    percent-encoded either (``segment_text_problem``). One trailing slash is
-    allowed.
+    ``..`` segments, also percent-encoded), and none of the characters a
+    sent path is refused for, percent-encoded or not (``segment_text_problem``:
+    control characters, whitespace at either end or next to a dot, a
+    backslash or an encoded slash, ``;``), so lint passes no declared call the
+    client would refuse to send. One trailing slash is allowed.
     """
     if not isinstance(path, str) or not path.startswith("/"):
         return "must be a string starting with /"
@@ -474,7 +489,10 @@ def path_template_problem(path: Any) -> str | None:
                 "segments may hold literal characters and {name} placeholders only "
                 "(no query, fragment or whitespace)"
             )
-        problem = segment_text_problem(unquote(_PLACEHOLDER_SPLIT_RE.sub("x", segment)))
+        text = unquote(_PLACEHOLDER_SPLIT_RE.sub("x", segment))
+        if text in (".", ".."):
+            return "must not contain '.' or '..' segments, also percent-encoded (%2E)"
+        problem = segment_text_problem(text)
         if problem:
             return f"has a segment that {problem}"
     return None

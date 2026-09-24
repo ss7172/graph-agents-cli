@@ -221,9 +221,11 @@ unreserved characters and ignoring one trailing slash; letter case counts for al
 denials and approval gates, which also cover a literal segment's dot-suffixed spellings (a denial of
 `/orders/{order_id}/cancel` refuses `/orders/7/cancel.json` and `cancel.`, which servers that route format
 suffixes or drop a trailing dot send to the same endpoint). A `;` in a request path is refused, and so is a
-segment with a control character or with whitespace at either end, also percent-encoded (`cancel%20`,
-`7%00`, which servers that trim segments or end a path at a NUL route elsewhere). Pass model input as
-`path_params` of a declared template, never as part of a concrete path.
+segment with a control character or with whitespace at either end or next to a dot, also percent-encoded
+(`cancel%20`, `cancel%20.json`, `7%00`, which servers that trim segments or the name before a suffix, or end
+a path at a NUL, route elsewhere); `lint` refuses the same in declared paths, and an encoded slash,
+backslash, `;` or dot segment too. Pass model input as `path_params` of a declared template, never as part
+of a concrete path.
 `graph-agents-cli api show` lists the APIs `api-policy.yaml` declares now, what each allows, and every
 tool's declared calls; without the file, declare the first API with `graph-agents-cli api add` (below). When
 `{{cookiecutter.agent_directory}}/tools/example_api.py` exists (a project created with a policy), it shows
@@ -299,6 +301,12 @@ request waits for someone who sees exactly what it does.
   the requester and decider hashed, the decision, its comment and time, and when it was used. Once decided
   or expired, the query and body are dropped unless `TRACE_CAPTURE=full`. Deleting a thread deletes its
   approvals. `/metrics` counts `agent_approvals_total{event="requested|approved|rejected|expired"}`.
+{%- if cookiecutter.runtime == 'langgraph-server' %}
+  The local `langgraph dev` server keeps its threads in `.langgraph_api/` across a restart or a hot reload
+  (a code change), and the approvals with them, in `.langgraph_api/agent_approvals.json` (written before
+  each change takes effect, so every binding above holds after a reload); a file that cannot be read stops
+  its startup. Delete `.langgraph_api/` to reset both; it stays out of git and images.
+{%- endif %}
 {%- if cookiecutter.runtime == 'langgraph-server' %}
 - **LangGraph Server.** The run pauses and resumes through the server's own interrupt and resume. The
   server's auth handler refuses a run that carries a `command` (a resume) from outside the app, and the

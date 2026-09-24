@@ -183,15 +183,8 @@ def decide(
     )
 
 
-@pytest.fixture(scope="module")
-def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
-    work = tmp_path_factory.mktemp("approvals-server")
-    upstream = Upstream()
-    threading.Thread(target=upstream.serve_forever, daemon=True).start()
-    body_file = work / "body.json"
-    body_file.write_text(json.dumps(BODY), encoding="utf-8")
-    policy = work / "api-policy.yaml"
-    policy.write_text(POLICY, encoding="utf-8")
+def _write_config(work: Path) -> Path:
+    """The `langgraph.json` a test server runs with: this project, the test graph."""
     project_config = json.loads((PROJECT / "langgraph.json").read_text(encoding="utf-8"))
     config = work / "langgraph.json"
     config.write_text(
@@ -206,13 +199,16 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
         ),
         encoding="utf-8",
     )
+    return config
+
+
+def _server_env(policy: Path, body_file: Path, upstream: Upstream) -> dict[str, str]:
     pem = (
         KEY.public_key()
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
-    port = _free_port()
-    env = {
+    return {
         **os.environ,
         "MODEL_PROVIDER": "fake",
         "MODEL_NAME": "fake",
@@ -230,46 +226,68 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
         "LANGGRAPH_CLI_NO_ANALYTICS": "1",
         "PYTHON_DOTENV_DISABLED": "1",
     }
-    log = work / "server.log"
-    with log.open("wb") as out:
+
+
+def _start_dev(
+    work: Path, env: dict[str, str], port: int, log: Path, *, reload: bool = False
+) -> subprocess.Popen[bytes]:
+    """`langgraph dev` in `work` (where it keeps its threads, in `.langgraph_api/`), once up.
+
+    With `reload`, a change to a `.py` file under `work` restarts it (a hot reload).
+    """
+    args = [str(LANGGRAPH), "dev", "--config", str(work / "langgraph.json")]
+    args += ["--port", str(port), "--no-browser"] + ([] if reload else ["--no-reload"])
+    with log.open("ab") as out:
         proc = subprocess.Popen(
-            [
-                str(LANGGRAPH),
-                "dev",
-                "--config",
-                str(config),
-                "--port",
-                str(port),
-                "--no-browser",
-                "--no-reload",
-            ],
-            cwd=work,
-            env=env,
-            stdout=out,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+            args, cwd=work, env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
         )
-    url = f"http://127.0.0.1:{port}"
     try:
-        deadline = time.monotonic() + 120
-        while True:
-            if proc.poll() is not None:
-                pytest.fail(f"langgraph dev exited:\n{log.read_text()[-4000:]}")
-            try:
-                if httpx.get(f"{url}/health", timeout=2).status_code == 200:
-                    break
-            except httpx.HTTPError:
-                pass
-            if time.monotonic() > deadline:
-                pytest.fail(f"langgraph dev did not start:\n{log.read_text()[-4000:]}")
-            time.sleep(0.5)
+        _wait_up(proc, f"http://127.0.0.1:{port}", log)
+    except BaseException:
+        _stop(proc)
+        raise
+    return proc
+
+
+def _wait_up(proc: subprocess.Popen[bytes], url: str, log: Path, timeout_s: float = 120) -> None:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if proc.poll() is not None:
+            pytest.fail(f"langgraph dev exited:\n{log.read_text()[-4000:]}")
+        try:
+            if httpx.get(f"{url}/health", timeout=2).status_code == 200:
+                return
+        except httpx.HTTPError:
+            pass
+        if time.monotonic() > deadline:
+            pytest.fail(f"langgraph dev did not start:\n{log.read_text()[-4000:]}")
+        time.sleep(0.5)
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Server]:
+    work = tmp_path_factory.mktemp("approvals-server")
+    upstream = Upstream()
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    body_file = work / "body.json"
+    body_file.write_text(json.dumps(BODY), encoding="utf-8")
+    policy = work / "api-policy.yaml"
+    policy.write_text(POLICY, encoding="utf-8")
+    _write_config(work)
+    port = _free_port()
+    log = work / "server.log"
+    proc = None
+    try:
+        proc = _start_dev(work, _server_env(policy, body_file, upstream), port, log)
+        url = f"http://127.0.0.1:{port}"
         running = Server(url=url, upstream=upstream, body_file=body_file, log=log, policy=policy)
         # Paused first, so they have expired by the time the last tests use them.
         running.expiring = pause(running, "90")
         running.expiring_native = pause(running, "91")
         yield running
     finally:
-        _stop(proc)
+        if proc is not None:
+            _stop(proc)
         upstream.shutdown()
         upstream.server_close()
 
@@ -579,3 +597,88 @@ def test_an_expired_approval_on_the_server_sends_nothing(server: Server) -> None
     tool = next(m for m in messages if m["role"] == "tool")
     assert "approval request expired" in tool["content"]
     assert server.upstream.sent_to("/orders/90/cancel") == []
+
+
+# The app's log line each time the server starts it (at startup and on a reload).
+APP_STARTED = "chat runtime started"
+
+
+def _reloaded(proc: subprocess.Popen[bytes], url: str, log: Path, starts: int) -> None:
+    """Wait until the server has started its app once more than `starts` times, and is up."""
+    deadline = time.monotonic() + 120
+    while log.read_text(errors="replace").count(APP_STARTED) <= starts:
+        if proc.poll() is not None or time.monotonic() > deadline:
+            pytest.fail(f"langgraph dev did not reload:\n{log.read_text()[-4000:]}")
+        time.sleep(0.5)
+    _wait_up(proc, url, log)
+
+
+def test_the_dev_server_keeps_the_approvals_with_its_threads(tmp_path: Path) -> None:
+    """`langgraph dev` keeps its threads (in `.langgraph_api/`) across a hot reload and a
+    restart, and the approvals that bind their tool calls with them: once the gate is
+    removed, a run without input or a replay of the paused step sends none of a pending,
+    a rejected, a sent, or an approved but refused call."""
+    upstream = Upstream()
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    body_file = tmp_path / "body.json"
+    body_file.write_text(json.dumps(BODY), encoding="utf-8")
+    policy = tmp_path / "api-policy.yaml"
+    gated = POLICY.replace(f"timeout_s: {TIMEOUT_S}", "timeout_s: 3600")  # nothing expires
+    policy.write_text(gated, encoding="utf-8")
+    _write_config(tmp_path)
+    env = _server_env(policy, body_file, upstream)
+    port = _free_port()
+    url = f"http://127.0.0.1:{port}"
+    log = tmp_path / "server.log"
+    proc = _start_dev(tmp_path, env, port, log, reload=True)
+    try:
+        server = Server(url=url, upstream=upstream, body_file=body_file, log=log, policy=policy)
+        waiting = pause(server, "81")
+        rejected = pause(server, "82")
+        assert decide(server, rejected, "reject", token("alice")).status_code == 200
+        sent = pause(server, "83")
+        assert decide(server, sent, "approve", token("alice")).status_code == 200
+        refused = pause(server, "84")
+        denied = "    denied_operations:\n      - path: /orders/84/cancel\n    approval:"
+        policy.write_text(gated.replace("    approval:", denied), encoding="utf-8")
+        r = decide(server, refused, "approve", token("alice"))
+        policy.write_text(gated, encoding="utf-8")
+        result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
+        assert result["is_error"] is True and "denied_operations" in result["result"]
+        paused = {
+            end["thread_id"]: (end, paused_checkpoint(server, end["thread_id"]))
+            for end in (waiting, rejected, sent, refused)
+        }
+        expected = {"81": [], "82": [], "83": [BODY], "84": []}
+
+        def assert_still_bound() -> None:
+            for thread, (end, _) in paused.items():
+                listed = httpx.get(f"{url}/threads/{thread}/approvals", headers=token("alice"))
+                assert listed.status_code == 200, listed.text
+                ids = [a["approval_id"] for a in listed.json()]
+                assert end["approval"]["approval_id"] in ids, listed.text
+            with gate_removed(server):
+                for thread, (_, checkpoint) in paused.items():
+                    for r in rerun_paused_step(server, thread, checkpoint):
+                        assert r.status_code in (403, 409), r.text
+                message = {"message": "hi", "thread_id": waiting["thread_id"]}
+                r = post(server, "/chat", message, token("alice"))
+                assert r.status_code == 409 and r.json()["code"] == "approval_pending"
+            for order, bodies in expected.items():
+                assert upstream.sent_to(f"/orders/{order}/cancel") == bodies, order
+
+        # A hot reload: a code change in the directory the server watches.
+        starts = log.read_text(errors="replace").count(APP_STARTED)
+        (tmp_path / "changed.py").write_text("CHANGED = True\n", encoding="utf-8")
+        _reloaded(proc, url, log, starts)
+        assert_still_bound()
+        # A restart.
+        _stop(proc)
+        proc = _start_dev(tmp_path, env, port, log)
+        assert_still_bound()
+        ledger = tmp_path / ".langgraph_api" / "agent_approvals.json"
+        assert ledger.stat().st_mode & 0o777 == 0o600
+    finally:
+        _stop(proc)
+        upstream.shutdown()
+        upstream.server_close()

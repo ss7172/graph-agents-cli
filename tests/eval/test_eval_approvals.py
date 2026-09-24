@@ -126,6 +126,26 @@ def fake_decide(monkeypatch: pytest.MonkeyPatch):
     return _install
 
 
+class FakeDelete:
+    """Replacement for ``_chat_client.delete_thread`` (no request leaves the test)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.fail: Exception | None = None
+
+    def __call__(self, base_url, thread_id, **kwargs):
+        self.calls.append({"base_url": base_url, "thread_id": thread_id, **kwargs})
+        if self.fail is not None:
+            raise self.fail
+
+
+@pytest.fixture(autouse=True)
+def fake_delete(monkeypatch: pytest.MonkeyPatch) -> FakeDelete:
+    delete = FakeDelete()
+    monkeypatch.setattr("graph_agents_cli._chat_client.delete_thread", delete)
+    return delete
+
+
 def case(approvals: Any = None, expect: dict[str, Any] | None = None, **extra: Any):
     raw: dict[str, Any] = {"id": "cancel", "messages": [{"role": "user", "content": "cancel it"}]}
     if approvals is not None:
@@ -315,16 +335,18 @@ def test_a_gate_the_rejected_run_pauses_on_is_rejected_too(fake_chat, fake_decid
 @pytest.mark.parametrize(
     ("code", "body", "cleanup"),
     [
-        (403, '{"code": "not_an_approver"}', "left_pending"),
-        (409, '{"code": "thread_busy"}', "left_pending"),
+        (403, '{"code": "not_an_approver"}', "thread_deleted"),
+        (409, '{"code": "thread_busy"}', "thread_deleted"),
         (409, '{"code": "approval_not_pending"}', "not_pending"),
         (410, '{"code": "approval_expired"}', "not_pending"),
         (404, '{"code": "approval_not_found"}', "not_pending"),
     ],
 )
-def test_a_gate_the_eval_cannot_reject_is_reported_left_pending(
-    fake_chat, monkeypatch, code: int, body: str, cleanup: str
+def test_a_gate_the_eval_cannot_reject_goes_with_the_cases_thread(
+    fake_chat, fake_delete, monkeypatch, code: int, body: str, cleanup: str
 ) -> None:
+    """Nothing is left for an approver to approve later: the thread (the eval identity
+    owns it) is deleted, and its approvals with it."""
     fake_chat({"cancel it": paused(dict(CANCEL, approvers=["role:ops"]))})
     calls: list[str] = []
 
@@ -334,11 +356,33 @@ def test_a_gate_the_eval_cannot_reject_is_reported_left_pending(
         yield  # a generator, as decide_approval is
 
     monkeypatch.setattr("graph_agents_cli._chat_client.decide_approval", refuse)
-    trace = run_case("http://x", case(), headers={})
+    trace = run_case("http://x", case(), headers={"Authorization": "Bearer eval-key"})
     assert calls == ["reject"]
     assert trace["status"] == "error" and trace["approvals"][0]["cleanup"] == cleanup
-    left = "approval a-1 on thread t-1 is left pending" in trace["error"]
-    assert left is (cleanup == "left_pending"), trace["error"]
+    deleted = cleanup == "thread_deleted"
+    assert [(c["thread_id"], c["headers"]) for c in fake_delete.calls] == (
+        [("t-1", {"Authorization": "Bearer eval-key"})] if deleted else []
+    )
+    assert ("the case's thread was deleted, and the approval with it" in trace["error"]) is deleted
+    assert "left pending" not in trace["error"]
+
+
+@pytest.mark.parametrize(
+    "failure", [ChatHTTPError(409, '{"code": "thread_busy"}', "http://x"), OSError("down")]
+)
+def test_a_gate_left_pending_is_named_with_who_may_still_decide_it(
+    fake_chat, fake_decide, fake_delete, failure: Exception
+) -> None:
+    """Only when the thread cannot be deleted either: an approver may still approve it."""
+    fake_chat({"cancel it": paused(dict(CANCEL, approvers=["role:ops"]))})
+    fake_decide(refuse=403)
+    fake_delete.fail = failure
+    trace = run_case("http://x", case(), headers={})
+    assert trace["approvals"][0]["cleanup"] == "left_pending"
+    error = " ".join(trace["error"].split())
+    assert "approval a-1 on thread t-1 is left pending" in error
+    assert "nor delete its thread" in error
+    assert "unless an approver approves or rejects it first" in error
 
 
 def test_an_api_in_the_match_narrows_it(fake_chat, fake_decide) -> None:
@@ -351,13 +395,13 @@ def test_an_api_in_the_match_narrows_it(fake_chat, fake_decide) -> None:
 @pytest.mark.parametrize(
     ("code", "status", "cleanup", "rejects"),
     [
-        # Refused as not allowed: a reject would be too, so the gate stays pending.
-        (403, "forbidden", "left_pending", []),
+        # Refused as not allowed: a reject would be too, so the thread goes, with the gate.
+        (403, "forbidden", "thread_deleted", []),
         (404, "not_found", "not_pending", []),
         # FakeDecide's 409 body is not approval_not_pending: it may still wait.
-        (409, "not_pending", "left_pending", ["reject"]),
+        (409, "not_pending", "thread_deleted", ["reject"]),
         (410, "expired", "not_pending", []),
-        (500, "error", "left_pending", ["reject"]),
+        (500, "error", "thread_deleted", ["reject"]),
     ],
 )
 def test_a_refused_decision_is_a_case_error(
@@ -371,7 +415,8 @@ def test_a_refused_decision_is_a_case_error(
     assert trace["approvals"][0]["status"] == status
     assert trace["approvals"][0]["cleanup"] == cleanup
     assert [c["decision"] for c in decide.calls] == ["approve", *rejects]
-    assert ("is left pending" in trace["error"]) is (cleanup == "left_pending")
+    assert ("the case's thread was deleted" in trace["error"]) is (cleanup == "thread_deleted")
+    assert "is left pending" not in trace["error"]
     if code == 403:
         assert "GRAPH_AGENTS_CLI_APPROVER_API_KEY" in trace["error"]
 

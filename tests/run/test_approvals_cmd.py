@@ -420,23 +420,27 @@ def test_help_lists_the_subcommands():
         assert sub in result.output
 
 
-def test_locally_under_langgraph_server_no_temporary_server_is_started(
+def test_locally_under_langgraph_server_a_temporary_server_is_started_and_stopped(
     local, chat_server, monkeypatch
 ):
-    """`langgraph dev` keeps the app's approvals in memory: a new server has none."""
+    """`langgraph dev` keeps its threads and the app's approvals in `.langgraph_api/`:
+    a new server has them, whatever the checkpointer recorded for deployments."""
     cfg = SimpleNamespace(agent_directory="app", runtime="langgraph-server", checkpointer="memory")
     monkeypatch.setattr(cmd_approvals, "read_project_config", lambda *a, **k: cfg)
+    approval = paused(chat_server, requester="shared")
     listed = approvals("list", "--thread-id", "t-1", token=None)
     assert listed.exit_code == 0, listed.output
-    assert "No local server is running" in listed.output
-    assert "keeps the app's approvals in memory" in listed.output
-    decided = approvals("approve", "a1", "--thread-id", "t-1", token=None)
-    assert decided.exit_code == 1
-    assert local.started == [] and decisions(chat_server) == []
+    assert "POST /orders/ORD-1/cancel" in listed.output
+    assert "No local server is running" not in listed.output
+    result = approvals("reject", approval.approval_id, "--thread-id", "t-1", token=None)
+    assert result.exit_code == 0, result.output
+    assert len(local.started) == 2 and local.stopped == [77, 77]
+    assert local.started[0]["runtime"] == "langgraph-server"
     # A running one (the server a paused run kept) is used as usual.
     local.port = int(chat_server.url.rsplit(":", 1)[1])
     paused(chat_server, requester="shared")
     assert "POST /orders/ORD-1/cancel" in approvals("list", "--thread-id", "t-1", token=None).output
+    assert len(local.started) == 2
 
 
 def test_json_listing_escapes_what_the_model_wrote(chat_server):

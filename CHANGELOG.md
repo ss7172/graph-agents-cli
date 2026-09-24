@@ -294,7 +294,9 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   one never, whatever the policy says about gating it by then (a decision is bound to its
   call), and a call still waiting when another decision resumes the run waits on for its own.
   Approvals are kept in an `approvals` table beside the checkpoints (`agent_approvals` under
-  `langgraph-server`); deleting a thread deletes them.
+  `langgraph-server`; under the local `langgraph dev`, in `.langgraph_api/agent_approvals.json`
+  beside its threads, so both survive a restart or a hot reload); deleting a thread deletes
+  them.
 - **`graph-agents-cli api approval NAME`** `[--methods M,...|none] [--operations OP,...|none]
   [--approvers requester,role:NAME] [--timeout-s N] [--remove] [--dry-run]`, with the other `api`
   commands' validate, diff and atomic-write rules: each option replaces that part of the block,
@@ -309,12 +311,15 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   stream the resumed run. `run` prints a paused call in full and, on a terminal when the
   requester is an approver, asks `Approve? [y/N]` and continues; otherwise it prints the
   decision commands and exits 0 with an "Awaiting approval" line, keeping a one-off local
-  server with the in-memory checkpointer running so the paused run survives.
+  server with the in-memory checkpointer running so the paused run survives. With no local
+  server running, `approvals` starts a temporary one where the paused run and its approval
+  outlive their server (`fastapi` with the postgres checkpointer, and `langgraph-server`).
 - **Eval approvals**: a dataset case declares how a human would decide each gated call it
   reaches (`"approvals": [{"decision": "approve"|"reject", "match": {"operation_id": ...} |
   {"method": ..., "path": ...}}]`, optionally with `api`); `eval generate` decides each gate
   per the first matching instruction and continues the run (a gate no instruction matches is a
-  case error, and is rejected, as is one whose decision the server refused, so no approval is
+  case error, and is rejected, as is one whose decision the server refused; one the eval may
+  not reject goes with the case's thread, which the eval identity deletes, so no approval is
   left pending: `approvals[].cleanup` in the trace), traces record every gate, and `expect.approvals` (`gated`, `approved`,
   `rejected`) and `expect.no_approvals` check them. A gate that lists `requester` is decided
   as the eval identity, any other as `GRAPH_AGENTS_CLI_APPROVER_API_KEY` when set.
@@ -613,9 +618,12 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   it failed or was cancelled are expired rather than blocking the thread. The API client
   refuses a `;` in a request path (also percent-encoded): servers that strip path parameters
   would route `/orders/7/cancel;x` to `/orders/7/cancel` past a gate or a denial. It also
-  refuses a segment with a control character or with whitespace at either end, also
-  percent-encoded (`cancel%20`, `7%00`), which servers that trim segments or end a path at a
-  NUL route to the gated or denied endpoint; `lint` refuses the same in declared paths.
+  refuses a segment with a control character, or with whitespace at either end or next to a
+  dot, also percent-encoded (`cancel%20`, `cancel%20.json`, `cancel%20%2e`, `7%00`), which
+  servers that trim segments, trim the name before a format suffix, strip trailing dots and
+  spaces, or end a path at a NUL route to the gated or denied endpoint; `lint` refuses the
+  same in declared paths, and also an encoded slash, backslash, `;` or dot segment
+  (`cancel%2F`, `cancel%5C`, `cancel%3B`, `%2e%2e`), which the client never sends.
   Denials and gates also cover a literal segment's dot-suffixed spellings
   (`/orders/7/cancel.json`, `cancel.`, `cancel%2e`), which servers that route format suffixes
   or drop a trailing dot send to the gated or denied endpoint; `lint` and the runtime share
@@ -630,8 +638,19 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   server's auth handler refuses such runs (403) on a thread that has approvals or waits on a
   gated call, and refuses to copy a thread that has approvals. A waiting call that a later denial or narrower policy refuses when another
   decision resumes the run has its approval expired, so the thread takes new messages again.
-  `eval generate` rejects the gates it does not decide, so an unattended run leaves no
-  approval behind for someone to approve.
+  Under `langgraph dev` (the local server of `run`, `playground` and `eval` for
+  `langgraph-server`) the approvals were kept in memory while the server keeps its threads
+  across a restart or a hot reload (a code change): afterwards a run continued without input
+  or replayed from a checkpoint found no record and, once the gate was removed, sent a
+  pending, rejected or already sent call. They are now kept beside the threads, in
+  `.langgraph_api/agent_approvals.json` (mode 0600, written before each change takes effect;
+  a file that cannot be read stops the startup, and while one cannot be written nothing is
+  sent), and `.langgraph_api/` is in the scaffold's `.gitignore` and `.dockerignore`.
+  `eval generate` rejects the gates it does not decide, and deletes the case's thread (with
+  its approvals) when it may not reject one (a `role:` gate without an approver credential,
+  or with one that may not decide it), so an unattended run leaves no approval behind for
+  someone to approve; only a gate whose thread cannot be deleted either stays pending (until
+  it expires, unless an approver approves or rejects it), named in the case error.
 - `run --mode a2a` no longer follows an agent card to another origin: A2A clients dial the URL
   the card advertises, and a stale `APP_URL` or `PORT` (the template's `.env` sets `PORT=8000`,
   which `langgraph dev` loads over the port it was given) sent the message and its bearer

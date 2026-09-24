@@ -21,7 +21,7 @@ nothing collides with the server's own schema). Otherwise they live in a
 bounded in-process dict (the newest `MEMORY_RUNS_CAP` records). Approvals of
 gated API calls (`approvals.py`) live beside them the same way: table
 `approvals` (fastapi) or `agent_approvals` (langgraph-server), else in process
-memory.
+memory, which `langgraph dev` also writes to a file beside its own threads.
 
 A run's record is written when it starts, with status `running`, and
 updated when it ends (`ok`, `step_limit`, `error`, `timeout`, `cancelled` or

@@ -364,6 +364,11 @@ async def test_path_params_refuse_traversal_before_sending(policy_file: Path, it
         "/items/1%00",
         "/items/1%00/x",
         "/items/1%7F",
+        # Servers that trim the name before a format suffix, or strip trailing dots and
+        # spaces, route these to /items/1 as well.
+        "/items/1%20.json",
+        "/items/1%20%2e",
+        "/items/1.%20json",
     ],
 )
 async def test_concrete_paths_are_validated(policy_file: Path, path: str) -> None:
@@ -610,6 +615,36 @@ async def test_a_dot_suffixed_spelling_of_a_gated_or_denied_path_is_covered(
     denied = path.replace("cancel", "purge").replace("Cancel", "Purge")
     with pytest.raises(ApiPolicyError, match="denied by denied_operations"):
         await client.post(denied, operation_id="purgeOrder")
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Whitespace next to a dot on the gated (or denied) segment: servers that trim the
+        # name before a format suffix, or strip trailing dots and spaces, send these to
+        # the bare segment, which the gate would not see in them: refused, not gated.
+        "/orders/7/cancel%20.json",
+        "/orders/7/cancel%20%2e",
+        "/orders/7/cancel%20%2E%2e",
+        "/orders/7/cancel.%20json",
+        "/orders/{order_id}/cancel%20.json",
+    ],
+)
+async def test_whitespace_next_to_a_dot_is_refused_before_sending(
+    gated_policy: Path, path: str
+) -> None:
+    calls: list[httpx.Request] = []
+    client = get_client("shop", transport=_transport(calls))
+    params = {"order_id": "7"} if "{" in path else None
+    for spelling in (path, path.replace("cancel", "purge")):
+        with pytest.raises(ApiPolicyError, match=r"whitespace next to a dot|not a valid"):
+            await client.post(spelling, operation_id="closeOrder", path_params=params)
+    # A path parameter value that would put it there is refused as well.
+    with pytest.raises(ApiPolicyError):
+        await client.post(
+            "/orders/{order_id}/cancel", operation_id="closeOrder", path_params={"order_id": "7 .x"}
+        )
     assert calls == []
 
 

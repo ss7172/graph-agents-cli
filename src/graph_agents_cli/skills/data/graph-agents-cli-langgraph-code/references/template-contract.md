@@ -333,7 +333,9 @@ apis:
   that has approvals. Only calls the policy allows are gated (approval never widens access). An `approval` key on an operation entry is refused ("not valid on an
   operation entry; gate the operation with apis.<name>.approval.required_for.operations").
   The tool re-runs from its start on resume: keep it idempotent up to the call and the request
-  deterministic. Approvals are stored in an `approvals` table beside the checkpoints.
+  deterministic. Approvals are stored in an `approvals` table beside the checkpoints (under
+  the local `langgraph dev`, in `.langgraph_api/agent_approvals.json` beside its threads, so
+  both survive a restart or a hot reload).
 - Matching: an allowed entry pinning several fields needs all of them to match. Denials win
   and hold on the endpoint: a denial covers every call to a path its `path` covers (with its
   `methods`), whatever `operation_id` the call names, and every call naming its
@@ -345,8 +347,10 @@ apis:
   case-sensitive, denials and gates are not, and a denial or gate also covers a literal
   segment's dot-suffixed spellings (`cancel.json`, `cancel.`), which servers that route format
   suffixes or drop a trailing dot send to the same endpoint; allows never match that way. A
-  segment with a control character or whitespace at either end, also percent-encoded
-  (`cancel%20`, `7%00`), is refused in declared paths (`lint`) and in the paths sent. `pagination.max_page_size` applies to every value of the
+  segment with a control character or whitespace at either end or next to a dot, also
+  percent-encoded (`cancel%20`, `cancel%20.json`, `7%00`), is refused in declared paths
+  (`lint`) and in the paths sent; so are an encoded slash, backslash, `;` or dot segment
+  (`%2F`, `%5C`, `%3B`, `%2e%2e`). `pagination.max_page_size` applies to every value of the
   parameter, in any letter case. Repeated YAML keys are errors, like unknown keys.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from

@@ -17,8 +17,9 @@
 The client's side runs a real graph (the fake model, one gated tool, an
 in-memory checkpointer) that pauses in LangGraph's `interrupt()` and resumes
 with decisions made here, the ledger being an `ApprovalStore`. Every store
-test runs in memory, and again on Postgres when `TEST_POSTGRES_DSN` is set
-(see `tests/integration/test_postgres.py`).
+test runs in memory, in memory kept in a file (as under `langgraph dev`), and
+again on Postgres when `TEST_POSTGRES_DSN` is set (see
+`tests/integration/test_postgres.py`).
 """
 
 from __future__ import annotations
@@ -64,7 +65,9 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     REJECTED,
     ApprovalRecord,
     ApprovalStore,
+    LedgerUnavailable,
     decision_value,
+    dev_ledger_path,
     may_decide,
     may_view,
     record_from_interrupt,
@@ -123,11 +126,17 @@ def _record(**overrides: Any) -> ApprovalRecord:
 ADMIN_DSN = os.environ.get("TEST_POSTGRES_DSN", "")
 
 
-@pytest.fixture(params=["memory", "postgres"])
-async def store(request: pytest.FixtureRequest) -> AsyncIterator[ApprovalStore]:
-    """The store in memory, and on Postgres when `TEST_POSTGRES_DSN` is set (a fresh database)."""
+@pytest.fixture(params=["memory", "file", "postgres"])
+async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[ApprovalStore]:
+    """The store in memory, in memory kept in a file (`langgraph dev`), and on Postgres
+    when `TEST_POSTGRES_DSN` is set (a fresh database)."""
     if request.param == "memory":
         yield ApprovalStore(Database("memory"))
+        return
+    if request.param == "file":
+        kept = ApprovalStore(Database("memory"), path=tmp_path / ".langgraph_api" / "a.json")
+        assert await kept.load() == 0
+        yield kept
         return
     if not ADMIN_DSN:
         pytest.skip("TEST_POSTGRES_DSN is not set")
@@ -347,6 +356,106 @@ async def test_the_ledger_names_the_approvals_a_tool_call_asked_for(store: Appro
     store._clock = lambda: later.expires_at + timedelta(seconds=1)
     [expired] = await store.bound_approvals(tool_call=("m4", "c4"))
     assert expired.status == EXPIRED and not expired.used
+
+
+# --- kept in a file (langgraph dev) -----------------------------------------------------
+
+
+def test_only_langgraph_dev_keeps_the_approvals_in_a_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LANGGRAPH_RUNTIME_EDITION", raising=False)
+    monkeypatch.delenv("LANGGRAPH_DISABLE_FILE_PERSISTENCE", raising=False)
+    assert dev_ledger_path() is None
+    monkeypatch.setenv("LANGGRAPH_RUNTIME_EDITION", "postgres")
+    assert dev_ledger_path() is None
+    monkeypatch.setenv("LANGGRAPH_RUNTIME_EDITION", "inmem")
+    assert dev_ledger_path() == Path(".langgraph_api") / "agent_approvals.json"
+    # No file persistence: the dev server keeps no threads either.
+    monkeypatch.setenv("LANGGRAPH_DISABLE_FILE_PERSISTENCE", "true")
+    assert dev_ledger_path() is None
+    # A database always wins (the path is ignored).
+    assert ApprovalStore(Database("postgres", "postgresql://x/y"), path="a.json").path is None
+
+
+async def test_the_approvals_kept_in_a_file_outlive_the_process(tmp_path: Path) -> None:
+    """What a restart or a hot reload of `langgraph dev` reads back: every state, bound."""
+    path = tmp_path / ".langgraph_api" / "agent_approvals.json"
+    first = ApprovalStore(Database("memory"), path=path)
+    await first.load()
+    pending, _, _ = await first.add(_record(interrupt_id="i1", message_id="m1", tool_call_id="c1"))
+    rejected, _, _ = await first.add(_record(interrupt_id="i2", message_id="m2", tool_call_id="c2"))
+    await first.decide(rejected.approval_id, REJECTED, "x", "no")
+    sent, _, _ = await first.add(_record(interrupt_id="i3", message_id="m3", tool_call_id="c3"))
+    await first.decide(sent.approval_id, APPROVED, "x", None)
+    assert await first.consume(sent.approval_id, "h1", "t1") is None
+    unused, _, _ = await first.add(_record(interrupt_id="i4", message_id="m4", tool_call_id="c4"))
+    await first.decide(unused.approval_id, APPROVED, "x", None)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert [p.name for p in path.parent.iterdir()] == [path.name]  # no partial file left
+
+    again = ApprovalStore(Database("memory"), path=path)
+    assert await again.load() == 4
+    assert [r.approval_id for r in await again.for_thread("t1")] == [
+        unused.approval_id,
+        sent.approval_id,
+        rejected.approval_id,
+        pending.approval_id,
+    ]
+    for (message_id, call_id), status, used in (
+        (("m1", "c1"), PENDING, False),
+        (("m2", "c2"), REJECTED, False),
+        (("m3", "c3"), APPROVED, True),
+        (("m4", "c4"), APPROVED, False),
+    ):
+        [bound] = await again.bound_approvals(tool_call=(message_id, call_id))
+        assert (bound.status, bound.used) == (status, used)
+    reloaded = await again.get(pending.approval_id)
+    assert reloaded is not None
+    assert reloaded.public() == pending.public() and reloaded.call_hash == pending.call_hash
+    assert reloaded.requester_context == pending.requester_context
+    assert (await again.get(rejected.approval_id)).comment == "no"
+    assert await again.consume(sent.approval_id, "h1", "t1") == "the approval was already used"
+    # A change made after the restart is kept too; a deleted thread takes its approvals.
+    assert await again.decide(pending.approval_id, REJECTED, "y", None) is not None
+    assert await again.delete_for_thread("t1") == 4
+    third = ApprovalStore(Database("memory"), path=path)
+    assert await third.load() == 0
+
+
+@pytest.mark.parametrize("content", [b"{not json", b'{"version": 99, "approvals": []}', b"[]"])
+async def test_an_approvals_file_that_cannot_be_read_stops_the_startup(
+    tmp_path: Path, content: bytes
+) -> None:
+    path = tmp_path / "agent_approvals.json"
+    path.write_bytes(content)
+    with pytest.raises(LedgerUnavailable, match="cannot be read"):
+        await ApprovalStore(Database("memory"), path=path).load()
+
+
+async def test_while_the_file_cannot_be_written_the_store_answers_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A change not in the file could be lost on a restart: nothing is answered until it is."""
+    path = tmp_path / "agent_approvals.json"
+    store = ApprovalStore(Database("memory"), path=path)
+    await store.load()
+    write = store._write
+
+    def broken(change: int, data: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_write", broken)
+    with pytest.raises(LedgerUnavailable, match="could not be written"):
+        await store.add(_record(message_id="m1", tool_call_id="c1"))
+    with pytest.raises(LedgerUnavailable):
+        await store.bound_approvals(tool_call=("m1", "c1"))
+    with pytest.raises(LedgerUnavailable):
+        await store.for_thread("t1")
+    # Written again (the sweep retries it too): the store answers, and the file has it.
+    monkeypatch.setattr(store, "_write", write)
+    [bound] = await store.bound_approvals(tool_call=("m1", "c1"))
+    assert bound.status == PENDING
+    again = ApprovalStore(Database("memory"), path=path)
+    assert await again.load() == 1
 
 
 # --- the call, as bound and as shown ------------------------------------------------------

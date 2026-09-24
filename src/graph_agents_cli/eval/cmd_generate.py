@@ -520,9 +520,12 @@ def cmd_generate(
     "approve"|"reject", "match": {...}}) and the run continues. A gate no
     instruction matches makes the case an error: generate never approves on
     its own, and rejects such a gate (as it does one whose decision was
-    refused) so that no approval is left pending; the trace records it
-    (approvals[].cleanup), and a gate it may not reject either is named in the
-    case error. A gate that lists requester is decided as the eval identity (it
+    refused) so that no approval is left pending; one it may not reject goes
+    with the case's thread, which it deletes as the eval identity (deleting a
+    thread deletes its approvals). The trace records how (approvals[].cleanup),
+    and the case error names a gate it could neither reject nor delete, which
+    stays pending until it expires or an approver decides it (approves or
+    rejects). A gate that lists requester is decided as the eval identity (it
     started the run); any other with GRAPH_AGENTS_CLI_APPROVER_API_KEY as a
     bearer credential when it is set (a principal holding the gate's role).
 

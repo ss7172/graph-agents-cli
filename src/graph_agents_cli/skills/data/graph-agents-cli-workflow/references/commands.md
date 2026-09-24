@@ -167,9 +167,10 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   start), `3` configuration error. A signal during `run` stops the server it started before
   exiting.
 - `approvals`: the client of the approval routes, for the project's local server (the running
-  one, such as the one a paused `run` kept; with none, a temporary one only for `fastapi` with a
-  postgres checkpointer, since an in-memory paused run, and every approval under `langgraph
-  dev`, ends with its server) or `--url`, with `run`'s credentials. `list` shows a thread's pending approvals (`--all`: decided ones too),
+  one, such as the one a paused `run` kept; with none, a temporary one for `fastapi` with a
+  postgres checkpointer and for `langgraph-server`, whose `langgraph dev` keeps its threads
+  and the approvals in `.langgraph_api/`; not for `fastapi` with the in-memory checkpointer,
+  whose paused run ends with its server) or `--url`, with `run`'s credentials. `list` shows a thread's pending approvals (`--all`: decided ones too),
   or, without `--thread-id`, every one the caller may see (`GET /approvals`: its own and the
   ones a role of its may decide; an agent without that route: the caller's own threads);
   `approve` / `reject` show the call, send only the decision and `--comment`, and stream the

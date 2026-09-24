@@ -31,10 +31,13 @@ turn (and the trace); a gate no instruction matches ends the case with
 Nor does it leave an approval pending (which would keep the eval's thread
 blocked, and leave a write an approver could still approve later): a gate the
 case does not decide (no instruction, too many gates, a refused decision) is
-rejected, as whoever may decide it, and the record's ``cleanup`` says how
-that ended (``rejected``; ``not_pending`` when the server says it no longer
-waits; ``left_pending`` with its id in the case error when the eval may not
-reject it either).
+rejected, as whoever may decide it. When the eval may not reject it (a
+``role:`` gate without an approver credential, or with one that may not
+decide it), the case's thread is deleted as the eval identity, which started
+it and owns it: deleting a thread deletes its approvals. The record's
+``cleanup`` says how that ended (``rejected``; ``not_pending`` when the
+server says it no longer waits; ``thread_deleted``; ``left_pending``, with
+its id in the case error, only when the thread could not be deleted either).
 """
 
 from __future__ import annotations
@@ -73,7 +76,10 @@ _REFUSED_STATUS = {403: "forbidden", 404: "not_found", 409: "not_pending", 410: 
 # How a gate the case did not decide was closed (trace `approvals[].cleanup`).
 CLEANUP_REJECTED = "rejected"  # the eval rejected it: nothing waits, nothing is sent
 CLEANUP_NOT_PENDING = "not_pending"  # the server says it no longer waits (decided, expired, gone)
-CLEANUP_LEFT_PENDING = "left_pending"  # the eval may not reject it: it waits until it expires
+# The eval may not reject it: the case's thread was deleted, and the approval with it.
+CLEANUP_THREAD_DELETED = "thread_deleted"
+# Nor could the thread be deleted: it waits until it expires or an approver decides it.
+CLEANUP_LEFT_PENDING = "left_pending"
 # The 409 code of a decision on an approval that is decided already.
 _NOT_PENDING_CODE = "approval_not_pending"
 
@@ -105,6 +111,12 @@ def _decide(base_url: str, thread_id: str, approval_id: str, decision: str, **kw
     from graph_agents_cli import _chat_client
 
     return _chat_client.decide_approval(base_url, thread_id, approval_id, decision, **kwargs)
+
+
+def _delete_thread(base_url: str, thread_id: str, **kwargs: Any) -> None:
+    from graph_agents_cli import _chat_client
+
+    _chat_client.delete_thread(base_url, thread_id, **kwargs)
 
 
 def _opened(events: Iterable[Any]) -> Iterator[Any]:
@@ -413,8 +425,9 @@ def _close_undecided(
     to its end, not folded into the turn: the case is an error already. A
     gate that run pauses on in turn is rejected the same way (and recorded).
     ``refused``: the decision was refused as not allowed (403), so a reject
-    is too. The outcome goes to each record's ``cleanup`` and, when the eval
-    could not reject, the approval's id to the case error.
+    is too. A gate the eval could not reject goes with the case's thread
+    (``_delete_case_thread``). The outcome goes to each record's ``cleanup``
+    and to the case error.
     """
     comment = f"eval case {case_id}: {why}" if case_id else f"eval: {why}"
     current, current_record = approval, record
@@ -436,13 +449,21 @@ def _close_undecided(
             except ChatHTTPError as exc:
                 refused = exc
             except Exception as exc:  # transport or protocol failure: it may still wait
-                current_record["cleanup"] = CLEANUP_LEFT_PENDING
-                _note_left_pending(turn, current, type(exc).__name__)
+                _delete_case_thread(
+                    base_url, current, current_record, turn, type(exc).__name__, headers, timeout
+                )
                 return
         if refused is not None:
             if _may_still_wait(refused):
-                current_record["cleanup"] = CLEANUP_LEFT_PENDING
-                _note_left_pending(turn, current, f"HTTP {refused.status_code}")
+                _delete_case_thread(
+                    base_url,
+                    current,
+                    current_record,
+                    turn,
+                    f"HTTP {refused.status_code}",
+                    headers,
+                    timeout,
+                )
             else:
                 current_record["cleanup"] = CLEANUP_NOT_PENDING
             return
@@ -478,11 +499,40 @@ def _drain(events: Iterable[Any]) -> dict[str, Any] | None:
     return end
 
 
-def _note_left_pending(turn: dict[str, Any], approval: Approval, why: str) -> None:
+def _delete_case_thread(
+    base_url: str,
+    approval: Approval,
+    record: dict[str, Any],
+    turn: dict[str, Any],
+    why: str,
+    headers: Mapping[str, str],
+    timeout: float,
+) -> None:
+    """Delete the case's thread, with the approval the eval could not reject.
+
+    As the eval identity (``headers``): it started the thread, so owns it,
+    and deleting a thread deletes its approvals, so nobody can approve the
+    eval's call later. Only when that fails too is the approval left pending
+    (named in the case error).
+    """
+    gate = f"approval {approval.approval_id} on thread {approval.thread_id}"
+    try:
+        _delete_thread(base_url, approval.thread_id, headers=dict(headers), timeout=timeout)
+    except Exception as exc:
+        failure = (
+            f"HTTP {exc.status_code}" if isinstance(exc, ChatHTTPError) else type(exc).__name__
+        )
+        record["cleanup"] = CLEANUP_LEFT_PENDING
+        turn["error"] = (turn["error"] or "") + (
+            f"; {gate} is left pending (the eval could not reject it: {why}, nor delete "
+            f"its thread: {failure}): it expires on its own unless an approver approves "
+            "or rejects it first; reject it, or delete the thread"
+        )
+        return
+    record["cleanup"] = CLEANUP_THREAD_DELETED
     turn["error"] = (turn["error"] or "") + (
-        f"; approval {approval.approval_id} on thread {approval.thread_id} is left pending "
-        f"(the eval could not reject it: {why}): it expires on its own, or an approver "
-        "rejects it"
+        f"; {gate} could not be rejected by the eval ({why}): the case's thread was "
+        "deleted, and the approval with it"
     )
 
 

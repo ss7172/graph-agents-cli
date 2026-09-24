@@ -10,6 +10,7 @@
 .venv
 .venv*
 .graph-agents-cli/
+.langgraph_api/
 artifacts/
 deployment/
 tests/

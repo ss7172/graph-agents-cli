@@ -223,6 +223,23 @@ def test_get_health_and_thread_messages(chat_server):
     assert excinfo.value.status_code == 404
 
 
+def test_delete_thread_deletes_the_owners_thread_and_its_approvals(chat_server):
+    chat_server.book.pause("t 1/x", "alice")
+    alice = {"Authorization": "Bearer alice-token"}
+    with pytest.raises(ChatHTTPError) as excinfo:  # not the owner's
+        _chat_client.delete_thread(
+            chat_server.url, "t 1/x", headers={"Authorization": "Bearer bob-token"}
+        )
+    assert excinfo.value.status_code == 404
+    assert chat_server.book.approvals
+    _chat_client.delete_thread(chat_server.url, "t 1/x", headers=alice)
+    assert chat_server.book.approvals == {}
+    # The thread id is one path segment, whatever it holds.
+    assert chat_server.requests[-1]["path"] == "/threads/t%201%2Fx"
+    with pytest.raises(ChatHTTPError):
+        _chat_client.delete_thread(chat_server.url, "t 1/x", headers=alice)
+
+
 def test_contract_sequence_helper_is_complete():
     names = [e for e, _ in contract_sequence()]
     assert names[0] == "message.start" and names[-1] == "message.end"

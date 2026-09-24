@@ -247,6 +247,12 @@ INVALID = [
             "{required_for: {operations: [{path: /x/cancel%20}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x/cancel%00}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: '/x/{id}%09'}]}, approvers: [requester]}",
+            # whitespace next to a dot, a ';', an encoded slash or backslash, an encoded dot
+            "{required_for: {operations: [{path: /x/cancel%20.json}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: /x/cancel%3B}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: /x/cancel%2F}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: /x/cancel%5c}]}, approvers: [requester]}",
+            "{required_for: {operations: [{path: /x/%2e%2e}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x, methods: ['*']}]}, approvers: [requester]}",
             "{required_for: {operations: [{path: /x, method: POST}]}, approvers: [requester]}",
             "{required_for: {operations: [{operationId: x, approval: {approvers: [requester]}}]},"
@@ -623,6 +629,17 @@ def test_denials_fail_closed_the_same_way(
         ("/orders/{id}/can%0Acel", "holds a control character"),
         ("/orders/{id}/cancel\x00", "holds a control character"),
         ("/orders/{id}/cancel%7f", "holds a control character"),
+        # Whitespace next to a dot: servers that trim the name before a format suffix,
+        # or strip trailing dots and spaces, route it to the bare segment.
+        ("/orders/{id}/cancel%20.json", "has whitespace next to a dot"),
+        ("/orders/{id}/cancel%20%2e", "has whitespace next to a dot"),
+        ("/orders/{id}/cancel%20%2E%2e", "has whitespace next to a dot"),
+        ("/orders/{id}/cancel.%20json", "has whitespace next to a dot"),
+        ("/orders/{id}/cancel%C2%A0.json", "has whitespace next to a dot"),
+        ("/orders/{id}%20.json/cancel", "has whitespace next to a dot"),
+        ("/orders/{id}/cancel%09%2ejson", "holds a control character"),
+        ("/files/red%20shirt.json", None),
+        ("/files/v1.2/red%20shirt", None),
     ],
 )
 def test_segments_servers_trim_or_cut_are_refused_by_both(
@@ -638,6 +655,33 @@ def test_segments_servers_trim_or_cut_are_refused_by_both(
     else:
         with pytest.raises(runtime.ApiPolicyError, match=problem):
             runtime.validate_concrete_path(concrete)
+
+
+@pytest.mark.parametrize(
+    ("path", "problem"),
+    [
+        ("/orders/{id}/cancel%3B", "holds ';'"),
+        ("/orders/{id}/cancel%3bx=1", "holds ';'"),
+        ("/orders/{id}/cancel;x=1", "holds ';'"),
+        ("/orders/{id}/cancel%2F", "holds a backslash or a percent-encoded slash"),
+        ("/orders/{id}/a%2fb", "holds a backslash or a percent-encoded slash"),
+        ("/orders/{id}/cancel%5C", "holds a backslash or a percent-encoded slash"),
+        ("/orders/{id}/can\\cel", "holds a backslash or a percent-encoded slash"),
+        ("/orders/{id}/%2e%2e", "'.' or '..' segments, also percent-encoded"),
+        ("/orders/%2E/cancel", "'.' or '..' segments, also percent-encoded"),
+    ],
+)
+def test_lint_refuses_the_segments_the_client_never_sends(
+    runtime: ModuleType, path: str, problem: str
+) -> None:
+    """A declared path the client would refuse to send (an encoded `;`, slash or
+    backslash, an encoded dot segment) is no valid template, for lint as for the runtime."""
+    for side in (cli, runtime):
+        found = side.path_template_problem(path)
+        assert found is not None and problem in found, (side, found)
+    assert cli.path_template_problem(path) == runtime.path_template_problem(path)
+    with pytest.raises(runtime.ApiPolicyError):
+        runtime.validate_concrete_path(path.replace("{id}", "7"))
 
 
 @pytest.mark.parametrize(

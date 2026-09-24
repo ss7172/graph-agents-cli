@@ -192,6 +192,8 @@ tests/load_test/.results/*.csv
 .graph-agents-cli/
 .env.*
 !.env.example
+# The local `langgraph dev` server's threads and the app's approvals (conversation content)
+.langgraph_api/
 
 # A2A Inspector
 tools/a2a-inspector/

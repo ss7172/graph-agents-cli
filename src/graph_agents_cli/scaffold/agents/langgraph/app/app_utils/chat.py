@@ -125,6 +125,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     ApprovalRecord,
     ApprovalStore,
     decision_value,
+    dev_ledger_path,
     is_approval_interrupt,
     may_decide,
     may_view,
@@ -1002,7 +1003,13 @@ class ChatRuntime:
                 graph.checkpointer = self._saver
             self.runs = RunStore(self.db)
             self.threads = ThreadStore(self.db)
-            self.approvals = ApprovalStore(self.db)
+            # Under `langgraph dev` the approvals are kept in a file beside the
+            # server's own threads, which outlive this process (a restart, a
+            # hot reload): the records binding their tool calls must too.
+            self.approvals = ApprovalStore(
+                self.db, path=dev_ledger_path() if self.runtime == LANGGRAPH_SERVER else None
+            )
+            await self.approvals.load()
             # The ledger the API client marks approvals used in, once, before a
             # gated call is sent (the graph runs in this process under both runtimes).
             set_approval_ledger(self.approvals)

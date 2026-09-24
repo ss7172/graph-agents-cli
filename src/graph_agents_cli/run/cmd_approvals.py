@@ -109,10 +109,10 @@ def _target(url: str | None, header: tuple[str, ...], cookie: tuple[str, ...]) -
     Locally, the running server (``run --start-server``, or the one a paused
     run kept) is used. With none running, a temporary server is started (and
     stopped afterwards) only where a paused run and its approval outlive
-    their server: ``fastapi`` with a postgres checkpointer. With the
-    in-memory checkpointer, or under ``langgraph dev`` (which keeps the
-    app's approvals in memory, whatever it keeps of the thread), nothing can
-    be pending.
+    their server: ``fastapi`` with a postgres checkpointer, and
+    ``langgraph-server``, whose ``langgraph dev`` keeps its threads and the
+    app's approvals in ``.langgraph_api/`` of the project. With the fastapi
+    runtime's in-memory checkpointer, nothing can be pending.
     """
     headers = build_headers(header, cookie)
     flags = _build_resume_flags(url, "chat", header, cookie, None)
@@ -134,18 +134,12 @@ def _target(url: str | None, header: tuple[str, ...], cookie: tuple[str, ...]) -
         return
     runtime = getattr(cfg, "runtime", "fastapi") or "fastapi"
     checkpointer = _local_checkpointer(root, getattr(cfg, "checkpointer", "memory") or "memory")
-    if runtime != "fastapi" or checkpointer != "postgres":
-        why = (
-            "`langgraph dev` keeps the app's approvals in memory: they end with the server "
-            "that recorded them"
-            if runtime != "fastapi"
-            else f"with the in-memory checkpointer (CHECKPOINTER={checkpointer}) a paused run "
-            "lives only in the server that ran it"
-        )
+    if runtime == "fastapi" and checkpointer != "postgres":
         raise NoPendingRun(
-            f"No local server is running, and {why}: nothing is pending. A run that pauses "
-            "keeps its one-off server running; `run --start-server` keeps one explicitly. Pass "
-            "--url for a deployed agent."
+            "No local server is running, and with the in-memory checkpointer "
+            f"(CHECKPOINTER={checkpointer}) a paused run lives only in the server that ran it: "
+            "nothing is pending. A run that pauses keeps its one-off server running; "
+            "`run --start-server` keeps one explicitly. Pass --url for a deployed agent."
         )
     with terminate_like_interrupt():
         server = _local_server.ensure_server(

@@ -180,9 +180,11 @@ cleanup}`, `status` being `approved`, `rejected`, `unexpected` (no instruction m
 is `error`), or the refusal of the decision (`forbidden`, `not_found`, `not_pending`,
 `expired`). `cleanup` says how a gate the case did not decide (unexpected, or its decision
 refused) was closed so the eval leaves no approval pending: `rejected` (the eval rejected it,
-as whoever may decide it), `not_pending` (the server says it no longer waits), or
-`left_pending` (the eval may not reject it either: its id is in the case error, and it waits
-until it expires or an approver rejects it); `null` for a gate the case decided. A turn that passed a gate folds the paused run and its continuation into one
+as whoever may decide it), `not_pending` (the server says it no longer waits),
+`thread_deleted` (the eval may not reject it, so it deleted the case's thread as the eval
+identity, which owns it: deleting a thread deletes its approvals), or `left_pending` (nor could
+the thread be deleted: its id is in the case error, and it waits until it expires unless an
+approver approves or rejects it first); `null` for a gate the case decided. A turn that passed a gate folds the paused run and its continuation into one
 record: the replies, tool calls, usage and latency of both.
 Judges and `expect.scope: all_turns` read `turns`; a multi-turn trace without them (an older file
 or an `eval.generate` override) shows the judge "[reply not recorded in the trace]" for the

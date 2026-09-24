@@ -38,7 +38,9 @@ first (`ApprovalStore.bound_approvals`) and sends no call an approval was
 asked for.
 
 Records (table `approvals`, `agent_approvals` under langgraph-server, in the
-app's database; in process memory without one): the thread, the run that
+app's database; in process memory without one, and under `langgraph dev` also
+in the file `.langgraph_api/agent_approvals.json` beside the dev server's own
+threads, see `dev_ledger_path`): the thread, the run that
 paused, the interrupt, the requester's hashed id and the roles and public
 attributes the run acted with (never credentials), the tool call that asked
 (the model message and its call id), the call (API, method, path, operation
@@ -55,17 +57,37 @@ every read treats it so. Deleting a thread deletes its approvals.
 Who sees an approval (`may_view`): the thread's owner, a principal who may
 decide it, and roles in `AUTH_READ_ACROSS_ROLES` (listing only; they see the
 query and body only under `TRACE_CAPTURE=full`).
+
+`langgraph dev` keeps its threads in `.langgraph_api/` and loads them again
+after a restart or a hot reload (a code change reloads the server), so the
+approvals that bind their tool calls must outlive the process too: without
+them, a run continued without input or replayed from a checkpoint would find
+no record of a rejected, pending or used approval and, once the policy no
+longer gates the call, send it. There the store writes its records to
+`.langgraph_api/agent_approvals.json` (mode 0600) before a change takes
+effect (a pending approval before the run ends awaiting it, a decision
+before the run resumes, a use before the call is sent) and reads them at
+startup; a file it cannot read stops the startup, and while a write fails
+the store answers nothing (every lookup fails, so calls are refused) until
+it writes again. Deleting `.langgraph_api/` resets the threads and their
+approvals together. Without file persistence (`LANGGRAPH_DISABLE_FILE_PERSISTENCE`)
+the dev server keeps no threads either, and the approvals stay in memory.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
+import os
+import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
@@ -79,7 +101,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     BoundApproval,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, read_across_roles
-from {{cookiecutter.agent_directory}}.app_utils.db import Database, capture_full
+from {{cookiecutter.agent_directory}}.app_utils.db import Database, StorageNotReady, capture_full
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +128,36 @@ MEMORY_APPROVALS_CAP = 10_000
 COMMENT_MAX_CHARS = 1000
 # Payload keys dropped once an approval is decided or expired (unless TRACE_CAPTURE=full).
 CALL_CONTENT_KEYS = ("query", "body")
+
+# Where `langgraph dev` keeps its threads (relative to the directory it runs in),
+# and the file the app keeps their approvals in there.
+DEV_STATE_DIR = ".langgraph_api"
+DEV_LEDGER_FILE = "agent_approvals.json"
+LEDGER_FILE_VERSION = 1
+_DATETIME_FIELDS = ("decided_at", "used_at", "created_at", "expires_at")
+
+
+def dev_ledger_path() -> Path | None:
+    """The file the approvals are kept in under `langgraph dev`, else None.
+
+    `langgraph dev` runs LangGraph Server's in-memory edition, which keeps its
+    threads in `.langgraph_api/` of the directory it runs in (unless file
+    persistence is off): the approvals are kept there too, so both survive a
+    restart or a hot reload. Everywhere else they live in the app's database
+    (or, with the fastapi runtime's in-memory checkpointer, in memory with
+    the threads).
+    """
+    edition = (os.environ.get("LANGGRAPH_RUNTIME_EDITION") or "").strip().lower()
+    if edition != "inmem":
+        return None
+    disabled = (os.environ.get("LANGGRAPH_DISABLE_FILE_PERSISTENCE") or "").strip().lower()
+    if disabled == "true":
+        return None
+    return Path(DEV_STATE_DIR) / DEV_LEDGER_FILE
+
+
+class LedgerUnavailable(StorageNotReady):
+    """The approvals file cannot be written or read: the store answers nothing (a 503)."""
 
 
 def utcnow() -> datetime:
@@ -401,21 +453,140 @@ def _record_from_row(row: Mapping[str, Any]) -> ApprovalRecord:
     )
 
 
+def _row_of(record: ApprovalRecord) -> dict[str, Any]:
+    """A record as the approvals file keeps it (the table's columns, times in ISO form)."""
+    row = asdict(record)
+    for key in _DATETIME_FIELDS:
+        row[key] = _iso(row[key])
+    return row
+
+
 class ApprovalStore:
     """The approvals table under postgres, an in-process dict otherwise.
 
     Also the ledger `api_client` marks approvals used in (`consume`). Times
     are this process's clock (`clock`), for the expiry and the decision alike.
+    Without a database, `path` (`dev_ledger_path`, under `langgraph dev`) is
+    the file the records are kept in: call `load` once before use.
     """
 
-    def __init__(self, db: Database, *, clock: Any = utcnow) -> None:
+    def __init__(
+        self, db: Database, *, clock: Any = utcnow, path: str | Path | None = None
+    ) -> None:
         self.db = db
         self.table = db.approvals_table
         self._clock = clock
         self._memory: OrderedDict[str, ApprovalRecord] = OrderedDict()
+        self.path = Path(path) if path is not None and not db.is_postgres else None
+        # The records, which graph runs may reach from other threads.
+        self._lock = threading.Lock()
+        # One file write at a time; a write older than the file's is skipped.
+        self._file_lock = threading.Lock()
+        self._changes = 0  # changes numbered as they are written out
+        self._saved = 0  # the newest change the file holds
+        self._failed = 0  # the newest change whose write failed
 
     def now(self) -> datetime:
         return self._clock()
+
+    # -- the file (langgraph dev) ------------------------------------------------
+
+    async def load(self) -> int:
+        """Read the records the file keeps (none without a file); how many.
+
+        Raises `LedgerUnavailable` when the file exists but cannot be read:
+        the server must not start without the approvals that bind the tool
+        calls of its threads.
+        """
+        if self.path is None:
+            return 0
+        records = await asyncio.to_thread(self._read)
+        with self._lock:
+            self._memory = OrderedDict((r.approval_id, r) for r in records)
+        logger.info("approvals kept in %s: %d loaded", self.path, len(records))
+        return len(records)
+
+    def _read(self) -> list[ApprovalRecord]:
+        assert self.path is not None
+        try:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            raise self._unreadable(exc) from exc
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict) or data.get("version") != LEDGER_FILE_VERSION:
+                raise ValueError(f"not a version {LEDGER_FILE_VERSION} approvals file")
+            return [_record_from_row(row) for row in data["approvals"]]
+        except Exception as exc:
+            raise self._unreadable(exc) from exc
+
+    def _unreadable(self, exc: BaseException) -> LedgerUnavailable:
+        return LedgerUnavailable(
+            f"the approvals file {self.path} cannot be read ({type(exc).__name__}). It binds "
+            "the tool calls of this server's threads to their approvals: without it, calls "
+            "rejected, pending or sent already could be sent again. Restore it, or delete "
+            f"{self.path.parent if self.path else DEV_STATE_DIR}/ to reset the dev server's "
+            "threads and approvals together."
+        )
+
+    def _dump(self) -> bytes:
+        """The records as the file keeps them (call with `_lock` held)."""
+        rows = [_row_of(r) for r in self._memory.values()]
+        return json.dumps({"version": LEDGER_FILE_VERSION, "approvals": rows}, default=str).encode()
+
+    def _write(self, change: int, data: bytes) -> None:
+        """Replace the file with `data` (atomically, mode 0600), unless it holds a newer change."""
+        assert self.path is not None
+        with self._file_lock:
+            if change <= self._saved:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            partial = self.path.with_name(f".{self.path.name}.{os.getpid()}.partial")
+            try:
+                fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as out:
+                    out.write(data)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(partial, self.path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(partial)
+                raise
+            self._saved = change
+
+    async def _save(self) -> None:
+        """Write the records out, after a change and before it takes effect (no file: nothing).
+
+        A failed write raises `LedgerUnavailable`, and the store answers
+        nothing until a later write succeeds (`_check_saved`).
+        """
+        if self.path is None:
+            return
+        with self._lock:
+            self._changes += 1
+            change = self._changes
+            data = self._dump()
+        try:
+            await asyncio.to_thread(self._write, change, data)
+        except Exception as exc:
+            self._failed = max(self._failed, change)
+            logger.error(
+                "the approvals file %s could not be written (%s): gated API calls and runs "
+                "on threads with approvals are refused until it is",
+                self.path,
+                type(exc).__name__,
+            )
+            raise LedgerUnavailable(
+                f"the approvals file could not be written ({type(exc).__name__})"
+            ) from exc
+
+    async def _check_saved(self) -> None:
+        """Before any use of the records: they are all in the file (a failed write is retried)."""
+        if self.path is not None and self._saved < self._failed:
+            await self._save()
 
     # -- writes -----------------------------------------------------------------
 
@@ -430,21 +601,29 @@ class ApprovalStore:
         """
         now = self.now()
         if not self.db.is_postgres:
-            superseded = 0
-            for existing in list(self._memory.values()):
-                if (
-                    existing.thread_id != record.thread_id
-                    or existing.interrupt_id != record.interrupt_id
-                    or existing.status != PENDING
-                ):
-                    continue
-                if existing.call_hash == record.call_hash and existing.expires_at > now:
-                    return existing, False, 0
-                self._close(existing, EXPIRED, now)
-                superseded += 1
-            self._memory[record.approval_id] = record
-            self._evict()
-            return record, True, superseded
+            await self._check_saved()
+            with self._lock:
+                superseded = 0
+                kept = None
+                for existing in list(self._memory.values()):
+                    if (
+                        existing.thread_id != record.thread_id
+                        or existing.interrupt_id != record.interrupt_id
+                        or existing.status != PENDING
+                    ):
+                        continue
+                    if existing.call_hash == record.call_hash and existing.expires_at > now:
+                        kept = existing
+                        break
+                    self._close(existing, EXPIRED, now)
+                    superseded += 1
+                if kept is None:
+                    self._memory[record.approval_id] = record
+                    self._evict()
+            if kept is not None and not superseded:
+                return kept, False, 0
+            await self._save()
+            return (kept, False, superseded) if kept is not None else (record, True, superseded)
         rows = await self.db.fetchall(
             f"""
             UPDATE {self.table}
@@ -521,10 +700,13 @@ class ApprovalStore:
         now = self.now()
         comment = (comment or "").strip()[:COMMENT_MAX_CHARS] or None
         if not self.db.is_postgres:
-            record = self._memory.get(approval_id)
-            if record is None or not record.is_pending(now):
-                return None
-            self._close(record, status, now, decided_by=decided_by, comment=comment)
+            await self._check_saved()
+            with self._lock:
+                record = self._memory.get(approval_id)
+                if record is None or not record.is_pending(now):
+                    return None
+                self._close(record, status, now, decided_by=decided_by, comment=comment)
+            await self._save()
             return record
         row = await self.db.fetchone(
             f"""
@@ -548,10 +730,14 @@ class ApprovalStore:
         """
         now = self.now()
         if not self.db.is_postgres:
-            record = self._memory.get(approval_id)
-            problem = self._unusable(record, call_hash, thread_id)
-            if problem is None and record is not None:
-                record.used_at = now
+            await self._check_saved()
+            with self._lock:
+                record = self._memory.get(approval_id)
+                problem = self._unusable(record, call_hash, thread_id)
+                if problem is None and record is not None:
+                    record.used_at = now
+            if problem is None:
+                await self._save()  # before the call is sent
             return problem
         row = await self.db.fetchone(
             f"""
@@ -588,10 +774,13 @@ class ApprovalStore:
         """Mark one pending approval `expired` (its run no longer waits for it); None if not pending."""
         now = self.now()
         if not self.db.is_postgres:
-            record = self._memory.get(approval_id)
-            if record is None or record.status != PENDING:
-                return None
-            self._close(record, EXPIRED, now)
+            await self._check_saved()
+            with self._lock:
+                record = self._memory.get(approval_id)
+                if record is None or record.status != PENDING:
+                    return None
+                self._close(record, EXPIRED, now)
+            await self._save()
             return record
         row = await self.db.fetchone(
             f"""
@@ -605,12 +794,21 @@ class ApprovalStore:
         return _record_from_row(row) if row is not None else None
 
     async def expire_due(self) -> list[ApprovalRecord]:
-        """Mark every pending approval past its expiry `expired`; return them (the sweep)."""
+        """Mark every pending approval past its expiry `expired`; return them (the sweep).
+
+        Also retries a failed write of the approvals file.
+        """
         now = self.now()
         if not self.db.is_postgres:
-            due = [r for r in self._memory.values() if r.status == PENDING and r.expires_at <= now]
-            for record in due:
-                self._close(record, EXPIRED, now)
+            await self._check_saved()
+            with self._lock:
+                due = [
+                    r for r in self._memory.values() if r.status == PENDING and r.expires_at <= now
+                ]
+                for record in due:
+                    self._close(record, EXPIRED, now)
+            if due:
+                await self._save()
             return due
         rows = await self.db.fetchall(
             f"""
@@ -626,9 +824,13 @@ class ApprovalStore:
     async def delete_for_thread(self, thread_id: str) -> int:
         """Delete every approval of a thread (the thread was deleted); how many."""
         if not self.db.is_postgres:
-            gone = [k for k, r in self._memory.items() if r.thread_id == thread_id]
-            for key in gone:
-                del self._memory[key]
+            await self._check_saved()
+            with self._lock:
+                gone = [k for k, r in self._memory.items() if r.thread_id == thread_id]
+                for key in gone:
+                    del self._memory[key]
+            if gone:
+                await self._save()
             return len(gone)
         rows = await self.db.fetchall(
             f"DELETE FROM {self.table} WHERE thread_id = %s RETURNING approval_id", (thread_id,)
@@ -636,6 +838,12 @@ class ApprovalStore:
         return len(rows)
 
     # -- reads ------------------------------------------------------------------
+
+    async def _records(self) -> list[ApprovalRecord]:
+        """The records kept without a database, in the order they were added."""
+        await self._check_saved()
+        with self._lock:
+            return list(self._memory.values())
 
     async def bound_approvals(
         self, *, tool_call: tuple[str, str] | None = None, interrupt_id: str | None = None
@@ -653,7 +861,7 @@ class ApprovalStore:
         if not self.db.is_postgres:
             records = [
                 r
-                for r in self._memory.values()
+                for r in await self._records()
                 if (message_id and r.message_id == message_id and r.tool_call_id == call_id)
                 or (interrupt_id and r.interrupt_id == interrupt_id)
             ]
@@ -681,7 +889,9 @@ class ApprovalStore:
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         if not self.db.is_postgres:
-            return self._memory.get(approval_id)
+            await self._check_saved()
+            with self._lock:
+                return self._memory.get(approval_id)
         row = await self.db.fetchone(
             f"SELECT {_COLUMNS} FROM {self.table} WHERE approval_id = %s", (approval_id,)
         )
@@ -691,7 +901,7 @@ class ApprovalStore:
         """Every approval of a thread, newest first."""
         if not self.db.is_postgres:
             return sorted(
-                (r for r in self._memory.values() if r.thread_id == thread_id),
+                (r for r in await self._records() if r.thread_id == thread_id),
                 key=lambda r: r.created_at,
                 reverse=True,
             )
@@ -731,7 +941,7 @@ class ApprovalStore:
         if not self.db.is_postgres:
             rows = [
                 r
-                for r in sorted(self._memory.values(), key=lambda r: r.created_at, reverse=True)
+                for r in sorted(await self._records(), key=lambda r: r.created_at, reverse=True)
                 if (across or r.requester_hash == own or roles & set(r.approvers))
                 and (status is None or r.effective_status(now) == status)
             ]
