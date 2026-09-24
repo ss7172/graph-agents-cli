@@ -65,6 +65,8 @@ graph-agents-cli-manifest.yaml
 | `uv run pytest` | Unit and integration tests with the deterministic `fake` model and the in-memory checkpointer (`TEST_POSTGRES_DSN` opts the Postgres tests in) |
 | `graph-agents-cli eval run` | Generate traces (`artifacts/traces/`) and grade them against the gate in `tests/eval/eval_config.yaml` |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool's `API_CALLS` |
+| `graph-agents-cli api show` / `api check` | The effective outbound API policy and every tool's declared calls / the policy check alone |
+| `graph-agents-cli api add\|access\|allow\|deny\|revoke\|limits\|remove ...` | Change `api-policy.yaml` (diff first, `--dry-run` to preview; see Outbound API access) |
 | `graph-agents-cli build` | `docker build` with the runtime's Dockerfile |
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
 | `graph-agents-cli infra check --env <env>` | Read-only report of cluster, GitHub and placeholder prerequisites |
@@ -116,7 +118,8 @@ at startup):
 - **CORS:** off unless `CORS_ALLOW_ORIGINS` lists origins.
 - **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`).
 
-No rate limiting is built in: configure it at the gateway or ingress.
+No inbound rate limiting is built in: configure it at the gateway or ingress (outbound calls
+can be limited per API, see below).
 
 ## Model and judge
 
@@ -131,32 +134,71 @@ leave and publish a privacy notice before connecting one.
 Tools reach external APIs only through `get_client("<api>")` of
 `{{cookiecutter.agent_directory}}/app_utils/api_client.py`, which enforces `api-policy.yaml` and refuses, before
 sending, any API, method or operation outside it. It fails closed: without the file every outbound call is
-refused. Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`none`, `bearer` with
+refused. The client sends every method the policy allows (`request()`, or `get`, `post`, `put`, `patch`,
+`delete`, `head`, `options`) with a JSON body, query parameters and headers.
+
+Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`none`, `bearer` with
 `token_env`, or `forward`, which sends the caller's own `attributes["credentials"][<api>]`; not available
 under langgraph-server, which would persist it), the required `allowed_methods`, and optional
 `allowed_operations` / `denied_operations` (an entry pinning both `operationId` and `path` needs both to
-match), `openapi`, `timeouts_ms` and `pagination` (`max_page_size` is enforced for every spelling of the
-parameter). Unknown and repeated keys are errors, so a typo never widens access. Denials win and fail closed: a
-call that does not name a field a denial pins is refused by it, so a denial by `operationId` alone refuses every
-call without `operation_id` (name it on the call and in `API_CALLS`, or pin the denial's `path`). Paths match
-after decoding percent-encoded unreserved characters and ignoring one trailing slash; letter case counts for
-allows and is ignored for denials. Pass model input as `path_params` of a declared template, never as part of a
-concrete path.
+match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the
+parameter) and `limits`: `max_calls_per_run` (calls to that API within one agent run) and
+`rate_per_minute` (a token bucket per process, so per replica). A call over a limit is refused before it is
+sent, with a reason the model can read. `approval` is reserved for human approval of calls, which is planned:
+the key is refused until then. Unknown and repeated keys are errors, so a typo never widens access. Denials
+win and fail closed: a call that does not name a field a denial pins is refused by it, so a denial by
+`operationId` alone refuses every call without `operation_id` (name it on the call and in `API_CALLS`, or pin
+the denial's `path`). Paths match after decoding percent-encoded unreserved characters and ignoring one
+trailing slash; letter case counts for allows and is ignored for denials. Pass model input as `path_params`
+of a declared template, never as part of a concrete path.
 {%- if cookiecutter.has_api_policy %}
 This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
 {%- if cookiecutter.example_api %}
 `{{cookiecutter.agent_directory}}/tools/example_api.py` shows the pattern with one call the policy allows
 (`{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }}` on `{{ cookiecutter.example_api.api }}`): replace it with your own.
 {%- else %}
-No example tool was generated: the first API allows no GET the example could make.
+No example tool was generated: the first API allows no operation the example could make.
 {%- endif %}
 {%- else %}
-No policy is declared yet: seed one with `graph-agents-cli create --api-policy <file>`, or write
-`api-policy.yaml` by hand and add `api_policy: {policy_file: api-policy.yaml}` to the manifest.
+No policy is declared yet: add an API with `graph-agents-cli api add` (below).
 {%- endif %}
 Every `*.py` under `{{cookiecutter.agent_directory}}/tools/` (subpackages included) declares `API_CALLS` as one
-module-level literal list; `graph-agents-cli lint` fails on an undeclared or disallowed call, and on `API_CALLS`
-changed anywhere else (`+=`, `.append()`, a conditional assignment), because it cannot read those calls.
+module-level literal list; `graph-agents-cli lint` fails on an undeclared or disallowed call (and prints the
+`graph-agents-cli api` command that would allow it), and on `API_CALLS` changed anywhere else (`+=`,
+`.append()`, a conditional assignment), because it cannot read those calls.
+
+### Changing the policy
+
+`api-policy.yaml` belongs to this project and evolves with the agent; `scaffold upgrade` and `enhance` never
+touch it. There is no default access level: every API lists its methods explicitly.
+
+| Command | Change |
+|---|---|
+| `graph-agents-cli api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] --access read-only\|read-write\|custom [--methods M,...] [--openapi SPEC] [--max-calls-per-run N] [--rate-per-minute N]` | Declare an API; `--access` is required. read-only = GET, HEAD; read-write = GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods` |
+| `graph-agents-cli api access NAME read-only\|read-write\|custom [--methods M,...]` | Set the allowed methods |
+| `graph-agents-cli api allow NAME OPERATION_ID` (or `--method M --path P`) | Add an `allowed_operations` entry (with `openapi`, the id must exist and its method and path are filled in). Creating the list narrows access to the listed operations: the command says so |
+| `graph-agents-cli api deny NAME OPERATION_ID` (or `--method M --path P`) | Add a `denied_operations` entry |
+| `graph-agents-cli api revoke NAME OPERATION_ID [--from allowed\|denied]` | Remove matching entries |
+| `graph-agents-cli api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none]` | Set or clear limits |
+| `graph-agents-cli api remove NAME` | Remove an API |
+
+Each command validates the result with the rules the agent enforces, prints a diff (comments and key order
+are kept), keeps the manifest (`secrets.keys`), `.env.example` and the chart's `values.yaml` in step, and
+writes atomically; `--dry-run` shows the diff only. Widening access (more methods or operations, a lifted
+denial, a raised limit) is a reviewed change: `.github/CODEOWNERS` covers `api-policy.yaml`. Narrowing is
+always safe, and the runtime keeps refusing anything outside the policy even if a tool declares otherwise.
+
+Adding functionality to a working agent, for example letting it update orders:
+
+1. `graph-agents-cli api allow orders updateOrder` (and `api access orders custom --methods ...` if the
+   method is not allowed yet); review the printed diff.
+2. Write the tool with `{"api": "orders", "method": "PATCH", "operation_id": "updateOrder", "path": ...}` in
+   `API_CALLS`, calling `get_client("orders")`.
+3. `graph-agents-cli api check` (or `lint`), then add eval cases in `tests/eval/datasets/` and run
+   `graph-agents-cli eval run`.
+4. Open a pull request: CODEOWNERS approves the policy change.
+5. Build and deploy: the policy is baked into the image, so what passed staging is exactly what reaches
+   production; only base URLs (the chart's `env`) and tokens (the Secret) differ per environment.
 
 ## Authentication
 
@@ -287,7 +329,7 @@ and reviewers. From a workstation `deploy` is allowed for `dev` and refused for 
 ## GitHub settings the workflows rely on (not created by the CLI)
 
 These are repository settings a workflow cannot create with the default token; `graph-agents-cli infra check`
-reports whether they exist when a `GITHUB_TOKEN` is available.
+reports whether they exist when `gh` is logged in (or `GITHUB_TOKEN` is set).
 
 - Environment `production`: required reviewers (at least one), "prevent self-review" enabled, deployment
   branches restricted to `main`, optional wait timer.

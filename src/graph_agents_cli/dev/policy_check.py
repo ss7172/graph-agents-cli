@@ -18,8 +18,8 @@ Every tool module under ``<agent_dir>/tools/`` (subpackages included) declares, 
 the external API calls it makes::
 
     API_CALLS = [
-        {"api": "example", "method": "GET", "operation_id": "getItem"},
-        {"api": "example", "method": "GET", "path": "/items/{item_id}"},
+        {"api": "orders", "method": "POST", "operation_id": "createOrder", "path": "/orders"},
+        {"api": "orders", "method": "GET", "path": "/orders/{order_id}"},
     ]
 
 The list is read with :mod:`ast` (``ast.literal_eval`` on the assigned value),
@@ -37,6 +37,10 @@ Fail closed: without a policy file every declared call is refused, as the
 runtime would refuse it. A module that still declares the retired
 ``PRODUCT_CALLS`` is an error with a rename hint, and ``auth: forward`` is an
 error under the ``langgraph-server`` runtime.
+
+Every refused call carries a hint: the ``graph-agents-cli api`` command that
+would allow it (a reviewed change to ``api-policy.yaml``), or what to change in
+the tool.
 
 ``example_call`` uses the same judgement to pick the call that ``create``
 renders into the example tool, so a fresh project passes this check.
@@ -59,14 +63,17 @@ from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._api_policy import (
+    ANY_METHOD,
     CALLS_NAME,
     HTTP_METHODS,
     LEGACY_CALLS_NAME,
     POLICY_FILENAME,
     ApiPolicyFileError,
     ExampleCall,
+    denial_matches,
     forward_runtime_problem,
     load_policy_document,
+    operation_matches,
     path_matches,
     path_template_problem,
     refusal_reason,
@@ -106,6 +113,9 @@ class CheckResult:
     call: DeclaredCall
     status: str
     reason: str = ""
+    # For a refused call: the `graph-agents-cli api` command that would allow it,
+    # or what to change in the tool.
+    hint: str = ""
 
     @property
     def is_violation(self) -> bool:
@@ -455,7 +465,10 @@ def check_call(
     """Evaluate one declared call against the policy and (optionally) the API's spec."""
     if document is None:
         return CheckResult(
-            call, STATUS_DENIED, f"no {policy_file}: outbound API calls are refused (fail closed)"
+            call,
+            STATUS_DENIED,
+            f"no {policy_file}: outbound API calls are refused (fail closed)",
+            add_hint(call.api),
         )
     api = document["apis"].get(call.api)
     if api is None:
@@ -464,6 +477,7 @@ def check_call(
             call,
             STATUS_DENIED,
             f"API {call.api!r} is not declared in {policy_file} (declared: {declared})",
+            add_hint(call.api),
         )
     spec = (specs or {}).get(call.api)
     by_id, pairs = _index_openapi(spec) if spec is not None else ({}, set())
@@ -474,7 +488,12 @@ def check_call(
         path = by_id[call.operation_id][0]
     reason = refusal_reason(api, call.method, call.operation_id, path)
     if reason:
-        return CheckResult(call, STATUS_DENIED, reason + _spec_operation_hint(call, by_id))
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            reason + _spec_operation_hint(call, by_id),
+            refusal_hint(call, api, path),
+        )
 
     if spec is not None:
         if call.operation_id and call.operation_id in by_id:
@@ -504,12 +523,86 @@ def check_call(
 
 
 # ---------------------------------------------------------------------------
+# Hints: the `graph-agents-cli api` command that would allow a refused call
+# ---------------------------------------------------------------------------
+
+API_COMMAND = "graph-agents-cli api"
+
+
+def add_hint(api_name: str) -> str:
+    """How to declare an API the policy does not know (every choice is explicit)."""
+    return (
+        f"{API_COMMAND} add {api_name} --base-url-env <NAME>_API_BASE_URL "
+        "--auth <none|bearer|forward> --access <read-only|read-write|custom>"
+    )
+
+
+def _operation_args(call: DeclaredCall) -> str:
+    if call.operation_id:
+        return call.operation_id
+    return f"--method {call.method} --path {call.path}"
+
+
+def _allowed_methods(api: Mapping[str, Any]) -> list[str]:
+    methods = [str(m).upper() for m in api.get("allowed_methods") or []]
+    return list(HTTP_METHODS) if ANY_METHOD in methods else list(dict.fromkeys(methods))
+
+
+def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -> str:
+    """What would make ``api`` accept ``call``: the exact ``graph-agents-cli api`` commands.
+
+    Each is a reviewed change to api-policy.yaml (CODEOWNERS covers it). A call
+    refused only because it names no operation id is fixed in the tool instead.
+    """
+    steps: list[str] = []
+    allowed = _allowed_methods(api)
+    if call.method not in allowed:
+        methods = ",".join(m for m in HTTP_METHODS if m in {*allowed, call.method})
+        steps.append(f"{API_COMMAND} access {call.api} custom --methods {methods}")
+    for entry in api.get("denied_operations") or []:
+        if denial_matches(entry, call.method, call.operation_id, path):
+            unnamed = entry.get("operationId") is not None and not call.operation_id
+            if unnamed:
+                return (
+                    f"name the operation: add operation_id to the call and to {CALLS_NAME} "
+                    "(a denial by operationId refuses calls that name none)"
+                )
+            revoke = (
+                f"--method {call.method} --path {entry['path']}"
+                if entry.get("operationId") is None and entry.get("path") is not None
+                else str(entry.get("operationId"))
+            )
+            steps.append(
+                f"{API_COMMAND} revoke {call.api} {revoke} --from denied (lifts a deliberate "
+                "denial: make sure it should go)"
+            )
+            return "; then ".join(steps)
+    allowed_operations = api.get("allowed_operations")
+    if allowed_operations is not None and not any(
+        operation_matches(entry, call.method, call.operation_id, path)
+        for entry in allowed_operations
+    ):
+        if call.operation_id or call.path:
+            steps.append(f"{API_COMMAND} allow {call.api} {_operation_args(call)}")
+    return "; then ".join(steps)
+
+
+# ---------------------------------------------------------------------------
 # The example tool's call
 # ---------------------------------------------------------------------------
 
 EXAMPLE_TOOL = "example_api.py"
-# The last resort when the policy leaves every operation open.
-DEFAULT_EXAMPLE_OPERATION = ("getItem", "/items/{item_id}")
+# The last resort when the policy leaves every operation open: one per method,
+# tried in the order of the API's allowed_methods.
+DEFAULT_EXAMPLE_OPERATIONS = {
+    "GET": ("getItem", "/items/{item_id}"),
+    "HEAD": ("checkItem", "/items/{item_id}"),
+    "POST": ("createItem", "/items"),
+    "PUT": ("replaceItem", "/items/{item_id}"),
+    "PATCH": ("updateItem", "/items/{item_id}"),
+    "DELETE": ("deleteItem", "/items/{item_id}"),
+    "OPTIONS": ("describeItems", "/items"),
+}
 # The example is rendered into Python source: operation ids and paths outside
 # these character sets are skipped rather than escaped.
 _EXAMPLE_OPERATION_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,99}$")
@@ -520,6 +613,7 @@ _EXAMPLE_RESERVED_PARAMS = frozenset(
     {
         "Any",
         "ToolRuntime",
+        "body",
         "callbacks",
         "client",
         "config",
@@ -557,7 +651,8 @@ def _example_renderable(operation_id: str | None, path: str) -> bool:
         return False
     if not _EXAMPLE_PATH_RE.match(path) or path_template_problem(path) is not None:
         return False
-    return all(_example_param_ok(name) for name in ExampleCall(api="x", path=path).params)
+    params = ExampleCall(api="x", method="GET", path=path).params
+    return all(_example_param_ok(name) for name in params)
 
 
 def _load_example_spec(api: Mapping[str, Any], base_dir: Path | None) -> dict[str, Any] | None:
@@ -575,47 +670,64 @@ def _load_example_spec(api: Mapping[str, Any], base_dir: Path | None) -> dict[st
 
 def _example_candidates(
     api: Mapping[str, Any], spec: dict[str, Any] | None
-) -> list[tuple[str | None, str]]:
-    """``(operation_id, path)`` GET candidates for the example, best first."""
+) -> list[tuple[str, str | None, str]]:
+    """``(METHOD, operation_id, path)`` candidates for the example, best first.
+
+    Every method counts: the policy's own order decides (its entries first,
+    each with its pinned methods or else ``allowed_methods`` in the order the
+    file lists them).
+    """
     operations = _spec_operations(spec) if spec is not None else []
-    spec_gets = [(path, op_id) for path, method, op_id in operations if method == "GET"]
-    candidates: list[tuple[str | None, str]] = []
+    allowed = _allowed_methods(api)
+    candidates: list[tuple[str, str | None, str]] = []
     for entry in api.get("allowed_operations") or []:
-        methods = entry.get("methods")
-        if methods and "GET" not in {str(m).upper() for m in methods}:
-            continue
-        operation_id = entry.get("operationId")
-        path = entry.get("path")
-        if path is None:
-            # An entry by operationId alone: only the spec knows its path.
-            path = next((p for p, op_id in spec_gets if op_id == operation_id), None)
-        elif operation_id is None:
-            # Name the operation when the spec does, so denials by operationId pass.
-            operation_id = next(
-                (op_id for p, op_id in spec_gets if op_id and path_matches(p, path)), None
-            )
-        if path is not None:
-            candidates.append((operation_id, path))
-    candidates.extend((op_id, path) for path, op_id in spec_gets)
+        pinned = [str(m).upper() for m in entry.get("methods") or []]
+        for method in [m for m in (pinned or allowed) if m in allowed]:
+            operation_id = entry.get("operationId")
+            path = entry.get("path")
+            if path is None:
+                # An entry by operationId alone: only the spec knows its path.
+                path = next(
+                    (p for p, m, op_id in operations if op_id == operation_id and m == method),
+                    None,
+                )
+            elif operation_id is None:
+                # Name the operation when the spec does, so denials by operationId pass.
+                operation_id = next(
+                    (
+                        op_id
+                        for p, m, op_id in operations
+                        if op_id and m == method and path_matches(p, path)
+                    ),
+                    None,
+                )
+            if path is not None:
+                candidates.append((method, operation_id, path))
+    candidates.extend((m, op_id, p) for p, m, op_id in operations if m in allowed)
     if spec is not None or not api.get("openapi"):
         # When the API names a spec that cannot be read here, lint would judge the
         # default against a spec this check never saw, so it is not offered.
-        candidates.append(DEFAULT_EXAMPLE_OPERATION)
+        for method in allowed:
+            operation_id, path = DEFAULT_EXAMPLE_OPERATIONS[method]
+            candidates.append((method, operation_id, path))
     return list(dict.fromkeys(candidates))
 
 
 def example_call(
     document: Mapping[str, Any], *, base_dir: Path | None = None
 ) -> ExampleCall | None:
-    """The GET the example tool makes on the policy's first API; None when it allows none.
+    """The call the example tool makes on the policy's first API; None when it allows none.
 
-    Candidates, in order: each ``allowed_operations`` entry that admits GET
-    (a missing path or operationId taken from the API's OpenAPI spec), each GET
-    of that spec, then ``GET getItem /items/{item_id}``. The first one this
-    check accepts wins (``check_call``: the runtime client's rules plus the
-    spec), so the rendered example passes ``lint`` and the project's policy
-    test. ``base_dir`` resolves a relative ``openapi:`` path (the directory
-    holding the policy file).
+    The first operation that API allows, whatever its method. Candidates, in
+    order: each ``allowed_operations`` entry (with its pinned methods, else
+    each of ``allowed_methods``; a missing path or operationId taken from the
+    API's OpenAPI spec), each operation of that spec, then one generic
+    operation per allowed method (``GET getItem /items/{item_id}``,
+    ``POST createItem /items``, ...). The first one this check accepts wins
+    (``check_call``: the runtime client's rules plus the spec), so the rendered
+    example passes ``lint`` and the project's policy test. ``base_dir``
+    resolves a relative ``openapi:`` path (the directory holding the policy
+    file).
     """
     apis = document.get("apis") or {}
     if not apis:
@@ -623,14 +735,14 @@ def example_call(
     name, api = next(iter(apis.items()))
     spec = _load_example_spec(api, base_dir) if api.get("openapi") else None
     specs = {name: spec} if spec is not None else {}
-    for operation_id, path in _example_candidates(api, spec):
+    for method, operation_id, path in _example_candidates(api, spec):
         if not _example_renderable(operation_id, path):
             continue
         call = DeclaredCall(
-            tool=EXAMPLE_TOOL, api=name, method="GET", operation_id=operation_id, path=path
+            tool=EXAMPLE_TOOL, api=name, method=method, operation_id=operation_id, path=path
         )
         if check_call(call, document, specs).status == STATUS_ALLOWED:
-            return ExampleCall(api=name, path=path, operation_id=operation_id)
+            return ExampleCall(api=name, method=method, path=path, operation_id=operation_id)
     return None
 
 
@@ -733,6 +845,14 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
             escape(result.reason),
         )
     console.print(table)
+    hints = list(dict.fromkeys(r.hint for r in report.results if r.is_violation and r.hint))
+    if hints:
+        console.print(
+            "To allow a refused call, change api-policy.yaml in a reviewed pull request "
+            "(CODEOWNERS covers it), for example:"
+        )
+        for hint in hints:
+            console.print(f"  {escape(hint)}", style="cyan", highlight=False)
     if report.violations:
         console.print(f"[red]{report.violations} violation(s).[/]")
     else:

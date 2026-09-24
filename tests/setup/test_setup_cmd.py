@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -23,7 +24,7 @@ import click
 import pytest
 
 from graph_agents_cli._skills_check import SKILLS_NPX_PACKAGE
-from graph_agents_cli._tools import DEFAULT_SKILLS_SOURCE
+from graph_agents_cli._tools import DEFAULT_SKILLS_SOURCE, default_skills_source
 from graph_agents_cli.scaffold.utils import version as version_mod
 from graph_agents_cli.setup import cmd_setup, cmd_update
 from graph_agents_cli.setup.cmd_setup import (
@@ -78,10 +79,31 @@ def test_build_args_all_agents():
     ]
 
 
-def test_resolve_source_default_and_dev(bundle: Path):
-    assert _resolve_skills_source(None, dev=False) == DEFAULT_SKILLS_SOURCE
+def test_resolve_source_default_and_dev(bundle: Path, monkeypatch: pytest.MonkeyPatch):
     assert DEFAULT_SKILLS_SOURCE == "https://github.com/ss7172/graph-agents-cli"
+    # A release installs the skills of its own tag, never the moving default branch.
+    monkeypatch.setattr(version_mod, "get_current_version", lambda: "0.2.0")
+    assert _resolve_skills_source(None, dev=False) == f"{DEFAULT_SKILLS_SOURCE}#v0.2.0"
     assert _resolve_skills_source(None, dev=True) == str(bundle)
+
+
+@pytest.mark.parametrize(
+    ("version", "source"),
+    [
+        ("0.2.0", "https://github.com/ss7172/graph-agents-cli#v0.2.0"),
+        ("1.4.0rc1", "https://github.com/ss7172/graph-agents-cli#v1.4.0rc1"),
+        # Development builds have no tag: the default branch.
+        ("0.0.0-dev", "https://github.com/ss7172/graph-agents-cli"),
+        ("0.0.0", "https://github.com/ss7172/graph-agents-cli"),
+        ("0.3.0.dev2", "https://github.com/ss7172/graph-agents-cli"),
+        ("0.2.0+local", "https://github.com/ss7172/graph-agents-cli"),
+        ("not a version", "https://github.com/ss7172/graph-agents-cli"),
+    ],
+)
+def test_the_default_skills_source_is_pinned_to_the_release(version: str, source: str) -> None:
+    from graph_agents_cli._tools import default_skills_source
+
+    assert default_skills_source(version) == source
 
 
 def test_resolve_source_local_path_is_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -200,9 +222,9 @@ def test_setup_dry_run_prints_commands(runner, bundle: Path, monkeypatch: pytest
     spec = version_mod.install_spec(version_mod.get_current_version())
     assert spec.startswith("git+https://github.com/ss7172/graph-agents-cli")
     assert f"uv tool install {spec}" in result.output
-    assert f"npx -y {SKILLS_NPX_PACKAGE} add {DEFAULT_SKILLS_SOURCE} -y --agent claude-code -g" in (
-        result.output
-    )
+    source = default_skills_source(version_mod.get_current_version())
+    command = ["npx", "-y", SKILLS_NPX_PACKAGE, "add", source, "-y", "--agent", "claude-code", "-g"]
+    assert shlex.join(command) in result.output
     assert "No changes made" in result.output
     assert "Auth" not in result.output
     assert calls == []
@@ -236,7 +258,7 @@ def test_setup_installs_cli_and_skills(runner, bundle: Path, monkeypatch: pytest
     result = runner.invoke(setup_command, ["--workspace"])
     assert result.exit_code == 0, result.output
     assert runs == [["uv", "tool", "install", "/srv/mirror/graph_agents_cli.whl"]]
-    assert npx.calls == [["add", DEFAULT_SKILLS_SOURCE, "-y"]]
+    assert npx.calls == [["add", default_skills_source(version_mod.get_current_version()), "-y"]]
     assert "Authentication" not in result.output
     assert "Skills: Installed" in result.output
     assert "Scope:  workspace" in result.output
@@ -298,7 +320,11 @@ def test_update_runs_npx_update_then_installs_the_latest_release(
     _versions(monkeypatch, current="0.1.0", latest="0.2.0")
     result = runner.invoke(update_command, ["--workspace", "-y"])
     assert result.exit_code == 0, result.output
-    assert npx_calls == [["update"]]
+    # The skills follow the CLI to the new release's tag.
+    assert npx_calls == [
+        ["update"],
+        ["add", "https://github.com/ss7172/graph-agents-cli#v0.2.0", "-y"],
+    ]
     # uv tool upgrade cannot move a git-pinned install: reinstall from the release tag.
     assert runs == [
         [

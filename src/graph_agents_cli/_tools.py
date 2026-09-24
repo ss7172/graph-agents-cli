@@ -38,9 +38,30 @@ _tool_paths: dict[str, str] = {}
 # to render as the previous line's color).
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
-# Where `graph-agents-cli setup` fetches the skills from by default.
+# Where `graph-agents-cli setup` fetches the skills from by default (pinned to the
+# running release's tag, see `default_skills_source`).
 # Keep in sync with extension._refs.FIRST_PARTY_REPO.
 DEFAULT_SKILLS_SOURCE = "https://github.com/ss7172/graph-agents-cli"
+
+
+def default_skills_source(version: str | None) -> str:
+    """The first-party skills matching CLI ``version``: ``<repo>#v<version>``.
+
+    A release installs the skills of its own tag, so they never drift from the
+    CLI when the default branch moves on. A development build (a source
+    checkout, ``0.0.0-dev``, an unknown ``0.0.0``, a ``.devN`` or ``+local``
+    version) has no matching tag and uses the default branch.
+    """
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        parsed = Version(version or "")
+    except InvalidVersion:
+        return DEFAULT_SKILLS_SOURCE
+    if parsed.is_devrelease or parsed.local or parsed == Version("0.0.0"):
+        return DEFAULT_SKILLS_SOURCE
+    return f"{DEFAULT_SKILLS_SOURCE}#v{version}"
+
 
 _UV_HINT = "Install uv (https://docs.astral.sh/uv/getting-started/installation/) and ensure it is in your PATH."
 _NODE_HINT = "Install Node.js (https://nodejs.org/en/download) and ensure it is in your PATH."

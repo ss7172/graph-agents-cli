@@ -253,7 +253,7 @@ apis:
     base_url_env: BILLING_API_BASE_URL
     auth: bearer
     token_env: BILLING_API_TOKEN
-    allowed_methods: [GET]
+    allowed_methods: [GET, POST]
   directory:
     base_url_env: DIRECTORY_API_BASE_URL
     auth: none
@@ -287,7 +287,7 @@ def test_api_policy_is_seeded(run_create: CreateRunner, tmp_path: pathlib.Path) 
         ("product_api:\n  auth: bearer\n  allowed_methods: [GET]\n", "retired single-API format"),
         ("apis:\n  a:\n    base_url_env: A\n    auth: none\n", "allowed_methods: required"),
         (
-            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
             "    allowed_operation: []\n",
             "unknown key 'allowed_operation'",
         ),
@@ -310,7 +310,7 @@ def test_forward_auth_is_refused_under_langgraph_server(
 ) -> None:
     policy = tmp_path / "policy.yaml"
     policy.write_text(
-        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET]\n"
+        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET, POST]\n"
     )
     result, project = run_create("--runtime", "langgraph-server", "--api-policy", str(policy))
     assert result.exit_code == 2, result.output

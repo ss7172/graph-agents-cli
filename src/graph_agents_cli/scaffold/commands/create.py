@@ -414,8 +414,8 @@ def create(
         tools_dir = (agent_directory or _rendered_agent_directory(rendered_path)) + "/tools"
         console.print(
             f"Note: {tools_dir}/example_api.py was not generated: the first API in "
-            f"{API_POLICY_FILENAME} allows no GET the example could make (lint and the "
-            "project's policy test would refuse it). Write your tools with their calls "
+            f"{API_POLICY_FILENAME} allows no operation the example could make (lint and "
+            "the project's policy test would refuse it). Write your tools with their calls "
             "declared in API_CALLS (see 'Outbound API access' in README.md).",
             style="yellow",
         )

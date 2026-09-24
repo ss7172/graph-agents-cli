@@ -60,9 +60,11 @@ Typical axes:
 - **`create_agent` (ReAct loop) versus an explicit `StateGraph`** with named nodes, conditional
   edges, and subgraphs. Start with `create_agent`; move to an explicit graph when the flow has
   fixed stages, branching, or a human approval step.
-- **Tool and integration choices:** which API operations, with which credential (none, a service
-  token, or the caller's own); everything goes through the API client and must be allowed by
-  `api-policy.yaml`. There is no generic HTTP tool.
+- **Tool and integration choices:** which API operations, with which methods and credential
+  (none, a service token, or the caller's own); everything goes through the API client and must be
+  allowed by `api-policy.yaml`. Ask which access each API gets (read-only, read-write, or a custom
+  set of methods, then which operations are allowed or denied, and any per-run or per-minute
+  limits); never assume a default. There is no generic HTTP tool.
 - **Human-in-the-loop:** which tool calls pause for approval (`interrupt`), and how the calling
   application resumes the thread.
 - **Persistence:** `memory` locally; `postgres` when deployed; `thread_id` is the continuity key.

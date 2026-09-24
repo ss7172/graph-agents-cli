@@ -24,7 +24,7 @@ environments:
   prod: { context: "", namespace: p5-policy-prod }
 secrets:
   # Only these keys are exported from an env file into the environment's Secret.
-  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY, EXAMPLE_API_TOKEN]
+  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY, ORDERS_API_TOKEN]
   # Team or role responsible for provisioning and rotating the Secret (free text).
   owner: ""
 api_policy:

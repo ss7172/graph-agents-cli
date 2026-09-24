@@ -15,7 +15,7 @@ Run `graph-agents-cli <command> --help` for the authoritative list.
 | `--registry` | | `ghcr.io/<org>` | Image registry and org; `<org>` from the git `origin` owner under `-y`, else `ghcr.io/CHANGE-ME` with a warning |
 | `--cd` | | `skip` (forced under `--prototype`) | `argocd` (pull-based, Argo `Application`s, PR flow), `helm-push` (self-hosted runner runs `deploy --image`), `skip` (CI only) |
 | `--auth-policy` | | `shared-bearer` | `shared-bearer` (API key), `jwt` (per-user OIDC/JWT tokens) or `custom` (stub; sets `auth_policy_implemented: false`); `product-session` is refused with a hint to `custom` |
-| `--api-policy` | | none | Path to an `api-policy.yaml` to seed at the project root (validated with the strict schema first, exit 3 on errors); copies the OpenAPI specs it references; adds `api_policy.policy_file` to the manifest. `--product-policy` is refused with a rename hint |
+| `--api-policy` | | none | Path to an `api-policy.yaml` to seed at the project root (validated with the strict schema first, exit 3 on errors); copies the OpenAPI specs it references; adds `api_policy.policy_file` to the manifest. Optional: without it the project has no policy until `graph-agents-cli api add`. `--product-policy` is refused with a rename hint |
 | `--process` | | none | Path to the governing process document; written as `process:` to the manifest and rendered into the guidance file |
 | `--prototype` | `-p` | off | Target defaults to `none` unless given explicitly; `--cd` forced to `skip` |
 | `--agent-directory` | `-dir` | `app` | Agent code directory inside the project |
@@ -51,7 +51,7 @@ What each choice renders:
 | `--cd helm-push` | + `.github/workflows/{staging,promote-to-prod}.yaml` |
 | `--runtime langgraph-server` | server Dockerfile (`FROM langchain/langgraph-api:0.14.4-py3.12`, meta routes disabled), `langgraph.json` `http.app` + `auth`, Redis toggle in values, `uv-langgraph-server.lock` -> `uv.lock` |
 | `--runtime fastapi` | multi-stage python Dockerfile with uvicorn (uid 1000, no uv in the final image), `uv-fastapi.lock` -> `uv.lock` |
-| `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (one GET the first declared API allows: its first allowed operation, else one from its OpenAPI spec, else `GET /items/{item_id}`; left out, with a note, when that API allows no such GET), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values |
+| `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (one call the first declared API allows, whatever its method: its first allowed operation, else one from its OpenAPI spec, else a generic operation of its first allowed method such as `GET /items/{item_id}` or `POST /items`; a `body` argument for POST, PUT and PATCH; left out, with a note, when that API allows nothing the example can make), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values. `graph-agents-cli api add` makes the same changes for an API added later |
 | `--auth-policy custom` | `auth_policy_implemented: false` (the `app/policies/custom.py` stub ships in every project) |
 | `--auth-policy jwt` | `AUTH_JWT_*` settings in `.env.example` and the chart values |
 
@@ -71,7 +71,6 @@ template it is re-applied and `TEMPLATE_PATH` is ignored.
 | `--registry` | | manifest value | Change the registry in values and workflows |
 | `--auth-policy` | | manifest value | Switch between `shared-bearer`, `jwt` and `custom` |
 | `--model-provider`, `--model` | | manifest value | Update the manifest, `secrets.keys`, `.env.example` and the chart values; the model follows the new provider's default only when it was the old default (otherwise pass `--model`, or exit 2); `.env` is never rewritten |
-| `--api-policy` | | | Accepted by the parser but **refused** by `enhance` (exit with a message): copy the file into the project root as `api-policy.yaml` and set `api_policy.policy_file` in the manifest instead |
 | `--process` | | manifest value | Declare or change the governing process |
 | `--prototype` | `-p` | off | Same semantics as on `create` |
 | `--agent-directory` | `-dir` | `app` | Where the agent code lives; pass it when not `app/` |
@@ -85,7 +84,8 @@ template it is re-applied and `TEMPLATE_PATH` is ignored.
 | `--interactive` | `-i` | off | Prompts |
 | `--debug` | | off | Debug logging |
 
-`enhance` never touches `api-policy.yaml`, `.env`, or agent code; files in those categories that
+`enhance` never touches `api-policy.yaml` (it refuses `--api-policy`, exit 2: change the policy
+with `graph-agents-cli api`), `.env`, or agent code; files in those categories that
 the project does not have yet but the new template does are added. Config files the new settings
 re-render (`.env.example`, `values-*.yaml`, `deployment/argocd/**`) take the new render when
 untouched and get the change merged in when edited; the chart's `values.yaml` and

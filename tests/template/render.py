@@ -47,15 +47,17 @@ from graph_agents_cli._defaults import (
 # What the bundled api-policy.yaml declares (the example tool calls it).
 BUNDLED_POLICY_APIS = (
     ApiSummary(
-        name="example",
-        base_url_env="EXAMPLE_API_BASE_URL",
+        name="orders",
+        base_url_env="ORDERS_API_BASE_URL",
         auth="bearer",
-        token_env="EXAMPLE_API_TOKEN",
+        token_env="ORDERS_API_TOKEN",
     ),
 )
 # The call `create` picks for the bundled policy (its first allowed operation);
 # tests/template/test_render.py checks the engine agrees.
-BUNDLED_POLICY_EXAMPLE = ExampleCall(api="example", path="/items/{item_id}", operation_id="getItem")
+BUNDLED_POLICY_EXAMPLE = ExampleCall(
+    api="orders", method="GET", path="/orders", operation_id="listOrders"
+)
 
 try:  # Reuse the engine's post-processing when it exposes it (scaffold-core).
     from graph_agents_cli.scaffold.utils import template as _engine

@@ -100,7 +100,7 @@ judging itself is acceptable for structural rubrics, weaker for quality.
 | `contains` fails but the answer is right | wording variance | use `regex` or a judge; or make the prompt ask for the phrase explicitly |
 | `tool_calls` fails: wrong tool | tool descriptions overlap | sharpen docstrings; remove unused tools |
 | `tool_calls` fails: no call | model does not call tools | on `openai-compatible`, check the model supports tools and the server parses them |
-| `tool_calls` fails: refused by policy | the call is outside `api-policy.yaml` | the operation must be allowed in `api-policy.yaml` by its owner (and declared in `API_CALLS`), or the tool must change |
+| `tool_calls` fails: refused by policy | the call is outside `api-policy.yaml`, or over one of its `limits` | the operation must be allowed by the policy's owner (`graph-agents-cli api allow`, a reviewed change) and declared in `API_CALLS`, a limit raised deliberately (`api limits`), or the tool must change |
 | `groundedness` low | the answer adds unsupported claims | instruct the model to cite tool results; return structured tool output |
 | `task_success` low with a `reference` | the reference is too specific | rewrite the reference as the essential content, not exact wording |
 | `max_latency_ms` fails | tool or model slow | measure with `run -v`; cache; reduce context |

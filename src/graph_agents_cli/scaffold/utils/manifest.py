@@ -72,9 +72,10 @@ class CreateParams:
     # templates document their variables and every ``auth: bearer`` API's
     # ``token_env`` joins ``secrets.keys`` so the token reaches the Secret.
     apis: tuple[ApiSummary, ...] = ()
-    # The GET the rendered example tool makes, chosen so lint and the project's
-    # policy test accept it; None when the policy's first API allows no GET the
-    # example can make (the example is then not rendered).
+    # The call the rendered example tool makes (the first operation the policy's
+    # first API allows, any method), chosen so lint and the project's policy test
+    # accept it; None when that API allows none the example can make (the example
+    # is then not rendered).
     example_call: ExampleCall | None = None
 
     @property

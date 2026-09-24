@@ -120,15 +120,18 @@ def test_lint_policy_only_end_to_end_with_real_check(fake_project, recorded_runs
     tools = fake_project.root / "app" / "tools"
     tools.mkdir()
     (tools / "incidents.py").write_text(
-        'API_CALLS = [{"api": "incidents", "method": "POST", "operation_id": "closeIncident"}]\n'
+        'API_CALLS = [{"api": "incidents", "method": "DELETE", "operation_id": "purgeIncident"}]\n'
     )
     (fake_project.root / "api-policy.yaml").write_text(
-        "apis:\n  incidents:\n    base_url_env: I\n    auth: none\n    allowed_methods: [GET]\n"
+        "apis:\n  incidents:\n    base_url_env: I\n    auth: none\n    allowed_methods: [GET, POST]\n"
     )
     result = CliRunner().invoke(lint, ["--policy-only"])
     assert result.exit_code == 1
-    assert "closeIncident" in result.output
+    assert "purgeIncident" in result.output
     assert "denied" in result.output
+    assert "graph-agents-cli api access incidents custom --methods GET,POST,DELETE" in (
+        result.output.replace("\n", " ")
+    )
 
 
 @pytest.mark.parametrize(

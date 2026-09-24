@@ -13,9 +13,10 @@ migration" with the steps to follow.
 graph-agents-cli is now a generic CLI for building, evaluating and deploying LangGraph agents
 on self-hosted Kubernetes, for any project and any domain. Nothing in the CLI, the template,
 the skills or a generated project is shaped around one consumer: projects choose an auth
-policy and declare the outbound APIs their tools may call. This release also closes the
-production-readiness findings of an independent assessment of 0.1.0 (runtime guardrails,
-per-user authentication, deploy safety, supply chain, release engineering).
+policy and declare the outbound APIs their tools may call. This release also closes most of
+the production-readiness findings of an independent assessment of 0.1.0 (runtime guardrails,
+per-user authentication, deploy safety, supply chain, release engineering); the remaining
+ones are listed under "Known limitations" and "Where it is behind" in the README.
 
 Install from the release tag (the package is not on PyPI yet):
 
@@ -171,9 +172,34 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   `create`, `lint` and the runtime client (`app_utils/api_client.py`), `auth: none | bearer |
   forward`, `allowed_operations` / `denied_operations` (denials win and fail closed),
   OpenAPI validation in `lint`, timeouts, an enforced pagination cap, path-prefix-safe URL
-  joins, no redirects. `create --api-policy` validates the file first, copies the OpenAPI
-  specs it references and renders an example tool that the policy allows; bearer tokens join
-  `secrets.keys`; `auth: forward` is refused under `langgraph-server`.
+  joins, no redirects. There is no default access level: every API lists its methods
+  explicitly. `create --api-policy` validates the file first, copies the OpenAPI specs it
+  references and renders an example tool making the first operation the policy's first API
+  allows, whatever its method (a `body` argument for POST, PUT and PATCH); bearer tokens join
+  `secrets.keys`; `auth: forward` is refused under `langgraph-server`. The runtime client
+  sends every allowed method (`request()`, `get`, `head`, `post`, `put`, `patch`, `delete`,
+  `options`) with JSON bodies, query parameters and headers.
+- **`graph-agents-cli api`**: the policy belongs to the project and evolves with the agent.
+  `api add NAME --base-url-env ENV --auth none|bearer|forward --access
+  read-only|read-write|custom` (`--access` is required: read-only = GET, HEAD; read-write =
+  GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods`), `api access`, `api allow` /
+  `api deny` (by operationId, filled in from the API's OpenAPI spec when it has one, or by
+  `--method`/`--path`), `api revoke`, `api limits`, `api remove`, `api show [--json]` and `api
+  check` (same as `lint --policy-only`). Every change validates the result, keeps comments
+  and key order, prints a unified diff of each file it touches (the policy, the manifest's
+  `api_policy` and `secrets.keys`, `.env.example`, the chart's `values.yaml`), writes
+  atomically, says whether it widens or narrows access and how the tools' declared calls are
+  affected; `--dry-run` prints the diff only; exit 3 on an invalid result or outside a
+  project. `lint` prints the `graph-agents-cli api` command that would allow each refused
+  call.
+- **Outbound call limits**: optional per-API `limits: {max_calls_per_run, rate_per_minute}`.
+  `max_calls_per_run` counts the calls to that API within one agent run (the LangGraph run
+  id, else the request's); `rate_per_minute` is a token bucket per process (per replica).
+  A call over a limit is refused before it is sent, with a reason the model can read;
+  a run's counters are dropped when a `/chat` run ends, or after an hour without a call.
+- The `approval` key is reserved on an API and on an operation entry for human approval of
+  calls (planned) and refused until then ("approval gates are not supported yet (planned);
+  remove the approval key"), so a policy never counts on a gate that does not exist.
 - **Endpoints**: `GET /ready` (readiness: the database answers within 2 s), `GET /metrics`
   (Prometheus: request count and latency, runs by status, active runs, run duration, tokens;
   optional `METRICS_TOKEN`), `GET /threads` (the caller's threads) and `DELETE
@@ -234,6 +260,12 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 ### Changed
 
+- `setup` installs the skills from this repository at the tag of the running release
+  (`https://github.com/ss7172/graph-agents-cli#v<version>`; the default branch only for a
+  development build), so they cannot drift from the CLI when the default branch moves on;
+  `update` moves them to the tag of the release it installs.
+- `scaffold enhance` no longer lists `--api-policy` in its help (it refuses the flag) and
+  points to `graph-agents-cli api` for changing the policy.
 - The printed "Get Started" after `create` includes `cp .env.example .env` and
   `graph-agents-cli login --write-env`, so a first `eval run` does not fail with 503.
 - With no `--registry` and no git `origin` remote, `create` still records the placeholder

@@ -30,14 +30,14 @@ scaffolding files implement them.
 │   └── tools/
 │       ├── __init__.py          # collects TOOLS from every module; warns on a module without API_CALLS
 │       ├── weather.py           # get_weather (API_CALLS = [])
-│       └── example_api.py       # call_<api>_api: one GET the policy's first API allows (API_CALLS);
-│                                #   only with --api-policy, and only when that API allows such a GET
+│       └── example_api.py       # call_<api>_api: the first operation the policy's first API allows,
+│                                #   any method (a JSON `body` for POST/PUT/PATCH); only with a policy
 ├── tests/
 │   ├── unit/test_policy.py      # auth policies (shared-bearer, custom stub, startup checks, aliases)
 │   ├── unit/test_jwt_policy.py  # jwt with locally generated keys: JWKS caching and rotation, claims, algorithms, 401/503
 │   ├── unit/test_server_auth.py # langgraph-server handlers: owners, read-across, AUTH_ADMIN_ROLES, default deny
 │   ├── unit/test_a2a_scoping.py # A2A tasks private per principal, TTL eviction
-│   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging; every tool's API_CALLS
+│   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging, every method against a local server, limits; every tool's API_CALLS
 │   ├── unit/test_limits.py      # the limit settings and their parsing
 │   ├── unit/test_logging.py     # JSON logs, request ids, hashed principals
 │   ├── unit/test_threads.py     # ownership: owner / read-across role / stranger; tool-args redaction
@@ -58,7 +58,7 @@ scaffolding files implement them.
 ├── Dockerfile                   # runtime-specific; runs as 1000:1000, read-only root filesystem compatible
 ├── .dockerignore                # keeps .env, .venv, .git, artifacts, tests, deployment out of the image
 ├── .env.example                 # full env contract
-├── api-policy.yaml              # only when --api-policy was given
+├── api-policy.yaml              # with --api-policy, or once `graph-agents-cli api add` declares an API
 ├── graph-agents-cli-manifest.yaml
 ├── AGENTS.md | CLAUDE.md | GEMINI.md   # may declare `process:` (default AGENTS.md)
 └── pyproject.toml, uv.lock
@@ -232,23 +232,41 @@ apis:
     auth: bearer                         # required: none | bearer | forward
     token_env: INCIDENTS_API_TOKEN       # required iff auth: bearer
     # forward_header: Authorization      # auth: forward only (the default)
-    allowed_methods: [GET]               # required, non-empty; ["*"] = every method
+    allowed_methods: [GET, POST]         # required, explicit (no default); ["*"] = every method
     allowed_operations:                  # optional; omit = every operation within allowed_methods
       - operationId: getIncident
         path: /incidents/{incident_id}   # both pinned: both must match
+      - operationId: acknowledgeIncident
+        path: /incidents/{incident_id}/ack
+        methods: [POST]
       - path: /sites/{siteId}/topology
         methods: [GET]
-    denied_operations: []                # same entry shape; denials win and fail closed
+    denied_operations:                   # same entry shape; denials win and fail closed
+      - operationId: closeIncident
+        path: /incidents/{incident_id}/close
     openapi: docs/incidents-openapi.yaml # optional; lint validates declared calls against it
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
+    limits: {max_calls_per_run: 20, rate_per_minute: 120}         # optional; per run / per replica
+    # approval: reserved (human approval of calls is planned); refused until then
 ```
 
 - `get_client(name)` returns a policy-enforcing async client for one declared API. It fails
   closed: no file, an invalid file or an undeclared API raise `ApiPolicyError`; there is no
-  unrestricted fallback. `request(method, path, operation_id=None, path_params=None, ...)`
+  unrestricted fallback. `request(method, path, operation_id=None, path_params=None, params=None,
+  json_body=None, headers=None)` (and `get`, `head`, `post`, `put`, `patch`, `delete`,
+  `options`) sends any allowed method with a JSON body, query parameters and headers, and
   refuses, before sending, any method or operation outside the policy (`ApiPolicyError`, a tool
-  error the model can read); configuration or HTTP failures raise `ApiCallError`.
+  error the model can read); configuration or HTTP failures raise `ApiCallError`. An empty
+  response body returns `""`.
+- `limits` (optional, per API): `max_calls_per_run` counts the calls to that API in one agent
+  run (the run id from the LangGraph run's config metadata, else the request's; `get_client(...,
+  run_id=...)` names it explicitly; calls outside any run share one count) and
+  `rate_per_minute` is a token bucket per process, so per replica. Both are checked just before
+  sending and raise `ApiPolicyError`. A run's counters are dropped when a `/chat` run ends
+  (`end_run`) or after an hour without a call, and at most 10 000 runs are tracked.
+- `approval` (on an API or an operation entry) is reserved and refused by the schema ("approval
+  gates are not supported yet (planned); remove the approval key").
 - Matching: an entry pinning several fields needs all of them to match. Denials win and fail
   closed: a call that does not name a field a denial pins (no `operation_id` against an
   `operationId` denial) is refused by it. Paths are compared after decoding percent-encoded
@@ -271,9 +289,15 @@ apis:
 - Both Dockerfiles copy `api-policy.yaml` into the image when the project has one. The manifest
   records `api_policy: {policy_file: api-policy.yaml}`; the key is absent without a policy. Any
   other `policy_file` is a config error (exit 3): the agent loads only `api-policy.yaml`.
-- The CLI never edits the policy after scaffolding; `scaffold enhance` and `upgrade` leave it
-  untouched. A project on the retired `product-policy.yaml` / `product_api:` format stops
-  `create`, `enhance`, `upgrade` and `lint` with migration steps (exit 3).
+- The policy belongs to the project and evolves with it: `create --api-policy` only seeds it,
+  `scaffold enhance` and `upgrade` leave it untouched, and `graph-agents-cli api` (`add`,
+  `access`, `allow`, `deny`, `revoke`, `limits`, `remove`, `show`, `check`) changes it with a
+  diff, keeping comments, the manifest (`api_policy`, `secrets.keys`), `.env.example` and the
+  chart values in step. There is no default access level: `api add --access
+  read-only|read-write|custom` is required and writes the methods explicitly. Widening access is
+  a reviewed change (CODEOWNERS covers `api-policy.yaml`). A project on the retired
+  `product-policy.yaml` / `product_api:` format stops `create`, `enhance`, `upgrade` and `lint`
+  with migration steps (exit 3).
 
 ## Manifest (`graph-agents-cli-manifest.yaml`)
 

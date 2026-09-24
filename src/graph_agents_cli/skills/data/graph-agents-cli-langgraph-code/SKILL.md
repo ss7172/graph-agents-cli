@@ -131,6 +131,12 @@ API_CALLS: list[dict[str, str]] = [
         "operation_id": "getIncident",
         "path": "/incidents/{incident_id}",
     },
+    {
+        "api": "incidents",
+        "method": "POST",
+        "operation_id": "acknowledgeIncident",
+        "path": "/incidents/{incident_id}/ack",
+    },
 ]
 
 
@@ -152,7 +158,20 @@ async def get_incident(incident_id: str, runtime: ToolRuntime) -> str:
     return data if isinstance(data, str) else json.dumps(data)
 
 
-TOOLS = [get_incident]
+@tool
+async def acknowledge_incident(incident_id: str, note: str, runtime: ToolRuntime) -> str:
+    """Acknowledge INCIDENT_ID with a short NOTE for the on-call team."""
+    client = get_client("incidents", context=getattr(runtime, "context", None))
+    data = await client.post(
+        "/incidents/{incident_id}/ack",
+        operation_id="acknowledgeIncident",
+        path_params={"incident_id": incident_id},
+        json_body={"note": note},
+    )
+    return data if isinstance(data, str) else json.dumps(data)
+
+
+TOOLS = [get_incident, acknowledge_incident]
 ```
 
 The convention, as the template implements it (`app/tools/weather.py`, and `app/tools/example_api.py`
@@ -177,8 +196,12 @@ when the project declares an API policy):
   leftover `PRODUCT_CALLS` is an error with a rename hint.
 - `get_client(name)` fails closed: no `api-policy.yaml`, an invalid one, or an undeclared API
   raises `ApiPolicyError`. `client.request(method, path, operation_id=None, path_params=None,
-  params=None, json_body=None, headers=None)` (and `client.get(...)`) refuses, before sending,
-  any method or operation outside the policy with `ApiPolicyError`. Policy `path` entries are
+  params=None, json_body=None, headers=None)` (and `get`, `head`, `post`, `put`, `patch`,
+  `delete`, `options`) sends any method the policy allows, with a JSON body, query parameters
+  and headers, and refuses, before sending, any method or operation outside the policy with
+  `ApiPolicyError`. The API's optional `limits` are counted just before sending:
+  `max_calls_per_run` (calls to that API in one agent run) and `rate_per_minute` (per process);
+  a call over a limit raises `ApiPolicyError` too, with the reason the model reads. Policy `path` entries are
   templates (`{param}` matches one segment, for `lint` and the client alike); an entry pinning
   both `operationId` and `path` needs both to match. Denials win and fail closed: a call that
   does not name a field a denial pins is refused by it, so when the API has a denial by
@@ -196,8 +219,10 @@ when the project declares an API policy):
   `attributes["credentials"][<api>]` (set by the auth policy) in `forward_header`
   (`Authorization` by default), and refuses to send when the caller has none; `auth: none`
   sends nothing. `forward` is refused under `langgraph-server` (the server persists run context).
-- No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS` **and**
-  ask the owner of `api-policy.yaml` to allow it; the policy is a reviewed security boundary.
+- No generic "call any URL" tool. If a tool needs a new operation, add it to `API_CALLS`; `lint`
+  then prints the `graph-agents-cli api` command that would allow it (`api allow`, or `api
+  access` for a new method). Propose it to the user: widening access is their decision and a
+  reviewed change (CODEOWNERS covers `api-policy.yaml`); never run it unasked.
 - Unit-test tools with an `httpx.MockTransport` passed as `get_client(..., transport=...)` (or
   `respx`) and the `fake` model; never against a live API.
 

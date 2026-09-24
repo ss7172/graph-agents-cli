@@ -48,8 +48,9 @@ PACKAGE_NAME = "graph-agents-cli"
 def cmd_update(workspace, auto_approve):
     """Force reinstall skills to all detected coding agents.
 
-    Updates all installed skills to their latest versions via npx skills,
-    then reinstalls the CLI from the latest GitHub release (best effort).
+    Refreshes the installed skills via npx skills, then reinstalls the CLI
+    from the latest GitHub release (best effort) and, when it did, installs
+    that release's skills (pinned to its tag) so the two stay in step.
     """
     click.echo()
     args = ["update"]
@@ -118,5 +119,22 @@ def cmd_update(workspace, auto_approve):
         click.secho(
             f"  Could not upgrade {PACKAGE_NAME} automatically "
             f"(exit code {result.returncode}); run '{shlex.join(cmd)}' manually.",
+            fg="yellow",
+        )
+        return
+    if latest == UNKNOWN_VERSION:
+        return
+    # Skills are pinned to a release tag: move them to the one just installed.
+    from graph_agents_cli._tools import default_skills_source
+
+    skills_args = ["add", default_skills_source(latest), "-y"]
+    if not workspace:
+        skills_args.append("-g")
+    try:
+        run_npx_skills(skills_args, f"Installing the skills of {latest}")
+    except click.ClickException as exc:
+        click.secho(
+            f"  Could not install the skills of {latest} ({exc.format_message()}); run "
+            f"'{PACKAGE_NAME} setup' with the new CLI.",
             fg="yellow",
         )

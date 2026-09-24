@@ -39,7 +39,7 @@ def test_info_json_in_project(
 ) -> None:
     policy = tmp_path / "policy.yaml"
     policy.write_text(
-        "apis:\n  crm:\n    base_url_env: CRM_URL\n    auth: none\n    allowed_methods: [GET]\n"
+        "apis:\n  crm:\n    base_url_env: CRM_URL\n    auth: none\n    allowed_methods: [GET, POST]\n"
     )
     result, project = run_create(
         "--cd", "argocd", "--api-policy", str(policy), "--process", "docs/p.md"
@@ -328,7 +328,7 @@ def test_enhance_force_keeps_the_project_api_policy(
     policy = tmp_path / "policy.yaml"
     policy.write_text(
         "apis:\n  crm:\n    base_url_env: CRM_URL\n    auth: bearer\n    token_env: MY_TOKEN\n"
-        "    allowed_methods: [GET]\n"
+        "    allowed_methods: [GET, POST]\n"
     )
     result, project = run_create("--api-policy", str(policy))
     assert result.exit_code == 0, result.output
@@ -363,7 +363,7 @@ def test_enhance_refuses_a_forward_api_on_langgraph_server(
 
     policy = tmp_path / "policy.yaml"
     policy.write_text(
-        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET]\n"
+        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET, POST]\n"
     )
     result, project = run_create("--api-policy", str(policy))
     assert result.exit_code == 0, result.output
@@ -427,8 +427,10 @@ def test_enhance_refuses_a_policy_flag(
     policy.write_text("apis: {}\n")
     monkeypatch.chdir(project)
     result = CliRunner().invoke(enhance, ["--api-policy", str(policy), "-y"])
-    assert result.exit_code != 0
-    assert "never edited" in result.output
+    assert result.exit_code == 2
+    assert "graph-agents-cli api" in result.output
+    # Refused, so not offered either.
+    assert "--api-policy" not in CliRunner().invoke(enhance, ["--help"]).output
     # The retired flag is refused with the rename hint.
     result = CliRunner().invoke(enhance, ["--product-policy", str(policy), "-y"])
     assert result.exit_code == 2

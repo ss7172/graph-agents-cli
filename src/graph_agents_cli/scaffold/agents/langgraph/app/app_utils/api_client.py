@@ -29,6 +29,16 @@ that API, `principal.attributes["credentials"][<name>]`, in `forward_header`
 (default `Authorization`); the principal comes from the run context the server
 sets for the graph run, and nothing is sent when the caller has no credential.
 
+Every method the policy allows can be sent (`request()`, or `get`, `head`,
+`post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
+parameters and extra headers. An API's optional `limits` cap the calls before
+they are sent: `max_calls_per_run` counts the calls to that API within one
+agent run (the run id of the LangGraph run, else the request's; calls made
+outside any run share one count), and `rate_per_minute` is a token bucket per
+process, so each replica allows that rate. Counters are dropped when the run
+ends (`end_run`) or after `RUN_COUNTER_TTL_S` without a call, so memory does
+not grow across runs.
+
 Every tool module declares `API_CALLS`, a module-level list of
 `{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
 `graph-agents-cli lint` checks those declarations against the same rules.
@@ -39,7 +49,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Mapping
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -86,10 +99,17 @@ _API_KEYS = (
     "openapi",
     "timeouts_ms",
     "pagination",
+    "limits",
 )
 _OPERATION_KEYS = ("operationId", "path", "methods")
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
+_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
+
+# Recognised on an API and on an operation entry, and refused: a policy must
+# never count on a human approval step that the runtime would silently skip.
+APPROVAL_KEY = "approval"
+APPROVAL_NOT_SUPPORTED = "approval gates are not supported yet (planned); remove the approval key"
 
 LEGACY_POLICY_HINT = (
     "product_api: is the retired single-API format: move its fields under "
@@ -103,7 +123,7 @@ class PolicyLoader(yaml.SafeLoader):
     """``yaml.SafeLoader`` that refuses a key repeated within one mapping, at any level.
 
     Plain ``safe_load`` silently keeps the last duplicate, so a reviewer reading
-    ``allowed_methods: [GET]`` would miss a later ``allowed_methods: ["*"]``
+    ``allowed_methods: [GET, POST]`` would miss a later ``allowed_methods: ["*"]``
     that is the one applied. Merge keys (``<<: *anchor``) still work.
     """
 
@@ -175,8 +195,10 @@ def _api_errors(name: Any, api: Any) -> list[str]:
     if not isinstance(api, Mapping):
         errors.append(f"{where}: must be a mapping")
         return errors
-    for key in sorted(set(api) - set(_API_KEYS), key=str):
+    for key in sorted(set(api) - set(_API_KEYS) - {APPROVAL_KEY}, key=str):
         errors.append(f"{where}: unknown key {key!r}")
+    if APPROVAL_KEY in api:
+        errors.append(f"{where}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
 
     if "base_url_env" not in api:
         errors.append(f"{where}.base_url_env: required")
@@ -227,6 +249,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         errors.extend(_timeouts_errors(f"{where}.timeouts_ms", api["timeouts_ms"]))
     if "pagination" in api:
         errors.extend(_pagination_errors(f"{where}.pagination", api["pagination"]))
+    if "limits" in api:
+        errors.extend(_limits_errors(f"{where}.limits", api["limits"]))
     return errors
 
 
@@ -260,8 +284,10 @@ def _operations_errors(where: str, value: Any, allow_empty: bool) -> list[str]:
         if not isinstance(entry, Mapping):
             errors.append(f"{at}: must be a mapping with operationId and/or path")
             continue
-        for key in sorted(set(entry) - set(_OPERATION_KEYS), key=str):
+        for key in sorted(set(entry) - set(_OPERATION_KEYS) - {APPROVAL_KEY}, key=str):
             errors.append(f"{at}: unknown key {key!r}")
+        if APPROVAL_KEY in entry:
+            errors.append(f"{at}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
         if "operationId" not in entry and "path" not in entry:
             errors.append(f"{at}: needs operationId and/or path")
         if "operationId" in entry:
@@ -309,6 +335,18 @@ def _pagination_errors(where: str, value: Any) -> list[str]:
         errors.append(f"{where}.max_page_size: required")
     elif not _is_positive_int(value["max_page_size"]):
         errors.append(f"{where}.max_page_size: must be a positive integer")
+    return errors
+
+
+def _limits_errors(where: str, value: Any) -> list[str]:
+    if not isinstance(value, Mapping) or not value:
+        return [f"{where}: must be a mapping with max_calls_per_run and/or rate_per_minute"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_LIMIT_KEYS), key=str)
+    ]
+    for key in _LIMIT_KEYS:
+        if key in value and not _is_positive_int(value[key]):
+            errors.append(f"{where}.{key}: must be an integer >= 1")
     return errors
 
 
@@ -428,7 +466,7 @@ def denial_matches(
 
 
 def describe_operation(entry: Mapping[str, Any]) -> str:
-    """``operationId=getItem path=/items/{item_id} methods=[GET]`` for messages."""
+    """``operationId=updateOrder path=/orders/{order_id} methods=['PATCH']`` for messages."""
     parts = []
     if entry.get("operationId") is not None:
         parts.append(f"operationId={entry['operationId']}")
@@ -670,6 +708,124 @@ def validate_concrete_path(path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Limits (`limits: {max_calls_per_run, rate_per_minute}`)
+# ---------------------------------------------------------------------------
+
+# A run's counters are dropped after this long without a call to a limited API
+# (and when the run ends, see `end_run`); at most MAX_TRACKED_RUNS runs are
+# tracked, the least recently active dropped first.
+RUN_COUNTER_TTL_S = 3600.0
+MAX_TRACKED_RUNS = 10_000
+# Calls made outside any run (no LangGraph run id, no request context) share
+# this one count: never looser than counting per run.
+NO_RUN = "<no run>"
+
+
+class CallLimiter:
+    """Per-run call counts and per-API token buckets, in this process only."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        # run key -> (last call time, {api name: calls})
+        self._runs: OrderedDict[str, tuple[float, dict[str, int]]] = OrderedDict()
+        # (api name, rate) -> (tokens, last refill time)
+        self._buckets: dict[tuple[str, int], tuple[float, float]] = {}
+
+    def acquire(self, api: str, limits: Mapping[str, Any], run_key: str) -> str | None:
+        """Count one call to `api` in `run_key`; the reason it is refused, or None."""
+        max_calls = limits.get("max_calls_per_run")
+        rate = limits.get("rate_per_minute")
+        with self._lock:
+            now = self._clock()
+            self._evict(now)
+            counts = self._runs.get(run_key, (now, {}))[1]
+            if max_calls and counts.get(api, 0) >= max_calls:
+                return (
+                    f"limits.max_calls_per_run ({max_calls}) reached: this run already made "
+                    f"{counts.get(api, 0)} call(s) to this API"
+                )
+            if rate:
+                tokens, updated = self._buckets.get((api, rate), (float(rate), now))
+                tokens = min(float(rate), tokens + (now - updated) * rate / 60.0)
+                if tokens < 1.0:
+                    self._buckets[(api, rate)] = (tokens, now)
+                    wait = (1.0 - tokens) * 60.0 / rate
+                    return (
+                        f"limits.rate_per_minute ({rate}) exceeded in this process; "
+                        f"retry in {wait:.1f} s"
+                    )
+                self._buckets[(api, rate)] = (tokens - 1.0, now)
+            if max_calls:
+                counts[api] = counts.get(api, 0) + 1
+                self._runs[run_key] = (now, counts)
+                self._runs.move_to_end(run_key)
+                self._evict(now)
+            return None
+
+    def end_run(self, run_key: str) -> None:
+        with self._lock:
+            self._runs.pop(run_key, None)
+
+    def tracked_runs(self) -> int:
+        with self._lock:
+            return len(self._runs)
+
+    def _evict(self, now: float) -> None:
+        while self._runs:
+            key, (seen, _counts) = next(iter(self._runs.items()))
+            if len(self._runs) <= MAX_TRACKED_RUNS and now - seen <= RUN_COUNTER_TTL_S:
+                break
+            del self._runs[key]
+
+
+_limiter = CallLimiter()
+
+
+def reset_limits(clock: Callable[[], float] = time.monotonic) -> CallLimiter:
+    """Start from empty counters (tests); returns the new limiter."""
+    global _limiter
+    _limiter = CallLimiter(clock)
+    return _limiter
+
+
+def end_run(run_id: str | None) -> None:
+    """Drop the call counts of a finished run (the chat runtime calls it)."""
+    if run_id:
+        _limiter.end_run(str(run_id))
+
+
+def current_run_id() -> str | None:
+    """The id of the agent run making the call.
+
+    The LangGraph run's (`run_id` in the run's config metadata, which the chat
+    runtime and LangGraph Server set), else the request context's (the
+    `run_id`, then the `request_id`, bound for the current request's logs),
+    else None.
+    """
+    try:
+        from langgraph.config import get_config
+
+        config = get_config()
+    except Exception:  # outside a graph run
+        config = None
+    if isinstance(config, Mapping):
+        for section in ("metadata", "configurable"):
+            values = config.get(section)
+            if isinstance(values, Mapping) and values.get("run_id"):
+                return str(values["run_id"])
+    try:
+        from .telemetry import LOG_CONTEXT
+    except ImportError:  # loaded outside its package
+        return None
+    for name in ("run_id", "request_id"):
+        value = LOG_CONTEXT[name].get()
+        if value:
+            return str(value)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # The client
 # ---------------------------------------------------------------------------
 
@@ -684,12 +840,14 @@ class ApiClient:
         *,
         credential: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.policy = policy
         self.name = name
         self.settings = policy.api(name)
         self._credential = credential
         self._transport = transport
+        self._run_id = run_id
 
     # -- configuration ------------------------------------------------------
 
@@ -768,6 +926,18 @@ class ApiClient:
                 )
         return query
 
+    def take_limits(self, method: str, what: str) -> None:
+        """Count the call against the API's `limits`; `ApiPolicyError` when one is exceeded."""
+        limits = self.settings.get("limits")
+        if not limits:
+            return
+        run_key = self._run_id or current_run_id() or NO_RUN
+        reason = _limiter.acquire(self.name, limits, run_key)
+        if reason:
+            raise ApiPolicyError(
+                f"{self.name}: {method} {what} refused: {reason} ({self.policy.file})."
+            )
+
     # -- requests -------------------------------------------------------------
 
     async def request(
@@ -784,7 +954,7 @@ class ApiClient:
         """Send `method` on `path` after the policy check; return the JSON body or the text.
 
         Pass `path` as the template declared in `API_CALLS` (for example
-        `/items/{item_id}`) with the values in `path_params`: the policy is
+        `/orders/{order_id}`) with the values in `path_params`: the policy is
         checked against the template and against the rendered path, and the
         client encodes each value as one segment, so model-chosen input cannot
         change which endpoint is hit. A concrete `path` is accepted too but
@@ -795,9 +965,11 @@ class ApiClient:
         denials by `operationId`: a call without one is refused by them.
         `params` (a mapping, a list of pairs or a query string) is checked
         against `pagination.max_page_size`. The API's base URL may carry a
-        path prefix (`https://host/v2`); `path` is joined under it. Redirects
-        are never followed. Raises `ApiPolicyError` (nothing sent) or
-        `ApiCallError`.
+        path prefix (`https://host/v2`); `path` is joined under it.
+        `json_body` is sent as JSON with any method the policy allows. The
+        API's `limits` are counted last, just before sending. Redirects are
+        never followed. An empty response body returns "". Raises
+        `ApiPolicyError` (nothing sent) or `ApiCallError`.
         """
         method = method.upper()
         if method not in HTTP_METHODS:
@@ -828,6 +1000,7 @@ class ApiClient:
         request_headers = httpx.Headers(headers or {})
         for name, value in self.auth_headers().items():
             request_headers[name] = value  # the policy's credential always wins
+        self.take_limits(method, operation_id or path)
 
         async with httpx.AsyncClient(
             transport=self._transport, timeout=self.timeout(), follow_redirects=False
@@ -845,12 +1018,35 @@ class ApiClient:
                 raise ApiCallError(
                     f"{self.name}: {method} {wire_path} failed: {type(exc).__name__}"
                 ) from exc
-        if "json" in response.headers.get("content-type", ""):
-            return response.json()
+        if response.content and "json" in response.headers.get("content-type", ""):
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise ApiCallError(
+                    f"{self.name}: {method} {wire_path} returned invalid JSON"
+                ) from exc
         return response.text
 
     async def get(self, path: str, **kwargs: Any) -> Any:
         return await self.request("GET", path, **kwargs)
+
+    async def head(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("HEAD", path, **kwargs)
+
+    async def post(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("POST", path, **kwargs)
+
+    async def put(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("PUT", path, **kwargs)
+
+    async def patch(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("PATCH", path, **kwargs)
+
+    async def delete(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("DELETE", path, **kwargs)
+
+    async def options(self, path: str, **kwargs: Any) -> Any:
+        return await self.request("OPTIONS", path, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -883,11 +1079,14 @@ def get_client(
     *,
     context: Any = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    run_id: str | None = None,
 ) -> ApiClient:
     """A policy-enforcing client for API `api_name` of `api-policy.yaml`.
 
     `context` is the run context holding the calling principal (a tool's
     `runtime.context`); by default it is read from the current graph run.
+    `run_id` names the run `limits.max_calls_per_run` counts against; by
+    default it is read from the current run (`current_run_id`).
     Raises `ApiPolicyError` when the policy file is missing or invalid, or does
     not declare `api_name`.
     """
@@ -898,4 +1097,4 @@ def get_client(
         credential = forwarded_credential(
             api_name, context if context is not None else current_context()
         )
-    return ApiClient(policy, api_name, credential=credential, transport=transport)
+    return ApiClient(policy, api_name, credential=credential, transport=transport, run_id=run_id)

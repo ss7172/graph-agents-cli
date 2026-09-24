@@ -59,9 +59,14 @@ so the upgrade baseline can install an older release; an override without it is 
 that (exit 3). An override with control characters or whitespace is refused (exit 3), except
 the spaces of a PEP 508 `name @ url` reference.
 
-`setup` installs the skills with `npx skills add`, falling back to the copy bundled in the
-wheel and then to a plain copy into `~/.agents/skills` (`./.agents/skills` with
-`--workspace`), so it also works without git or network. The CLI stores no credentials;
+`setup` installs the skills with `npx skills add` from this repository at the tag of the
+running release (`https://github.com/ss7172/graph-agents-cli#v0.2.0`), so they match the CLI
+even after the default branch moves on; a development build (a source checkout) uses the
+default branch. When that fails it falls back to the copy bundled in the wheel (the same
+version) and then to a plain copy into `~/.agents/skills` (`./.agents/skills` with
+`--workspace`), so it also works without git or network. `--skills-source` picks another
+source (a path, `owner/repo`, or a URL with `#<ref>`); `update` moves the skills to the tag
+of the release it installs. The CLI stores no credentials;
 `login` only checks the environment. The CLI checks GitHub for a newer release at most every
 12 hours; `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` turns that off.
 
@@ -91,8 +96,9 @@ Useful `create` options: `--runtime fastapi|langgraph-server`,
 `--model-provider openai|anthropic|gemini|openai-compatible`, `--model`,
 `--checkpointer memory|postgres`, `-d/--deployment-target kubernetes|none`, `--registry`,
 `--cd skip|helm-push|argocd`, `--auth-policy shared-bearer|jwt|custom`,
-`--api-policy <file>`, `--process <path>`, `-p/--prototype` (no deployment files). Ask your
-coding agent to "use graph-agents-cli to build ..." and the `graph-agents-cli-workflow`
+`--api-policy <file>` (seed the outbound API policy; or add APIs later with
+`graph-agents-cli api add`), `--process <path>`, `-p/--prototype` (no deployment files). Ask
+your coding agent to "use graph-agents-cli to build ..." and the `graph-agents-cli-workflow`
 skill walks the same steps.
 
 To deploy to a local cluster (kind, k3d, minikube, Docker Desktop), see
@@ -118,12 +124,18 @@ line naming the file that implements it.
 | `update [--workspace] [-i] [-y]` | Reinstall the skills and the CLI from the latest GitHub release |
 | `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig. `--write-env` prompts for missing keys (never echoed), generates `API_KEY`, fills blank `KEY=` lines in place and keeps `.env` at 0600. Exit 1 on a failed check (0 with `--status`) |
 | `create [NAME]` / `scaffold create [NAME]` | Create a project: `-a/--agent`, `-o/--output-dir`, `--runtime`, `--model-provider`, `--model`, `--checkpointer`, `-d/--deployment-target`, `--registry`, `--cd`, `--auth-policy`, `--api-policy FILE`, `--process`, `-p/--prototype`, `-dir/--agent-directory`, `--agent-guidance-filename` (default `AGENTS.md`), `-bt/--base-template`, `-i`, `-y`, `-s/--skip-checks`, `--debug` |
-| `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`; `--api-policy` is refused). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
+| `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags except `--api-policy`, which it refuses (the policy changes through `api`), plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
 | `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest's `cli_version` or the install-spec override is the reason) |
 | `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
 | `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL |
 | `install [--clean] [--locked]` | `uv sync` the project |
-| `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it) |
+| `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it; a refused call comes with the `api` command that would allow it) |
+| `api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] [--forward-header H] --access read-only\|read-write\|custom [--methods M,...] [--openapi PATH] [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]` | Declare an outbound API (creates `api-policy.yaml` when absent); `--access` is required, there is no default |
+| `api access NAME read-only\|read-write\|custom [--methods M,...] [--dry-run]` | Set the methods an API allows |
+| `api allow\|deny NAME (OPERATION_ID \| --method M --path P) [--methods M,...] [--dry-run]` | Add an `allowed_operations` / `denied_operations` entry (`--methods` for `allow` only) |
+| `api revoke NAME (OPERATION_ID \| --method M --path P) [--from allowed\|denied] [--dry-run]` | Remove the matching entries |
+| `api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none] [--dry-run]` / `api remove NAME [--dry-run]` | Set or clear call limits / remove an API |
+| `api show [NAME] [--json]` / `api check` | The effective policy and each tool's declared calls / the policy check (`lint --policy-only`) |
 | `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` with the runtime's Dockerfile (default tag `latest`); a placeholder or invalid registry is exit 3 |
 | `eval run [--dataset] [--url] [--concurrency] [-H]... [--cookie]... [--app-name] [--timeout] [--config] [-o] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; the exit code is the gate |
 | `eval generate [--dataset] [-o] [--url] [--concurrency] [-H]... [--cookie]... [--app-name] [--timeout]` | Run the agent over `tests/eval/datasets/*.json` and write `artifacts/traces/` |
@@ -334,7 +346,8 @@ Tools reach external APIs only through `get_client("<api>")` of `app/app_utils/a
 which enforces `api-policy.yaml` at the project root (path from `API_POLICY_PATH`) and refuses,
 before sending, anything outside it. It fails closed: without the file, or for an API it does
 not declare, every call raises `ApiPolicyError`; the refusal becomes a tool error the model
-can read.
+can read. The client sends every method the policy allows (`request()`, or `get`, `head`,
+`post`, `put`, `patch`, `delete`, `options`) with a JSON body, query parameters and headers.
 
 ```yaml
 apis:
@@ -343,24 +356,52 @@ apis:
     auth: bearer                           # required: none | bearer | forward
     token_env: ORDERS_API_TOKEN            # required iff auth: bearer (joins secrets.keys)
     # forward_header: Authorization        # auth: forward only (default Authorization)
-    allowed_methods: [GET]                 # required, non-empty; ["*"] = every method, explicitly
+    allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]  # required, explicit; ["*"] = every method
     allowed_operations:                    # optional; omitted = every operation within allowed_methods
-      - operationId: getOrder              # an entry may pin operationId and/or path (+ methods);
-        path: /orders/{order_id}           # pinning both requires both to match
+      - operationId: listOrders            # an entry may pin operationId and/or path (+ methods);
+        path: /orders                      # pinning both requires both to match
         methods: [GET]
-    denied_operations: []                  # same entry shape; denials win
+      - operationId: createOrder
+        path: /orders
+        methods: [POST]
+      - operationId: updateOrder
+        path: /orders/{order_id}
+        methods: [PATCH]
+    denied_operations:                     # same entry shape; denials win
+      - operationId: deleteOrder
+        path: /orders/{order_id}
+        methods: [DELETE]
     openapi: specs/orders.yaml             # optional: lint checks declared calls against it
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
+    limits: {max_calls_per_run: 20, rate_per_minute: 120}         # optional
 ```
+
+There is no default access level. Every API lists its methods; the CLI's two shorthands are
+written into the file as the methods themselves, never as a name:
+
+| `--access` | `allowed_methods` written |
+|---|---|
+| `read-only` | `[GET, HEAD]` |
+| `read-write` | `[GET, HEAD, POST, PUT, PATCH, DELETE]` |
+| `custom --methods M,...` | exactly those (case-insensitive, stored upper-case; `"*"` alone for every method) |
 
 Auth modes: `none` sends no credential; `bearer` sends `Authorization: Bearer
 $<token_env>`; `forward` sends the caller's own `attributes["credentials"][<api name>]` as
 `forward_header` (nothing when the caller has none) and is refused under `langgraph-server`,
 which would persist it. The policy's credential always overrides a header the tool passes.
 
-Fail-closed rules, identical in `create`, `lint` and the runtime (one block of code is shared
-byte-for-byte and a test keeps the copies in sync):
+Limits (optional, per API): `max_calls_per_run` caps the calls to that API within one agent
+run (the LangGraph run id, else the request's); `rate_per_minute` is a token bucket per
+process, so N replicas allow N times the rate. A call over a limit is refused before it is
+sent, with a reason the model can read; a run's counters are dropped when it ends or after an
+hour without a call. The key `approval` (on an API or an operation entry) is reserved for
+human approval of calls, which is planned: until then it is refused ("approval gates are not
+supported yet (planned); remove the approval key"), so a policy never counts on a gate that
+does not exist.
+
+Fail-closed rules, identical in `create`, `lint`, `api` and the runtime (one block of code is
+shared byte-for-byte and a test keeps the copies in sync):
 
 - Unknown keys and repeated keys are errors at every level, so a typo never widens access.
 - A denial covers a call that does not name a field the denial pins: a denial by
@@ -374,26 +415,64 @@ byte-for-byte and a test keeps the copies in sync):
   not followed.
 
 Each tool module declares its calls as one module-level literal list, and `graph-agents-cli
-lint` (and `lint --policy-only`) checks every `*.py` under `app/tools/`, subpackages included,
-against the policy and the OpenAPI spec:
+lint` (and `lint --policy-only`, `api check`) checks every `*.py` under `app/tools/`,
+subpackages included, against the policy and the OpenAPI spec:
 
 ```python
 API_CALLS = [
-    {"api": "orders", "method": "GET", "operation_id": "getOrder", "path": "/orders/{order_id}"}
+    {"api": "orders", "method": "POST", "operation_id": "createOrder", "path": "/orders"},
 ]
 
 client = get_client("orders", context=runtime.context)
-order = await client.get(
-    "/orders/{order_id}", operation_id="getOrder", path_params={"order_id": order_id}
-)
+order = await client.post("/orders", operation_id="createOrder", json_body={"sku": sku})
 ```
 
 `API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional assignment) is a lint
-error because lint cannot read it. `create --api-policy <file>` validates the file (exit 3 on
-errors), copies the OpenAPI specs it references into the project, renders
-`app/tools/example_api.py` with a call the first API allows, and adds every bearer
-`token_env` to `secrets.keys`. `scaffold enhance` and `scaffold upgrade` never touch the file.
-Both Dockerfiles copy it into the image.
+error because lint cannot read it. A refused call is printed with the `graph-agents-cli api`
+command that would allow it.
+
+### The policy's lifecycle
+
+`api-policy.yaml` belongs to the project and evolves with the agent. `create` only seeds it
+(`--api-policy <file>`: validated first, the OpenAPI specs it references copied, and
+`app/tools/example_api.py` rendered with the first operation the first API allows, whatever
+its method: one concrete declared call rather than a generic "any method, any path" tool,
+because `lint` can only check the calls a tool declares) or leaves it out; `scaffold enhance` and `scaffold upgrade` never touch it.
+Afterwards it changes through `graph-agents-cli api` (see [Commands](#commands)): each
+command validates the current file, applies one change, validates the result, prints a
+unified diff of every file it touches (the policy, the manifest's `api_policy` and
+`secrets.keys`, `.env.example`, the chart's `values.yaml`), keeps comments and key order, and
+writes atomically; `--dry-run` stops after the diff, and an invalid result exits 3 with
+nothing written. It also says whether the change widens or narrows access and which of the
+tools' declared calls become allowed or refused. `api allow` on an API without
+`allowed_operations` creates the list, which narrows access from "every operation within
+`allowed_methods`" to the listed ones: the command says so. With `openapi:` recorded, `allow`
+and `deny` by operation id check that the id exists and fill in its method and path.
+
+1. `graph-agents-cli create my-agent`, then `graph-agents-cli api add orders --base-url-env
+   ORDERS_API_BASE_URL --auth bearer --token-env ORDERS_API_TOKEN --access read-only`
+   (every access level is an explicit choice).
+2. Write the tool with its calls in `API_CALLS`; `graph-agents-cli lint` (or `api check`).
+3. Eval cases for the tool's behaviour, refusals included; `graph-agents-cli eval run`.
+4. A pull request: `.github/CODEOWNERS` covers `api-policy.yaml`, so widening access (more
+   methods or operations, a lifted denial, a raised limit) needs the code owners' approval.
+   Narrowing is always safe, and the runtime keeps refusing anything outside the policy even
+   if a tool declares otherwise.
+5. `build`, then `deploy --env dev`, staging, prod. Both Dockerfiles copy the policy into the
+   image, so each image carries exactly one policy: what passed staging is what reaches
+   production. Only the base URLs (the chart's `env`, per environment in
+   `values-<env>.yaml`) and the tokens (the Secret) differ between environments.
+
+Adding functionality to a working agent, for example letting it change orders:
+
+```bash
+graph-agents-cli api access orders custom --methods GET,HEAD,PATCH --dry-run   # review, then without --dry-run
+graph-agents-cli api allow orders updateOrder        # filled in from the spec when openapi: is set
+# write app/tools/update_order.py with {"api": "orders", "method": "PATCH", "operation_id": "updateOrder", ...}
+graph-agents-cli api check
+graph-agents-cli eval run                            # with new cases for the change
+git checkout -b orders-update && git commit -am "Allow updating orders" && git push   # PR: CODEOWNERS review
+```
 
 ## Environments and CD modes
 
@@ -409,14 +488,17 @@ The `--cd` choice at create time fixes how changes reach a cluster:
 | Mode | What `deploy` does | What CI does |
 |---|---|---|
 | `skip` (default) | Builds the image, side-loads it into a local cluster or pushes it, applies the Secret, `helm upgrade --install`, for any environment | `pr_checks` only (ruff, tests, eval gate) |
-| `helm-push` | Direct deploy to `dev`; `staging`/`prod` are refused outside CI (even with `--image`) unless `--force-direct` | `staging` builds and deploys from `main` on a self-hosted runner; `promote-to-prod` deploys behind the GitHub `production` environment; both verify the rollout (`/health`, `/ready`) |
+| `helm-push` | Direct deploy to `dev`; `staging`/`prod` are refused outside CI (even with `--image`) unless `--force-direct`. It only checks the live Secret, never applies it, and refuses `--env-file` and `--rotate-api-key`: the Secret owner runs `secrets apply` | `staging` builds and deploys from `main` on a self-hosted runner; `promote-to-prod` deploys behind the GitHub `production` environment; both verify the rollout (`/health`, `/ready`) |
 | `argocd` | Never runs helm and contacts no cluster: opens a pull request that changes only `image.tag` in `values-<env>.yaml` (branch `deploy/<env>/<short sha>`, built with git plumbing from `origin/main`, your checkout untouched); `--status` and `--restart` use the cluster | CI builds, pushes and opens the staging PR with auto-merge (newer PRs supersede older ones); production is a PR merged by a human after code-owner review, then an Argo CD sync (manual for prod) |
 
 Rules `deploy` and `secrets apply` follow:
 
 - **Env file.** `--env-file`, else `.env.<env>`. Only `dev` falls back to `.env`; any other
   environment without an env file exits 3, so your development keys never reach staging or
-  prod.
+  prod. `secrets apply` always reads one; `deploy` reads it (and applies the Secret) only in
+  `skip` mode. In `helm-push` mode `deploy` checks the live Secret without applying it, in
+  `argocd` mode it never touches the cluster, and both refuse `--env-file` and
+  `--rotate-api-key`: the Secret owner runs `secrets apply`.
 - **Kube context.** The context is `--context`, else `environments.<env>.context` in the
   manifest, else the kubeconfig's current context. Outside `dev` the current context needs a
   confirmation: a prompt at a terminal, `--yes` otherwise (exit 1 without). An explicit
@@ -572,7 +654,9 @@ Usage errors from Click (an unknown flag) are also 2. A signal ends a command wi
   startup. Threads and A2A tasks belong to the principal that created them; read-across roles
   may read, never write.
 - **Outbound calls are allow-listed** by `api-policy.yaml` and refused before sending; the
-  same rules are checked statically by `lint` in CI.
+  same rules are checked statically by `lint` in CI. There is no default access: each API
+  lists its methods, widening access is a reviewed change (CODEOWNERS), and optional
+  per-API limits cap the calls per run and per minute.
 - **Secrets** stay in the allow-listed Kubernetes Secret: never in values files, workflow
   logs, command lines or printed output. Only `Principal.public_attributes()` is persisted,
   logged or traced; principal ids are hashed in logs and traces.
@@ -586,14 +670,15 @@ Usage errors from Click (an unknown flag) are also 2. A signal ends a command wi
   [Known limitations](#known-limitations)). Production
   desired state changes only through a reviewed pull request (`argocd`) or the `production`
   environment gate (`helm-push`).
-- **Supply chain**: the CLI installs from a pinned git tag; generated projects pin the CLI
-  version in `.github/agent.env`, install from committed lock files, and pin base images,
+- **Supply chain**: the CLI installs from a pinned git tag, and `setup` installs the skills
+  from the same tag; generated projects pin the CLI version in `.github/agent.env`, install from committed lock files, and pin base images,
   the uv version, subchart versions and subchart image digests. CI and CD jobs disable
   extension overrides.
 - **Pods** run as non-root with a read-only root filesystem, no capabilities and no
   service-account token; probes and metrics stay inside the cluster.
 
-What it does not do for you: rate limiting (do it at the gateway), web application firewall
+What it does not do for you: inbound rate limiting (do it at the gateway; outbound calls
+have per-API `limits`), web application firewall
 rules, TLS termination (the Gateway, Ingress or cert-manager), network isolation (the
 NetworkPolicy is off by default), and backups of the agent's database.
 
@@ -603,8 +688,9 @@ NetworkPolicy is off by default), and backups of the agent's database.
       implemented and tested (then set `auth_policy_implemented: true`). `shared-bearer` only
       for trusted callers.
 - [ ] Set `AUTH_READ_ACROSS_ROLES` and `AUTH_ADMIN_ROLES` deliberately (both empty by default).
-- [ ] Declare every outbound API in `api-policy.yaml` with the narrowest `allowed_methods` and
-      operations; `graph-agents-cli lint` passes.
+- [ ] Declare every outbound API with the access it needs and no more (`graph-agents-cli api
+      add`, then `allow`/`deny` for its operations), with `limits` where a runaway loop would
+      hurt; `graph-agents-cli api check` passes and CODEOWNERS covers `api-policy.yaml`.
 - [ ] `eval run` passes on the real model, with cases for your tools, refusals and failure
       modes; the `pr_checks` gate runs on the real provider (its key secret is set).
 - [ ] Record `environments.<env>.context` for staging and prod in the manifest; keep
@@ -704,7 +790,12 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 - **A2A task store** is in process memory, per replica: `GetTask` or a resubscribe routed to
   another pod reads as not found, and tasks are dropped `A2A_TASK_TTL_S` after their last
   update. Use one replica, or sticky routing, for long A2A tasks.
-- **No built-in rate limiting**: configure it at the gateway or ingress.
+- **No built-in inbound rate limiting**: configure it at the gateway or ingress (outbound calls
+  have per-API `limits` in `api-policy.yaml`).
+- **Outbound `limits` are per process.** `rate_per_minute` is a token bucket in each replica
+  (N replicas allow N times the rate), and `max_calls_per_run` is counted in the process that
+  runs the run; neither is shared across replicas. Rely on the upstream API's own quota for a
+  global cap.
 - **Run lock across replicas** uses Postgres session advisory locks: one extra connection per
   replica, and it does not hold behind a transaction-mode connection pooler.
 - **Concurrent deploys to one release.** `deploy` refuses while another helm operation holds

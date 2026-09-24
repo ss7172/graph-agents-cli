@@ -61,8 +61,9 @@ def cmd_lint(fix: bool, policy_only: bool) -> None:
     )
     if violations:
         raise click.ClickException(
-            f"API policy check failed: {violations} violation(s). "
-            "Fix the tool declarations or update api-policy.yaml."
+            f"API policy check failed: {violations} violation(s). Fix the tool declarations, "
+            "or change api-policy.yaml with `graph-agents-cli api` (the commands above) in a "
+            "reviewed pull request."
         )
 
 

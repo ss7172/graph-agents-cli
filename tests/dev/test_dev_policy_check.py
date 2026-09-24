@@ -443,7 +443,7 @@ def test_a_call_declared_by_operation_id_is_judged_with_the_spec_path(tmp_path):
 
 def test_a_repeated_policy_key_is_invalid(project):
     (project / "api-policy.yaml").write_text(
-        "apis:\n  incidents:\n    base_url_env: X\n    auth: none\n    allowed_methods: [GET]\n"
+        "apis:\n  incidents:\n    base_url_env: X\n    auth: none\n    allowed_methods: [GET, POST]\n"
         "    allowed_methods: ['*']\n"
     )
     report = pc.build_report(project, "app")
@@ -453,7 +453,7 @@ def test_a_repeated_policy_key_is_invalid(project):
 
 def test_strict_policy_errors_are_reported(project):
     (project / "api-policy.yaml").write_text(
-        "apis:\n  incidents:\n    base_url_env: X\n    auth: bearer\n    allowed_methods: [GET]\n"
+        "apis:\n  incidents:\n    base_url_env: X\n    auth: bearer\n    allowed_methods: [GET, POST]\n"
         "    allowed_method: [POST]\n"
     )
     report = pc.build_report(project, "app")
@@ -478,7 +478,7 @@ def test_malformed_policy_is_invalid(project):
 
 def test_forward_is_refused_under_langgraph_server(project):
     (project / "api-policy.yaml").write_text(
-        "apis:\n  incidents:\n    base_url_env: X\n    auth: forward\n    allowed_methods: [GET]\n"
+        "apis:\n  incidents:\n    base_url_env: X\n    auth: forward\n    allowed_methods: [GET, POST]\n"
     )
     fastapi = pc.build_report(project, "app", runtime="fastapi")
     assert not any(r.status == pc.STATUS_INVALID for r in fastapi.results)
@@ -578,17 +578,45 @@ def test_example_uses_the_first_allowed_operation():
         allowed_operations=[{"operationId": "listOrders", "path": "/orders"}],
     )
     call = _example(orders=orders)
-    assert call == pc.ExampleCall(api="orders", path="/orders", operation_id="listOrders")
+    assert call == pc.ExampleCall(
+        api="orders", method="GET", path="/orders", operation_id="listOrders"
+    )
     assert call.params == ()
+    assert not call.has_body
+
+
+def test_example_takes_the_first_allowed_operation_whatever_its_method():
+    orders = api(
+        allowed_methods=["GET", "POST"],
+        allowed_operations=[
+            {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]},
+            {"operationId": "getOrder", "path": "/orders/{order_id}", "methods": ["GET"]},
+        ],
+    )
+    call = _example(orders=orders)
+    assert call == pc.ExampleCall(
+        api="orders", method="POST", path="/orders", operation_id="createOrder"
+    )
+    assert call.has_body
+    assert call.as_context()["has_body"] is True
+    # An entry without pinned methods takes the API's methods in the file's order.
+    patcher = api(
+        allowed_methods=["PATCH", "GET"],
+        allowed_operations=[{"operationId": "updateOrder", "path": "/orders/{order_id}"}],
+    )
+    assert _example(orders=patcher) == pc.ExampleCall(
+        api="orders", method="PATCH", path="/orders/{order_id}", operation_id="updateOrder"
+    )
 
 
 def test_example_skips_operations_it_cannot_make():
     orders = api(
         allowed_methods=["GET", "POST"],
         allowed_operations=[
-            {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]},
+            {"operationId": "outside", "path": "/o", "methods": ["DELETE"]},  # not allowed
             {"operationId": "byClass", "path": "/classes/{class}"},  # a Python keyword
             {"operationId": "own", "path": "/runs/{runtime}"},  # the tool's own parameter
+            {"operationId": "withBody", "path": "/b/{body}"},  # the body parameter's name
             {"operationId": "priv", "path": "/p/{_id}"},  # pydantic refuses _ fields
             {"operationId": "quoted", "path": '/q/"x"'},  # not safe to render
             {"operationId": "noPath"},  # no spec to say where it lives
@@ -596,22 +624,36 @@ def test_example_skips_operations_it_cannot_make():
         ],
     )
     call = _example(orders=orders)
-    assert call == pc.ExampleCall(api="orders", path="/orders/{order_id}", operation_id="getOrder")
+    assert call == pc.ExampleCall(
+        api="orders", method="GET", path="/orders/{order_id}", operation_id="getOrder"
+    )
     assert call.params == ("order_id",)
 
 
-def test_example_falls_back_to_get_item_only_when_the_policy_allows_it():
+def test_example_falls_back_to_a_generic_operation_of_an_allowed_method():
     assert _example(open=api()) == pc.ExampleCall(
-        api="open", path="/items/{item_id}", operation_id="getItem"
+        api="open", method="GET", path="/items/{item_id}", operation_id="getItem"
+    )
+    assert _example(writer=api(allowed_methods=["POST"])) == pc.ExampleCall(
+        api="writer", method="POST", path="/items", operation_id="createItem"
+    )
+    # The file's order decides, not a preference for any method.
+    assert _example(w=api(allowed_methods=["DELETE", "GET"])) == pc.ExampleCall(
+        api="w", method="DELETE", path="/items/{item_id}", operation_id="deleteItem"
     )
     denied = api(denied_operations=[{"path": "/items/{id}"}])
-    assert _example(open=denied) is None
+    assert _example(open=denied) == pc.ExampleCall(
+        api="open", method="POST", path="/items", operation_id="createItem"
+    )
+    closed = api(denied_operations=[{"path": "/items/{id}"}, {"path": "/items"}])
+    assert _example(open=closed) is None
 
 
-def test_example_is_none_when_the_first_api_allows_no_get():
-    assert _example(writer=api(allowed_methods=["POST"])) is None
+def test_example_is_none_when_the_first_api_allows_nothing_it_can_make():
+    unplaceable = api(allowed_methods=["POST"], allowed_operations=[{"operationId": "noPath"}])
+    assert _example(writer=unplaceable) is None
     # Only the first API is used, as the template documents.
-    assert _example(writer=api(allowed_methods=["POST"]), reader=api()) is None
+    assert _example(writer=unplaceable, reader=api()) is None
 
 
 def test_example_honours_fail_closed_denials_by_operation_id():
@@ -620,7 +662,7 @@ def test_example_honours_fail_closed_denials_by_operation_id():
         denied_operations=[{"operationId": "deleteOrder"}],
     )
     # A call without operation_id cannot be told apart from deleteOrder, and the
-    # getItem fallback is not in allowed_operations: no example.
+    # generic fallbacks are not in allowed_operations: no example.
     assert _example(orders=orders) is None
 
 
@@ -628,15 +670,22 @@ def test_example_takes_paths_and_ids_from_the_openapi_spec(tmp_path):
     (tmp_path / "spec.yaml").write_text(yaml.safe_dump(OPENAPI))
     by_id = api(allowed_operations=[{"operationId": "getIncident"}], openapi="spec.yaml")
     assert _example(tmp_path, incidents=by_id) == pc.ExampleCall(
-        api="incidents", path="/incidents/{id}", operation_id="getIncident"
+        api="incidents", method="GET", path="/incidents/{id}", operation_id="getIncident"
     )
     by_path = api(allowed_operations=[{"path": "/sites/{siteId}/topology"}], openapi="spec.yaml")
     assert _example(tmp_path, incidents=by_path) == pc.ExampleCall(
-        api="incidents", path="/sites/{siteId}/topology", operation_id="getTopology"
+        api="incidents",
+        method="GET",
+        path="/sites/{siteId}/topology",
+        operation_id="getTopology",
     )
-    # No allowed_operations: the spec's first GET, never an operation it lacks.
+    # No allowed_operations: the spec's first operation, never an operation it lacks.
     assert _example(tmp_path, incidents=api(openapi="spec.yaml")) == pc.ExampleCall(
-        api="incidents", path="/incidents/{id}", operation_id="getIncident"
+        api="incidents", method="GET", path="/incidents/{id}", operation_id="getIncident"
+    )
+    writer = api(allowed_methods=["POST"], openapi="spec.yaml")
+    assert _example(tmp_path, incidents=writer) == pc.ExampleCall(
+        api="incidents", method="POST", path="/incidents/{id}", operation_id="closeIncident"
     )
 
 
@@ -645,7 +694,7 @@ def test_example_without_its_spec_does_not_guess(tmp_path):
     assert _example(tmp_path, incidents=missing) is None
     pinned = api(openapi="missing.yaml", allowed_operations=[{"operationId": "a", "path": "/a"}])
     assert _example(tmp_path, incidents=pinned) == pc.ExampleCall(
-        api="incidents", path="/a", operation_id="a"
+        api="incidents", method="GET", path="/a", operation_id="a"
     )
 
 
@@ -656,6 +705,8 @@ def test_example_without_its_spec_does_not_guess(tmp_path):
         {"allowed_operations": [{"path": "/orders/{order_id}"}]},
         {"allowed_methods": ["GET"], "denied_operations": [{"path": "/admin/{x}"}]},
         {"allowed_methods": ["*"]},
+        {"allowed_methods": ["POST", "PUT"]},
+        {"allowed_methods": ["PATCH"], "denied_operations": [{"operationId": "x"}]},
     ],
 )
 def test_every_example_passes_lint(tmp_path, policy):
@@ -671,3 +722,64 @@ def test_every_example_passes_lint(tmp_path, policy):
         path=call.path,
     )
     assert pc.check_call(declared, document).status == pc.STATUS_ALLOWED
+
+
+# ---------------------------------------------------------------------------
+# hints: the command that would allow a refused call
+# ---------------------------------------------------------------------------
+
+
+def test_refused_calls_carry_the_api_command_that_would_allow_them():
+    document = {
+        "apis": {
+            "orders": api(
+                allowed_methods=["GET"],
+                allowed_operations=[{"operationId": "listOrders"}],
+                denied_operations=[
+                    {"operationId": "deleteOrder", "path": "/orders/{order_id}"},
+                    {"path": "/admin/{section}"},
+                ],
+            )
+        }
+    }
+
+    def hint(method: str, operation_id: str | None, path: str | None, name: str = "orders"):
+        call = pc.DeclaredCall(
+            tool="t.py", api=name, method=method, operation_id=operation_id, path=path
+        )
+        result = pc.check_call(call, document)
+        assert result.status == pc.STATUS_DENIED
+        return result.hint
+
+    assert hint("GET", "getOrder", "/orders/{order_id}") == (
+        "graph-agents-cli api allow orders getOrder"
+    )
+    assert hint("POST", "createOrder", "/orders") == (
+        "graph-agents-cli api access orders custom --methods GET,POST; then "
+        "graph-agents-cli api allow orders createOrder"
+    )
+    assert hint("GET", None, "/reports") == (
+        "graph-agents-cli api allow orders --method GET --path /reports"
+    )
+    assert hint("GET", None, "/orders/7").startswith("name the operation")
+    assert hint("GET", "adminReport", "/admin/{section}").startswith(
+        "graph-agents-cli api revoke orders --method GET --path /admin/{section} --from denied"
+    )
+    assert hint("GET", "x", "/x", name="billing").startswith(
+        "graph-agents-cli api add billing --base-url-env"
+    )
+    assert "--access <read-only|read-write|custom>" in hint("GET", "x", "/x", name="billing")
+
+
+def test_the_report_prints_each_hint_once(tmp_path):
+    write_policy(tmp_path, orders=api(allowed_methods=["GET"]))
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    call = '{"api": "orders", "method": "PUT", "operation_id": "replaceOrder", "path": "/o"}'
+    (tools / "a.py").write_text(f"API_CALLS = [{call}]\n")
+    (tools / "b.py").write_text(f"API_CALLS = [{call}]\n")
+    buf = io.StringIO()
+    assert pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=300)) == 2
+    out = buf.getvalue()
+    assert out.count("graph-agents-cli api access orders custom --methods GET,PUT") == 1
+    assert "reviewed pull request" in out

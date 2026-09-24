@@ -155,7 +155,7 @@ def test_manifest_matches_contract(rendered: dict[str, Path]) -> None:
     assert custom["api_policy"] == {"policy_file": "api-policy.yaml"}
     assert custom["process"] == "agentic-template/workflow.md"
     assert custom["agent_directory"] == "my_agent"
-    assert custom["secrets"]["keys"][-1] == "EXAMPLE_API_TOKEN"  # the example API uses bearer
+    assert custom["secrets"]["keys"][-1] == "ORDERS_API_TOKEN"  # the sample API uses bearer
 
     stub = yaml.safe_load(
         (rendered["compat-custom"] / "graph-agents-cli-manifest.yaml").read_text()
@@ -241,7 +241,7 @@ def test_conditional_files_per_combo(rendered: dict[str, Path]) -> None:
     custom = rendered["custom-dir"]
     assert (custom / "api-policy.yaml").exists()
     assert (custom / "my_agent" / "tools" / "example_api.py").exists()
-    assert '"api": "example"' in (custom / "my_agent" / "tools" / "example_api.py").read_text()
+    assert '"api": "orders"' in (custom / "my_agent" / "tools" / "example_api.py").read_text()
     assert (custom / "my_agent" / "agent.py").exists() and not (custom / "app").exists()
 
 
@@ -387,7 +387,7 @@ def test_rendered_values_and_agent_env(rendered: dict[str, Path]) -> None:
             rendered["custom-dir"] / "deployment" / "helm" / "weather-agent" / "values.yaml"
         ).read_text()
     )
-    assert policy_values["env"]["EXAMPLE_API_BASE_URL"] == "http://CHANGE-ME"
+    assert policy_values["env"]["ORDERS_API_BASE_URL"] == "http://CHANGE-ME"
     prod_app = yaml.safe_load(
         (project / "deployment" / "argocd" / "application-prod.yaml").read_text()
     )
@@ -537,7 +537,7 @@ def test_langgraph_json_env_and_guidance(rendered: dict[str, Path]) -> None:
         assert var in jwt_env, var
     assert "AUTH_JWT_ISSUER=" not in env_example
     policy_env = (rendered["custom-dir"] / ".env.example").read_text()
-    assert "EXAMPLE_API_BASE_URL=" in policy_env and "EXAMPLE_API_TOKEN=" in policy_env
+    assert "ORDERS_API_BASE_URL=" in policy_env and "ORDERS_API_TOKEN=" in policy_env
     assert "every outbound API call is refused" in env_example
     server_env = (rendered["server-helm-push"] / ".env.example").read_text()
     assert (

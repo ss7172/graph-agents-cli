@@ -35,15 +35,17 @@ graph-agents-cli login [--profile default|disconnected] [--cluster] [--write-env
 ```
 
 - `setup` installs the CLI (`uv tool install <install spec>`: the running version's git tag, or
-  `GRAPH_AGENTS_CLI_INSTALL_SPEC`) and the six
-  `graph-agents-cli-*` skills into detected coding agents through `npx skills add`, falling back to
-  the wheel-bundled copy, then to a direct copy into `~/.agents/skills` (`./.agents/skills` with
-  `--workspace`). `--agent` is repeatable (`claude-code`, `cursor`, ... or `all`); `--dev` installs
-  the CLI editable from the checkout; `--skills-source` overrides the bundled skills. It performs
-  no authentication.
-- `update` force-reinstalls the skills (`npx skills update`) and then reinstalls the CLI from
-  the latest GitHub release (`uv tool install --force <install spec>`; skipped when there is no
-  newer release; a failure is a warning, a malformed `GRAPH_AGENTS_CLI_INSTALL_SPEC` is exit 3).
+  `GRAPH_AGENTS_CLI_INSTALL_SPEC`) and the six `graph-agents-cli-*` skills into detected coding
+  agents through `npx skills add` from this repository at the running release's tag
+  (`https://github.com/ss7172/graph-agents-cli#v<version>`; the default branch for a development
+  build), falling back to the wheel-bundled copy, then to a direct copy into `~/.agents/skills`
+  (`./.agents/skills` with `--workspace`). `--agent` is repeatable (`claude-code`, `cursor`, ...
+  or `all`); `--dev` installs the CLI editable from the checkout and the skills from it;
+  `--skills-source` picks another source (no fallback). It performs no authentication.
+- `update` refreshes the skills (`npx skills update`), then reinstalls the CLI from the latest
+  GitHub release (`uv tool install --force <install spec>`; skipped when there is no newer
+  release; a failure is a warning, a malformed `GRAPH_AGENTS_CLI_INSTALL_SPEC` is exit 3) and
+  installs that release's skills from its tag.
 - `login` is a preflight check, not an authentication: the provider key for `MODEL_PROVIDER`
   (`OPENAI_BASE_URL` for `openai-compatible`), the judge key, `LANGSMITH_API_KEY` or an OTLP
   endpoint when `TRACING_ENABLED=true`, the kube context (`--cluster` also runs
@@ -74,18 +76,18 @@ graph-agents-cli create [PROJECT_NAME]
   --registry TEXT                                                   (default: ghcr.io/<git origin owner>)
   --cd argocd | helm-push | skip                                    (default: skip; requires --deployment-target kubernetes)
   --auth-policy shared-bearer | jwt | custom                        (default: shared-bearer)
-  --api-policy FILE                                                 (validated, then seeds api-policy.yaml)
+  --api-policy FILE                                                 (validated, then seeds api-policy.yaml; optional)
   --process TEXT                                                    (path or string recorded as process: and rendered into the guidance file)
   -p/--prototype                                                    (target defaults to none unless given; CD forced to skip)
   -dir/--agent-directory TEXT   --agent-guidance-filename TEXT (default AGENTS.md)   -bt/--base-template TEXT (remote templates only)
   -i/--interactive   -y/--auto-approve/--yes   -s/--skip-checks (skips only the uv-on-PATH preflight)   --debug
 graph-agents-cli scaffold create [PROJECT_NAME] ...                 (same command)
 graph-agents-cli scaffold enhance [TEMPLATE_PATH]
-  -n/--name TEXT plus every create flag above (--runtime, --model-provider, --model, --checkpointer,
-  -d/--deployment-target, --registry, --cd, --auth-policy, --api-policy, --process, -p, -dir,
-  --agent-guidance-filename, -bt, -i, -y, -s, --debug) and
+  -n/--name TEXT plus the create flags above except --api-policy (--runtime, --model-provider,
+  --model, --checkpointer, -d/--deployment-target, --registry, --cd, --auth-policy, --process, -p,
+  -dir, --agent-guidance-filename, -bt, -i, -y, -s, --debug) and
   --force   --dry-run/--dryrun   --prefer-new
-  (--api-policy is refused by enhance: api-policy.yaml belongs to the project and is never edited)
+  (api-policy.yaml belongs to the project: enhance never touches it; use graph-agents-cli api)
 graph-agents-cli scaffold upgrade [PROJECT_PATH] [--dry-run/--dryrun] [-y/--auto-approve/--yes] [-i/--interactive]
   [--baseline authentic|current] [--debug]
 ```
@@ -138,12 +140,59 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   its OpenAPI spec; `API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional) is a
   violation. A leftover `PRODUCT_CALLS` is an error; a
   project still on `product-policy.yaml` stops with migration steps (exit 3).
-  `--policy-only` skips ruff.
+  `--policy-only` skips ruff. Each refused call is followed by the `graph-agents-cli api`
+  command that would allow it (a reviewed change; propose it, do not run it unasked).
 - `build`: `docker build -t <registry>/<name>:<tag> -f Dockerfile .` (default tag `latest`;
   `--registry` overrides the manifest; `--push` pushes; `--dry-run` prints the commands). Exit `2`
   on a docker failure, `3` without a Dockerfile or with a placeholder (`ghcr.io/CHANGE-ME`) or
   invalid image reference (checked before docker runs, `--dry-run` included).
 
+
+## Outbound API policy
+
+```
+graph-agents-cli api add NAME --base-url-env ENV --auth none|bearer|forward [--token-env ENV]
+  [--forward-header H] --access read-only|read-write|custom [--methods M,...] [--openapi PATH]
+  [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]
+graph-agents-cli api access NAME read-only|read-write|custom [--methods M,...] [--dry-run]
+graph-agents-cli api allow NAME (OPERATION_ID | --method M --path P) [--methods M,...] [--dry-run]
+graph-agents-cli api deny NAME (OPERATION_ID | --method M --path P) [--dry-run]
+graph-agents-cli api revoke NAME (OPERATION_ID | --method M --path P) [--from allowed|denied] [--dry-run]
+graph-agents-cli api limits NAME [--max-calls-per-run N|none] [--rate-per-minute N|none] [--dry-run]
+graph-agents-cli api remove NAME [--dry-run]
+graph-agents-cli api show [NAME] [--json]
+graph-agents-cli api check
+```
+
+- `api-policy.yaml` belongs to the project and evolves with the agent; `create --api-policy`
+  only seeds it. There is no default access: `--access` is required on `add`; `read-only` writes
+  `[GET, HEAD]`, `read-write` writes `[GET, HEAD, POST, PUT, PATCH, DELETE]`, `custom` writes
+  `--methods` (case-insensitive, stored upper-case; `"*"` alone for every method). The file never
+  stores a preset name.
+- Every mutating command loads and validates the current file, applies one change, validates the
+  result, prints a unified diff of each file it touches (the policy, the manifest's `api_policy`
+  and `secrets.keys`, `.env.example`, the chart's `values.yaml` `env`), keeps comments and key
+  order, and writes atomically; `--dry-run` prints the diff only. It says whether access widens
+  (a reviewed change: CODEOWNERS covers `api-policy.yaml`) or narrows, and which declared calls
+  become allowed or refused. What it cannot edit safely is listed under "Left for you".
+- `add` creates the file when absent, copies an `--openapi` spec outside the project to
+  `openapi/<name>/`, adds a bearer `token_env` to `secrets.keys`, and documents the variables in
+  `.env.example` and the chart values (placeholder `http://CHANGE-ME`). `forward` is refused under
+  `langgraph-server`.
+- `allow` on an API without `allowed_operations` creates the list, which narrows access from
+  every operation within `allowed_methods` to the listed ones: the command says so. With
+  `openapi:` recorded, `allow` and `deny` by operation id check that the id exists and fill in its
+  method and path.
+- `revoke` removes the entries naming the operation (only one method of an entry pinning several
+  when `--method` is given); `--from` picks the list when both match; removing the last
+  `allowed_operations` entry is refused (it would allow every operation).
+- `remove` drops the API (and its token from `secrets.keys` when no other API uses it); the last
+  one removes `api-policy.yaml` and the manifest's `api_policy`, so every call is refused.
+- `show` prints the effective policy per API (auth, methods and preset, allowed and denied
+  operations, limits, openapi, timeouts) and every tool's declared calls with their status and
+  hint; `check` is `lint --policy-only` (same exit codes).
+- Exit codes: `0` changed (or nothing to change), `1` `check` found a refused call, `2` usage
+  error, `3` an invalid result (nothing written), an invalid current file, or not in a project.
 ## Evaluate
 
 ```

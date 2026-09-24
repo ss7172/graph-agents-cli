@@ -1072,7 +1072,10 @@ class _ChartCheck:
 @click.option(
     "--name",
     "-n",
-    help="Project name for templating (defaults to current directory name)",
+    help=(
+        "Project name for templating (default: the manifest's name, else the current "
+        "directory name)"
+    ),
 )
 @shared_template_options
 @click.option(
@@ -1146,7 +1149,8 @@ def enhance(
     --base-template is separate. It names a base template this CLI ships, which
     sits underneath whatever TEMPLATE_PATH supplies.
 
-    api-policy.yaml is never touched by enhance: it belongs to the project.
+    api-policy.yaml is never touched by enhance: it belongs to the project;
+    change it with `graph-agents-cli api`.
 
     A runtime or model-provider change is applied to the files it shapes,
     including ones you edited (the chart values key by key, around your
@@ -1174,9 +1178,9 @@ def enhance(
     if api_policy:
         raise click.UsageError(
             "--api-policy is not accepted by enhance: api-policy.yaml belongs to the "
-            "project and is never edited after scaffolding. Copy the file to the project "
-            "root as api-policy.yaml and set api_policy: {policy_file: api-policy.yaml} "
-            "in graph-agents-cli-manifest.yaml instead."
+            "project, and enhance never touches it. Change it with `graph-agents-cli api` "
+            "(add, access, allow, deny, revoke, limits, remove), which also keeps the "
+            "manifest, .env.example and the chart values in step."
         )
 
     current_dir = pathlib.Path.cwd()
@@ -1541,6 +1545,13 @@ def enhance(
                 previous=previous_params,
                 new_config=new_config,
             )
+
+
+# --api-policy is shared with create but refused here (the policy belongs to the
+# project; `graph-agents-cli api` changes it), so --help does not offer it.
+for _param in enhance.params:
+    if _param.name == "api_policy" and isinstance(_param, click.Option):
+        _param.hidden = True
 
 
 def _reconcile_after_in_folder_render(

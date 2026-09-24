@@ -18,14 +18,15 @@ A project declares every external API its tools may call in ``api-policy.yaml``
 at the project root::
 
     apis:
-      example:
-        base_url_env: EXAMPLE_API_BASE_URL
-        auth: bearer                 # none | bearer | forward
-        token_env: EXAMPLE_API_TOKEN # auth: bearer only
-        allowed_methods: [GET]       # required; ["*"] allows every method
-        allowed_operations:          # optional; omitted = every operation
-          - operationId: getItem
-            path: /items/{item_id}
+      orders:
+        base_url_env: ORDERS_API_BASE_URL
+        auth: bearer                     # none | bearer | forward
+        token_env: ORDERS_API_TOKEN      # auth: bearer only
+        allowed_methods: [GET, POST]     # required, explicit; ["*"] allows every method
+        allowed_operations:              # optional; omitted = every operation
+          - operationId: createOrder
+            path: /orders
+        limits: {max_calls_per_run: 20}  # optional
 
 The schema rules and the matching rules live in the block between the
 ``SHARED API POLICY RULES`` markers. The scaffolded runtime
@@ -33,7 +34,8 @@ The schema rules and the matching rules live in the block between the
 ``create --api-policy``, ``lint`` and the running agent accept the same files,
 report the same errors and refuse the same calls. The rest of this module is
 CLI-only: reading the file, summarising it for the templates, and detecting
-the retired single-API ``product_api`` format.
+the retired single-API ``product_api`` format. ``graph-agents-cli api`` edits
+the file (``graph_agents_cli.api``).
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import click
 import yaml
@@ -82,10 +84,17 @@ _API_KEYS = (
     "openapi",
     "timeouts_ms",
     "pagination",
+    "limits",
 )
 _OPERATION_KEYS = ("operationId", "path", "methods")
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
+_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
+
+# Recognised on an API and on an operation entry, and refused: a policy must
+# never count on a human approval step that the runtime would silently skip.
+APPROVAL_KEY = "approval"
+APPROVAL_NOT_SUPPORTED = "approval gates are not supported yet (planned); remove the approval key"
 
 LEGACY_POLICY_HINT = (
     "product_api: is the retired single-API format: move its fields under "
@@ -99,7 +108,7 @@ class PolicyLoader(yaml.SafeLoader):
     """``yaml.SafeLoader`` that refuses a key repeated within one mapping, at any level.
 
     Plain ``safe_load`` silently keeps the last duplicate, so a reviewer reading
-    ``allowed_methods: [GET]`` would miss a later ``allowed_methods: ["*"]``
+    ``allowed_methods: [GET, POST]`` would miss a later ``allowed_methods: ["*"]``
     that is the one applied. Merge keys (``<<: *anchor``) still work.
     """
 
@@ -171,8 +180,10 @@ def _api_errors(name: Any, api: Any) -> list[str]:
     if not isinstance(api, Mapping):
         errors.append(f"{where}: must be a mapping")
         return errors
-    for key in sorted(set(api) - set(_API_KEYS), key=str):
+    for key in sorted(set(api) - set(_API_KEYS) - {APPROVAL_KEY}, key=str):
         errors.append(f"{where}: unknown key {key!r}")
+    if APPROVAL_KEY in api:
+        errors.append(f"{where}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
 
     if "base_url_env" not in api:
         errors.append(f"{where}.base_url_env: required")
@@ -223,6 +234,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         errors.extend(_timeouts_errors(f"{where}.timeouts_ms", api["timeouts_ms"]))
     if "pagination" in api:
         errors.extend(_pagination_errors(f"{where}.pagination", api["pagination"]))
+    if "limits" in api:
+        errors.extend(_limits_errors(f"{where}.limits", api["limits"]))
     return errors
 
 
@@ -256,8 +269,10 @@ def _operations_errors(where: str, value: Any, allow_empty: bool) -> list[str]:
         if not isinstance(entry, Mapping):
             errors.append(f"{at}: must be a mapping with operationId and/or path")
             continue
-        for key in sorted(set(entry) - set(_OPERATION_KEYS), key=str):
+        for key in sorted(set(entry) - set(_OPERATION_KEYS) - {APPROVAL_KEY}, key=str):
             errors.append(f"{at}: unknown key {key!r}")
+        if APPROVAL_KEY in entry:
+            errors.append(f"{at}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
         if "operationId" not in entry and "path" not in entry:
             errors.append(f"{at}: needs operationId and/or path")
         if "operationId" in entry:
@@ -305,6 +320,18 @@ def _pagination_errors(where: str, value: Any) -> list[str]:
         errors.append(f"{where}.max_page_size: required")
     elif not _is_positive_int(value["max_page_size"]):
         errors.append(f"{where}.max_page_size: must be a positive integer")
+    return errors
+
+
+def _limits_errors(where: str, value: Any) -> list[str]:
+    if not isinstance(value, Mapping) or not value:
+        return [f"{where}: must be a mapping with max_calls_per_run and/or rate_per_minute"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_LIMIT_KEYS), key=str)
+    ]
+    for key in _LIMIT_KEYS:
+        if key in value and not _is_positive_int(value[key]):
+            errors.append(f"{where}.{key}: must be an integer >= 1")
     return errors
 
 
@@ -424,7 +451,7 @@ def denial_matches(
 
 
 def describe_operation(entry: Mapping[str, Any]) -> str:
-    """``operationId=getItem path=/items/{item_id} methods=[GET]`` for messages."""
+    """``operationId=updateOrder path=/orders/{order_id} methods=['PATCH']`` for messages."""
     parts = []
     if entry.get("operationId") is not None:
         parts.append(f"operationId={entry['operationId']}")
@@ -580,25 +607,34 @@ def summarize(document: Mapping[str, Any]) -> tuple[ApiSummary, ...]:
     )
 
 
+# Methods whose example call sends a JSON body (the example tool takes a `body` argument).
+BODY_METHODS = ("POST", "PUT", "PATCH")
+
+
 @dataclass(frozen=True)
 class ExampleCall:
-    """The GET that the rendered ``tools/example_api.py`` makes.
+    """The call that the rendered ``tools/example_api.py`` makes.
 
-    Chosen when the project is rendered (``dev.policy_check.example_call``) so
+    Chosen when the project is rendered (``dev.policy_check.example_call``):
+    the first operation the policy's first API allows, whatever its method, so
     the example passes ``lint`` and the project's policy test from the first
-    commit, whatever the seed policy allows.
+    commit.
     """
 
     api: str
+    method: str
     path: str
     operation_id: str | None = None
-
-    method: ClassVar[str] = "GET"
 
     @property
     def params(self) -> tuple[str, ...]:
         """The path's ``{name}`` placeholders in order, each once: the tool's parameters."""
         return tuple(dict.fromkeys(_PLACEHOLDER_NAME_RE.findall(self.path)))
+
+    @property
+    def has_body(self) -> bool:
+        """True when the call sends a JSON body (POST, PUT, PATCH)."""
+        return self.method in BODY_METHODS
 
     def as_context(self) -> dict[str, Any]:
         return {
@@ -607,6 +643,7 @@ class ExampleCall:
             "operation_id": self.operation_id or "",
             "path": self.path,
             "params": list(self.params),
+            "has_body": self.has_body,
         }
 
 
@@ -688,7 +725,7 @@ def legacy_migration_message(findings: list[str]) -> str:
         "           base_url_env: EXAMPLE_API_BASE_URL\n"
         "           auth: bearer              # none | bearer | forward (was forwarded-session)\n"
         "           token_env: EXAMPLE_API_TOKEN\n"
-        "           allowed_methods: [GET]\n"
+        "           allowed_methods: [GET, POST]  # list every method it may use\n"
         f"  3. In graph-agents-cli-manifest.yaml replace `{LEGACY_MANIFEST_KEY}:` with\n"
         f"     `{MANIFEST_KEY}: {{policy_file: {POLICY_FILENAME}}}`.\n"
         f"  4. In every tool module rename {LEGACY_CALLS_NAME} to {CALLS_NAME}, add\n"

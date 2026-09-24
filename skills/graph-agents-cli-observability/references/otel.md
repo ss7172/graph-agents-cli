@@ -16,9 +16,11 @@ disconnected profile.
 `app/app_utils/telemetry.py` uses the OpenInference LangChain instrumentor
 (`openinference-instrumentation-langchain`) with `opentelemetry-exporter-otlp-proto-http`. It is
 initialised only when tracing is enabled and no LangSmith key is present; otherwise the modules
-are not imported. Standard `OTEL_*` variables (`OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
-`OTEL_EXPORTER_OTLP_HEADERS`) are honoured by the SDK; the chart sets `OTEL_SERVICE_NAME` to the
-release name.
+are not imported. Standard `OTEL_*` variables (`OTEL_RESOURCE_ATTRIBUTES`,
+`OTEL_EXPORTER_OTLP_HEADERS`) are honoured by the SDK. The resource's `service.name` is
+`OTEL_SERVICE_NAME` when set, else `LANGSMITH_PROJECT`, else the name of the working directory
+(`app` in the fastapi image, the project name in the server image); the chart does not set it, so add `OTEL_SERVICE_NAME: <name>` to the
+chart's `env` (or `values-<env>.yaml`) to name the service in your backend.
 
 ## Spans and attributes
 

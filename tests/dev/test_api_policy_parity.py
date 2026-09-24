@@ -80,7 +80,7 @@ def test_the_runtime_module_renders_unchanged() -> None:
 
 
 VALID = [
-    "apis:\n  a:\n    base_url_env: A_URL\n    auth: none\n    allowed_methods: [GET]\n",
+    "apis:\n  a:\n    base_url_env: A_URL\n    auth: none\n    allowed_methods: [GET, POST]\n",
     (
         "apis:\n  billing:\n    base_url_env: BILLING_API_BASE_URL\n    auth: bearer\n"
         "    token_env: BILLING_API_TOKEN\n    allowed_methods: [get, POST]\n"
@@ -96,6 +96,13 @@ VALID = [
         "    forward_header: X-User-Token\n    allowed_methods: ['*']\n"
         "  other_api_2:\n    base_url_env: O\n    auth: forward\n    allowed_methods: [DELETE]\n"
     ),
+    (
+        "apis:\n  orders:\n    base_url_env: ORDERS_URL\n    auth: none\n"
+        "    allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]\n"
+        "    limits: {max_calls_per_run: 20, rate_per_minute: 120}\n"
+        "  audit:\n    base_url_env: AUDIT_URL\n    auth: none\n    allowed_methods: [POST]\n"
+        "    limits: {rate_per_minute: 1}\n"
+    ),
 ]
 
 INVALID = [
@@ -106,59 +113,77 @@ INVALID = [
     "apis:\n",
     "product_api:\n  auth: bearer\n",
     "product_api:\n  auth: bearer\napis:\n  a:\n    base_url_env: A\n    auth: none\n"
-    "    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\nextra: 1\n",
-    "apis:\n  Bad-Name:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
-    "apis:\n  " + "a" * 33 + ":\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
+    "    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\nextra: 1\n",
+    "apis:\n  Bad-Name:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  "
+    + "a" * 33
+    + ":\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n",
     "apis:\n  a: 1\n",
-    "apis:\n  a:\n    auth: none\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: 1A\n    auth: none\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: forwarded-session\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: bearer\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    token_env: T\n    allowed_methods: [GET]\n",
+    "apis:\n  a:\n    auth: none\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: 1A\n    auth: none\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: forwarded-session\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: bearer\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    token_env: T\n    allowed_methods: [GET, POST]\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: bearer\n    token_env: T\n"
-    "    forward_header: X\n    allowed_methods: [GET]\n",
+    "    forward_header: X\n    allowed_methods: [GET, POST]\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: forward\n    forward_header: 'X Y'\n"
-    "    allowed_methods: [GET]\n",
+    "    allowed_methods: [GET, POST]\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: none\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: []\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, '*']\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [FETCH]\n",
     "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: GET\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations: []\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations: [getItem]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - operationId: get item\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: items/1\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /items/../admin\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /items?x=1\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /items/{bad-name}\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /x\n        methods: ['*']\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /x\n        method: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    denied_operations:\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n    openapi: ''\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n    openapi: ''\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    timeouts_ms: {connect: 0, write: 5}\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    timeouts_ms: {read: true}\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    pagination: {page_size_param: limit}\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    pagination: {page_size_param: '', max_page_size: -1, cursor: c}\n",
+    # limits: optional, but each value an integer >= 1 and nothing else in it
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    limits: {}\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    limits: 20\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    limits: {max_calls_per_run: 0, rate_per_minute: 1.5, per_day: 3}\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    limits: {max_calls_per_run: true}\n",
+    # approval: reserved for a later release, refused (never silently accepted)
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    approval: required\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+    "    allowed_operations:\n      - operationId: createOrder\n        approval: {by: ops}\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [DELETE]\n"
+    "    denied_operations:\n      - path: /x\n        approval: false\n",
 ]
 
 
@@ -186,6 +211,29 @@ def test_invalid_policies_are_refused_by_both_with_the_same_errors(
     cli_errors = cli.policy_errors(data)
     assert cli_errors, "the CLI must refuse this document"
     assert _runtime_errors(runtime, data) == cli_errors
+
+
+def test_the_approval_key_is_refused_with_the_planned_message() -> None:
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["POST"]}
+    reserved = "approval gates are not supported yet (planned); remove the approval key"
+    assert cli.policy_errors({"apis": {"a": {**api, "approval": "required"}}}) == [
+        f"apis.a.approval: {reserved}"
+    ]
+    entry = {"operationId": "createOrder", "approval": True}
+    assert cli.policy_errors({"apis": {"a": {**api, "allowed_operations": [entry]}}}) == [
+        f"apis.a.allowed_operations[0].approval: {reserved}"
+    ]
+
+
+def test_limits_errors_name_the_rule() -> None:
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["PUT"]}
+    errors = cli.policy_errors(
+        {"apis": {"a": {**api, "limits": {"max_calls_per_run": 0, "per_day": 3}}}}
+    )
+    assert errors == [
+        "apis.a.limits: unknown key 'per_day'",
+        "apis.a.limits.max_calls_per_run: must be an integer >= 1",
+    ]
 
 
 def test_files_are_judged_the_same_by_create_and_the_runtime(
@@ -261,24 +309,28 @@ def test_the_bundled_sample_policy_is_valid() -> None:
     )
     data = yaml.safe_load(text)
     assert cli.policy_errors(data) == []
-    assert list(data["apis"]) == ["example"]
+    assert list(data["apis"]) == ["orders"]
+    # A sample, not a default: read-write methods with an explicit allow-list and a denial.
+    orders = data["apis"]["orders"]
+    assert orders["allowed_methods"] != ["GET"]
+    assert orders["allowed_operations"] and orders["denied_operations"]
 
 
 # --- repeated keys ------------------------------------------------------------------
 
 DUPLICATE_KEYS = [
     # The narrower rule is read first; plain safe_load would apply the later "*".
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_methods: ['*']\n",
     # A second definition of the same API would silently drop the first one's denial.
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    denied_operations:\n      - path: /admin\n"
-    "  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n",
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "apis:\n  b:\n    base_url_env: B\n    auth: none\n    allowed_methods: ['*']\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    allowed_operations:\n      - path: /items/{id}\n        path: /admin\n",
-    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+    "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
     "    pagination: {page_size_param: limit, max_page_size: 5, max_page_size: 5000}\n",
 ]
 
@@ -303,7 +355,7 @@ def test_repeated_keys_are_refused_by_both_with_the_same_error(
 
 def test_merge_keys_are_not_repeated_keys(runtime: ModuleType) -> None:
     document = (
-        "apis:\n  a: &base\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+        "apis:\n  a: &base\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET, POST]\n"
         "  b:\n    <<: *base\n    base_url_env: B\n"
     )
     for side in (cli, runtime):
@@ -312,7 +364,7 @@ def test_merge_keys_are_not_repeated_keys(runtime: ModuleType) -> None:
         assert data["apis"]["b"] == {
             "base_url_env": "B",
             "auth": "none",
-            "allowed_methods": ["GET"],
+            "allowed_methods": ["GET", "POST"],
         }
         assert side.policy_errors(data) == []
 

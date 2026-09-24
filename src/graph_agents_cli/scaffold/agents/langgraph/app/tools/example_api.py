@@ -13,13 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Example API tool: one explicit GET through the policy-enforcing client.
+"""Example API tool: one explicit call through the policy-enforcing client.
 
-Generated from `api-policy.yaml`: the call is the first GET its first API
-allows (an `allowed_operations` entry, else an operation of its OpenAPI spec),
-so it passes `graph-agents-cli lint` and the policy test as generated. It shows
-the pattern every tool that calls an external API follows: declare each call
-in `API_CALLS` (checked by `graph-agents-cli lint`), send it through
+Generated from `api-policy.yaml`: the call is the first operation its first API
+allows, whatever its method (an `allowed_operations` entry, else an operation
+of its OpenAPI spec), so it passes `graph-agents-cli lint` and the policy test
+as generated. It is one concrete, declared call rather than a generic
+"any method, any path" tool, because lint can only check calls a tool declares.
+It shows the pattern every tool that calls an external API follows: declare
+each call in `API_CALLS` (checked by `graph-agents-cli lint`), send it through
 `app_utils.api_client.get_client` (which refuses anything outside
 `api-policy.yaml` before sending), and pass the run context so an
 `auth: forward` API receives the caller's own credential. Replace the call with
@@ -53,17 +55,21 @@ async def call_{{ cookiecutter.example_api.api }}_api(
 {%- for name in cookiecutter.example_api.params %}
     {{ name }}: str,
 {%- endfor %}
+{%- if cookiecutter.example_api.has_body %}
+    body: dict[str, Any],
+{%- endif %}
     runtime: ToolRuntime,
 ) -> str:
-    """{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }} on the {{ cookiecutter.example_api.api }} API and return the response as JSON."""
+    """{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }} on the {{ cookiecutter.example_api.api }} API{% if cookiecutter.example_api.has_body %} with `body` as the JSON request body{% endif %}; return the response as JSON."""
     context: Any = getattr(runtime, "context", None)
     client = get_client("{{ cookiecutter.example_api.api }}", context=context)
     # The path stays the declared template; the client encodes each path
     # parameter as one segment and refuses `.`/`..`, so model input cannot reach
-    # another endpoint. A refusal (ApiPolicyError) or a failed call
-    # (ApiCallError) propagates: agent.py turns it into a tool error the model
-    # can read.
-    data = await client.get(
+    # another endpoint. A refusal (ApiPolicyError, also when the API's limits are
+    # reached) or a failed call (ApiCallError) propagates: agent.py turns it
+    # into a tool error the model can read.
+    data = await client.request(
+        "{{ cookiecutter.example_api.method }}",
         "{{ cookiecutter.example_api.path }}",
 {%- if cookiecutter.example_api.operation_id %}
         operation_id="{{ cookiecutter.example_api.operation_id }}",
@@ -74,6 +80,9 @@ async def call_{{ cookiecutter.example_api.api }}_api(
             "{{ name }}": {{ name }},
 {%- endfor %}
         },
+{%- endif %}
+{%- if cookiecutter.example_api.has_body %}
+        json_body=body,
 {%- endif %}
     )
     return data if isinstance(data, str) else json.dumps(data)

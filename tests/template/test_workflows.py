@@ -478,7 +478,7 @@ def test_helm_push_verifies_the_rollout(path: Path, env: str, deploy_step: str) 
 
 
 def test_every_step_that_runs_the_cli_ignores_extensions() -> None:
-    """LIFECYCLE-4: a committed or runner-wide extension cannot replace the gate or deploy."""
+    """A committed or runner-wide extension cannot replace the gate or the deploy."""
     seen = 0
     for path in ALL_WORKFLOWS:
         for name, job in _workflow(path)["jobs"].items():

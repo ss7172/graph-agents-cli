@@ -14,16 +14,21 @@
 
 """Unit tests for the policy-enforcing API client (`app_utils.api_client`).
 
-No network: requests go to an httpx MockTransport, and every refusal is
-checked to happen before anything is sent.
+No outside network: most requests go to an httpx MockTransport, the
+every-method tests to an HTTP server on 127.0.0.1 started by the test, and
+every refusal is checked to happen before anything is sent.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import pkgutil
+import threading
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -37,10 +42,14 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     ApiPolicy,
     ApiPolicyError,
     current_context,
+    current_run_id,
+    end_run,
     get_client,
     render_path,
+    reset_limits,
     reset_policy_cache,
 )
+from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 
 POLICY = """
 apis:
@@ -80,6 +89,25 @@ apis:
         methods: [DELETE]
       - path: /admin/{section}
     pagination: {page_size_param: limit, max_page_size: 50}
+  orders:
+    base_url_env: ORDERS_API_BASE_URL
+    auth: bearer
+    token_env: ORDERS_API_TOKEN
+    allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    allowed_operations:
+      - {operationId: listOrders, path: /orders, methods: [GET, HEAD]}
+      - {operationId: createOrder, path: /orders, methods: [POST]}
+      - {operationId: replaceOrder, path: "/orders/{order_id}", methods: [PUT]}
+      - {operationId: updateOrder, path: "/orders/{order_id}", methods: [PATCH]}
+      - {operationId: cancelOrder, path: "/orders/{order_id}", methods: [DELETE]}
+    denied_operations:
+      - {operationId: purgeOrders, path: /orders, methods: [DELETE]}
+    limits: {max_calls_per_run: 3}
+  metered:
+    base_url_env: METERED_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST]
+    limits: {rate_per_minute: 2}
 """
 
 
@@ -99,9 +127,14 @@ def policy_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DIRECTORY_API_BASE_URL", "http://directory.test/api/v2/")
     monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://public.test")
     monkeypatch.setenv("RECORDS_API_BASE_URL", "https://records.test")
+    monkeypatch.setenv("ORDERS_API_BASE_URL", "http://orders.test")
+    monkeypatch.setenv("ORDERS_API_TOKEN", "orders-token")
+    monkeypatch.setenv("METERED_API_BASE_URL", "http://metered.test")
     reset_policy_cache()
+    reset_limits()
     yield path
     reset_policy_cache()
+    reset_limits()
 
 
 def _transport(calls: list[httpx.Request], status: int = 200, **extra: Any) -> httpx.MockTransport:
@@ -136,22 +169,32 @@ def test_undeclared_api_is_refused(policy_file: Path) -> None:
         ("apis: {}\n", "non-empty mapping"),
         ("apis:\n  a:\n    base_url_env: A\n    auth: none\n", "allowed_methods: required"),
         (
-            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [PUT]\n"
             "    allowed_method: [POST]\n",
             "unknown key 'allowed_method'",
         ),
         (
-            "apis:\n  a:\n    base_url_env: A\n    auth: bearer\n    allowed_methods: [GET]\n",
+            "apis:\n  a:\n    base_url_env: A\n    auth: bearer\n    allowed_methods: [POST]\n",
             "token_env",
         ),
         (
-            "apis:\n  A:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n",
+            "apis:\n  A:\n    base_url_env: A\n    auth: none\n    allowed_methods: [DELETE]\n",
             "invalid API name",
         ),
         (
-            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [GET]\n"
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [PATCH]\n"
             "    allowed_methods: ['*']\n",
             "found duplicate key 'allowed_methods'",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    approval: required\n",
+            "approval gates are not supported yet (planned); remove the approval key",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [PUT]\n"
+            "    limits: {max_calls_per_run: 0}\n",
+            "limits.max_calls_per_run: must be an integer >= 1",
         ),
     ],
 )
@@ -393,6 +436,198 @@ async def test_missing_base_url_is_a_call_error(
 
 def test_current_context_outside_a_run_is_none() -> None:
     assert current_context() is None
+
+
+# --- every method against a real server ------------------------------------------
+
+
+class _EchoHandler(BaseHTTPRequestHandler):
+    """Answers every method with what it received (204 and no body for DELETE)."""
+
+    def _answer(self) -> None:
+        length = int(self.headers.get("content-length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        if self.command == "DELETE":
+            self.send_response(204)
+            self.end_headers()
+            return
+        payload = {
+            "method": self.command,
+            "path": self.path,
+            "body": json.loads(raw) if raw else None,
+            "authorization": self.headers.get("authorization"),
+            "x_request_tag": self.headers.get("x-request-tag"),
+            "content_type": self.headers.get("content-type"),
+        }
+        data = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _answer
+
+    def log_message(self, format: str, *args: Any) -> None:  # quiet test output
+        return
+
+
+@pytest.fixture
+def local_server(policy_file: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _EchoHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    monkeypatch.setenv("ORDERS_API_BASE_URL", base)
+    try:
+        yield base
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+async def test_every_allowed_method_reaches_a_real_server(local_server: str) -> None:
+    client = get_client("orders", run_id="methods-1")
+    created = await client.post(
+        "/orders",
+        operation_id="createOrder",
+        json_body={"sku": "a-1", "quantity": 2},
+        params={"dry": "false"},
+        headers={"X-Request-Tag": "t1", "Authorization": "Bearer forged"},
+    )
+    assert created["method"] == "POST"
+    assert created["path"] == "/v1/orders?dry=false"
+    assert created["body"] == {"sku": "a-1", "quantity": 2}
+    assert created["content_type"] == "application/json"
+    assert created["x_request_tag"] == "t1"
+    assert created["authorization"] == "Bearer orders-token"  # the policy's token wins
+    replaced = await client.put(
+        "/orders/{order_id}",
+        operation_id="replaceOrder",
+        path_params={"order_id": "7"},
+        json_body={"sku": "b-2"},
+    )
+    assert (replaced["method"], replaced["path"], replaced["body"]) == (
+        "PUT",
+        "/v1/orders/7",
+        {"sku": "b-2"},
+    )
+    client = get_client("orders", run_id="methods-2")  # max_calls_per_run is 3
+    updated = await client.patch(
+        "/orders/{order_id}",
+        operation_id="updateOrder",
+        path_params={"order_id": "7"},
+        json_body={"quantity": 3},
+    )
+    assert (updated["method"], updated["body"]) == ("PATCH", {"quantity": 3})
+    cancelled = await client.delete(
+        "/orders/{order_id}", operation_id="cancelOrder", path_params={"order_id": "7"}
+    )
+    assert cancelled == ""  # 204, no body
+    assert await client.head("/orders", operation_id="listOrders") == ""
+
+
+async def test_a_denied_method_never_reaches_the_server(local_server: str) -> None:
+    client = get_client("orders", run_id="denied")
+    with pytest.raises(ApiPolicyError, match="denied"):
+        await client.delete("/orders", operation_id="purgeOrders")
+    with pytest.raises(ApiPolicyError, match="allowed_methods"):
+        await client.options("/orders", operation_id="listOrders")
+
+
+# --- limits ----------------------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def test_max_calls_per_run_is_counted_per_run(policy_file: Path) -> None:
+    calls: list[httpx.Request] = []
+    run_a = get_client("orders", transport=_transport(calls), run_id="run-a")
+    for _ in range(3):
+        await run_a.get("/orders", operation_id="listOrders")
+    with pytest.raises(ApiPolicyError, match="max_calls_per_run"):
+        await run_a.get("/orders", operation_id="listOrders")
+    assert len(calls) == 3  # refused before sending
+    # Another run has its own count; a finished run's count is dropped.
+    run_b = get_client("orders", transport=_transport(calls), run_id="run-b")
+    await run_b.get("/orders", operation_id="listOrders")
+    end_run("run-a")
+    await run_a.get("/orders", operation_id="listOrders")
+    assert len(calls) == 5
+    # A refused call (outside the policy) does not use up the budget.
+    run_c = get_client("orders", transport=_transport(calls), run_id="run-c")
+    with pytest.raises(ApiPolicyError, match="not in allowed_operations"):
+        await run_c.get("/elsewhere", operation_id="other")
+    for _ in range(3):
+        await run_c.get("/orders", operation_id="listOrders")
+
+
+async def test_rate_per_minute_is_a_token_bucket(policy_file: Path) -> None:
+    clock = _Clock()
+    reset_limits(clock)
+    calls: list[httpx.Request] = []
+    client = get_client("metered", transport=_transport(calls))
+    await client.get("/a")
+    await client.post("/b")
+    with pytest.raises(ApiPolicyError, match="rate_per_minute"):
+        await client.get("/a")
+    assert len(calls) == 2
+    clock.now += 30  # half a minute refills one of the two tokens
+    await client.get("/a")
+    with pytest.raises(ApiPolicyError, match="rate_per_minute"):
+        await client.get("/a")
+    assert len(calls) == 3
+
+
+def test_run_counters_are_evicted_by_ttl_and_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _Clock()
+    limiter = reset_limits(clock)
+    limits = {"max_calls_per_run": 1}
+    assert limiter.acquire("a", limits, "old") is None
+    clock.now += api_client.RUN_COUNTER_TTL_S + 1
+    assert limiter.acquire("a", limits, "new") is None
+    assert limiter.tracked_runs() == 1  # "old" went after the TTL
+    assert limiter.acquire("a", limits, "old") is None  # a fresh count
+    monkeypatch.setattr(api_client, "MAX_TRACKED_RUNS", 2)
+    for run in ("r1", "r2", "r3"):
+        assert limiter.acquire("a", limits, run) is None
+    assert limiter.tracked_runs() == 2
+
+
+async def test_the_run_id_comes_from_the_graph_run_then_the_request() -> None:
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    class State(TypedDict):
+        seen: str
+
+    def node(state: State) -> dict[str, str]:
+        return {"seen": current_run_id() or ""}
+
+    builder = StateGraph(State)
+    builder.add_node("n", node)
+    builder.add_edge(START, "n")
+    builder.add_edge("n", END)
+    graph = builder.compile()
+    result = await graph.ainvoke({"seen": ""}, config={"metadata": {"run_id": "run-42"}})
+    assert result["seen"] == "run-42"
+    assert current_run_id() is None
+    bind_log_context(request_id="req-1")
+    try:
+        assert current_run_id() == "req-1"
+        bind_log_context(run_id="run-7")
+        assert current_run_id() == "run-7"
+    finally:
+        bind_log_context(request_id=None, run_id=None)
 
 
 # --- the project's own tools and policy ----------------------------------------

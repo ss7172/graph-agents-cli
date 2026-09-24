@@ -87,6 +87,7 @@ def test_every_command_is_registered() -> None:
         "run",
         "install",
         "lint",
+        "api",
         "build",
         "eval",
         "deploy",
@@ -102,6 +103,7 @@ def test_every_command_is_registered() -> None:
         "eval": ("run", "generate", "grade", "compare", "analyze", "submit", "metric"),
         "secrets": ("apply", "status"),
         "infra": ("check",),
+        "api": ("add", "remove", "access", "allow", "deny", "revoke", "limits", "show", "check"),
         "extension": ("add", "list", "remove", "update"),
     }.items():
         for sub in subs:

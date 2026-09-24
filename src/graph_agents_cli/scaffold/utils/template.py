@@ -235,7 +235,7 @@ def validate_combination(
 # fail their condition are renamed to unused_* and removed afterwards.
 #
 # The config dict carries: deployment_target, runtime, cd, has_api_policy,
-# has_example_api (the policy's first API allows a GET the example can make).
+# has_example_api (the policy's first API allows an operation the example can make).
 # `deployment/argocd` is listed before `deployment` so its own rule is applied
 # even when the whole directory is kept.
 
@@ -774,9 +774,10 @@ def build_cookiecutter_context(
     treats a bare list as a choice and would keep only its first item. ``apis``
     summarises the declared APIs of ``api-policy.yaml`` (name, base_url_env,
     auth, token_env) and every ``auth: bearer`` API's ``token_env`` joins
-    ``secret_keys``. ``example_api`` is the GET ``tools/example_api.py`` makes
-    (``dev.policy_check.example_call``), empty when the policy's first API
-    allows none; the example is then not rendered.
+    ``secret_keys``. ``example_api`` is the call ``tools/example_api.py`` makes
+    (``dev.policy_check.example_call``: the first operation the policy's first
+    API allows, any method), empty when that API allows none; the example is
+    then not rendered.
     ``auth_policy_implemented`` is derived from ``auth_policy`` unless a
     recorded value is passed (an in-folder re-render keeps the developer's flip).
     """
@@ -901,7 +902,7 @@ def process_template(
             the create parameters (validated by the caller)
         has_api_policy: keep ``api-policy.yaml``
         apis: the APIs the policy declares (see ``build_cookiecutter_context``)
-        example_call: the GET the example API tool makes; None leaves the tool out
+        example_call: the call the example API tool makes; None leaves the tool out
         process: governing process document (path or string), recorded verbatim
         output_dir: Optional output directory path, defaults to current directory
         remote_template_path: Optional path to remote template for overlay

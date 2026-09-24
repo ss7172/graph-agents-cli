@@ -487,6 +487,11 @@ main.add_lazy_command(
     "Run code quality checks and the API-policy check.",
 )
 main.add_lazy_command(
+    "api",
+    "graph_agents_cli.api.cmd_api:api_group",
+    "Declare and change the outbound APIs tools may call (api-policy.yaml).",
+)
+main.add_lazy_command(
     "install",
     "graph_agents_cli.dev.cmd_install:cmd_install",
     "Install project dependencies.",

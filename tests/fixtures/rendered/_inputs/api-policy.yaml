@@ -1,10 +1,27 @@
-# Sample API policy used by scripts/regen_fixtures.py and the e2e tests:
-# read-only access to one API with a bearer token.
+# Sample API policy used by scripts/regen_fixtures.py and the e2e tests: one
+# read-write API with a bearer token, an explicit allow-list and a denial.
 apis:
-  example:
-    base_url_env: EXAMPLE_API_BASE_URL
+  orders:
+    base_url_env: ORDERS_API_BASE_URL
     auth: bearer
-    token_env: EXAMPLE_API_TOKEN
-    allowed_methods: [GET]
-    denied_operations: []
+    token_env: ORDERS_API_TOKEN
+    allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    allowed_operations:
+      - operationId: listOrders
+        path: /orders
+        methods: [GET]
+      - operationId: getOrder
+        path: /orders/{order_id}
+        methods: [GET]
+      - operationId: createOrder
+        path: /orders
+        methods: [POST]
+      - operationId: updateOrder
+        path: /orders/{order_id}
+        methods: [PATCH]
+    denied_operations:
+      - operationId: deleteOrder
+        path: /orders/{order_id}
+        methods: [DELETE]
     timeouts_ms: {connect: 2000, read: 5000}
+    limits: {max_calls_per_run: 20, rate_per_minute: 120}

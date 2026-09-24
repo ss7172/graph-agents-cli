@@ -53,7 +53,8 @@ human-approval node. Keep the export `graph`.
 from langchain_core.tools import tool
 
 API_CALLS = [
-    {"api": "sites", "method": "GET", "operation_id": "getSite", "path": "/sites/{site_id}"}
+    {"api": "sites", "method": "GET", "operation_id": "getSite", "path": "/sites/{site_id}"},
+    {"api": "sites", "method": "PATCH", "operation_id": "renameSite", "path": "/sites/{site_id}"},
 ]
 
 

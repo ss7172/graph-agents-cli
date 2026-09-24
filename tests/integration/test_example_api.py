@@ -93,7 +93,19 @@ apis:
   reader:
     base_url_env: READER_API_BASE_URL
     auth: none
-    allowed_methods: [GET]
+    allowed_methods: [GET, HEAD]
+"""
+
+# An allow-list the example cannot use: an operation by id alone, with no spec
+# to say where it lives.
+UNPLACEABLE = """\
+apis:
+  audit:
+    base_url_env: AUDIT_API_BASE_URL
+    auth: none
+    allowed_methods: [POST]
+    allowed_operations:
+      - operationId: recordEvent
 """
 
 RUFF = shutil.which("ruff")
@@ -156,8 +168,9 @@ def _assert_lint_clean(project: Path) -> None:
             None,
             {
                 "api": "orders",
-                "operation_id": "getOrderLine",
-                "path": "/orders/{order_id}/lines/{line_no}",
+                "method": "POST",
+                "operation_id": "createOrder",
+                "path": "/orders",
             },
         ),
         (
@@ -166,38 +179,60 @@ def _assert_lint_clean(project: Path) -> None:
             {"api": "catalog", "operation_id": "getProduct", "path": "/products/{sku}"},
         ),
     ],
-    ids=["one-operation", "path-parameters", "openapi-spec"],
+    ids=["one-operation", "first-operation-is-a-post", "openapi-spec"],
 )
 def test_example_follows_a_restrictive_seed_policy(
     tmp_path: Path, policy_text: str, extra: dict | None, expected: dict
 ) -> None:
+    method = expected.pop("method", "GET")
     _, project = _create(tmp_path, "p-example", policy_text, extra)
     # create copies each referenced spec to where the policy names it (lint reads it there).
     for rel, text in (extra or {}).items():
         assert (project / rel).read_text(encoding="utf-8") == text
     tool = project / "app" / "tools" / "example_api.py"
     assert tool.is_file()
-    assert _declared_calls(tool) == [{"method": "GET", **expected}]
+    assert _declared_calls(tool) == [{"method": method, **expected}]
     source = tool.read_text(encoding="utf-8")
     assert f"async def call_{expected['api']}_api(" in source
-    assert f'"{expected["path"]}",\n        operation_id="{expected["operation_id"]}",' in source
+    assert (
+        f'"{method}",\n        "{expected["path"]}",\n'
+        f'        operation_id="{expected["operation_id"]}",'
+    ) in source
     # The runtime's shared rules allow it (the project's own test asserts the same).
     api = load_policy_document(project / "api-policy.yaml")["apis"][expected["api"]]
-    assert refusal_reason(api, "GET", expected["operation_id"], expected["path"]) is None
+    assert refusal_reason(api, method, expected["operation_id"], expected["path"]) is None
     readme = (project / "README.md").read_text(encoding="utf-8")
-    assert f"`GET {expected['path']}` on `{expected['api']}`" in readme
+    assert f"`{method} {expected['path']}` on `{expected['api']}`" in readme
     _assert_lint_clean(project)
 
 
 def test_example_with_path_parameters_passes_them_through(tmp_path: Path) -> None:
-    _, project = _create(tmp_path, "p-params", ORDER_BY_ID)
+    by_line = ORDER_BY_ID.replace(
+        "      - {operationId: createOrder, path: /orders, methods: [POST]}\n", ""
+    )
+    _, project = _create(tmp_path, "p-params", by_line)
     source = (project / "app" / "tools" / "example_api.py").read_text(encoding="utf-8")
     assert "    order_id: str,\n    line_no: str,\n    runtime: ToolRuntime,\n" in source
     assert '"order_id": order_id,' in source and '"line_no": line_no,' in source
+    assert "json_body" not in source and "body:" not in source
 
 
-def test_no_example_when_the_first_api_allows_no_get(tmp_path: Path) -> None:
-    result, project = _create(tmp_path, "p-write-only", WRITE_ONLY)
+def test_a_body_method_example_takes_a_json_body(tmp_path: Path) -> None:
+    """For POST, PUT and PATCH the example tool passes a `body` argument as the JSON body."""
+    _, project = _create(tmp_path, "p-write-only", WRITE_ONLY)
+    tool = project / "app" / "tools" / "example_api.py"
+    assert _declared_calls(tool) == [
+        {"api": "audit", "method": "POST", "operation_id": "createItem", "path": "/items"}
+    ]
+    source = tool.read_text(encoding="utf-8")
+    assert "    body: dict[str, Any],\n    runtime: ToolRuntime,\n" in source
+    assert '        "POST",\n        "/items",\n' in source
+    assert "        json_body=body,\n" in source
+    _assert_lint_clean(project)
+
+
+def test_no_example_when_the_first_api_allows_nothing_it_can_make(tmp_path: Path) -> None:
+    result, project = _create(tmp_path, "p-unplaceable", UNPLACEABLE)
     assert "example_api.py was not generated" in result.output
     assert not (project / "app" / "tools" / "example_api.py").exists()
     assert (project / "api-policy.yaml").is_file()
@@ -206,7 +241,7 @@ def test_no_example_when_the_first_api_allows_no_get(tmp_path: Path) -> None:
     _assert_lint_clean(project)
 
 
-def test_the_bundled_sample_policy_keeps_the_get_item_example(tmp_path: Path) -> None:
+def test_the_bundled_sample_policy_gives_its_first_allowed_operation(tmp_path: Path) -> None:
     import graph_agents_cli
 
     template = Path(graph_agents_cli.__file__).parent / "scaffold" / "agents" / "langgraph"
@@ -217,7 +252,7 @@ def test_the_bundled_sample_policy_keeps_the_get_item_example(tmp_path: Path) ->
     _, project = _create(tmp_path, "p-sample", sample)
     tool = project / "app" / "tools" / "example_api.py"
     assert _declared_calls(tool) == [
-        {"api": "example", "method": "GET", "operation_id": "getItem", "path": "/items/{item_id}"}
+        {"api": "orders", "method": "GET", "operation_id": "listOrders", "path": "/orders"}
     ]
     _assert_lint_clean(project)
 
@@ -229,7 +264,7 @@ def test_enhance_force_keeps_the_projects_own_example_tool(
     an app/tools/example_api.py the project wrote itself."""
     import graph_agents_cli.scaffold.commands.enhance as enhance_mod
 
-    _, project = _create(tmp_path, "p-own", WRITE_ONLY)
+    _, project = _create(tmp_path, "p-own", UNPLACEABLE)
     own = project / "app" / "tools" / "example_api.py"
     own.write_text("API_CALLS: list = []\nTOOLS: list = []\n", encoding="utf-8")
     monkeypatch.chdir(project)

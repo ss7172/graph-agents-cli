@@ -248,6 +248,7 @@ def check_skills_version() -> None:
         f"\n⚠️  Skills version mismatch — CLI is v{__version__}, "
         f"but {len(mismatched)} skill(s) differ:\n"
         + "\n".join(lines)
-        + "\n   Run 'graph-agents-cli update' to sync.\n",
+        + "\n   Run 'graph-agents-cli setup' to install the skills of this version (or "
+        "'graph-agents-cli update' to move the CLI and the skills to the latest release).\n",
         err=True,
     )

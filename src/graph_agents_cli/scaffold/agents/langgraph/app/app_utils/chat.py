@@ -67,6 +67,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from {{cookiecutter.agent_directory}}.app_utils import metrics
+from {{cookiecutter.agent_directory}}.app_utils.api_client import end_run as end_api_run
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import checkpointer_kind, get_checkpointer
 from {{cookiecutter.agent_directory}}.app_utils.content import content_to_text
@@ -892,6 +893,8 @@ class ChatRuntime:
             latency_ms = int((time.perf_counter() - started) * 1000)
             metrics.ACTIVE_RUNS.dec()
             metrics.observe_run(status, latency_ms / 1000, state.input_tokens, state.output_tokens)
+            # The run's outbound-API call counts (limits.max_calls_per_run) go with it.
+            end_api_run(run_id)
             finish = asyncio.ensure_future(
                 self._finish_run(
                     principal, req, thread_id, run_id, state, status, error, latency_ms, pump, lease

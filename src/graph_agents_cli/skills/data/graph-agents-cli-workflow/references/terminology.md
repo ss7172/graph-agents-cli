@@ -49,7 +49,9 @@ choosing flags or editing configuration.
 | "OIDC", "SSO", "JWT", "access token", "per-user identity", "who owns the conversation" | `--auth-policy jwt` (per-user principals from a verified token: `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, JWKS or public key) |
 | "our app's session cookie", "existing roles", "custom header", "gateway identity headers" | `--auth-policy custom` (stub fails closed until implemented in `app/policies/custom.py`); clients use `--header` or `--cookie` |
 | "support staff may read conversations", "admins" | `AUTH_READ_ACROSS_ROLES` (read others' threads), `AUTH_ADMIN_ROLES` (manage assistants, crons and the store under `langgraph-server`) |
-| "which endpoints may the agent call", "read-only", "GET only", "allow-list" | `api-policy.yaml` (`apis: <name>:` with `allowed_methods`, `allowed_operations`, `denied_operations`), seeded by `create --api-policy <file>` |
+| "which endpoints may the agent call", "read-only", "read-write", "only these operations", "allow-list", "deny" | `api-policy.yaml` (`apis: <name>:` with `allowed_methods`, `allowed_operations`, `denied_operations`, optional `limits`), changed with `graph-agents-cli api add --access read-only\|read-write\|custom`, `api access`, `api allow`, `api deny`, `api revoke`; seeded by `create --api-policy <file>`. The access level is the user's choice per API; there is no default |
+| "the agent may call it at most N times", "rate limit the API", "don't hammer the backend" | `limits: {max_calls_per_run, rate_per_minute}` on the API (`graph-agents-cli api limits`); per run and per replica |
+| "ask a human before the agent writes" | an approval gate on API calls is planned, not available (the `approval` key is refused); use a LangGraph `interrupt` in the graph meanwhile |
 | "call our backend API", "backend client", "call the service as the user" | `get_client("<api>")` from `app/app_utils/api_client.py`, the only HTTP path to external APIs (`auth: none`, `bearer`, or `forward` for the caller's own credential); tools declare `API_CALLS` |
 
 ## Deployment

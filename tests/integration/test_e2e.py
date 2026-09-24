@@ -678,11 +678,11 @@ def test_policy_lint_passes_with_template_tools(project5: Path) -> None:
     assert "example_api.py" in _out(result)
 
 
-def test_policy_lint_flags_a_post_tool_and_a_leftover_product_calls(project5: Path) -> None:
+def test_policy_lint_flags_a_denied_tool_and_a_leftover_product_calls(project5: Path) -> None:
     tool = project5 / "app" / "tools" / "mutate.py"
     tool.write_text(
-        'API_CALLS = [{"api": "example", "method": "POST", "operation_id": "createItem",'
-        ' "path": "/items"}]\n'
+        'API_CALLS = [{"api": "orders", "method": "DELETE", "operation_id": "deleteOrder",'
+        ' "path": "/orders/{order_id}"}]\n'
         "TOOLS: list = []\n",
         encoding="utf-8",
     )
@@ -692,8 +692,9 @@ def test_policy_lint_flags_a_post_tool_and_a_leftover_product_calls(project5: Pa
         tool.unlink()
     assert result.returncode == 1
     out = _out(result)
-    assert "mutate.py" in out and "POST" in out and "denied" in out
+    assert "mutate.py" in out and "DELETE" in out and "denied" in out
     assert "1 violation(s)" in out
+    assert "graph-agents-cli api revoke orders deleteOrder --from denied" in out
     old = project5 / "app" / "tools" / "old.py"
     old.write_text('PRODUCT_CALLS = [{"method": "GET", "path": "/x"}]\n', encoding="utf-8")
     try:
@@ -735,7 +736,7 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
     )
     tool = project5 / "app" / "tools" / "mutate.py"
     tool.write_text(
-        'API_CALLS = [{"api": "example", "method": "POST", "operation_id": "createItem",'
+        'API_CALLS = [{"api": "orders", "method": "POST", "operation_id": "createItem",'
         ' "path": "/items"}]\n'
         "TOOLS: list = []\n",
         encoding="utf-8",
@@ -743,15 +744,24 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
     try:
         policy.write_text(
             "apis:\n"
-            "  example:\n"
-            "    base_url_env: EXAMPLE_API_BASE_URL\n"
+            "  orders:\n"
+            "    base_url_env: ORDERS_API_BASE_URL\n"
             "    auth: bearer\n"
-            "    token_env: EXAMPLE_API_TOKEN\n"
+            "    token_env: ORDERS_API_TOKEN\n"
             "    allowed_methods: [GET, POST]\n"
             "    allowed_operations:\n"
+            "      - operationId: listOrders\n"
             "      - operationId: getItem\n"
             "      - operationId: createItem\n"
             "    openapi: docs/example-openapi.yaml\n",
+            encoding="utf-8",
+        )
+        (project5 / "docs" / "example-openapi.yaml").write_text(
+            (project5 / "docs" / "example-openapi.yaml").read_text(encoding="utf-8")
+            + "  /orders:\n"
+            "    get:\n"
+            "      operationId: listOrders\n"
+            '      responses: {"200": {description: ok}}\n',
             encoding="utf-8",
         )
         accepted = _ok(cli("lint", "--policy-only", cwd=project5))
@@ -759,7 +769,7 @@ def test_policy_lint_with_openapi_accepts_and_rejects(project5: Path) -> None:
         # An operation the policy allows but the spec does not know is a violation.
         ghost = project5 / "app" / "tools" / "ghost.py"
         ghost.write_text(
-            'API_CALLS = [{"api": "example", "method": "GET", "operation_id": "getGhost"}]\n'
+            'API_CALLS = [{"api": "orders", "method": "GET", "operation_id": "getGhost"}]\n'
             "TOOLS: list = []\n",
             encoding="utf-8",
         )
@@ -801,8 +811,8 @@ apis:
     auth: none
     allowed_methods: [GET, POST]
     allowed_operations:
-      - {operationId: createOrder, path: /orders, methods: [POST]}
       - {operationId: getOrderLine, path: "/orders/{order_id}/lines/{line_no}"}
+      - {operationId: createOrder, path: /orders, methods: [POST]}
     denied_operations:
       - path: /orders/admin/lines/{line_no}
 """
@@ -845,7 +855,7 @@ async def test_the_example_tool_calls_its_declared_path(monkeypatch):
 
 @pytest.fixture(scope="module")
 def project7(workspace: Path) -> Path:
-    """A restrictive seed policy (one GET, with path parameters), installed."""
+    """A restrictive seed policy (its first operation has path parameters), installed."""
     policy = workspace / "orders-policy.yaml"
     policy.write_text(RESTRICTIVE_POLICY, encoding="utf-8")
     project = _create(
@@ -887,6 +897,275 @@ def test_a_restrictive_seed_policy_gives_a_project_that_lints_and_passes_its_tes
                 "no:cacheprovider",
             ],
             cwd=project7,
+            env=_env({"MODEL_PROVIDER": "fake"}),
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+    finally:
+        extra.unlink()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert " passed" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# F. The policy's lifecycle: create without one, then `graph-agents-cli api`
+# ---------------------------------------------------------------------------
+
+ORDERS_READ_TOOL = """\
+from __future__ import annotations
+
+import json
+
+from langchain.tools import ToolRuntime
+from langchain_core.tools import tool
+
+from app.app_utils.api_client import get_client
+
+API_CALLS: list[dict[str, str]] = [
+    {"api": "orders", "method": "GET", "operation_id": "listOrders", "path": "/orders"},
+    {"api": "orders", "method": "GET", "operation_id": "getOrder", "path": "/orders/{order_id}"},
+]
+
+
+@tool
+async def list_orders(runtime: ToolRuntime) -> str:
+    \"\"\"List the orders.\"\"\"
+    client = get_client("orders", context=getattr(runtime, "context", None))
+    data = await client.get("/orders", operation_id="listOrders")
+    return data if isinstance(data, str) else json.dumps(data)
+
+
+@tool
+async def get_order(order_id: str, runtime: ToolRuntime) -> str:
+    \"\"\"Return the order ORDER_ID.\"\"\"
+    client = get_client("orders", context=getattr(runtime, "context", None))
+    data = await client.get(
+        "/orders/{order_id}", operation_id="getOrder", path_params={"order_id": order_id}
+    )
+    return data if isinstance(data, str) else json.dumps(data)
+
+
+TOOLS = [list_orders, get_order]
+"""
+
+ORDERS_WRITE_TOOL = """\
+from __future__ import annotations
+
+import json
+
+from langchain.tools import ToolRuntime
+from langchain_core.tools import tool
+
+from app.app_utils.api_client import get_client
+
+API_CALLS: list[dict[str, str]] = [
+    {"api": "orders", "method": "POST", "operation_id": "createOrder", "path": "/orders"},
+]
+
+
+@tool
+async def create_order(sku: str, quantity: int, runtime: ToolRuntime) -> str:
+    \"\"\"Order QUANTITY of SKU.\"\"\"
+    client = get_client("orders", context=getattr(runtime, "context", None))
+    data = await client.post(
+        "/orders", operation_id="createOrder", json_body={"sku": sku, "quantity": quantity}
+    )
+    return data if isinstance(data, str) else json.dumps(data)
+
+
+TOOLS = [create_order]
+"""
+
+ORDERS_DELETE_TOOL = """\
+API_CALLS: list[dict[str, str]] = [
+    {"api": "orders", "method": "DELETE", "operation_id": "deleteOrder",
+     "path": "/orders/{order_id}"},
+]
+TOOLS: list = []
+"""
+
+# Dropped into the installed project: the tools call a real HTTP server on
+# 127.0.0.1 through the policy-enforcing client.
+LIFECYCLE_RUNTIME_TEST = """\
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
+
+from app.app_utils import api_client
+from app.tools import orders_read, orders_write
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _answer(self):
+        length = int(self.headers.get("content-length") or 0)
+        body = json.loads(self.rfile.read(length)) if length else None
+        data = json.dumps(
+            {
+                "method": self.command,
+                "path": self.path,
+                "body": body,
+                "auth": self.headers.get("authorization"),
+            }
+        ).encode()
+        self.send_response(201 if self.command == "POST" else 200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    do_GET = do_POST = do_DELETE = _answer
+
+    def log_message(self, *args):
+        return
+
+
+@pytest.fixture
+def server(monkeypatch):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ORDERS_API_BASE_URL", f"http://127.0.0.1:{srv.server_address[1]}/api")
+    monkeypatch.setenv("ORDERS_API_TOKEN", "t0k")
+    api_client.reset_policy_cache()
+    api_client.reset_limits()
+    yield srv
+    srv.shutdown()
+    srv.server_close()
+    thread.join(5)
+
+
+async def test_the_tools_reach_the_api_through_the_policy(server):
+    listed = json.loads(await orders_read.list_orders.coroutine(runtime=None))
+    assert (listed["method"], listed["path"], listed["auth"]) == ("GET", "/api/orders", "Bearer t0k")
+    got = json.loads(await orders_read.get_order.coroutine(order_id="7", runtime=None))
+    assert got["path"] == "/api/orders/7"
+    created = json.loads(
+        await orders_write.create_order.coroutine(sku="a-1", quantity=2, runtime=None)
+    )
+    assert created["method"] == "POST"
+    assert created["body"] == {"sku": "a-1", "quantity": 2}
+
+
+async def test_a_denied_operation_is_refused_at_runtime(server):
+    client = api_client.get_client("orders", run_id="deny")
+    with pytest.raises(api_client.ApiPolicyError, match="denied"):
+        await client.delete(
+            "/orders/{order_id}", operation_id="deleteOrder", path_params={"order_id": "1"}
+        )
+
+
+async def test_limits_are_enforced_at_runtime(server):
+    client = api_client.get_client("orders", run_id="limits")
+    for _ in range(3):
+        await client.get("/orders", operation_id="listOrders")
+    with pytest.raises(api_client.ApiPolicyError, match="max_calls_per_run"):
+        await client.get("/orders", operation_id="listOrders")
+    other = api_client.get_client("orders", run_id="another-run")
+    await other.get("/orders", operation_id="listOrders")
+"""
+
+
+@pytest.fixture(scope="module")
+def project8(workspace: Path) -> Path:
+    """A project created without a policy, installed; its policy grows with `api`."""
+    project = _create(
+        workspace, "p8-lifecycle", "--runtime", "fastapi", "--cd", "skip", "-d", "kubernetes"
+    )
+    _write_env(project)
+    _ok(cli("install", cwd=project, timeout=1200))
+    return project
+
+
+def test_the_api_policy_lifecycle_on_a_fresh_project(project8: Path) -> None:
+    project = project8
+    policy = project / "api-policy.yaml"
+    assert not policy.exists()
+    add = [
+        *("api", "add", "orders", "--base-url-env", "ORDERS_API_BASE_URL"),
+        *("--auth", "bearer", "--token-env", "ORDERS_API_TOKEN", "--access", "read-write"),
+        *("--max-calls-per-run", "3", "--rate-per-minute", "60"),
+    ]
+    dry = _ok(cli(*add, "--dry-run", cwd=project))
+    assert "+++ b/api-policy.yaml" in _out(dry) and not policy.exists()
+    _ok(cli(*add, cwd=project))
+    # A comment the team adds survives every later change.
+    policy.write_text(
+        policy.read_text(encoding="utf-8").replace(
+            "  orders:\n", "  orders:  # owned by the orders team\n"
+        ),
+        encoding="utf-8",
+    )
+    steps = [
+        ["api", "allow", "orders", "listOrders", "--methods", "GET"],
+        ["api", "allow", "orders", "createOrder", "--methods", "POST"],
+        ["api", "allow", "orders", "--method", "GET", "--path", "/orders/{order_id}"],
+        ["api", "allow", "orders", "cancelOrder", "--methods", "DELETE"],
+        ["api", "deny", "orders", "--method", "DELETE", "--path", "/orders/{order_id}"],
+        ["api", "revoke", "orders", "cancelOrder"],
+        ["api", "access", "orders", "custom", "--methods", "GET,HEAD,POST,DELETE"],
+        ["api", "limits", "orders", "--rate-per-minute", "none"],
+        ["api", "limits", "orders", "--rate-per-minute", "120"],
+    ]
+    for step in steps:
+        before = policy.read_text(encoding="utf-8")
+        dry = _ok(cli(*step, "--dry-run", cwd=project))
+        assert "Dry run: nothing was written." in _out(dry), step
+        assert policy.read_text(encoding="utf-8") == before, step
+        real = _ok(cli(*step, cwd=project))
+        assert "--- a/api-policy.yaml" in _out(real), step
+        assert "# owned by the orders team" in policy.read_text(encoding="utf-8"), step
+    shown = json.loads(_ok(cli("api", "show", "orders", "--json", cwd=project)).stdout)
+    orders = shown["apis"]["orders"]
+    assert orders["allowed_methods"] == ["GET", "HEAD", "POST", "DELETE"]
+    assert orders["allowed_operations"] == [
+        {"operationId": "listOrders", "methods": ["GET"]},
+        {"operationId": "createOrder", "methods": ["POST"]},
+        {"path": "/orders/{order_id}", "methods": ["GET"]},
+    ]
+    assert orders["denied_operations"] == [{"path": "/orders/{order_id}", "methods": ["DELETE"]}]
+    assert orders["limits"] == {"max_calls_per_run": 3, "rate_per_minute": 120}
+    manifest = (project / rf.MANIFEST_FILENAME).read_text(encoding="utf-8")
+    assert "ORDERS_API_TOKEN" in manifest and "policy_file: api-policy.yaml" in manifest
+
+    tools = project / "app" / "tools"
+    (tools / "orders_read.py").write_text(ORDERS_READ_TOOL, encoding="utf-8")
+    (tools / "orders_write.py").write_text(ORDERS_WRITE_TOOL, encoding="utf-8")
+    lint = _ok(cli("lint", cwd=project, timeout=900))  # ruff and the policy check
+    assert "All declared API calls are allowed" in _out(lint)
+    assert _ok(cli("api", "check", cwd=project)).returncode == 0
+
+    # A denied operation is refused by lint (and by the runtime, below).
+    denied_tool = tools / "orders_delete.py"
+    denied_tool.write_text(ORDERS_DELETE_TOOL, encoding="utf-8")
+    try:
+        refused = cli("api", "check", cwd=project)
+    finally:
+        denied_tool.unlink()
+    assert refused.returncode == 1
+    assert "denied by denied_operations" in _out(refused)
+    assert "graph-agents-cli api revoke orders --method DELETE --path /orders/{order_id}" in _out(
+        refused
+    )
+
+    extra = project / "tests" / "unit" / "test_api_lifecycle_e2e.py"
+    extra.write_text(LIFECYCLE_RUNTIME_TEST, encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [
+                "uv",
+                "run",
+                "pytest",
+                "tests/unit",
+                "tests/integration",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=project,
             env=_env({"MODEL_PROVIDER": "fake"}),
             capture_output=True,
             text=True,

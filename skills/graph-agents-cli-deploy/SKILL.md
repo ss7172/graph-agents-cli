@@ -267,7 +267,7 @@ disconnected" (this profile).
 | 401 from `run --url` | wrong credential for the policy; `secrets status`; pass `--header` |
 | 503 on every request under `custom` | the stub is still in place |
 | Argo shows `OutOfSync` after `--restart` | self-heal reverted the restart annotation; use an Argo resource action |
-| `ApiPolicyError` in tool results after deploy | the deployed `api-policy.yaml` differs from local (it is baked into the image; rebuild), or a base URL / token variable is missing in the pod |
+| `ApiPolicyError` in tool results after deploy | the deployed `api-policy.yaml` differs from local (it is baked into the image; rebuild), or a base URL / token variable is missing in the pod; "limits.max_calls_per_run" or "rate_per_minute" in the message means a limit was reached (per run / per replica) |
 
 ## Not covered by this skill
 

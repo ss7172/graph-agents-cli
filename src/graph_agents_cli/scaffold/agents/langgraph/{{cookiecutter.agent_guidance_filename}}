@@ -35,10 +35,22 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 3. Write eval cases by hand in `tests/eval/datasets/`, then `graph-agents-cli eval run`
    until the gate passes. `eval compare` shows regressions; `eval analyze` clusters failures.
 4. `uv run pytest` and `graph-agents-cli lint` before deploying.
+{%- if cookiecutter.deployment_target != 'kubernetes' %}
+5. No deployment target yet: `graph-agents-cli scaffold enhance --deployment-target kubernetes`
+   adds the chart and the deploy commands, only when the user asks for it.
+{%- else %}
 5. `graph-agents-cli deploy --env dev` **only after the user approves it.**
+{%- endif %}
+{%- if cookiecutter.deployment_target != 'kubernetes' %}
+{%- elif cookiecutter.cd == 'skip' %}
+   With `cd: skip` staging and production are direct deploys too (`deploy --env staging|prod`):
+   the kube context must be recorded in the manifest or passed with `--context`, and secrets come
+   from `.env.<env>`, never `.env`.
+{%- else %}
    Staging and production go through the CI/CD path recorded in the manifest (`cd: {{cookiecutter.cd}}`);
    outside `dev` the kube context must be recorded in the manifest or passed with `--context`, and
    secrets come from `.env.<env>`, never `.env`.
+{%- endif %}
 
 ## Commands
 
@@ -49,6 +61,7 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 | `uv run pytest` | Unit and integration tests (fake model, in-memory checkpointer) |
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool |
+| `graph-agents-cli api show` / `api check` | The outbound API policy and each tool's declared calls / the policy check alone |
 | `graph-agents-cli build` | Build the container image from the runtime's Dockerfile |
 | `graph-agents-cli deploy --env <env>` | Deploy (direct modes) or open the desired-state PR (argocd) |
 | `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from `.env.<env>` |
@@ -70,10 +83,16 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
   `operation_id` and/or `path`) for every external API call a tool makes;
   `graph-agents-cli lint` refuses undeclared or disallowed calls. Never bypass
   `api_client.py` with a raw HTTP client.
-- **Never edit `api-policy.yaml`, `graph-agents-cli-manifest.yaml` or
-  `values-prod.yaml`** unless the user asks: the API policy is a security
-  boundary, and production desired state changes only through a pull request
-  reviewed by the code owners.
+- **Change `api-policy.yaml` only when the user asks**, with `graph-agents-cli api`
+  (`add`, `access`, `allow`, `deny`, `revoke`, `limits`, `remove`; show the user the
+  printed diff, use `--dry-run` first). The policy is a security boundary: never
+  widen access (more methods or operations, a lifted denial, a raised limit) on your
+  own, and never add an `approval` key (not supported yet). When a tool needs a call
+  the policy refuses, `lint` prints the command that would allow it: propose it,
+  do not run it unasked. Widening goes through a pull request reviewed by the code owners.
+- **Never edit `graph-agents-cli-manifest.yaml` or `values-prod.yaml`** unless the
+  user asks: production desired state changes only through a pull request reviewed
+  by the code owners.
 - **Do not export prompts or user data** to a hosted tracing destination unless
   the user has decided so (`TRACING_ENABLED`, `TRACE_CAPTURE=full`).
 - **Never log credentials, prompts or tool arguments**, and keep secrets out of

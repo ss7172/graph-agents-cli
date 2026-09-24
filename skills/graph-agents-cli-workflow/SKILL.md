@@ -123,10 +123,12 @@ access, per-user identity and roles, safety-critical) gets the full treatment in
 **Topics to cover** (one question at a time):
 
 1. **What problem will the agent solve?** Core purpose, capabilities, who calls it.
-2. **External APIs or data sources?** Which API operations the agent may call, and with what
-   credential (none, a service token, or the caller's own). Every outbound API is declared in
-   `api-policy.yaml` (see `/graph-agents-cli-langgraph-code`); the agent never gets a generic
-   "call any endpoint" tool.
+2. **External APIs or data sources?** Which API operations the agent may call, with which
+   methods, and with what credential (none, a service token, or the caller's own). Access is the
+   user's explicit choice per API (read-only, read-write, or a custom list of methods, then the
+   allowed and denied operations): never assume one. Every outbound API is declared in
+   `api-policy.yaml` with `graph-agents-cli api add` (see `/graph-agents-cli-langgraph-code`);
+   the agent never gets a generic "call any endpoint" tool.
 3. **Safety constraints?** What the agent must NOT do; which tool calls need human approval
    (LangGraph interrupts); what may leave the network (model egress, traces).
 4. **Model provider?** `openai`, `anthropic`, `gemini`, or `openai-compatible` (on-network servers
@@ -185,7 +187,15 @@ combinations, prototype semantics, and what `upgrade` never touches.
 5. `graph-agents-cli lint` runs ruff and the API-policy check: every `*.py` under `app/tools/`
    (subpackages included) declares one literal `API_CALLS` (and `TOOLS`), which the CLI reads
    statically with `ast` and checks against `api-policy.yaml` (and the API's OpenAPI spec when it
-   names one).
+   names one). A refused call comes with the `graph-agents-cli api` command that would allow it:
+   propose that change to the user (it widens access, so it needs their approval and a reviewed
+   pull request); never run it on your own.
+6. **Adding functionality to a working agent** follows the same loop: agree the new operations
+   and their access with the user, change the policy with `graph-agents-cli api` (`access`,
+   `allow`; `--dry-run` first, show the diff), write the tool with its `API_CALLS`, `api check`
+   (or `lint`), add eval cases and run `eval run`, then a pull request (CODEOWNERS approves
+   `api-policy.yaml`), build and deploy dev, staging, prod. The policy is baked into the image,
+   so what passed staging is what reaches production.
 
 Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
 their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
@@ -270,6 +280,7 @@ policy, hashed principal ids, and run records.
 | "It answered correctly in `run`, so eval is unnecessary" | One prompt is not a test suite. The eval gate catches regressions, tool trajectory errors, and edge cases. |
 | "I'll switch to a newer/better model" | The provider and model were chosen deliberately and written to `.env` and the manifest. Changing them without being asked violates code preservation and is an egress decision the user owns. |
 | "I'll add a generic HTTP tool so the agent can call whatever it needs" | `app_utils.api_client` is the only path to external APIs and it enforces `api-policy.yaml`. A generic tool bypasses the policy the team reviewed. |
+| "The tool needs POST, I'll widen the API's access" | Widening access is the user's decision and a reviewed change. Propose the `graph-agents-cli api` command `lint` prints; run it only when asked. |
 | "I'll `helm upgrade` / `kubectl apply` directly, it's quicker" | In `argocd` mode the cluster follows `main`; direct changes are drift that self-heal reverts, and they skip the production gate. |
 | "I can skip the scaffold and set up manually" | Manual setup misses the chat API, auth adapter, eval gate, chart, and workflows. Use `create` even for experiments (`--prototype`). |
 

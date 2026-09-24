@@ -17,8 +17,9 @@
 
 Skills install ladder (each step is tried only when the previous one is unavailable):
 
-1. ``npx skills add <source>`` from ``--skills-source`` or DEFAULT_SKILLS_SOURCE
-   (needs ``git`` and network).
+1. ``npx skills add <source>`` from ``--skills-source``, else this repository
+   at the running release's tag (``<repo>#v<version>``; the default branch for a
+   development build), so the skills match the CLI (needs ``git`` and network).
 2. ``npx skills add <bundled dir>`` from the skills shipped inside the wheel
    (needs ``npx`` only).
 3. Copy the bundled skills straight into ``~/.agents/skills`` (or
@@ -42,7 +43,7 @@ import click
 
 from graph_agents_cli._runner import run
 from graph_agents_cli._skills_check import SKILLS_NPX_PACKAGE
-from graph_agents_cli._tools import DEFAULT_SKILLS_SOURCE, run_npx_skills
+from graph_agents_cli._tools import default_skills_source, run_npx_skills
 from graph_agents_cli.skills._bundle import (
     SKILL_BUNDLE_DIR,
     get_bundled_skills_dir,
@@ -205,9 +206,10 @@ def _resolve_skills_source(skills_source, *, dev):
     """Pick the skills source from the flags.
 
     ``--skills-source`` wins; ``--dev`` uses the checkout's bundled copy;
-    otherwise the default GitHub source. Local paths are made absolute so
-    ``npx skills`` sees them regardless of its own cwd; remote references are
-    left untouched.
+    otherwise this repository at the tag of the running release
+    (``default_skills_source``; the default branch for a development build).
+    Local paths are made absolute so ``npx skills`` sees them regardless of its
+    own cwd; remote references are left untouched.
     """
     if skills_source:
         source_path = Path(skills_source)
@@ -219,7 +221,9 @@ def _resolve_skills_source(skills_source, *, dev):
     if dev:
         # In dev mode, use skills from the local repo checkout
         return str(SKILL_BUNDLE_DIR)
-    return DEFAULT_SKILLS_SOURCE
+    from graph_agents_cli.scaffold.utils.version import get_current_version
+
+    return default_skills_source(get_current_version())
 
 
 def _cli_install_args(*, dev):
@@ -266,7 +270,10 @@ def _cli_install_args(*, dev):
 @click.option(
     "--skills-source",
     default=None,
-    help="Skills source: local path, GitHub owner/repo, or URL. Overrides the bundled skills.",
+    help=(
+        "Skills source: local path, GitHub owner/repo, or URL (default: this repository at "
+        "the running release's tag; no fallback to the bundled copy)."
+    ),
 )
 @click.option(
     "--agent",
@@ -282,6 +289,9 @@ def cmd_setup(*, workspace, dry_run, dev, skills_source, agent):
     Installs the graph-agents-cli tool (via uv tool install) and detects
     installed coding agents (Claude Code, Antigravity, Codex, Gemini CLI,
     Cursor, etc.) to install the LangGraph development skills via npx skills.
+    The skills come from this repository at the tag of the running release
+    (the default branch for a development build), falling back to the copy
+    bundled with the CLI when that fails.
 
     By default, skills are installed globally for all detected agents.
     Use --workspace to install at the project level instead.

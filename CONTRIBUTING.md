@@ -115,23 +115,31 @@ are excluded: the templates carry Jinja placeholders (in import statements too, 
 
 Check GitHub workflows with [actionlint](https://github.com/rhysd/actionlint) (the image
 includes shellcheck): this repository's in place, the template's in a rendered project
-(they are Jinja-free but only complete once rendered):
+(they are Jinja-free but only complete once rendered). Without file arguments actionlint
+looks for a git repository, so name the workflows in a freshly created project that is not
+one yet:
 
 ```bash
+# this repository (a git checkout)
 docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:latest -no-color
+# a rendered project (git or not)
+docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:latest -no-color \
+  .github/workflows/*.yaml
 ```
 
 ## How templates are rendered
 
 `create` (and `scaffold enhance` / `scaffold upgrade`) render a project with cookiecutter from
-three layers, merged in `scaffold/utils/template.py`:
+three layers, merged in `scaffold/utils/template.py` in this order (a later layer overwrites
+the files of an earlier one, so the agent overlay wins):
 
 1. `scaffold/base_templates/_shared` and `base_templates/python`: the manifest, the
    guidance file, `.github/` (workflows, `agent.env`, `CODEOWNERS`).
-2. `scaffold/agents/langgraph`: the agent code, `langgraph.json`, the two runtime Dockerfiles,
-   `.env.example`, `api-policy.yaml`, the tests.
-3. `scaffold/deployment_targets/kubernetes`: the Helm chart, the values files, the Argo CD
+2. `scaffold/deployment_targets/kubernetes`: the Helm chart, the values files, the Argo CD
    `Application` manifests and the CD workflows.
+3. `scaffold/agents/langgraph` (the agent overlay): the agent code, `langgraph.json`, the two
+   runtime Dockerfiles, `.env.example`, `api-policy.yaml` (a sample: `create --api-policy`
+   replaces it with the seed file, and a project without a policy gets none), the tests.
 
 Runtime- and mode-specific files are selected with `CONDITIONAL_FILES`, not separate layers:
 for example `staging.yaml` and `promote-to-prod.yaml` are kept only when `cd != skip`,
@@ -160,7 +168,23 @@ the byte identity and feeds the same valid and invalid policies and calls to bot
 
 To change a rule: edit the CLI copy, copy the whole block into the template, and add cases to
 the parity test. Keep the block free of Jinja and of imports the template does not have, and
-fail closed: an ambiguous or unknown input is an error, never an allow.
+fail closed: an ambiguous or unknown input is an error, never an allow. The block holds the
+schema (including `limits` and the reserved `approval` key, refused until approval gates
+exist) and the matching rules; stateful enforcement (the per-run call counts and the
+per-process rate buckets of `limits`) lives outside it, in the runtime only.
+
+### `graph-agents-cli api` and comment-preserving edits
+
+`api-policy.yaml` belongs to the project and changes over the agent's life through
+`graph-agents-cli api` (`src/graph_agents_cli/api/`): each command validates the current file
+with the shared rules, applies one change, validates the result, and prints a diff of every
+file it touches (the policy, the manifest, `.env.example`, the chart's `values.yaml`) before
+writing them atomically. The edits go through `scaffold/utils/keyedit.py`, which changes the
+text at the positions PyYAML reports (built on the key merge of `keymerge.py`) and re-parses
+the result, which must equal the old document plus exactly that change; anything it cannot
+edit safely is an error or a "Left for you" item, never a reformatted file. Keep `create`
+seeding the file only (`--api-policy`), never inventing access: there is no default access
+level anywhere, and samples, examples and messages must not suggest one.
 
 ## How locks are regenerated
 
@@ -214,7 +238,10 @@ has frontmatter with `name` equal to its directory, `metadata.version` equal to 
 `` `references/<file>.md` `` a `SKILL.md` mentions exists and every reference file is
 mentioned; Google Cloud product names appear only under a heading containing "Migration".
 `_skills_check.py` compares the installed skills' `metadata.version` with the CLI version and
-asks the user to run `graph-agents-cli update` when they differ. Keep
+asks the user to run `graph-agents-cli setup` (the skills of this version) or `update` when they
+differ. `setup` installs the skills from this repository at the tag of the running release
+(`<repo>#v<version>`; the default branch only for a development build), so the release tag
+must exist before users install that version. Keep
 `skills/graph-agents-cli-workflow/references/commands.md` and
 `skills/graph-agents-cli-scaffold/references/flags.md` equal to the real `--help` output, and
 never document hidden or deprecated flags there.

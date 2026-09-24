@@ -52,7 +52,7 @@ provider (and what may leave the network), and whether they want a prototype or 
 | Registry | `--registry <url/org>` (default `ghcr.io/<org>`) |
 | CD mode | `--cd argocd\|helm-push\|skip` (default `skip`) |
 | Auth | `--auth-policy shared-bearer` (default), `jwt` (per-user OIDC/JWT tokens) or `custom` (your own policy; fail-closed stub) |
-| Outbound API boundary | `--api-policy <file>` seeds `api-policy.yaml` (validated first; every API tools may call) |
+| Outbound API boundary | `--api-policy <file>` seeds `api-policy.yaml` (validated first); or none now and `graph-agents-cli api add` later. Access is always the user's explicit choice: never assume a level |
 | Governing process | `--process <path>` writes `process:` to the manifest and the guidance file |
 
 ### Valid runtime x checkpointer x target combinations (enforced by `create`)
@@ -151,8 +151,13 @@ graph-agents-cli create <project-name> \
 - `create --api-policy <file>` validates the policy first (exit 3 on errors), copies the OpenAPI
   specs it references into the project (a spec outside the policy's directory goes to
   `openapi/<api>/<file>` and the reference is rewritten), adds every `auth: bearer` API's
-  `token_env` to `secrets.keys`, and renders `app/tools/example_api.py` with the first GET the
-  first API allows (none, with a note, when it allows no GET).
+  `token_env` to `secrets.keys`, and renders `app/tools/example_api.py` with the first operation
+  the first API allows, whatever its method (a `body` argument for POST, PUT and PATCH; none,
+  with a note, when it allows nothing the example can make).
+- `create` only seeds the policy. It evolves with the agent through `graph-agents-cli api`
+  (`add`, `access`, `allow`, `deny`, `revoke`, `limits`, `remove`, `show`, `check`), which keeps
+  the manifest (`api_policy`, `secrets.keys`), `.env.example` and the chart's `values.yaml` in
+  step; see `/graph-agents-cli-langgraph-code` for the schema.
 - After `create`, the printed "Get Started" is `cp .env.example .env`,
   `graph-agents-cli login --write-env`, `install`, `playground`, `eval run` (and `deploy --env
   dev` for kubernetes): the local server answers 503 until `.env` has the provider key and, under
@@ -171,8 +176,8 @@ it is ignored when the manifest records one). Enhance renders the template for t
 parameters and applies the 3-way merge; a backup goes to
 `~/.graph-agents-cli/backups/<dir>_<project id>_<timestamp>/` first (private, the newest 5 per
 project kept). When the agent code is not in `app/`, pass `--agent-directory <dir>`.
-`--api-policy` is refused by `enhance` (copy the file into the project as `api-policy.yaml` and
-set `api_policy: {policy_file: api-policy.yaml}` in the manifest instead). When the merge changes
+`--api-policy` is refused by `enhance` (exit 2): change the policy with `graph-agents-cli api`
+instead. When the merge changes
 the manifest (for example `enhance --cd argocd`), `graph-agents-cli-manifest.yaml` is rewritten in
 block style and its comments are dropped; app files stay byte-identical. **Always ask before
 choosing the CD mode or auth policy.**
@@ -287,7 +292,9 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 - **`--process` when the project has a governing process**; it makes the workflow skill defer.
 - **Start with `--prototype`** for quick iteration; add deployment later with `enhance`.
 - **NEVER hand-write the A2A surface**; it is built into the scaffolded app.
-- **NEVER edit `api-policy.yaml` on your own**; it is the project's reviewed security boundary.
+- **NEVER change `api-policy.yaml` on your own**; it is the project's reviewed security boundary.
+  When the user asks, use `graph-agents-cli api ...` with `--dry-run` first and show the diff;
+  ask which access (read-only, read-write, custom methods) rather than choosing one.
 
 ---
 
@@ -297,10 +304,14 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 
 > "Build me an agent that answers questions about our incidents."
 
-1. Phase 0: purpose, API operations (`getIncident`, `listIncidents`, GET only), provider.
-2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --api-policy ./api-policy.yaml --agent-guidance-filename CLAUDE.md -y`
-3. Implement tools, smoke test, eval.
-4. Later: `graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme --cd argocd`.
+1. Phase 0: purpose, API operations and the access the user chooses for them (here
+   `listIncidents`, `getIncident` and `acknowledgeIncident`), provider.
+2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --agent-guidance-filename CLAUDE.md -y`
+3. `graph-agents-cli api add incidents --base-url-env INCIDENTS_API_BASE_URL --auth bearer --token-env INCIDENTS_API_TOKEN --access custom --methods GET,POST`,
+   then `api allow incidents listIncidents`, `api allow incidents getIncident`,
+   `api allow incidents acknowledgeIncident` (each with `--method`/`--path` without a spec).
+4. Implement tools, smoke test, eval.
+5. Later: `graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme --cd argocd`.
 
 **Disconnected cluster**
 
