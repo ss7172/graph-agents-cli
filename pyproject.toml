@@ -64,7 +64,26 @@ packages = ["src/graph_agents_cli"]
 artifacts = ["src/graph_agents_cli/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/graph_agents_cli", "/schemas", "/skills", "/LICENSE", "/NOTICE", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md"]
+include = ["/src/graph_agents_cli", "/hatch_build.py", "/schemas", "/skills", "/LICENSE", "/NOTICE", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md"]
+
+# hatch_build.py records the git commit a wheel or sdist is built from in
+# graph_agents_cli/_build_info.json, so `--version` and project manifests can
+# tell apart builds that share one version string.
+[tool.hatch.build.hooks.custom]
+
+[tool.uv]
+# uv reuses a wheel it built from a local directory until a cache key changes;
+# by default the only key is pyproject.toml, whose version does not change
+# between releases. Keying on the commit (and tags: tagging a commit makes its
+# build a release build) and on the package sources makes
+# `uv tool install --from <checkout>` rebuild whenever the checkout moves or is
+# edited, instead of silently reinstalling an older cached build.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "hatch_build.py" },
+    { git = { commit = true, tags = true } },
+    { file = "src/**/*" },
+]
 
 [tool.ruff]
 line-length = 100

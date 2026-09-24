@@ -56,8 +56,17 @@ baseline and generated projects' CI (`GRAPH_AGENTS_CLI_SPEC` in `.github/agent.e
 the CLI from: a private mirror, a wheel, or a package index once one is used. Write
 `{version}` where the version goes (`git+https://git.example.com/graph-agents-cli@v{version}`)
 so the upgrade baseline can install an older release; an override without it is refused for
-that (exit 3). An override with control characters or whitespace is refused (exit 3), except
-the spaces of a PEP 508 `name @ url` reference.
+that (exit 3). `{version}` is a release number (the `cli_version` a project records), so the
+override names releases only; a build between two releases is named with `scaffold upgrade
+--baseline-ref` (see [Upgrading a project](#upgrading-a-project)). An override with control
+characters or whitespace is refused (exit 3), except the spaces of a PEP 508 `name @ url`
+reference.
+
+`graph-agents-cli --version` names the build: `0.2.0` for the release, `0.2.0+g<commit>` for a
+build of any other commit (a checkout between releases) and `0.2.0+g<commit>.dirty` with
+uncommitted changes; `info` shows the full commit. To install a build from a checkout, see
+CONTRIBUTING.md ("Installing a build from a checkout"): uv rebuilds a checkout whenever its
+commit or sources change.
 
 `setup` installs the skills with `npx skills add` from this repository at the tag of the
 running release (`https://github.com/ss7172/graph-agents-cli#v0.2.0`), so they match the CLI
@@ -145,7 +154,7 @@ line naming the file that implements it.
 | `auth dev-token --sub USER [--roles R,...] [--ttl 12h]` | A JWT for local runs of a `jwt` project, printed alone for `GRAPH_AGENTS_CLI_API_KEY`: a dev key pair in `.graph-agents-cli/dev-jwt/`, blank `AUTH_JWT_PUBLIC_KEY` / `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` filled in `.env`. Refused (exit 3) unless the policy is `jwt` and `APP_ENV` is exactly `dev`, or when `.env` names a JWKS URL or another public key |
 | `create [NAME]` / `scaffold create [NAME]` | Create a project: `-a/--agent`, `-o/--output-dir`, `--runtime`, `--model-provider`, `--model`, `--checkpointer`, `-d/--deployment-target`, `--registry`, `--cd`, `--auth-policy`, `--api-policy FILE`, `--process`, `-p/--prototype`, `-dir/--agent-directory`, `--agent-guidance-filename` (default `AGENTS.md`), `-bt/--base-template`, `-i`, `-y`, `-s/--skip-checks`, `--debug` |
 | `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags except `--api-policy`, which it refuses (the policy changes through `api`), plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
-| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest's `cli_version` or the install-spec override is the reason) |
+| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--baseline-ref REF] [--debug]` | Upgrade a project to this CLI build with a 3-way merge against the templates of the exact build that created it (its release, the commit the manifest's `cli_build` records, or `--baseline-ref`); stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest, the install-spec override or `--baseline-ref` is the reason). See [Upgrading a project](#upgrading-a-project) |
 | `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
 | `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL. A bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, not `--header`; the footer names the thread and how to resume it, after an error too; `-v` adds one line per event. A run paused on a gated call prints the call; on a terminal, when the requester is an approver, it asks `Approve? [y/N]` and continues, otherwise it prints the `approvals` commands and exits 0 (see [Human approval of calls](#human-approval-of-calls-approval)) |
 | `approvals list [--thread-id ID] [--all] [--json]` / `approvals approve\|reject APPROVAL_ID [--thread-id ID] [--comment TEXT] [-v]` (each with `[--url URL] [-H]... [--cookie]...`) | List the calls runs are waiting on (a thread's, or every one you may see: your own and the ones a role of yours may decide), or decide one: the call is shown first, the decision carries only `approve`/`reject` and the comment, and the resumed run streams. Same credentials as `run`; exit 1 when the server refuses (not an approver, already decided, expired, not found) |
@@ -171,7 +180,7 @@ line naming the file that implements it.
 | `secrets status --env ENV [--context NAME] [--strict] [--dry-run]` | Which allow-listed keys the Secret holds (never values); exit 1 when a required key is missing |
 | `infra check [--env ENV] [--profile disconnected] [--json]` | Read-only report of cluster, repository and placeholder prerequisites; creates nothing |
 | `extension add REFERENCE [--global] [--ref] [-i] [-y]` / `list` / `remove NAME` / `update [NAME]` | Manage command overrides and additions from extension repositories or local paths (experimental). New third-party code needs a trust prompt or `-y` (never prompted without a terminal); `update` asks only when the code changed |
-| `info [--json]` | Project configuration, paths, extensions, CLI version |
+| `info [--json]` | Project configuration (with the version and build that scaffolded it), paths, extensions, CLI version and build |
 
 CLI environment variables: `GRAPH_AGENTS_CLI_INSTALL_SPEC` (install source),
 `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` (no GitHub release check), `GRAPH_AGENTS_CLI_API_KEY`
@@ -182,6 +191,50 @@ gates with; a gate that lists `requester` is decided as the eval identity), `GRA
 the local server `run` and `eval` start), `GRAPH_AGENTS_CLI_DEBUG=1` (tracebacks behind
 one-line errors), `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` (ignore extension overrides; set in
 every generated CI and CD job).
+
+### Upgrading a project
+
+`scaffold upgrade` re-renders the project's old templates with the build that created it and
+merges the difference into the project: files you did not edit take the new templates, your
+edits are kept, conflicts are listed (or resolved with `-i`). Preview with `--dry-run`, apply
+with `-y`; a backup is written first.
+
+The manifest names the old build. `cli_version` is the release; `cli_build` (written by
+`create`, `enhance` and `upgrade`) is the build id `--version` prints, its commit and
+`template_digest`, a digest of what that build renders for the project's settings. So:
+
+- A project from an older release is rebuilt from the release tag `v<cli_version>`, or from
+  the recorded commit when `cli_build` names a build between releases (`X.Y.Z+g<commit>`).
+- A project of the running version is "already at version" when `cli_build` names this build,
+  or another build that renders the same files (same `template_digest`); otherwise it is
+  upgraded from the recorded commit.
+- A manifest without `cli_build` (made before builds were recorded, for example by a
+  pre-release 0.2.0 build) is compared by version only: `upgrade` says "already at version"
+  and shows how to name its build.
+
+`--baseline-ref REF` names the build that created the project and wins over the manifest:
+a commit or tag of this repository (`1a2b3c4`, `v0.1.0`), `<clone>@<commit>` for a local
+clone (the commit is looked up there first; the way to reach a commit that was never
+pushed), a path to a checkout or wheel (rebuilt, never a stale uv cache), or a full install
+spec (`git+https://git.example.com/graph-agents-cli@<commit>`, for a mirror). The baseline
+must render the manifest's `cli_version` (exit 3 otherwise). Without a known commit, the
+newest one before the project was generated is a first candidate; the build may be older (a
+checkout behind its branch, or a stale uv build), so check it with `--dry-run`: with the
+right build only files you edited are listed under "Will preserve" or as conflicts
+(`upgrade` warns when most template files would keep their current content, the sign of a
+later build named as the baseline).
+
+```bash
+git -C <clone> log -1 --format=%H --before='<generated_at from the manifest>'
+graph-agents-cli scaffold upgrade --baseline-ref <clone>@<commit> --dry-run
+graph-agents-cli scaffold upgrade --baseline-ref <clone>@<commit> -y
+```
+
+Afterwards the manifest records the running build, so the next upgrade needs no flag. A build
+with uncommitted changes (`.dirty`) cannot be rebuilt: name the closest commit with
+`--baseline-ref`. Release tags on the remote are created by the repository owner; until
+`v<version>` exists there, the default baseline of that release cannot be fetched and
+`--baseline-ref <clone>@<commit>` is the way to name it.
 
 ## The generated service
 
@@ -1061,8 +1114,8 @@ Every command follows one scheme:
 |---|---|
 | 0 | Success (`eval`: gate met; `secrets status`: every required key present; `run`: also a run left awaiting an approval) |
 | 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `run` and `approvals`: the server refused a decision (not an approver, already decided, expired); `scaffold enhance`: required steps left; `deploy --status`: the rollout is not complete within `--timeout`) |
-| 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; `scaffold upgrade` and version-locked `scaffold enhance`: `uvx` is missing or could not fetch and run the prior release; an unexpected crash |
-| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy (`lint` and `api check` included: an invalid `api-policy.yaml` is not a refused call), port or context, a placeholder registry, a `CHANGE-ME` left in the chart `env` or incomplete `jwt` settings outside dev (`deploy`), an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
+| 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; `scaffold upgrade` and version-locked `scaffold enhance`: `uvx` is missing or could not fetch and run the prior build; an unexpected crash |
+| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`, a recorded build that cannot be rebuilt, or a `--baseline-ref` that names no build or a build of another version), env file, policy (`lint` and `api check` included: an invalid `api-policy.yaml` is not a refused call), port or context, a placeholder registry, a `CHANGE-ME` left in the chart `env` or incomplete `jwt` settings outside dev (`deploy`), an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
 
 Usage errors from Click (an unknown flag) are also 2. A signal ends a command with 128+N
 (130 for Ctrl-C, 143 for SIGTERM) after the local server it started is stopped.
@@ -1290,12 +1343,19 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
   (and shows its body's numbers as A2A data carries them: `1` reads `1.0`);
   `eval generate` decides `requester` gates as the eval identity and `role:` gates as the
   one principal of `GRAPH_AGENTS_CLI_APPROVER_API_KEY`.
-- `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after
+- `scaffold enhance` (a settings change) and `scaffold upgrade` (to a new version) rewrite the
+  manifest without its comments; after
   `enhance --runtime`, run `graph-agents-cli install` to bring `uv.lock` up to date; required
   steps are reported only by the enhance that changes the settings.
 - Upgrading a 0.1.0 project needs manual steps (see CHANGELOG.md) and the `v0.1.0` tag for its
-  authentic baseline. `--baseline current` is no substitute there: it cannot tell your edits
-  from 0.2.0's changes, so every scaffolding file 0.2.0 changed keeps its 0.1.0 content.
+  authentic baseline (or `--baseline-ref <clone>@fc3f2f9`). `--baseline current` is no
+  substitute there: it cannot tell your edits from 0.2.0's changes, so every scaffolding file
+  0.2.0 changed keeps its 0.1.0 content.
+- The repository has no release tags yet (the owner creates them): until `v0.1.0` and `v0.2.0`
+  are pushed, `uv tool install ...@v0.2.0` and the default upgrade baseline of those releases
+  cannot be fetched; install from a checkout and name baselines with `--baseline-ref`.
+- A project made by a build between releases is upgraded from its commit on the remote; a
+  commit that was never pushed is named with `--baseline-ref <clone>@<commit>`.
 - The Bitnami subcharts come from `registry-1.docker.io`, which rate-limits anonymous pulls;
   their images are pinned by digest, and a pin must be refreshed if the digest is withdrawn.
 - The generated workflows reference actions by version tag, not commit SHA.

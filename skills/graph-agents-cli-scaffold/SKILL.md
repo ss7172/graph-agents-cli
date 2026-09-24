@@ -207,33 +207,58 @@ graph-agents-cli scaffold upgrade <project-path>
 graph-agents-cli scaffold upgrade --dry-run       # preview
 graph-agents-cli scaffold upgrade -y              # apply non-conflicting changes (--auto-approve / --yes)
 graph-agents-cli scaffold upgrade -i              # resolve conflicts interactively
+graph-agents-cli scaffold upgrade --baseline-ref <ref> --dry-run   # name the build that created the project
 graph-agents-cli scaffold upgrade --baseline current   # explicit, logged opt-out of the authentic baseline
 ```
 
-**Authentic baseline or stop.** `upgrade` regenerates the old template with the exact prior CLI
-version (`uvx --from git+https://github.com/ss7172/graph-agents-cli@v<old-version> graph-agents-cli scaffold create ...`,
-or `GRAPH_AGENTS_CLI_INSTALL_SPEC` with `{version}` filled in). If that version cannot be
-fetched and run (source unreachable, version absent, `uvx` missing, or an install-spec override
-without `{version}`, which would install some other build), `upgrade` **stops with no changes**
-(exit 2 when `uvx` is missing or failed; exit 3 when the manifest's `cli_version` is missing or
-not a release, or the override lacks `{version}`), because an inauthentic baseline would
-misclassify files. `--baseline current` compares against the current templates instead; it is
-an explicit opt-in, logged, and the result is labelled as such. It cannot tell the user's edits
-from template changes since the old version: every file listed under "Will preserve (differs
-from the current template)" that the user did not edit keeps its old content, and dependency
-changes are not merged. Do not pass it just to make the error go away; tell the user why the
-baseline is unavailable.
+**Authentic baseline or stop.** `upgrade` regenerates the old template with the exact CLI build
+that created the project. The manifest names it: `cli_version` (a release, rebuilt with
+`uvx --from git+https://github.com/ss7172/graph-agents-cli@v<old-version> graph-agents-cli scaffold create ...`,
+or `GRAPH_AGENTS_CLI_INSTALL_SPEC` with `{version}` filled in) and `cli_build` (written by
+`create`, `enhance` and `upgrade`: the build id `graph-agents-cli --version` prints, its commit,
+and `template_digest`, a digest of what that build renders for the recorded settings). A build
+between two releases (id `0.2.0+g<commit>`) is rebuilt from its commit in the repository. If the
+build cannot be fetched and run (source unreachable, ref absent, `uvx` missing, or an
+install-spec override without `{version}`, which would install some other build), `upgrade`
+**stops with no changes** (exit 2 when `uvx` is missing or failed; exit 3 when the manifest's
+`cli_version` is missing or not a release, the override lacks `{version}`, the recorded build
+had uncommitted changes, or a build between releases is recorded while an override is set:
+`{version}` names releases only), because an inauthentic baseline would misclassify files.
+`--baseline current` compares against the current templates instead; it is an explicit opt-in,
+logged, and the result is labelled as such. It cannot tell the user's edits from template
+changes since the old version: every file listed under "Will preserve (differs from the current
+template)" that the user did not edit keeps its old content, and dependency changes are not
+merged. Do not pass it just to make the error go away; tell the user why the baseline is
+unavailable.
+
+**Same version, other build.** A project whose `cli_build` names another build of the running
+version is upgraded from that build, unless both render the same files for its settings (same
+`template_digest`: "already at version"). A manifest without `cli_build` (made before builds were
+recorded, for example by a pre-release 0.2.0 build) is compared by version only: `upgrade` says
+"already at version" and prints how to name the build. Name it with `--baseline-ref`, which
+wins over the manifest: a commit or tag of the repository (`1a2b3c4`, `v0.1.0`),
+`<clone>@<commit>` for a local clone (the commit is looked up there first), a path to a checkout
+or wheel (rebuilt, never a stale uv cache), or a full install spec
+(`git+https://<mirror>/graph-agents-cli@<commit>`). The baseline must render the manifest's
+`cli_version` (exit 3 otherwise); a different recorded commit is a warning. Without a known
+commit, `git -C <clone> log -1 --format=%H --before=<generated_at from the manifest>` gives a
+first candidate (the newest commit before the project was generated); the build may be older
+(a checkout behind its branch, or a stale uv build). Check it with `--dry-run`: with the right
+build only files the user edited are listed under "Will preserve" or as conflicts; many
+untouched scaffolding files there mean the wrong build (`upgrade` warns when most template files
+would keep their current content, and when the baseline renders the same files as the running
+build). After the upgrade the manifest records
+the running build. Tags on the remote are the owner's to create; until `v<version>` exists there,
+`--baseline-ref <clone>@<commit>` is the way to name any build.
 
 A project created with 0.1.0 is upgraded against the `v0.1.0` tag (commit `fc3f2f9`). Never
 use `--baseline current` for it: nearly every scaffolding file changed in 0.2.0, so the project
 would keep 0.1.0's `app_utils`, chart and workflows, its tests would fail to import and `/chat`
-would answer 500. If the tag cannot be fetched, build the baseline from a clone that holds the
-commit (`git -C <clone> tag v0.1.0 fc3f2f9`, then
-`GRAPH_AGENTS_CLI_INSTALL_SPEC='git+file://<clone>@v{version}' graph-agents-cli scaffold upgrade`,
-and afterwards set `GRAPH_AGENTS_CLI_SPEC` in `.github/agent.env` back to the release spec).
-Manual steps follow: see the CHANGELOG's "Upgrading a project created with 0.1.0" (a new
-`app/policies/__init__.py` and `app/agent.py`, `API_CALLS` instead of `PRODUCT_CALLS`,
-`secretOptional: true` in `values-dev.yaml`). Outside a project `upgrade` exits 3.
+would answer 500. If the tag cannot be fetched, name the commit in a clone that holds it:
+`graph-agents-cli scaffold upgrade --baseline-ref <clone>@fc3f2f9`. Manual steps follow: see
+the CHANGELOG's "Upgrading a project created with 0.1.0" (a new `app/policies/__init__.py` and
+`app/agent.py`, `API_CALLS` instead of `PRODUCT_CALLS`, `secretOptional: true` in
+`values-dev.yaml`). Outside a project `upgrade` exits 3.
 
 **What upgrade never touches:**
 
@@ -338,7 +363,8 @@ then follows that process's gates.
 | Symptom | Cause / fix |
 |---|---|
 | `create` refuses the combination | consult the table; pick `postgres` for kubernetes |
-| `upgrade` exits 2: "Could not build the graph-agents-cli@X baseline" | the old CLI version could not be fetched (no `vX` tag, no network, no `uvx`); fix access, or point `GRAPH_AGENTS_CLI_INSTALL_SPEC` (with `{version}`) at a mirror or clone that has the tag. `--baseline current` only knowingly, never for a 0.1.0 project |
+| `upgrade` exits 2: "Could not build the baseline" | the old CLI build could not be fetched (no `vX` tag on the remote, a commit that was never pushed, no network, no `uvx`); fix access, or name the build with `--baseline-ref <clone>@<commit>` (or point `GRAPH_AGENTS_CLI_INSTALL_SPEC`, with `{version}`, at a mirror that has the tag). `--baseline current` only knowingly, never for a 0.1.0 project |
+| `upgrade` says "already at version X" for a project an earlier build of X created | its manifest records no `cli_build` (made before builds were recorded): name that build with `--baseline-ref` (the message shows the forms and how to find the commit) |
 | `enhance` misplaces files | pass `--agent-directory` matching where the code lives |
 | `ghcr.io/CHANGE-ME` in values | pass `--registry` or set a git `origin` remote before `create`; afterwards `graph-agents-cli scaffold enhance --registry <host>/<org>` sets it in the manifest, the chart values and `.github/agent.env`. `build` and `deploy` refuse the placeholder (exit 3) until then |
 | `enhance` exits 1: "item(s) marked (required) above must be done by hand" | do each `(required)` step in the "Left for you" list (for example merge `Dockerfile.new` into your `Dockerfile`, or set the chart key it names) |

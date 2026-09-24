@@ -164,7 +164,8 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 6. Eval datasets: review `not_contains` checks (now case-insensitive) and metrics declared
    on only some cases (see above).
 7. Template files you have not edited take the new versions with `graph-agents-cli scaffold
-   upgrade`; in `app/agent.py` keep `middleware()` (`SurfaceApiErrors`,
+   upgrade` (a project made by a pre-release 0.2.0 build names that build: see "Upgrading a
+   project made by a pre-release 0.2.0 build" below); in `app/agent.py` keep `middleware()` (`SurfaceApiErrors`,
    `AnswerInvalidToolCalls` and `UntrustedToolResults`, in that order) if you rewrote it,
    and in tools use `ToolRuntime[Any]`. `scaffold upgrade` never rewrites `agent.py`: an
    edited one needs `AnswerInvalidToolCalls()` added by hand (from `app_utils.content`).
@@ -185,17 +186,19 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
    ones (`app/policies/custom.py` among them), removes `app/app_utils/product_client.py` and
    reports your own edits as conflicts. It needs `uvx` and access to the repository.
 
-   If the tag cannot be fetched (an offline mirror, a fork without tags), build the same
-   baseline from any clone that holds commit `fc3f2f9`:
+   If the tag cannot be fetched (it is not on the remote yet, an offline mirror, a fork
+   without tags), name the same build in any clone that holds commit `fc3f2f9`:
 
    ```bash
    git clone https://github.com/ss7172/graph-agents-cli /tmp/gac   # or your mirror
-   git -C /tmp/gac tag v0.1.0 fc3f2f9
-   GRAPH_AGENTS_CLI_INSTALL_SPEC='git+file:///tmp/gac@v{version}' graph-agents-cli scaffold upgrade -y
+   graph-agents-cli scaffold upgrade --baseline-ref /tmp/gac@fc3f2f9 --dry-run
+   graph-agents-cli scaffold upgrade --baseline-ref /tmp/gac@fc3f2f9 -y
    ```
 
-   The override also becomes the new `.github/agent.env`'s `GRAPH_AGENTS_CLI_SPEC`: set that
-   line back to `git+https://github.com/ss7172/graph-agents-cli@v0.2.0` (or your mirror).
+   (`GRAPH_AGENTS_CLI_INSTALL_SPEC='git+file:///tmp/gac@v{version}'` after
+   `git -C /tmp/gac tag v0.1.0 fc3f2f9` still works, but the override also becomes the new
+   `.github/agent.env`'s `GRAPH_AGENTS_CLI_SPEC`, which you then set back to
+   `git+https://github.com/ss7172/graph-agents-cli@v0.2.0`.)
 
    **Do not use `--baseline current` for a 0.1.0 project.** It compares against the 0.2.0
    templates, so it cannot tell your edits from 0.2.0's changes: every scaffolding file 0.2.0
@@ -223,8 +226,57 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 4. `graph-agents-cli install`, `uv run pytest tests/unit tests/integration` with
    `MODEL_PROVIDER=fake`, and `graph-agents-cli lint`.
 
+#### Upgrading a project made by a pre-release 0.2.0 build
+
+Builds made before the release share its version, so such a project's manifest says
+`cli_version: '0.2.0'` without the `cli_build` record this release adds, and `scaffold upgrade`
+answers "already at version 0.2.0" (compared by version only) with the steps below. Nothing in
+the manifest has to be edited.
+
+1. Find the commit of the build that created the project. If you do not know it, the
+   newest commit before the project was generated is a first candidate:
+   `git -C <checkout> log -1 --format=%H --before='<generated_at from the manifest>'`. The
+   build may be older than that: a checkout behind its branch, or a stale build
+   (`uv tool install --from` reused its cached wheel of an earlier commit before this
+   release, see Fixed).
+2. Preview with that build as the baseline, then apply (a local clone reaches commits that
+   were never pushed). With the right build, only files you edited are listed under "Will
+   preserve" or as conflicts; many scaffolding files you never touched there mean the wrong
+   build, so try an earlier commit:
+
+   ```bash
+   graph-agents-cli scaffold upgrade --baseline-ref <checkout>@<commit> --dry-run
+   graph-agents-cli scaffold upgrade --baseline-ref <checkout>@<commit> -y
+   ```
+
+   The baseline must be a 0.2.0 build (exit 3 otherwise). Files you did not edit take the
+   0.2.0 versions, new ones are added, your edits are kept or reported as conflicts, and the
+   manifest then records this build in `cli_build`, so later upgrades need no flag.
+3. Port what `scaffold upgrade` never rewrites (`app/agent.py`, `app/tools/**`, the
+   `values-<env>.yaml` files): see "Upgrading a running deployment" step 7.
+
 ### Added
 
+- **The manifest records the build that rendered the project**, as `cli_build`: its id (what
+  `graph-agents-cli --version` prints: `0.2.0` for the release, `0.2.0+g<commit>` between
+  releases), its full commit and `template_digest`, a digest of what that build renders for
+  the recorded settings (null when `create` seeded a policy or used a local or remote
+  template). `create` writes it (keeping the manifest's comments), `scaffold upgrade` and a
+  settings change with `scaffold enhance` rewrite it, and `info` shows it
+  (`Scaffolded with: 0.2.0 (build ...)`). `scaffold upgrade` uses it to pick the old
+  snapshot's build: a build between releases is rebuilt from its commit; at the running
+  version a project is up to date only when the build, or what it renders, is the same. A
+  recorded build with uncommitted changes, or a build between releases while
+  `GRAPH_AGENTS_CLI_INSTALL_SPEC` is set (its `{version}` names releases only), stops the
+  upgrade with the ways out (exit 3).
+- **`scaffold upgrade --baseline-ref REF`** names the build that created a project when the
+  manifest cannot: a commit or tag of the repository, `<clone>@<commit>` for a local clone
+  (looked up there first), a path to a checkout or wheel (rebuilt with `uvx
+  --refresh-package`), or a full install spec. The baseline must render the manifest's
+  `cli_version` (exit 3 otherwise); a different recorded commit is a warning, and so is a
+  baseline under which most template files would keep their current content (the sign of a
+  later build than the one that created the project) or that renders the same files as the
+  running build.
 - **`jwt` auth policy**: per-user principals from a verified OIDC/JWT bearer token. JWKS URL
   (`AUTH_JWT_JWKS_URL`, cached for `AUTH_JWT_JWKS_CACHE_S`, one rate-limited refetch on an
   unknown key id, stale-while-revalidate, a bounded grace when the issuer is down) or one PEM
@@ -573,6 +625,22 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 
 ### Fixed
 
+- `scaffold upgrade` said "already at version 0.2.0" for a project made by an earlier build of
+  the same version, because it compared version strings only. The manifest now records the
+  build (`cli_build`, see Added) and `upgrade` compares it; a manifest without it is compared
+  by version, with a message that says how to name the build (`--baseline-ref`). The fallback
+  for a missing release tag no longer needs a tag in a clone or a relabelled manifest:
+  `--baseline-ref <clone>@<commit>` names any build.
+- `uv tool install --from <checkout> graph-agents-cli` could silently reinstall uv's cached
+  wheel of an earlier commit: uv keyed its build cache on `pyproject.toml` alone, whose
+  version does not change between releases. `pyproject.toml` now sets `[tool.uv] cache-keys`
+  on the commit, the tags and every file under `src/`, so a moved or edited checkout is
+  rebuilt (a checkout at a commit older than this fix still needs `--reinstall`).
+  `--version` names the build: `0.2.0` for the release, `0.2.0+g<commit>` for any other
+  commit and `0.2.0+g<commit>.dirty` with uncommitted changes; `info` shows the full commit
+  (`info --json`: `cli_build`). Every wheel and sdist built from a git checkout records the
+  commit in `graph_agents_cli/_build_info.json` (`hatch_build.py`). CONTRIBUTING.md
+  describes installing a build from a checkout.
 - The `pr_checks` workflow wrote comment lines of `agent.env` into `GITHUB_ENV` and failed.
 - `deploy` created no namespace before applying the Secret on a first deploy.
 - Server runtime: "thread not found" is 404, not 503; run records are durable in Postgres.

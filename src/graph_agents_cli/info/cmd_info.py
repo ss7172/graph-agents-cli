@@ -25,6 +25,7 @@ import click
 
 import graph_agents_cli as _cli_pkg
 from graph_agents_cli.__init__ import __version__
+from graph_agents_cli._build import BuildInfo, current_build
 from graph_agents_cli._output import emit
 from graph_agents_cli._project import (
     ProjectConfig,
@@ -85,12 +86,23 @@ def _print_installed_skills(skills: list[dict] | None) -> None:
             click.echo(f"  - {name}")
 
 
+def build_info_json(build: BuildInfo) -> dict[str, Any]:
+    """The ``cli_build`` block of ``info --json``."""
+    return {
+        "id": build.id,
+        "commit": build.commit,
+        "dirty": build.dirty,
+        "release": build.is_release,
+    }
+
+
 def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
     """The project block of ``info``: what the manifest records."""
     return {
         "project_root": str(project_root),
         "project_name": cfg.project_name,
         "cli_version": cfg.cli_version,
+        "cli_build": cfg.cli_build if isinstance(cfg.cli_build, dict) else None,
         "language": cfg.language,
         "base_template": cfg.base_template,
         "agent_directory": cfg.agent_directory,
@@ -111,11 +123,20 @@ def project_info(project_root: Path, cfg: ProjectConfig) -> dict[str, Any]:
     }
 
 
+def _scaffolded_with(cfg: ProjectConfig) -> str:
+    """The version and, when the manifest records it, the build that rendered the project."""
+    version = cfg.cli_version or "(unknown)"
+    build = cfg.cli_build.get("id") if isinstance(cfg.cli_build, dict) else None
+    if not build:
+        return f"{version} (no build recorded)" if cfg.cli_version else version
+    return version if build == cfg.cli_version else f"{version} (build {build})"
+
+
 def _print_project(project_root: Path, cfg: ProjectConfig) -> None:
     click.echo()
     click.echo(f"Project root:       {project_root}")
     click.echo(f"Project name:       {cfg.project_name or '(not set)'}")
-    click.echo(f"Scaffolded with:    {cfg.cli_version or '(unknown)'}")
+    click.echo(f"Scaffolded with:    {_scaffolded_with(cfg)}")
     click.echo(f"Base template:      {cfg.base_template}")
     click.echo(f"Agent directory:    {cfg.agent_directory}")
     click.echo(f"Runtime:            {cfg.runtime}")
@@ -147,8 +168,10 @@ def cmd_info(as_json: bool) -> None:
     os_info = platform.platform()
     extension_set = load_extension_set(project_root, user_config_root())
 
+    build = current_build()
     base: dict[str, Any] = {
         "cli_version": __version__,
+        "cli_build": build_info_json(build),
         "cli_install_path": _CLI_INSTALL_PATH,
         "os_info": os_info,
         "installed_skills": installed_skills,
@@ -162,6 +185,7 @@ def cmd_info(as_json: bool) -> None:
             emit({**base, "project": None})
         else:
             click.echo(f"CLI version:        {__version__}")
+            click.echo(f"CLI build:          {build.describe()}")
             click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
             click.echo(f"OS info:            {os_info}")
             _print_installed_skills(installed_skills)
@@ -180,6 +204,7 @@ def cmd_info(as_json: bool) -> None:
         return
 
     click.echo(f"CLI version:        {__version__}")
+    click.echo(f"CLI build:          {build.describe()}")
     click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
     click.echo(f"OS info:            {os_info}")
     _print_installed_skills(installed_skills)

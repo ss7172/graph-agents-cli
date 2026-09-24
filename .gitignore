@@ -16,3 +16,5 @@ artifacts/
 .env.*
 !.env.example
 !.env.*.example
+# Written into wheels and sdists by hatch_build.py; never committed.
+/src/graph_agents_cli/_build_info.json

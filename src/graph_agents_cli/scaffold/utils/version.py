@@ -25,7 +25,10 @@ is replaced by the version asked for, so one mirror setting serves every
 release. Replaying an older release (the ``scaffold upgrade`` baseline, a
 version-locked ``scaffold enhance``) uses ``pinned_install_spec``, which refuses
 an override without ``{version}``: that override installs one fixed build, so it
-cannot stand for the older version.
+cannot stand for the older version. ``{version}`` is a release number (the
+``cli_version`` a manifest records), so the override selects releases only; a
+build between two releases (same version, another commit) is named with
+``scaffold upgrade --baseline-ref`` (``resolve_baseline_ref``).
 
 The update check compares the running version with the latest GitHub release.
 It is opt-out through ``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`` (disconnected
@@ -37,6 +40,7 @@ import os
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -185,6 +189,119 @@ def pinned_spec_unavailable(version: str) -> str:
         f"{PACKAGE_NAME} {version} specifically. Put {VERSION_PLACEHOLDER} where the "
         f"version goes (for example git+https://git.example.com/{PACKAGE_NAME}@v{VERSION_PLACEHOLDER}), "
         f"or unset it"
+    )
+
+
+@dataclass(frozen=True)
+class BaselineSource:
+    """The CLI build that renders an upgrade's old snapshot, as a ``uvx --from`` spec.
+
+    ``refresh`` rebuilds a local directory whatever uv cached for it: a checkout
+    at an older commit may key its build cache on ``pyproject.toml`` alone.
+    """
+
+    spec: str
+    label: str
+    refresh: bool = False
+    commit: str | None = None
+
+
+# A git ref as `--baseline-ref` accepts it: a tag, a branch or a commit.
+_GIT_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/+-]*")
+_FULL_COMMIT_RE = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
+def _check_git_ref(ref: str, flag: str) -> None:
+    if not _GIT_REF_RE.fullmatch(ref) or ".." in ref or ref.endswith((".lock", "/", ".")):
+        raise InstallSpecError(
+            f"{flag} {ref!r} is not a git ref (a tag, a branch or a commit such as 1a2b3c4)."
+        )
+
+
+def _resolve_local_commit(clone: Path, ref: str, flag: str) -> str:
+    """``ref``'s full commit in the clone at ``clone`` (InstallSpecError when it has none)."""
+    from graph_agents_cli._runner import run_resolved
+
+    try:
+        result = run_resolved(
+            ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        raise InstallSpecError(
+            f"{flag}: git could not run to look up {ref!r} in {clone}: {e}"
+        ) from e
+    commit = (result.stdout or "").strip()
+    if result.returncode != 0 or not _FULL_COMMIT_RE.fullmatch(commit):
+        raise InstallSpecError(
+            f"{flag}: {clone} has no commit named {ref!r} (is it a clone of {PACKAGE_NAME} "
+            "that holds that commit? `git fetch` it first)."
+        )
+    return commit
+
+
+def commit_install_spec(commit: str) -> str:
+    """The spec of one commit of the default repository."""
+    return f"git+{REPO_URL}@{commit}"
+
+
+def resolve_baseline_ref(ref: str, *, flag: str = "--baseline-ref") -> BaselineSource:
+    """The build ``scaffold upgrade --baseline-ref`` names.
+
+    * a full install spec (``git+https://...@<ref>``, ``git+file://...``,
+      ``graph-agents-cli==X``, ``graph-agents-cli @ <url>``): used as it is;
+    * an existing path (a checkout, an unpacked sdist, a wheel): that build;
+    * ``<clone>@<ref>`` where ``<clone>`` is a local git clone: ``ref``'s commit
+      in it (looked up now, so a typo fails before anything is built);
+    * anything else is a tag, branch or commit of the default repository.
+
+    Raises :class:`InstallSpecError` (exit 3) when ``ref`` cannot name a build.
+    """
+    value = ref.strip()
+    # Plain spaces can be part of a path; every other whitespace or control
+    # character is refused, and a spec follows the install-spec rules.
+    problem = _invalid_character(value.replace(" ", "_"))
+    if not value or problem is not None:
+        raise InstallSpecError(
+            f"{flag} must name a {PACKAGE_NAME} build"
+            + (f"; it contains {problem}." if problem else ".")
+        )
+    if "://" in value or value.startswith(("git+", PACKAGE_NAME)):
+        problem = _invalid_character(value)
+        if problem is not None:
+            raise InstallSpecError(
+                f"{flag} {value!r} is not an install spec: it contains {problem}."
+            )
+        return BaselineSource(spec=value, label=value)
+    path = Path(value).expanduser()
+    # A path is what is written as one, or a checkout or distribution that exists:
+    # a branch named like some directory here (`main`, `release/0.2`) stays a ref.
+    written_as_path = value.startswith(("/", ".", "~"))
+    build_source = (path.is_dir() and (path / "pyproject.toml").is_file()) or (
+        path.is_file() and value.endswith((".whl", ".tar.gz", ".zip"))
+    )
+    if path.exists() and (written_as_path or build_source):
+        resolved = path.resolve()
+        return BaselineSource(spec=str(resolved), label=f"the build at {resolved}", refresh=True)
+    if "@" in value:
+        clone_text, _, git_ref = value.rpartition("@")
+        clone = Path(clone_text).expanduser()
+        if clone_text and clone.is_dir():
+            _check_git_ref(git_ref, flag)
+            commit = _resolve_local_commit(clone.resolve(), git_ref, flag)
+            return BaselineSource(
+                spec=f"git+{clone.resolve().as_uri()}@{commit}",
+                label=f"commit {commit[:12]} of {clone.resolve()}",
+                commit=commit,
+            )
+        if clone_text and ("/" in clone_text or clone_text.startswith((".", "~"))):
+            raise InstallSpecError(f"{flag}: {clone_text} is not a directory (a local clone).")
+    _check_git_ref(value, flag)
+    commit = value if _FULL_COMMIT_RE.fullmatch(value) else None
+    return BaselineSource(
+        spec=f"git+{REPO_URL}@{value}", label=f"{value} of {REPO_URL}", commit=commit
     )
 
 

@@ -18,10 +18,11 @@ Exit codes, for every command: `0` ok; `1` refused by policy or mode, a declined
 or a failed gate (a lint violation, an agent that answered with an error, `scaffold enhance`
 with required steps left); `2` tool failure (helm/kubectl/docker/git/gh non-zero or missing from
 `PATH`, a local server that cannot start, an agent that cannot be reached, `uvx` missing or unable
-to fetch the prior release for `scaffold upgrade` or a version-locked `scaffold enhance`, an
+to fetch the prior build for `scaffold upgrade` or a version-locked `scaffold enhance`, an
 unexpected crash); `3` configuration error (not in a project, an invalid manifest, including a
 missing or unreleased `cli_version` for `scaffold upgrade`, env file, policy, port or kube
-context, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC`). A signal ends a command with 128+N (130 for Ctrl-C, 143 for SIGTERM) after the local
+context, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC`, a `scaffold upgrade --baseline-ref` that
+names no build or a build of another version). A signal ends a command with 128+N (130 for Ctrl-C, 143 for SIGTERM) after the local
 server it started is stopped. `secrets status` exits `1` when the Secret or a *required* key is
 missing (`--strict`: any allow-listed key). `eval` exit codes are in `/graph-agents-cli-eval`.
 `GRAPH_AGENTS_CLI_DEBUG=1` shows the traceback behind a one-line network, file or parse error.
@@ -105,7 +106,7 @@ graph-agents-cli scaffold enhance [TEMPLATE_PATH]
   --force   --dry-run/--dryrun   --prefer-new
   (api-policy.yaml belongs to the project: enhance never touches it; use graph-agents-cli api)
 graph-agents-cli scaffold upgrade [PROJECT_PATH] [--dry-run/--dryrun] [-y/--auto-approve/--yes] [-i/--interactive]
-  [--baseline authentic|current] [--debug]
+  [--baseline authentic|current] [--baseline-ref REF] [--debug]
 ```
 
 `enhance` always enhances the current directory; `TEMPLATE_PATH` names the template to apply and
@@ -376,7 +377,10 @@ changed, without a trust prompt; new third-party code needs a prompt or `-y`. Wi
 (CI, a pipe) the trust gate never prompts: `add` and `update` of untrusted code exit 1 with a hint
 to pass `-y`, and `update` keeps the old pin.
 
-`info` prints the CLI version and install path plus, inside a project: name, base template,
+`info` prints the CLI version, its build (`CLI build:` the id `--version` prints, `0.2.0` for
+a release and `0.2.0+g<commit>` for a build between releases, with the full commit; `--json`:
+`cli_build`) and install path plus, inside a project: the version and build that scaffolded it
+(`Scaffolded with:`, from the manifest's `cli_build`), name, base template,
 agent directory, runtime, model provider and model, checkpointer, deployment target, registry,
 CD mode, auth policy, the API policy file (or none), `process`, the environments with their
 namespaces, and active extensions with their sources and conflicts.
@@ -386,7 +390,7 @@ namespaces, and active extensions with their sources and conflicts.
 | Variable | Effect |
 |---|---|
 | `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` | disables the GitHub release check and the skills-version check (disconnected profile) |
-| `GRAPH_AGENTS_CLI_INSTALL_SPEC` | where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install the CLI from (a mirror, a wheel); `{version}` is replaced by the version needed; control characters and whitespace are refused (exit 3), except the spaces of `name @ url` |
+| `GRAPH_AGENTS_CLI_INSTALL_SPEC` | where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install the CLI from (a mirror, a wheel); `{version}` is replaced by the version needed, a release number, so it cannot name a build between releases (`scaffold upgrade --baseline-ref` does); control characters and whitespace are refused (exit 3), except the spaces of `name @ url` |
 | `GRAPH_AGENTS_CLI_RUN_PORT` | port of the local server `run` and `eval generate` start |
 | `GRAPH_AGENTS_CLI_DEBUG=1` | print the traceback behind a one-line network, file or parse error |
 | `GRAPH_AGENTS_CLI_API_KEY` | bearer credential `run` and `eval` send (locally and with `--url`) when no `Authorization` header is given: the `API_KEY` (`shared-bearer`) or a JWT (`jwt`; locally from `auth dev-token`); keeps it out of argv |

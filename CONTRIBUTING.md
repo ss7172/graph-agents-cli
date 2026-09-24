@@ -32,6 +32,41 @@ uv run graph-agents-cli setup --dev  # optional: editable `uv tool install` + sk
 the lock with them. CI pins uv 0.9.2 (the version the bundled template locks are generated
 with); use the same locally when you regenerate locks.
 
+### Installing a build from a checkout
+
+To use a development build as your `graph-agents-cli` outside `uv run` (to try it on a real
+project, or to hand it to a reviewer), install it from the checkout:
+
+```bash
+uv tool install --from /path/to/graph-agents-cli graph-agents-cli   # a snapshot of the checkout
+uv run graph-agents-cli setup --dev                                 # or: editable, follows the checkout
+```
+
+`pyproject.toml` (`[tool.uv] cache-keys`) keys uv's build cache on the checkout's commit, its
+tags and every file under `src/`, so after a pull, a branch switch or an edit the same
+command rebuilds and installs the new code; no `--reinstall` is needed. (uv's default key is
+`pyproject.toml` alone, whose version does not change between releases: before these keys
+it silently reinstalled a cached wheel of an earlier commit. A checkout at a commit that
+predates them still needs `--reinstall`.) Use a separate `UV_TOOL_DIR` and
+`UV_TOOL_BIN_DIR` to keep a development build beside a released one.
+
+Builds between two releases share the version string; `graph-agents-cli --version` tells them
+apart: `0.2.0` for a clean build of the commit the release tag `v0.2.0` names,
+`0.2.0+g1a2b3c4` for any other commit, and `0.2.0+g1a2b3c4.dirty` when files under `src/`
+(or `pyproject.toml`, `hatch_build.py`) had uncommitted changes. `graph-agents-cli info`
+prints the full commit (`info --json`: `cli_build`). The facts come from
+`graph_agents_cli/_build_info.json`, which `hatch_build.py` writes into every wheel and sdist
+built from a git checkout (`src/graph_agents_cli/_build.py` computes them); an editable
+install reads git when asked, and a tree without git builds a wheel identified by its
+version only.
+
+A project created by such a build records it in its manifest (`cli_build`: the id, the commit
+and a digest of what it rendered), and `scaffold upgrade` rebuilds that commit as the old
+snapshot, from the repository on GitHub. For a commit only your clone has, name it:
+`graph-agents-cli scaffold upgrade --baseline-ref <clone>@<commit>`. A build with uncommitted
+changes (`.dirty`) cannot be rebuilt at all, so commit before creating projects you mean to
+upgrade later.
+
 ## Tests
 
 | Tier | Command | Needs | Runs in CI |
@@ -86,7 +121,9 @@ uv run --project <checkout> graph-agents-cli lint
 
 Snapshots of rendered projects live under `tests/fixtures/rendered/<combo>/`:
 `files.json` (the sorted file list) and `manifest.yaml` (the rendered manifest with
-`generated_at` replaced by `<generated_at>`). `scripts/regen_fixtures.py` renders six
+`generated_at` replaced by `<generated_at>` and without the `cli_build` block, which changes
+with every commit; `test_render_snapshots.py` checks that block on its own: this build's id,
+and a digest equal to a fresh render from the manifest's settings). `scripts/regen_fixtures.py` renders six
 combinations (`fastapi-none-memory`, `fastapi-k8s-postgres`, `fastapi-argocd-custom`,
 `server-helm-push`, `fastapi-k8s-policy-process`, `fastapi-none-jwt`) through the real
 `create -y --skip-checks --skip-deps --registry ghcr.io/e2e` (`--skip-deps` is a hidden
@@ -291,14 +328,21 @@ owner tags releases.
    `git tag -a v0.1.0 fc3f2f9 -m "graph-agents-cli 0.1.0" && git push origin v0.1.0`. That
    commit has no workflows, so the tag creates no GitHub Release. Check it with a project
    created by 0.1.0: `graph-agents-cli scaffold upgrade --dry-run` lists about 30 files under
-   "Will auto-update" (without the tag it stops with exit 2).
+   "Will auto-update" (without the tag it stops with exit 2). Tags are the owner's action
+   alone; until one exists on the remote, users name that baseline with `scaffold upgrade
+   --baseline-ref <clone>@<commit>`. Projects also record the build that rendered them
+   (`cli_build` in the manifest: build id, commit, digest of the render); one made by a
+   build between releases is upgraded from that commit on the remote, so push the branch
+   such builds come from, or those users need `--baseline-ref` too.
 6. **Tag and push**: `git tag -a vX.Y.Z -m "graph-agents-cli X.Y.Z" && git push origin vX.Y.Z`.
 7. `.github/workflows/release.yml` then checks that the tag equals the package version (and
    the plugin manifests, the skills' `metadata.version` and the changelog agree), runs ruff
    and the fast suite, builds the sdist and wheel with `uv build`, checks that the wheel
-   installs and reports the version, and creates the GitHub Release with the sdist, the
-   wheel, `SHA256SUMS` and the changelog section as notes (a version with `a`, `b`, `rc` or
-   `dev` is a prerelease).
+   installs and reports the version (exactly `version X.Y.Z`: `hatch_build.py` marks the
+   build a release only when the tag `vX.Y.Z` names the checked-out commit and the tree is
+   clean; any other build reports `X.Y.Z+g<commit>`), and creates the GitHub Release with
+   the sdist, the wheel, `SHA256SUMS` and the changelog section as notes (a version with
+   `a`, `b`, `rc` or `dev` is a prerelease).
 8. **PyPI (off by default).** The `pypi` job runs only when the variable `PUBLISH_TO_PYPI`
    is `true`. Before turning it on, the owner registers the project on PyPI with a trusted
    publisher (owner `ss7172`, repository `graph-agents-cli`, workflow `release.yml`,
