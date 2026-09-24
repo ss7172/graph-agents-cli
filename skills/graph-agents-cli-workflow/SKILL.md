@@ -15,11 +15,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.1.0"
+  version: "0.2.0"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
 ---
 
 # Agent Development Workflow and Guidelines
@@ -28,14 +28,15 @@ metadata:
 [LangGraph](https://langchain-ai.github.io/langgraph/) agents on self-hosted Kubernetes. It works
 with any coding agent (Claude Code, Codex, Gemini CLI, Cursor, Antigravity, others). The agent's
 model is a scaffold-time and runtime choice among OpenAI, Anthropic, Gemini (AI Studio API key),
-and any OpenAI-compatible endpoint (Ollama, vLLM, TGI, OpenRouter). Install with
-`uv tool install git+https://github.com/ss7172/graph-agents-cli` and `graph-agents-cli setup`.
+and any OpenAI-compatible endpoint (Ollama, vLLM, TGI, OpenRouter). It is generic: projects pick an
+auth policy and declare their outbound APIs, nothing is tied to one consumer. Install with
+`uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0` and `graph-agents-cli setup`.
 
 > **Before writing agent code, make sure a scaffolded project exists (see Phase 1).** Skipping the
 > scaffold loses the chat API, the auth policy adapter, the eval gate, the Helm chart, and the
 > CI workflows the template wires up.
 
-> Requires: graph-agents-cli ~= 0.1.0. Check with `graph-agents-cli --version` or
+> Requires: graph-agents-cli ~= 0.2.0. Check with `graph-agents-cli --version` or
 > `graph-agents-cli info`. [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md)
 > first if needed.
 
@@ -61,7 +62,7 @@ Context compaction may have dropped earlier skill content. If skills are missing
 If `graph-agents-cli` is not installed:
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli   # or a pinned tag: ...@v<version>
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0   # a release tag; not on PyPI yet
 graph-agents-cli setup          # installs the six skills into detected coding agents
 ```
 
@@ -181,9 +182,10 @@ combinations, prototype semantics, and what `upgrade` never touches.
 4. Interactive testing: `graph-agents-cli playground` (the selected application with reload and
    the `/playground` dev page). `playground --graph` opens LangGraph Studio through `langgraph dev`;
    it bypasses the auth policy and the chat API, so use it for graph debugging only.
-5. `graph-agents-cli lint` runs ruff and the API-policy check: every module under
-   `app/tools/` declares a literal `API_CALLS` (and `TOOLS`), which the CLI reads statically
-   with `ast` and checks against `api-policy.yaml` (and the API's OpenAPI spec when it names one).
+5. `graph-agents-cli lint` runs ruff and the API-policy check: every `*.py` under `app/tools/`
+   (subpackages included) declares one literal `API_CALLS` (and `TOOLS`), which the CLI reads
+   statically with `ast` and checks against `api-policy.yaml` (and the API's OpenAPI spec when it
+   names one).
 
 Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
 their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
@@ -235,11 +237,14 @@ Once the user agrees the eval gate is met:
    `graph-agents-cli scaffold enhance . --deployment-target kubernetes [--cd ...]`.
 3. `graph-agents-cli infra check --env <env>` reports the cluster and repository prerequisites for
    the project's mode (read-only, never creates anything).
-4. Secrets: `graph-agents-cli secrets apply --env <env>` in direct modes; in `helm-push` and
-   `argocd` modes the named owner provisions them from a workstation, never CI.
+4. Secrets: `graph-agents-cli secrets apply --env <env>` reads `.env.<env>` (only `dev` falls
+   back to `.env`); in `helm-push` and `argocd` modes the named owner provisions them from a
+   workstation, never CI. `secrets status --env <env>` exits 0 when every required key is there.
 5. `graph-agents-cli deploy --env <env>`; what that does depends on the CD mode (direct helm,
-   helm from a CI runner, or a pull request that Argo CD reconciles). `--dry-run` prints every
-   command and the rendered manifests without running them.
+   helm from a CI runner, or a pull request that Argo CD reconciles). Outside `dev` the kube
+   context must be recorded in the manifest or passed with `--context`; never pass `--yes` to
+   accept the current context without showing it to the user. `--dry-run` prints every command
+   and the rendered manifests without running them.
 
 **IMPORTANT: never deploy without explicit human approval.** In `argocd` mode a production change
 is a PR that a code owner merges; the merge is the single gate and you never merge it yourself.
@@ -290,9 +295,9 @@ graph = create_agent(
 
 # COMPLIANT
 graph = create_agent(
-    model=get_model(),                      # PRESERVED: reads MODEL_PROVIDER / MODEL_NAME
-    tools=TOOLS,                            # PRESERVED
-    system_prompt="You are a recipe suggester.",   # the direct target
+    model=get_model(),  # PRESERVED: reads MODEL_PROVIDER / MODEL_NAME
+    tools=TOOLS,  # PRESERVED
+    system_prompt="You are a recipe suggester.",  # the direct target
 )
 ```
 

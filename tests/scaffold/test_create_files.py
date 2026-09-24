@@ -436,13 +436,19 @@ def test_local_at_spec_renders_on_bundled_base(
 def test_next_steps_banner(run_create: CreateRunner) -> None:
     result, _ = run_create("--deployment-target", "kubernetes")
     assert result.exit_code == 0, result.output
-    for step in (
+    steps = (
+        "cp .env.example .env",
+        "graph-agents-cli login --write-env",
         "graph-agents-cli install",
         "graph-agents-cli playground",
         "graph-agents-cli eval run",
         "graph-agents-cli deploy --env dev",
-    ):
+    )
+    for step in steps:
         assert step in result.output
+    # In the order a first run needs them: the env file before anything starts the app.
+    positions = [result.output.index(step) for step in steps]
+    assert positions == sorted(positions)
     result, _ = run_create("--deployment-target", "none", name="local-only")
     assert "deploy --env dev" not in result.output
     assert "scaffold enhance --deployment-target kubernetes" in result.output

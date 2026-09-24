@@ -13,11 +13,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.1.0"
+  version: "0.2.0"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
 ---
 
 # Observability guide
@@ -64,8 +64,11 @@ The disconnected profile allows only the OTLP path to an in-cluster collector, o
 
 | `TRACE_CAPTURE` | Captured | Never captured |
 |---|---|---|
-| `metadata` (default) | span structure and timing; model and provider names; token counts; tool **names**; error **types** and HTTP status codes; identifiers (`thread_id`, `run_id`, hashed principal id, agent version) | prompt text, completion text, tool arguments, tool results, error messages |
-| `full` | everything in `metadata` plus prompts, completions, tool arguments, tool results, full error messages | |
+| `metadata` (default) | span structure and timing; model and provider names; token counts; tool **names**; error **types** and HTTP status codes; identifiers (`thread_id`, `run_id`, hashed principal id, agent version) | prompt text, completion text, tool arguments, tool results, error messages, the client's `/chat` metadata |
+| `full` | everything in `metadata` plus prompts, completions, tool arguments, tool results, full error messages, and the client's `/chat` metadata (as `client_metadata`) | |
+
+Clients can never overwrite trace ids through `/chat` metadata, and that metadata is never
+written into checkpoints (it is kept in the run record).
 
 Enabling `full` against a hosted destination sends user content off-network. The consuming
 project must decide that explicitly (and publish a truthful privacy notice) before you set it. Do
@@ -77,29 +80,57 @@ thread's owner under `metadata`.
 
 ## Hashed principal id
 
-Traces, run records, and eval traces record `Principal.hashed_id()` (sha256 of the policy's
-`Principal.id`, first 16 hex characters), never the raw id, under `metadata`. Audit and thread
-ownership use the same identity, so a support engineer can correlate a trace with a conversation
-without the trace revealing who the user is. Under `shared-bearer` every caller is `shared`.
+Traces, logs, run records, and eval traces record `Principal.hashed_id()` (the first 16 hex
+characters of sha256 of the policy's `Principal.id`, or of HMAC-SHA256 keyed with
+`PRINCIPAL_HASH_SALT` when that secret is set), never the raw id. Audit and thread ownership use
+the same identity, so a support engineer can correlate a trace with a conversation without the
+trace revealing who the user is. Set `PRINCIPAL_HASH_SALT` (and add it to `secrets.keys`) when ids
+are guessable, such as email addresses: without a salt anyone holding a trace can confirm a guess
+by hashing it. Changing the salt changes every hash. Under `shared-bearer` every caller is
+`shared`. Under `langgraph-server`, runs started through the server's native API carry the raw id
+in checkpoint metadata (the server injects it); `/chat` runs carry only the hash.
 
 ## Run records
 
 Besides traces, the app writes one run record per `/chat` call: run id, thread id, hashed
-principal, model, token counts, latency, status; payload (prompt, completion, tool I/O) only under
+principal, model, token counts, latency, status (`ok`, `error`, `timeout`, `cancelled`), error
+type, the client's `/chat` metadata; payload (prompt, completion, tool I/O) only under
 `TRACE_CAPTURE=full`.
 
 - `CHECKPOINTER=postgres`: durable rows in the agent-owned database (`runs` table, created at
-  startup; no retention job in this release, so plan one).
+  startup under an advisory lock).
 - `CHECKPOINTER=memory`: in-process, served to the `/playground` page while the process lives,
   lost on restart. Local development needs no database.
-- Under `langgraph-server`, the server's own Runs API is the durable record; the app's records
-  follow the same capture policy.
+- Under `langgraph-server`, the app keeps its records in an `agent_runs` table in the server's
+  Postgres (`DATABASE_URI`), beside the server's own Runs API.
+- Retention: `RETENTION_DAYS=N` deletes threads idle for more than N days with their checkpoints
+  and run records, in an hourly best-effort pass on every replica (0, the default, keeps
+  everything). `DELETE /threads/{thread_id}` deletes one thread and its records on request.
 - Evaluation never depends on run records; `eval generate` writes trace files.
+
+## Logs, metrics and health
+
+- **Logs** are JSON lines by default outside `APP_ENV=dev` (`LOG_FORMAT=json|text`, `LOG_LEVEL`),
+  each with the request id (`X-Request-ID`, echoed to the client), run id, thread id and hashed
+  principal. Client-facing errors carry an `error_id`; the exception is logged under that id. The
+  app does not log credentials, messages or tool arguments.
+- **Metrics:** `GET /metrics` serves Prometheus text (`METRICS_ENABLED`, default true):
+  `http_requests_total` and `http_request_duration_seconds` (by method, route, status),
+  `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`,
+  `agent_tokens_total`. It is unauthenticated unless `METRICS_TOKEN` is set (then the scraper
+  sends `Authorization: Bearer <token>`), and the chart never publishes it on the Gateway or
+  Ingress. Scrape it with `metrics.serviceMonitor.enabled` (Prometheus Operator) or
+  `metrics.scrapeAnnotations`. Under `langgraph dev` the server's own `/metrics` answers instead;
+  the server image disables it so the app's is served.
+- **Health:** `GET /health` is liveness (the process answers); `GET /ready` is readiness (the
+  database answers within 2 s, else 503). Useful alerts: `/ready` failing, a rising
+  `agent_runs_total{status!="ok"}`, `agent_active_runs` near capacity.
 
 ## What is never captured by default
 
 - Prompt and completion text, tool arguments and results, error messages (only under `full`).
-- Raw principal ids, session cookies, session tokens, bearer keys (never, under any setting).
+- Raw principal ids (except the langgraph-server native-API case above), session cookies,
+  session tokens, bearer keys and `attributes["credentials"]` (never, under any setting).
 - External API payloads beyond what a tool returns into the trace (governed by `full`).
 - Anything at all while `TRACING_ENABLED=false`.
 
@@ -135,7 +166,8 @@ pick it up.
 - Writing nodes or tools that emit custom spans: `/graph-agents-cli-langgraph-code` (keep
   prompt text out of logs).
 - The eval gate and results files: `/graph-agents-cli-eval`.
-- Cluster-wide metrics, logging stacks, dashboards, alerting: platform tooling outside the CLI.
+- Cluster-wide metrics collection, logging stacks, dashboards, alerting rules: platform tooling
+  outside the CLI (the app exposes `/metrics` and JSON logs for them).
 - Self-hosted LangSmith installation (point `LANGSMITH_ENDPOINT` at one that exists).
 
 ## Migration note

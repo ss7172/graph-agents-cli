@@ -20,10 +20,21 @@ from memory.
 ## `get_model()` shape (as `app/app_utils/model.py` implements it)
 
 ```python
-from langchain.chat_models import init_chat_model   # imported lazily, inside build_model
+from langchain.chat_models import init_chat_model  # imported lazily, inside build_model
 
-PROVIDER_TO_LANGCHAIN = {"openai": "openai", "anthropic": "anthropic", "gemini": "google_genai", "openai-compatible": "openai"}
-PROVIDER_KEY_VARS = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GOOGLE_API_KEY", "openai-compatible": "MODEL_API_KEY"}
+PROVIDER_TO_LANGCHAIN = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "gemini": "google_genai",
+    "openai-compatible": "openai",
+}
+PROVIDER_KEY_VARS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "openai-compatible": "MODEL_API_KEY",
+}
+
 
 def model_settings(*, judge=False) -> dict:
     # MODEL_PROVIDER (default "openai"), MODEL_NAME, OPENAI_BASE_URL, the provider's key variable;
@@ -31,20 +42,26 @@ def model_settings(*, judge=False) -> dict:
     # JUDGE_API_KEY when set. Read at CALL time, so tests and the eval judge runner can set them late.
     ...
 
+
 def build_model(provider, name, *, base_url=None, api_key=None, **kwargs):
     if provider == "fake":
         return FakeChatModel(**kwargs)
     # unknown provider -> ValueError; empty MODEL_NAME -> ValueError;
     # openai-compatible without OPENAI_BASE_URL -> ValueError
-    return init_chat_model(name, model_provider=PROVIDER_TO_LANGCHAIN[provider], api_key=..., base_url=..., **kwargs)
+    return init_chat_model(
+        name, model_provider=PROVIDER_TO_LANGCHAIN[provider], api_key=..., base_url=..., **kwargs
+    )
 
-def get_model(**kwargs):        # the agent's model
+
+def get_model(**kwargs):  # the agent's model
     return build_model(**model_settings(), **kwargs)
+
 
 def get_judge_model(**kwargs):  # the judge; JUDGE_* with the agent's values as defaults
     return build_model(**model_settings(judge=True), **kwargs)
 
-def model_label(*, judge=False) -> str:   # "<provider>/<model>", recorded in run records and traces
+
+def model_label(*, judge=False) -> str:  # "<provider>/<model>", recorded in run records and traces
     ...
 ```
 

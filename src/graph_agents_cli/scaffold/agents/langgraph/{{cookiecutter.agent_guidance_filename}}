@@ -5,9 +5,12 @@ process: {{ cookiecutter.process if cookiecutter.process else 'null' }}
 This is a LangGraph project scaffolded by graph-agents-cli. `{{cookiecutter.agent_directory}}/agent.py`
 exports `graph`, a compiled LangGraph agent with no checkpointer bound;
 `{{cookiecutter.agent_directory}}/fast_api_app.py` exports `app`, the FastAPI application that serves
-`POST /chat` (SSE), `GET /health`, `GET /threads/{id}/messages`, `GET /playground`
+`POST /chat` (SSE), `GET /threads`, `GET /threads/{id}/messages`, `DELETE /threads/{id}`,
+`GET /health` (liveness), `GET /ready` (readiness), `GET /metrics`, `GET /playground`
 (dev only) and the A2A protocol under `/a2a/{{cookiecutter.agent_directory}}`.
 Runtime: `{{cookiecutter.runtime}}`. Model provider: `{{cookiecutter.model_provider}}` (`MODEL_PROVIDER` in `.env`).
+Auth policy: `{{cookiecutter.auth_policy}}` (`AUTH_POLICY`). Every setting and its default is in
+`.env.example`; `README.md` explains the API, the auth policies and the deploy rules.
 
 ## Governing process
 
@@ -21,17 +24,21 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 ## The loop
 
 1. Build in `{{cookiecutter.agent_directory}}/`. Tools live in `{{cookiecutter.agent_directory}}/tools/`; every tool module
-   declares `API_CALLS` (empty when it calls no external API) and reaches an
-   external API only through `get_client("<api>")` of `{{cookiecutter.agent_directory}}/app_utils/api_client.py`,
-   which enforces `api-policy.yaml`.
-2. Try it: `graph-agents-cli playground` (the app with `/playground`), or
-   `graph-agents-cli run "prompt"`. `graph-agents-cli playground --graph` opens
+   (subpackages included) declares `API_CALLS` as one literal list (empty when it calls no
+   external API) and reaches an external API only through `get_client("<api>")` of
+   `{{cookiecutter.agent_directory}}/app_utils/api_client.py`, which enforces `api-policy.yaml` and fails closed.
+   Keep `graph` unbound (no checkpointer) and keep its `recursion_limit` config and
+   `SurfaceApiErrors` middleware.
+2. Try it: `cp .env.example .env` and `graph-agents-cli login --write-env` once, then
+   `graph-agents-cli playground` (the app with `/playground`), or `graph-agents-cli run "prompt"`. `graph-agents-cli playground --graph` opens
    LangGraph Studio against the graph directly (bypasses the auth policy).
 3. Write eval cases by hand in `tests/eval/datasets/`, then `graph-agents-cli eval run`
    until the gate passes. `eval compare` shows regressions; `eval analyze` clusters failures.
-4. `uv run pytest tests/unit tests/integration` and `graph-agents-cli lint` before deploying.
+4. `uv run pytest` and `graph-agents-cli lint` before deploying.
 5. `graph-agents-cli deploy --env dev` **only after the user approves it.**
-   Staging and production go through the CI/CD path recorded in the manifest (`cd: {{cookiecutter.cd}}`).
+   Staging and production go through the CI/CD path recorded in the manifest (`cd: {{cookiecutter.cd}}`);
+   outside `dev` the kube context must be recorded in the manifest or passed with `--context`, and
+   secrets come from `.env.<env>`, never `.env`.
 
 ## Commands
 
@@ -39,12 +46,13 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 |---|---|
 | `graph-agents-cli playground` | Run the app with reload and open the dev chat page |
 | `graph-agents-cli run "prompt"` | One-shot chat (`--mode a2a` for the A2A path, `--url` for a deployed agent) |
-| `uv run pytest tests/unit tests/integration` | Unit and integration tests (fake model, in-memory checkpointer) |
+| `uv run pytest` | Unit and integration tests (fake model, in-memory checkpointer) |
 | `graph-agents-cli eval run` | Generate traces and grade them against the gate |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool |
 | `graph-agents-cli build` | Build the container image from the runtime's Dockerfile |
 | `graph-agents-cli deploy --env <env>` | Deploy (direct modes) or open the desired-state PR (argocd) |
-| `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from an env file |
+| `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from `.env.<env>` |
+| `graph-agents-cli secrets status --env <env>` | Which keys the Secret holds (never values); exit 1 on a missing required key |
 | `graph-agents-cli infra check --env <env>` | Read-only report of cluster and GitHub prerequisites |
 
 ## Rules
@@ -54,7 +62,8 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
 - **Never change the model** (`MODEL_PROVIDER`, `MODEL_NAME`) unless explicitly asked.
   A model 404 means the name is wrong for the provider or the endpoint; fix the
   configuration in `.env`, not `{{cookiecutter.agent_directory}}/agent.py`.
-- **Human approval before deploy.** Never run `graph-agents-cli deploy` without the user's explicit go-ahead.
+- **Human approval before deploy.** Never run `graph-agents-cli deploy` without the user's explicit go-ahead,
+  and never pass `--yes` (accepting the kubeconfig's current context) or `--rotate-api-key` on your own.
 - **Run Python through uv**: `uv run python script.py`, after `uv sync`.
 - **Three strikes.** The same error three times means fix the cause, not retry.
 - **Tools declare their API calls.** Add an `API_CALLS` entry (`api`, `method`,
@@ -67,3 +76,7 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
   reviewed by the code owners.
 - **Do not export prompts or user data** to a hosted tracing destination unless
   the user has decided so (`TRACING_ENABLED`, `TRACE_CAPTURE=full`).
+- **Never log credentials, prompts or tool arguments**, and keep secrets out of
+  `Principal.attributes` except under `attributes["credentials"]`.
+- **Respect the guardrails** (`RUN_TIMEOUT_S`, `RECURSION_LIMIT`, the one-run-per-thread 409):
+  fix a tool or graph that hits them instead of raising the limits, unless the user asks.

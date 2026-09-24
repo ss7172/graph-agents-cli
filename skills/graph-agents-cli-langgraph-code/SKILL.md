@@ -16,11 +16,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.1.0"
+  version: "0.2.0"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
 ---
 
 # LangGraph and LangChain patterns for graph-agents-cli projects
@@ -47,7 +47,7 @@ metadata:
 
 | File | Contents |
 |---|---|
-| `references/template-contract.md` | File layout, env contract, chat SSE API, auth policy interface, API client, exactly as the template implements them |
+| `references/template-contract.md` | File layout, env contract (every setting and its default), chat SSE API and error events, routes (`/ready`, `/metrics`, `/threads`), request rules, auth policy interface, API client, manifest, exactly as the template implements them |
 | `references/langgraph.md` | `create_agent`, `StateGraph`/`MessagesState`, tools, checkpointers and `thread_id`, streaming, interrupts (not wired to `/chat` in this milestone), subgraphs, testing with the `fake` provider |
 | `references/langchain-models.md` | `init_chat_model` provider switching, provider env variables, tool-capable open models, the judge configuration |
 
@@ -61,16 +61,35 @@ The scaffolded `app/agent.py`:
 from langchain.agents import create_agent
 from langgraph.graph.state import CompiledStateGraph
 
+from app.app_utils.api_client import ApiCallError, ApiPolicyError
+from app.app_utils.limits import recursion_limit
 from app.app_utils.model import get_model
-from app.tools import TOOLS
+from app.tools import get_tools
 
-SYSTEM_PROMPT = "You are a helpful assistant."
+SYSTEM_PROMPT = "You are a helpful assistant. ..."
+
+
+@dataclass
+class AgentContext:  # per-run context: who is calling (public attributes only)
+    principal_id: str = "anonymous"
+    roles: list[str] = field(default_factory=list)
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+class SurfaceApiErrors(
+    AgentMiddleware
+):  # ApiPolicyError / ApiCallError -> ToolMessage(status="error")
+    ...
+
 
 graph: CompiledStateGraph = create_agent(
     model=get_model(),
-    tools=TOOLS,
+    tools=get_tools(),
     system_prompt=SYSTEM_PROMPT,
-)
+    middleware=[SurfaceApiErrors()],
+    context_schema=AgentContext,
+    name="my-agent",
+).with_config({"recursion_limit": recursion_limit()})  # RECURSION_LIMIT, default 25
 ```
 
 Rules:
@@ -79,7 +98,9 @@ Rules:
   checkpointer chosen by `CHECKPOINTER`; under `langgraph-server` the server binds its own
   persistence. Passing `checkpointer=` here breaks both runtimes.
 - Keep the export name `graph`; `langgraph.json` points at `./app/agent.py:graph` and the app
-  imports it by that name.
+  imports it by that name. Keep the `recursion_limit` config and the `SurfaceApiErrors`
+  middleware when you rewrite it: the first stops a looping run, the second turns API refusals
+  into tool errors the model can read.
 - Move to an explicit `StateGraph` when the conversation has fixed stages, branching, a
   human-approval step, or subgraphs. `references/langgraph.md` has the pattern; keep the same
   export and stay unbound.
@@ -104,8 +125,12 @@ from app.app_utils.api_client import get_client
 # Static declaration read by `graph-agents-cli lint` (the CLI parses this literal with `ast`;
 # the module is never imported by lint). Use [] when the module calls no external API.
 API_CALLS: list[dict[str, str]] = [
-    {"api": "incidents", "method": "GET", "operation_id": "getIncident",
-     "path": "/incidents/{incident_id}"},
+    {
+        "api": "incidents",
+        "method": "GET",
+        "operation_id": "getIncident",
+        "path": "/incidents/{incident_id}",
+    },
 ]
 
 
@@ -133,8 +158,9 @@ TOOLS = [get_incident]
 The convention, as the template implements it (`app/tools/weather.py`, and `app/tools/example_api.py`
 when the project declares an API policy):
 
-- **Every** module under `app/tools/` (except `__init__.py`; `_`-prefixed modules included, since
-  `get_tools()` imports them too) declares two module-level names:
+- **Every** `*.py` under `app/tools/` (subpackages and their `__init__.py` included, the
+  top-level `__init__.py` excluded; `_`-prefixed modules included, since `get_tools()` imports
+  them too) declares two module-level names:
   `API_CALLS`, a **literal** list of `{"api", "method", "operation_id", "path"}` dicts (`api`
   and `method` required, plus `operation_id` and/or `path`; `[]` when it calls no external API;
   an annotated assignment `API_CALLS: list[...] = [...]` is fine), and `TOOLS`, the list of tool
@@ -179,11 +205,19 @@ when the project declares an API policy):
 
 - `CHECKPOINTER=memory` (the `.env.example` default): `InMemorySaver`; threads and run records
   live in the process and vanish on restart. No database for local development.
-- `CHECKPOINTER=postgres` with `POSTGRES_DSN`: `langgraph-checkpoint-postgres`; the app runs
-  `setup()` at startup and writes run records to its own `runs` table. This is the deployed
-  default on Kubernetes; the chart sets it.
+- `CHECKPOINTER=postgres` with `POSTGRES_DSN`: `langgraph-checkpoint-postgres` on one
+  health-checked connection pool per process (`DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE`); the app
+  runs the schema setup at startup under a Postgres advisory lock (replicas may start together)
+  and writes run records to its own `runs` table. This is the deployed default on Kubernetes; the
+  chart sets it. `GET /ready` answers 503 while the database does not.
 - Under `langgraph-server` the server owns persistence from `DATABASE_URI` and `REDIS_URI`;
-  `CHECKPOINTER` is ignored.
+  `CHECKPOINTER` is ignored; the app keeps its run records in an `agent_runs` table there.
+- **One run per thread:** a second `/chat` on a thread whose run is still in progress gets 409
+  `{"code": "thread_busy"}` (a Postgres advisory lock across replicas; it needs session-level
+  locks, so no transaction-mode PgBouncer). Clients retry after the run ends.
+- `GET /threads` lists the caller's threads; `DELETE /threads/{thread_id}` deletes a thread with
+  its checkpoints and run records (owner only). `RETENTION_DAYS=N` purges threads idle for more
+  than N days, hourly (0 keeps everything).
 - Continuity is the `thread_id` in the `/chat` request (`config={"configurable": {"thread_id": ...}}`
   inside the app). A missing `thread_id` starts a new thread; the response's `message.start` and
   `message.end` events carry the id back.
@@ -203,8 +237,22 @@ The app streams the graph with `graph.astream_events(...)` (or `stream_mode=["me
 `tool.call` and `tool.result` for tool nodes, `message.end` with `usage` and `latency_ms`. Keep
 nodes and tools async-friendly; a blocking tool stalls the stream.
 
+A failed run ends with an `error` event `{code, message, error_id, run_id}` (`code`:
+`run_failed`, `timeout`, `recursion_limit`, `thread_busy`, `unavailable`, `forbidden`); the
+detail is only in the server log under `error_id` (and in `detail` under `APP_ENV=dev`). Idle
+streams get `: keep-alive` comments every `SSE_HEARTBEAT_S`; a client disconnect cancels the run.
+
 `graph-agents-cli run "prompt" -v` prints every event; use it to confirm a new node or tool emits
 what you expect.
+
+## 4a. Guardrails
+
+The app enforces limits you should design for rather than work around: `RUN_TIMEOUT_S` (300; the
+run is cancelled with status `timeout`), `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2) per
+model request, `RECURSION_LIMIT` (25 graph steps), `MAX_REQUEST_BYTES` (413) and the `/chat`
+metadata caps (422). A stopped run (timeout, disconnect, error) answers its open tool calls with
+an error result, so the thread's next turn is valid. Long tools must finish well inside
+`RUN_TIMEOUT_S`, or raise it deliberately in `.env` and the chart values.
 
 ## 5. Human-in-the-loop with interrupts (not implemented in this milestone)
 
@@ -231,8 +279,11 @@ the parent's checkpointer; do not bind one on the subgraph.
 ```python
 from langchain.chat_models import init_chat_model
 
+
 def get_model():
-    provider = os.environ["MODEL_PROVIDER"]          # openai | anthropic | gemini | openai-compatible | fake
+    provider = os.environ[
+        "MODEL_PROVIDER"
+    ]  # openai | anthropic | gemini | openai-compatible | fake
     name = os.environ["MODEL_NAME"]
     ...
     return init_chat_model(name, model_provider=_LANGCHAIN_PROVIDER[provider], **kwargs)
@@ -272,14 +323,22 @@ maximum.
 
 `app/app_utils/auth.py` defines `Principal` and the `AuthPolicy` protocol
 (`authenticate(request) -> Principal`, `authorize(principal, action, resource)`), and
-`get_policy()` selects the implementation from `AUTH_POLICY`. `SharedBearerPolicy` (default)
-checks `Authorization: Bearer <API_KEY>` and returns `Principal(id="shared")`. `JwtPolicy`
-(`AUTH_POLICY=jwt`) gives each user a principal from a verified OIDC/JWT bearer token
-(`AUTH_JWT_*` settings). `CustomPolicy` in `app/policies/custom.py` fails closed with an
+`get_policy()` selects the implementation from `AUTH_POLICY` (the registry is
+`app/policies/__init__.py`). Startup fails closed: an unknown `AUTH_POLICY` never starts, and a
+policy whose optional `startup_problems() -> list[str]` returns anything stops the process
+outside `APP_ENV=dev`. `SharedBearerPolicy` (default) checks `Authorization: Bearer <API_KEY>` and
+returns `Principal(id="shared")`. `JwtPolicy` (`AUTH_POLICY=jwt`) gives each user a principal from
+a verified OIDC/JWT bearer token (`AUTH_JWT_*` settings: JWKS URL or PEM key, issuer and audience
+required outside dev, an algorithm allow-list without `none`, principal and roles claims with
+dotted paths; see `references/template-contract.md`). `CustomPolicy` in `app/policies/custom.py` fails closed with an
 `HTTPException(503)` whose `detail` carries the implementation instructions (`require()` also
 maps a `NotImplementedError` to 503) until you implement it: validate whatever credential your
 callers carry (for example an existing application's session cookie), load roles and
-permissions on every request, honour `AUTH_READ_ACROSS_ROLES`. To let tools call an
+permissions on every request, raise 401 with `WWW-Authenticate` for a missing or invalid
+credential and 503 when the issuer is unreachable, and never log the credential. Roles are
+matched against `AUTH_READ_ACROSS_ROLES` and `AUTH_ADMIN_ROLES` (who may manage assistants, crons
+and the store under `langgraph-server`; empty = nobody). A2A tasks and threads belong to the
+principal's `id`, so it must be stable and unique. To let tools call an
 `auth: forward` API with the caller's own credential, put it in
 `attributes["credentials"][<api>]`; it is the only attribute that may hold a secret
 (`Principal.public_attributes()` is what may be persisted, logged or traced). Then set
@@ -292,8 +351,11 @@ handler under `langgraph-server` (`langgraph.json` `auth`).
 `app/app_utils/telemetry.py` does nothing unless `TRACING_ENABLED=true`. When enabled with
 `LANGSMITH_API_KEY` it traces to LangSmith; without it, over OTLP to
 `OTEL_EXPORTER_OTLP_ENDPOINT`. `TRACE_CAPTURE=metadata` (default) records structure, timing,
-tokens, tool names, and `principal.hashed_id()`; `full` adds prompts, completions, tool arguments
-and results. Do not add ad-hoc exporters or `print` prompts in nodes. See
+tokens, tool names, and `principal.hashed_id()` (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set);
+`full` adds prompts, completions, tool arguments and results, and the client's `/chat` metadata.
+Logs are JSON outside `APP_ENV=dev` (`LOG_FORMAT`, `LOG_LEVEL`) with the request id, run id,
+thread id and hashed principal; use `logging.getLogger(__name__)` and never log prompts,
+credentials or tool arguments. Do not add ad-hoc exporters or `print` prompts in nodes. See
 `/graph-agents-cli-observability`.
 
 ---

@@ -1,6 +1,6 @@
 [project]
 name = "graph-agents-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI and skills for building, evaluating, and deploying LangGraph agents on self-hosted Kubernetes."
 readme = "README.md"
 license = "Apache-2.0"
@@ -64,7 +64,7 @@ packages = ["src/graph_agents_cli"]
 artifacts = ["src/graph_agents_cli/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/graph_agents_cli", "schemas", "skills", "LICENSE", "NOTICE", "README.md", "CONTRIBUTING.md"]
+include = ["/src/graph_agents_cli", "/schemas", "/skills", "/LICENSE", "/NOTICE", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md"]
 
 [tool.ruff]
 line-length = 100

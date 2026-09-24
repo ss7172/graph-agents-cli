@@ -1319,6 +1319,10 @@ def _print_next_steps(
 
     console.print("\n[bold cyan]🚀 Get Started[/]")
     console.print(f"   [bold bright_green]cd {cd_path}[/]")
+    # The local server refuses every request until .env has the provider key
+    # and (shared-bearer) an API_KEY; `login --write-env` fills both in.
+    console.print("   [bold bright_green]cp .env.example .env[/]")
+    console.print("   [bold bright_green]graph-agents-cli login --write-env[/]")
     console.print("   [bold bright_green]graph-agents-cli install[/]")
     console.print("   [bold bright_green]graph-agents-cli playground[/]")
     console.print("   [bold bright_green]graph-agents-cli eval run[/]")

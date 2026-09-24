@@ -70,8 +70,10 @@ custom_metrics:
 # tests/eval/metrics.py
 def answer_length_ok(case: dict, trace: dict) -> dict:
     words = len((trace.get("response") or "").split())
-    return {"score": 1 if words <= case.get("metadata", {}).get("max_words", 200) else 0,
-            "reasoning": f"{words} words"}
+    return {
+        "score": 1 if words <= case.get("metadata", {}).get("max_words", 200) else 0,
+        "reasoning": f"{words} words",
+    }
 ```
 
 Signature `fn(case: dict, trace: dict) -> bool | number | {"score": n, "reasoning": str}`;

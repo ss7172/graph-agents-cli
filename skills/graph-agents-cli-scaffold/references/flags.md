@@ -15,7 +15,7 @@ Run `graph-agents-cli <command> --help` for the authoritative list.
 | `--registry` | | `ghcr.io/<org>` | Image registry and org; `<org>` from the git `origin` owner under `-y`, else `ghcr.io/CHANGE-ME` with a warning |
 | `--cd` | | `skip` (forced under `--prototype`) | `argocd` (pull-based, Argo `Application`s, PR flow), `helm-push` (self-hosted runner runs `deploy --image`), `skip` (CI only) |
 | `--auth-policy` | | `shared-bearer` | `shared-bearer` (API key), `jwt` (per-user OIDC/JWT tokens) or `custom` (stub; sets `auth_policy_implemented: false`); `product-session` is refused with a hint to `custom` |
-| `--api-policy` | | none | Path to an `api-policy.yaml` to seed at the project root (validated with the strict schema first, exit 3 on errors); adds `api_policy.policy_file` to the manifest. `--product-policy` is refused with a rename hint |
+| `--api-policy` | | none | Path to an `api-policy.yaml` to seed at the project root (validated with the strict schema first, exit 3 on errors); copies the OpenAPI specs it references; adds `api_policy.policy_file` to the manifest. `--product-policy` is refused with a rename hint |
 | `--process` | | none | Path to the governing process document; written as `process:` to the manifest and rendered into the guidance file |
 | `--prototype` | `-p` | off | Target defaults to `none` unless given explicitly; `--cd` forced to `skip` |
 | `--agent-directory` | `-dir` | `app` | Agent code directory inside the project |
@@ -36,18 +36,21 @@ Validation (`create` refuses otherwise):
 - runtime x checkpointer x target must be a valid row of the table in `SKILL.md`
   (`memory` + `kubernetes` is refused for both runtimes);
 - `--cd argocd|helm-push` requires `--deployment-target kubernetes`;
-- `--deployment-target none` defaults `--checkpointer memory`.
+- `--deployment-target none` defaults `--checkpointer memory`;
+- an `auth: forward` API in `--api-policy` is refused under `--runtime langgraph-server`;
+- `GRAPH_AGENTS_CLI_INSTALL_SPEC`, when set, must be one install spec without control characters or
+  whitespace (exit 3 before anything is rendered).
 
 What each choice renders:
 
 | Choice | Files |
 |---|---|
-| (always) | `.github/workflows/pr_checks.yaml`, `.github/agent.env` (`GRAPH_AGENTS_CLI_SPEC`) |
-| `--deployment-target kubernetes` | `deployment/helm/<name>/**`, `environments:` in the manifest, chart settings in `.github/agent.env` |
-| `--cd argocd` | + `deployment/argocd/application-{dev,staging,prod}.yaml`, `.github/workflows/{staging,promote-to-prod}.yaml`, `.github/CODEOWNERS` |
-| `--cd helm-push` | + `.github/workflows/{staging,promote-to-prod}.yaml`, `.github/CODEOWNERS` |
-| `--runtime langgraph-server` | server Dockerfile (`FROM langchain/langgraph-api:<pinned>`), `langgraph.json` `http.app` + `auth`, Redis toggle in values, `uv-langgraph-server.lock` -> `uv.lock` |
-| `--runtime fastapi` | python Dockerfile with uvicorn, `uv-fastapi.lock` -> `uv.lock` |
+| (always) | `.github/workflows/pr_checks.yaml`, `.github/agent.env` (`GRAPH_AGENTS_CLI_SPEC`), `.github/CODEOWNERS`, `.env.example`, the guidance file |
+| `--deployment-target kubernetes` | `deployment/helm/<name>/**`, `environments:` in the manifest, chart settings in `.github/agent.env`, `/deployment/` rules in CODEOWNERS |
+| `--cd argocd` | + `deployment/argocd/application-{dev,staging,prod}.yaml`, `.github/workflows/{staging,promote-to-prod}.yaml` |
+| `--cd helm-push` | + `.github/workflows/{staging,promote-to-prod}.yaml` |
+| `--runtime langgraph-server` | server Dockerfile (`FROM langchain/langgraph-api:0.14.4-py3.12`, meta routes disabled), `langgraph.json` `http.app` + `auth`, Redis toggle in values, `uv-langgraph-server.lock` -> `uv.lock` |
+| `--runtime fastapi` | multi-stage python Dockerfile with uvicorn (uid 1000, no uv in the final image), `uv-fastapi.lock` -> `uv.lock` |
 | `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (one GET the first declared API allows: its first allowed operation, else one from its OpenAPI spec, else `GET /items/{item_id}`; left out, with a note, when that API allows no such GET), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values |
 | `--auth-policy custom` | `auth_policy_implemented: false` (the `app/policies/custom.py` stub ships in every project) |
 | `--auth-policy jwt` | `AUTH_JWT_*` settings in `.env.example` and the chart values |
@@ -60,21 +63,21 @@ template it is re-applied and `TEMPLATE_PATH` is ignored.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--name` | `-n` | current directory name | Project name for templating |
+| `--name` | `-n` | the manifest's name (else the current directory name) | Project name for templating |
 | `--deployment-target` | `-d` | manifest value | Add or change the target (`kubernetes`, `none`) |
 | `--cd` | | manifest value | Add or change the CD mode (`argocd`, `helm-push`, `skip`) |
-| `--runtime` | | manifest value | Change the runtime (re-renders the Dockerfile, `langgraph.json`, lock) |
+| `--runtime` | | manifest value | Change the runtime: the Dockerfile, `langgraph.json`, `secrets.keys`, `.env.example`, the chart values (key by key around your edits) and `.github/agent.env`; run `graph-agents-cli install` afterwards for `uv.lock` |
 | `--checkpointer` | | manifest value | Change the deployed checkpointer default |
 | `--registry` | | manifest value | Change the registry in values and workflows |
 | `--auth-policy` | | manifest value | Switch between `shared-bearer`, `jwt` and `custom` |
-| `--model-provider`, `--model` | | manifest value | Update the manifest and `.env.example`; `.env` is never rewritten |
+| `--model-provider`, `--model` | | manifest value | Update the manifest, `secrets.keys`, `.env.example` and the chart values; the model follows the new provider's default only when it was the old default (otherwise pass `--model`, or exit 2); `.env` is never rewritten |
 | `--api-policy` | | | Accepted by the parser but **refused** by `enhance` (exit with a message): copy the file into the project root as `api-policy.yaml` and set `api_policy.policy_file` in the manifest instead |
 | `--process` | | manifest value | Declare or change the governing process |
 | `--prototype` | `-p` | off | Same semantics as on `create` |
 | `--agent-directory` | `-dir` | `app` | Where the agent code lives; pass it when not `app/` |
 | `--agent-guidance-filename` | | the manifest's value | Guidance file to render |
 | `--base-template` | `-bt` | | Base template underneath `TEMPLATE_PATH` (remote templates only) |
-| `--force` | | off | Overwrite all scaffolding files (skips the 3-way compare; agent code and config still untouched) |
+| `--force` | | off | Overwrite all scaffolding files (skips the 3-way compare; agent code and config still untouched); the same reconciliation runs afterwards, and a replay's exit code is kept |
 | `--dry-run` / `--dryrun` | | off | Preview the merge without applying (requires saved metadata) |
 | `--prefer-new` | | off | Resolve scaffolding conflicts in favour of the new template |
 | `--skip-checks` | `-s` | off | Skip the `uv` preflight |
@@ -82,11 +85,20 @@ template it is re-applied and `TEMPLATE_PATH` is ignored.
 | `--interactive` | `-i` | off | Prompts |
 | `--debug` | | off | Debug logging |
 
-`enhance` never touches `api-policy.yaml`, `.env*`, `values-<env>.yaml`, or agent code; files
-in those categories that the project does not have yet but the new template does are added.
-When the merge changes the manifest (for example `enhance --cd argocd` updating `cd:`),
-`graph-agents-cli-manifest.yaml` is rewritten through the YAML dumper in block style and its
-comments are dropped; `.github/agent.env` is updated in the same run.
+`enhance` never touches `api-policy.yaml`, `.env`, or agent code; files in those categories that
+the project does not have yet but the new template does are added. Config files the new settings
+re-render (`.env.example`, `values-*.yaml`, `deployment/argocd/**`) take the new render when
+untouched and get the change merged in when edited; the chart's `values.yaml` and
+`.github/agent.env` are merged key by key. When the merge changes the manifest (for example
+`enhance --cd argocd` updating `cd:`), `graph-agents-cli-manifest.yaml` is rewritten through the
+YAML dumper in block style and its comments are dropped.
+
+Output: "Recomputed for the new settings", the files merged, and a numbered "Left for you" list.
+Exit codes: `0` applied (anything left is optional), `1` applied with `(required)` steps left (a
+chart key still on the old settings, `Dockerfile.new` beside an edited `Dockerfile`, dependency
+changes uv could not write), `2` usage error, `3` configuration error (no project for
+`--dry-run`, a legacy policy file). Backups: `~/.graph-agents-cli/backups/<dir>_<project
+id>_<timestamp>` (0700; the newest 5 per project are kept).
 
 ## `graph-agents-cli scaffold upgrade [<path>]`
 
@@ -99,6 +111,9 @@ comments are dropped; `.github/agent.env` is updated in the same run.
 | `--debug` | | off | Debug logging |
 
 Behaviour: requires `uvx`; runs `uvx --from <install spec of the manifest cli_version> graph-agents-cli scaffold create`
-to regenerate the old baseline; stops with a non-zero exit and no changes when that fails, unless
-`--baseline current`. Backup first to `~/.graph-agents-cli/backups/`. Updates `cli_version` in
-the manifest on success.
+(`git+https://github.com/ss7172/graph-agents-cli@v<version>`, or `GRAPH_AGENTS_CLI_INSTALL_SPEC`
+with `{version}` filled in) to regenerate the old baseline; stops with a non-zero exit and no
+changes when that fails, unless `--baseline current`. Backup first to
+`~/.graph-agents-cli/backups/`. Updates `cli_version` in the manifest on success. Outside a
+project: exit 3. A project still on the retired `product-policy.yaml` stops with migration steps
+(exit 3).

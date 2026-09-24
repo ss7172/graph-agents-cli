@@ -115,7 +115,7 @@ turn; the top-level `response`/`tool_calls`/`usage`/`latency_ms` are the final t
       "reasons": ["contains: response does not contain hello"],
       "checks": {"contains": false, "tool_calls": true},
       "judge_scores": {
-        "response_quality": {"score": 5, "threshold": 4, "passed": true, "quality": true, "reasoning": "...", "error": null}
+        "response_quality": {"score": 5, "threshold": 4, "passed": true, "quality": true, "reasoning": "...", "error": null, "kind": "judge"}
       }
     }
   ]
@@ -132,7 +132,9 @@ from `dataset_hash` only when `--dataset` graded stale traces, which `eval compa
 `config` (the effective eval config) and `planned` (the planned
 case ids); `quality.<metric>.below_threshold` (count); and `cases[*].judge_scores.<metric>` is the
 object shown above (`score`, `threshold`, `passed`, `quality` = whether the metric is a quality
-metric, `reasoning`, `error`) rather than a bare number. Cases already `failed`, `error` or
+metric, `reasoning`, `error`, `kind` = `judge` for a model judge or `custom` for a
+`custom_metrics` callable, whose errors read `custom metric <name>: ...` and which `eval analyze`
+groups as `error/custom`) rather than a bare number. Cases already `failed`, `error` or
 `missing` have empty `judge_scores` (judges are not called for them).
 
 ## `eval_config.yaml`

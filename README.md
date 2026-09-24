@@ -1,239 +1,720 @@
 # graph-agents-cli
 
-CLI and skills for building, evaluating, and deploying [LangGraph](https://langchain-ai.github.io/langgraph/)
-agents on self-hosted Kubernetes.
+A command-line tool and a set of coding-agent skills for building, evaluating and deploying
+[LangGraph](https://langchain-ai.github.io/langgraph/) agents on self-hosted Kubernetes.
 
-`graph-agents-cli` scaffolds a LangGraph project with a chat API, an A2A endpoint, an eval
-harness, a Helm chart, and GitHub Actions workflows; runs and evaluates the agent locally;
-and deploys it to any Kubernetes cluster with Helm, either directly or through Argo CD. It
-ships six skills that teach a coding agent (Claude Code, Antigravity, Codex, Gemini CLI,
-Cursor) the same lifecycle. It is a generic tool: projects choose their auth policy
-(`shared-bearer`, `jwt` or `custom`) and declare the external APIs their tools may call in
-`api-policy.yaml`; nothing in the CLI or the template is specific to one consumer.
+It is generic: use it for any project, in any domain. It scaffolds a LangGraph project with a
+streaming chat API, an A2A endpoint, per-user or shared-key authentication, a policy for the
+external APIs the agent's tools may call, an eval harness with an enforceable gate, a
+hardened Helm chart and GitHub Actions workflows. It then runs and evaluates the agent
+locally and deploys it to any Kubernetes cluster with Helm, either directly or through
+Argo CD. Six bundled skills teach a coding agent (Claude Code, Codex, Gemini CLI, Cursor,
+Antigravity and others) the same lifecycle.
 
-It is a fork of [google-agents-cli](https://github.com/google/agents-cli) with the Google
-Cloud specific parts removed; see [NOTICE](NOTICE). Status: first milestone under
-construction. See this README for the supported commands and behavior, and
-[CONTRIBUTING.md](CONTRIBUTING.md) for development and verification guidance.
+Nothing in the CLI or the template is specific to one consumer. A project chooses its auth
+policy (`shared-bearer`, `jwt` or `custom`), declares its outbound APIs in `api-policy.yaml`,
+and configures everything else through environment variables and chart values.
+
+graph-agents-cli is a fork of [google-agents-cli](https://github.com/google/agents-cli) with
+the Google Cloud specific parts removed (see [NOTICE](NOTICE)). Version 0.2.0, alpha: the
+interfaces below may still change between minor versions; [CHANGELOG.md](CHANGELOG.md)
+lists every breaking change with its migration steps.
+
+**Contents:** [Install](#install) · [Quick start](#quick-start) · [Commands](#commands) ·
+[The generated service](#the-generated-service) · [Authentication](#authentication) ·
+[Outbound API policy](#outbound-api-policy-api-policyyaml) ·
+[Environments and CD modes](#environments-and-cd-modes) · [Secrets](#secrets) ·
+[Exit codes](#exit-codes) · [Security model](#security-model) ·
+[Production checklist](#production-checklist) ·
+[Compared with google-agents-cli](#compared-with-google-agents-cli) ·
+[Known limitations](#known-limitations)
 
 ## Install
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/),
-and Node.js (for the skills installer). Deployment additionally needs `helm`, `kubectl`, a
-Docker-compatible `docker` CLI, `git`, and, for Argo CD or GitHub-hosted CD, `gh`. A tool
-missing from `PATH` makes `deploy` exit 2. `run --mode a2a` needs the optional `a2a` extra
-(`uv tool install 'graph-agents-cli[a2a] @ git+https://github.com/ss7172/graph-agents-cli'`);
-`eval submit` needs the `langsmith` extra.
+Prerequisites: Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+Node.js is needed only for the skills installer (`setup` falls back to a plain copy without
+it). Deploying needs `helm`, `kubectl`, a Docker-compatible `docker` CLI and `git`, plus `gh`
+for Argo CD or GitHub-hosted CD; a tool missing from `PATH` makes `deploy` exit 2.
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli   # the CLI (pin a release: ...@v<version>)
-graph-agents-cli setup               # install the CLI and skills into your coding agents
-graph-agents-cli login               # preflight: provider key, tracing, kubeconfig
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+graph-agents-cli setup      # optional: install the skills into your coding agents
 ```
 
-The CLI is installed from its GitHub repository (it is not published on a package index).
-`GRAPH_AGENTS_CLI_INSTALL_SPEC` overrides where `setup`, `update`, the `scaffold upgrade`
-baseline and generated projects' CI (`.github/agent.env` `GRAPH_AGENTS_CLI_SPEC`) install it
-from, for example a private mirror or a wheel. Write `{version}` where the version goes
-(`git+https://git.example.com/graph-agents-cli@v{version}`) so the upgrade baseline and a
-version-locked `scaffold enhance` can install an older release; an override without it is
-refused for those (use `scaffold upgrade --baseline current`).
+The CLI is installed from a pinned git tag of this repository. **Publication on PyPI is
+pending**: until this repository's release workflow publishes it, a package named
+`graph-agents-cli` on an index is not this project, so install from the git tag.
 
-`setup` installs skills with `npx skills add`, falling back to the copy bundled in the
-wheel and finally to a plain copy into `~/.agents/skills` (`./.agents/skills` with
-`--workspace`), so it also works without git or network. Contributors use
-`graph-agents-cli setup --dev` from a checkout. The CLI stores no credentials: `login`
-only checks the environment and can append missing keys to `.env` with `--write-env`, which
-also generates the `API_KEY` the `shared-bearer` auth policy requires.
-`login` resolves the provider as `MODEL_PROVIDER` from the environment or `.env` (the
-value the app reads at runtime) > the manifest's `create_params.model_provider` >
-`openai`; `MODEL_PROVIDER=fake` is accepted as the test-only provider (warning, no key
-check, allowed under the disconnected profile) and `JUDGE_MODEL_PROVIDER=fake` is ok.
+Optional extras: `run --mode a2a` needs `a2a`, `eval submit` needs `langsmith`:
+
+```bash
+uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.2.0'
+```
+
+`GRAPH_AGENTS_CLI_INSTALL_SPEC` overrides where `setup`, `update`, the `scaffold upgrade`
+baseline and generated projects' CI (`GRAPH_AGENTS_CLI_SPEC` in `.github/agent.env`) install
+the CLI from: a private mirror, a wheel, or a package index once one is used. Write
+`{version}` where the version goes (`git+https://git.example.com/graph-agents-cli@v{version}`)
+so the upgrade baseline can install an older release; an override without it is refused for
+that (use `scaffold upgrade --baseline current`). An override with control characters or
+whitespace is refused (exit 3), except the spaces of a PEP 508 `name @ url` reference.
+
+`setup` installs the skills with `npx skills add`, falling back to the copy bundled in the
+wheel and then to a plain copy into `~/.agents/skills` (`./.agents/skills` with
+`--workspace`), so it also works without git or network. The CLI stores no credentials;
+`login` only checks the environment. The CLI checks GitHub for a newer release at most every
+12 hours; `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` turns that off.
 
 ## Quick start
 
+This runs a new agent locally. It works without any model key when you pick the
+deterministic test model (`MODEL_PROVIDER=fake`), as the comment shows.
+
 ```bash
-graph-agents-cli create my-agent --model-provider openai      # scaffold (fastapi runtime, cd: skip)
+graph-agents-cli create my-agent        # fastapi runtime, kubernetes target, cd: skip
 cd my-agent
-cp .env.example .env && graph-agents-cli login --write-env    # fill in OPENAI_API_KEY, generate API_KEY
-graph-agents-cli install                                      # uv sync from the bundled lock
-graph-agents-cli playground                                   # app with reload + /playground chat page
-graph-agents-cli eval run                                     # generate traces, grade, enforce the gate
-graph-agents-cli deploy --env dev                             # helm upgrade --install on the current context
+cp .env.example .env                    # set OPENAI_API_KEY, or MODEL_PROVIDER=fake to try it keyless
+graph-agents-cli login --write-env      # checks the setup; prompts for missing keys, generates API_KEY
+graph-agents-cli install                # uv sync from the bundled lock
+graph-agents-cli run "What's the weather in San Francisco?"
+graph-agents-cli eval run               # generate traces, grade them, enforce the gate
+graph-agents-cli playground             # http://127.0.0.1:8000/playground (Ctrl-C to stop)
 ```
 
-`create` accepts `--runtime fastapi|langgraph-server`, `--model-provider
-openai|anthropic|gemini|openai-compatible`, `--model`, `--checkpointer memory|postgres`,
-`--deployment-target kubernetes|none`, `--registry`, `--cd argocd|helm-push|skip`,
-`--auth-policy shared-bearer|jwt|custom`, `--api-policy <file>`, `--process
-<path>`, and `--prototype`; incompatible combinations are rejected by the CLI. Ask your
+`run` starts a temporary local server (the first free port of 18080-18089), sends the
+prompt to `POST /chat` with the `API_KEY` from `.env`, prints the streamed answer and stops
+the server. `eval run` does the same for every case in `tests/eval/datasets/` and exits 0
+when the gate is met. With a real provider, keep `MODEL_PROVIDER` as generated and put the
+key in `.env` (`login --write-env` prompts for it without echoing).
+
+Useful `create` options: `--runtime fastapi|langgraph-server`,
+`--model-provider openai|anthropic|gemini|openai-compatible`, `--model`,
+`--checkpointer memory|postgres`, `-d/--deployment-target kubernetes|none`, `--registry`,
+`--cd skip|helm-push|argocd`, `--auth-policy shared-bearer|jwt|custom`,
+`--api-policy <file>`, `--process <path>`, `-p/--prototype` (no deployment files). Ask your
 coding agent to "use graph-agents-cli to build ..." and the `graph-agents-cli-workflow`
-skill walks the same steps. `.env.example` selects `MODEL_PROVIDER` from the manifest and
-`CHECKPOINTER=memory`; set `MODEL_PROVIDER=fake` in `.env` to exercise the scaffolded
-project (tests, `run`, `eval run`) with the deterministic test model and no key.
+skill walks the same steps.
+
+To deploy to a local cluster (kind, k3d, minikube, Docker Desktop), see
+[Environments and CD modes](#environments-and-cd-modes): `graph-agents-cli deploy --env dev`
+builds the image, side-loads it and runs `helm upgrade --install` on the kubeconfig's
+current context.
 
 ## Commands
 
+Run `graph-agents-cli <command> --help` for every flag; each help page ends with a `Source:`
+line naming the file that implements it.
+
 | Command | What it does |
-|---------|-------------|
-| `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install` from the pinned git spec) and the skills into detected coding agents |
-| `update [--workspace] [-i] [-y]` | Force-reinstall the skills and reinstall the CLI from the latest GitHub release (best effort) |
-| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig; writes `.env` on request (generating `API_KEY`); stores nothing; exit 1 on a failed check (0 with `--status`) |
-| `create [NAME]` / `scaffold create [NAME]` `[-a/--agent] [-o/--output-dir] [--runtime] [--model-provider] [--model] [--checkpointer] [-d/--deployment-target] [--registry] [--cd] [--auth-policy] [--api-policy FILE] [--process] [-p/--prototype] [-dir/--agent-directory] [--agent-guidance-filename] [-bt/--base-template] [-i] [-y] [-s/--skip-checks] [--debug]` | Create a LangGraph agent project from the template |
-| `scaffold enhance [TEMPLATE_PATH]` (the `create` flags plus `[-n/--name]`, `[--force]`, `[--dry-run]`, `[--prefer-new]`; `--api-policy` is refused) | Add or change the deployment target, CD mode, or runtime of an existing project (3-way merge, backup first) |
-| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge; stops without an authentic prior baseline |
-| `playground [--port INT] [--graph] [--no-open]` | Run the selected application with reload and the dev chat page (port 8000); `--graph` opens LangGraph Studio via `langgraph dev` |
-| `run MESSAGE [--mode chat\|a2a] [--url] [--thread-id] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [-v]` | Send one prompt to the local server (started on demand) or a deployed URL; `--mode a2a` needs the `a2a` extra |
-| `install [--clean] [--locked]` | Install project dependencies with uv |
-| `lint [--fix] [--policy-only]` | Ruff plus the static API-policy check: `api-policy.yaml` against the strict schema, every tool module's `API_CALLS` against it |
-| `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` the runtime-specific Dockerfile (default tag `latest`) |
-| `eval run [--dataset] [--url] [--concurrency] [-H/--header]... [--cookie]... [--app-name] [--timeout] [--config] [-o/--output] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; exit code is the eval gate |
-| `eval generate [--dataset] [-o/--output] [--url] [--concurrency] [-H/--header]... [--cookie]... [--app-name] [--timeout]` | Run the agent over `tests/eval/datasets/*.json`, write `artifacts/traces/` |
-| `eval grade [--traces] [--dataset] [--config] [-o/--output] [--judge-provider] [--judge-model] [--judge-timeout]` | Deterministic checks in-process, then judge metrics through a runner staged into the project; write `artifacts/grade_results/` |
-| `eval compare BASELINE CANDIDATE [--fail-on-regression] [--json]` | Diff two result files |
-| `eval analyze [--results] [--output] [--top-k] [--judge] [--judge-provider] [--judge-model]` | Deterministic clustering of failures (judge summaries with `--judge`) |
-| `eval submit [--results] [--traces] [--dataset] [--dataset-name] [--experiment] [--endpoint]` | Upload the dataset and results to LangSmith (optional `langsmith` extra) |
-| `eval metric list [--json]` | List deterministic checks and built-in judges (plus the project's config) |
-| `deploy --env <env> [--image] [--env-file] [--status] [--restart] [--force-direct] [--dry-run] [--tag]` | Deploy per the project's CD mode; never runs helm in an Argo CD environment |
-| `secrets apply --env <env> [--env-file] [--dry-run]` / `secrets status --env <env> [--dry-run]` | Create or inspect the `<release>-app` Secret from allow-listed keys; values are never printed; `status` exits 1 when a key is missing |
-| `infra check [--env] [--profile disconnected] [--json]` | Read-only prerequisite and repository-settings report; creates nothing |
-| `extension add REFERENCE [--global] [--ref] [-i] [-y]` / `list` / `remove NAME [-i] [-y]` / `update [NAME] [-i] [-y]` | Manage command overrides and additions from extension repos |
+|---|---|
+| `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install` of the pinned spec) and the skills into detected coding agents |
+| `update [--workspace] [-i] [-y]` | Reinstall the skills and the CLI from the latest GitHub release |
+| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig. `--write-env` prompts for missing keys (never echoed), generates `API_KEY`, fills blank `KEY=` lines in place and keeps `.env` at 0600. Exit 1 on a failed check (0 with `--status`) |
+| `create [NAME]` / `scaffold create [NAME]` | Create a project: `-a/--agent`, `-o/--output-dir`, `--runtime`, `--model-provider`, `--model`, `--checkpointer`, `-d/--deployment-target`, `--registry`, `--cd`, `--auth-policy`, `--api-policy FILE`, `--process`, `-p/--prototype`, `-dir/--agent-directory`, `--agent-guidance-filename` (default `AGENTS.md`), `-bt/--base-template`, `-i`, `-y`, `-s/--skip-checks`, `--debug` |
+| `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`; `--api-policy` is refused). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
+| `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built |
+| `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
+| `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL |
+| `install [--clean] [--locked]` | `uv sync` the project |
+| `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it) |
+| `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` with the runtime's Dockerfile (default tag `latest`); a placeholder or invalid registry is exit 3 |
+| `eval run [--dataset] [--url] [--concurrency] [-H]... [--cookie]... [--app-name] [--timeout] [--config] [-o] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; the exit code is the gate |
+| `eval generate [--dataset] [-o] [--url] [--concurrency] [-H]... [--cookie]... [--app-name] [--timeout]` | Run the agent over `tests/eval/datasets/*.json` and write `artifacts/traces/` |
+| `eval grade [--traces] [--dataset] [--config] [-o] [--judge-provider] [--judge-model] [--judge-timeout]` | Deterministic checks, then judge and custom metrics in the project's environment; write `artifacts/grade_results/` |
+| `eval compare BASELINE CANDIDATE [--fail-on-regression] [--json]` | Diff two results files |
+| `eval analyze [--results] [--output] [--top-k] [--judge] [--judge-provider] [--judge-model]` | Cluster failures deterministically (judge summaries with `--judge`) |
+| `eval submit [--results] [--traces] [--dataset] [--dataset-name] [--experiment] [--endpoint]` | Upload the dataset and results to LangSmith (`langsmith` extra) |
+| `eval metric list [--json]` | List deterministic checks, built-in judges and the project's metrics |
+| `deploy --env ENV [--image REF] [--env-file FILE] [--context NAME] [-y/--yes] [--status] [--restart] [--force-direct] [--dry-run] [--tag TAG] [--timeout DURATION] [--atomic/--no-atomic] [--rotate-api-key]` | Deploy per the project's CD mode (see below); never runs helm in an Argo CD environment |
+| `secrets apply --env ENV [--env-file FILE] [--context NAME] [-y/--yes] [--rotate-api-key] [--dry-run]` | Create or update the `<release>-app` Secret from the allow-listed keys of an env file (server-side apply; values are never printed) |
+| `secrets status --env ENV [--context NAME] [--strict] [--dry-run]` | Which allow-listed keys the Secret holds (never values); exit 1 when a required key is missing |
+| `infra check [--env ENV] [--profile disconnected] [--json]` | Read-only report of cluster, repository and placeholder prerequisites; creates nothing |
+| `extension add REFERENCE [--global] [--ref] [-i] [-y]` / `list` / `remove NAME` / `update [NAME]` | Manage command overrides and additions from extension repositories or local paths (experimental) |
 | `info [--json]` | Project configuration, paths, extensions, CLI version |
 
-Run `graph-agents-cli <command> --help` for every flag; the help ends with a `Source:` line
-naming the implementing file.
+CLI environment variables: `GRAPH_AGENTS_CLI_INSTALL_SPEC` (install source),
+`GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` (no GitHub release check), `GRAPH_AGENTS_CLI_API_KEY`
+(bearer key for `run --url` and `eval generate --url`), `GRAPH_AGENTS_CLI_RUN_PORT` (port of
+the local server `run` and `eval` start), `GRAPH_AGENTS_CLI_DEBUG=1` (tracebacks behind
+one-line errors), `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` (ignore extension overrides; set in
+every generated CI and CD job).
+
+## The generated service
+
+A project has one agent directory (`app/` by default):
+
+```
+app/agent.py              # exports `graph` (compiled LangGraph agent, no checkpointer bound)
+app/fast_api_app.py       # exports `app`: the HTTP API below
+app/app_utils/            # auth, api_client, chat, threads, db, limits, metrics, middleware, model, telemetry, a2a
+app/policies/custom.py    # the custom auth policy (a fail-closed stub until implemented)
+app/tools/                # every module declares API_CALLS and TOOLS
+tests/{unit,integration,eval,load_test}
+deployment/helm/<name>/   # chart and values-{dev,staging,prod}.yaml (kubernetes target)
+api-policy.yaml           # outbound API policy (when declared)
+.env.example              # the full environment contract, with defaults
+AGENTS.md                 # guidance for coding agents
+graph-agents-cli-manifest.yaml
+```
+
+Two runtimes share the same routes, auth and clients:
+
+- **`fastapi`** (default): uvicorn serves `fast_api_app.py`; the checkpointer is `memory`
+  locally and `postgres` in a cluster (`CHECKPOINTER`, `POSTGRES_DSN`).
+- **`langgraph-server`**: the LangGraph Server image serves the graph and mounts the same app
+  as custom routes (`langgraph.json` `http.app`); the server owns persistence
+  (`DATABASE_URI`, `REDIS_URI`) and the same policy is its auth handler. See
+  [Known limitations](#known-limitations) for its licence requirement.
+
+### Endpoints
+
+| Route | Auth | Behaviour |
+|---|---|---|
+| `POST /chat` | `chat.send` | Body `{"thread_id": "optional", "message": "...", "metadata": {}}`, `Accept: text/event-stream`. Events: `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Send the same `thread_id` to continue a thread (owner only) |
+| `GET /threads` | `thread.list` | The caller's threads, most recent first: `?limit=1..100` (default 20) `&offset=`; `[{thread_id, created_at, updated_at}]` |
+| `GET /threads/{thread_id}/messages` | `thread.read` | The thread's messages; owner, or a role in `AUTH_READ_ACROSS_ROLES` |
+| `DELETE /threads/{thread_id}` | `thread.delete` | Deletes the thread, its checkpoints and run records (owner only): 204, or 403, 404, 409 (a run in progress), 422. Under `langgraph-server` this is the server's own route, with the same owner rule |
+| `GET /health` | none | Liveness, process only: `{"status": "ok", "runtime", "checkpointer"}` |
+| `GET /ready` | none | Readiness: 200 `{"status": "ready"}` when the database (and run store) answer within 2 s, else 503 `{"status": "not_ready"}` |
+| `GET /metrics` | none, or `METRICS_TOKEN` | Prometheus text (`METRICS_ENABLED`, default true): `http_requests_total`, `http_request_duration_seconds`, `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`, `agent_tokens_total`. With `METRICS_TOKEN` set, only `Authorization: Bearer <METRICS_TOKEN>` is answered |
+| `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them |
+| `GET /playground`, `/docs`, `/openapi.json` | none | Only under `APP_ENV=dev` |
+
+Behaviour:
+
+- **One run per thread.** A second `/chat` on a thread with a run in progress gets 409
+  `{"code": "thread_busy"}` (an in-process lock, plus a Postgres advisory lock across
+  replicas under `postgres`).
+- **Limits.** Bodies over `MAX_REQUEST_BYTES` (1 MiB) get 413; `/chat` metadata beyond
+  `MAX_METADATA_KEYS` (16) keys or `MAX_METADATA_VALUE_CHARS` (256), or with non-scalar
+  values, gets 422. Thread ids are 1-128 characters of `[A-Za-z0-9_.:-]` (UUIDs under
+  `langgraph-server`).
+- **Timeouts.** A run is cancelled after `RUN_TIMEOUT_S` (300; status `timeout`); each model
+  request has `MODEL_TIMEOUT_S` (60; 0 = provider default) and `MODEL_MAX_RETRIES` (2); a run
+  stops after `RECURSION_LIMIT` (25) graph steps. Idle SSE streams get a `: keep-alive`
+  comment every `SSE_HEARTBEAT_S` (15). A client disconnect cancels the run (status
+  `cancelled`). A stopped run answers its open tool calls with an error so the thread's
+  next turn is valid.
+- **Errors.** The SSE `error` event is `{"code", "message", "error_id", "run_id"}` with `code`
+  one of `run_failed`, `timeout`, `recursion_limit`, `thread_busy`, `unavailable`,
+  `forbidden`. An unhandled error answers 500 `{"detail": "Internal server error. Reference:
+  <id>.", "error_id": ...}`; the detail is only in the server log under that id (and in the
+  event's `detail` under `APP_ENV=dev`).
+- **Retention.** `RETENTION_DAYS=N` (0, the default, keeps everything) deletes threads idle
+  for more than N days, with their checkpoints and run records, in an hourly best-effort
+  pass on every replica. Idleness is re-checked under the thread's lock.
+- **Logging.** JSON lines by default outside `APP_ENV=dev` (`LOG_FORMAT=json|text`,
+  `LOG_LEVEL`), each with the request id, run id, thread id and a hashed principal id (HMAC
+  with `PRINCIPAL_HASH_SALT` when set). Every response carries `X-Request-ID` (a valid one
+  from the caller is echoed). The app does not log credentials, messages or tool arguments;
+  an unexpected error's exception and traceback are logged under its `error_id`.
+- **CORS.** Off unless `CORS_ALLOW_ORIGINS` lists origins (comma-separated).
+- **Tracing.** Off unless `TRACING_ENABLED=true`: LangSmith with `LANGSMITH_API_KEY`, else
+  OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`. `TRACE_CAPTURE=metadata` (default) exports
+  structure, timing, token counts, tool names, error types and hashed ids only; `full` adds
+  prompts, completions, tool I/O and the client's `/chat` metadata. Client metadata is kept
+  in the run record and never written into checkpoints.
+- **Database.** One connection pool per process (`DB_POOL_MIN_SIZE` 1, `DB_POOL_MAX_SIZE` 10),
+  health-checked on checkout, so a Postgres restart heals itself. Schema changes run at
+  startup under an advisory lock, so replicas can start together.
+
+Every setting has a default in code and is documented in the generated `.env.example`; a
+value that does not parse stops the app at startup, naming the variable.
+
+## Authentication
+
+One policy, selected by `AUTH_POLICY` (and recorded as `auth_policy` in the manifest),
+guards every surface: `/chat` and the thread routes, the A2A card and JSON-RPC, and under
+`langgraph-server` the server's native API. `/health`, `/ready`, `/metrics` and the dev-only
+pages are outside it. Startup fails closed: an unknown `AUTH_POLICY` never starts, and a
+misconfigured policy stops the process outside `APP_ENV=dev` (under dev the problem is logged
+and requests get 503). `APP_ENV` counts as dev only when it is exactly `dev`.
+
+Common settings: `AUTH_READ_ACROSS_ROLES` (comma list; roles that may read, never continue or
+delete, other principals' threads) and `AUTH_ADMIN_ROLES` (comma list, empty = nobody; under
+`langgraph-server` only these roles may create, update or delete assistants and crons or
+write the store; reads are open to any authenticated principal, and every other native-API
+action is denied).
+
+### `shared-bearer` (default)
+
+Clients send `Authorization: Bearer <API_KEY>`, compared in constant time. Every caller is
+the same principal (`shared`), so thread ownership separates nobody: use it for internal
+tools, service-to-service calls and development. An unset `API_KEY` answers 503, never "no
+auth". `login --write-env` generates a local key; `secrets apply` / `deploy` generate one
+per environment when neither the env file nor the live Secret has one.
+
+### `jwt`
+
+Per-user principals from a verified OIDC/JWT bearer token (`Authorization: Bearer <token>`),
+for example from Keycloak, Auth0, Entra ID, Okta or Dex.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_JWT_JWKS_URL` | | The issuer's JWK set (fetched directly, no redirects; https outside dev unless the host is loopback). Set this or `AUTH_JWT_PUBLIC_KEY`, not both |
+| `AUTH_JWT_PUBLIC_KEY` | | One PEM public key or certificate (only its key is used; `\n` escapes accepted) |
+| `AUTH_JWT_ISSUER` | | The expected `iss`; required outside `APP_ENV=dev` |
+| `AUTH_JWT_AUDIENCE` | | The expected `aud` (comma list accepted); required outside `APP_ENV=dev` |
+| `AUTH_JWT_ALGORITHMS` | `RS256,ES256` | Allow-list: RS/PS/ES 256/384/512 and EdDSA; never `none`; the key type must match |
+| `AUTH_JWT_ALLOW_HS` | `false` | `true` also allows HS256/384/512 with `AUTH_JWT_SECRET` |
+| `AUTH_JWT_SECRET` | | Shared secret for HS*, at least 32 bytes. A secret: it goes into the app Secret (the CLI adds it to the allow-list when the chart values or env file opt into HS*) |
+| `AUTH_JWT_PRINCIPAL_CLAIM` | `sub` | Claim holding the principal id (dotted path allowed; at most 256 characters) |
+| `AUTH_JWT_ROLES_CLAIM` | `roles` | Claim holding the roles: a list or a space/comma separated string (dotted path allowed, e.g. `realm_access.roles`) |
+| `AUTH_JWT_LEEWAY_S` | `60` | Clock skew allowed for `exp`/`nbf`/`iat` (0-600) |
+| `AUTH_JWT_JWKS_CACHE_S` | `300` | How long fetched keys are cached (1-86400) |
+| `AUTH_JWT_JWKS_ALLOW_HTTP` | `false` | Allow a plain-http JWKS URL outside dev (a trusted in-cluster issuer only) |
+
+A missing token gets 401 `Missing bearer token.`; an invalid one gets 401 `Invalid bearer
+token: <reason>.` with an RFC 6750 `WWW-Authenticate: Bearer error="invalid_token"` challenge
+(expired, not yet valid, wrong audience or issuer, bad signature, algorithm not allowed,
+unknown key, malformed, over 16384 characters, missing principal claim). A misconfigured
+policy answers 503 (details in the server log). Keys: one fetch at a time, an unknown key id
+triggers at most one refetch per 30 s, an expired cache is refreshed in the background while
+the cached keys keep verifying, and the last good keys stay usable for 1 hour when the issuer
+is unreachable (then 503). Nothing from the token is logged.
+
+### `custom`
+
+For anything else, for example the session cookie of an existing application or an API
+gateway's identity headers. `create --auth-policy custom` scaffolds
+`app/policies/custom.py`, a documented stub that answers 503 to every request, and records
+`auth_policy_implemented: false`, so `deploy --env staging|prod` is refused until you
+implement it and set the flag to `true`. Implement `CustomPolicy`:
+
+```python
+from fastapi import HTTPException, Request
+from app.app_utils.auth import ACTIONS, Principal
+
+
+class CustomPolicy:
+    async def authenticate(self, request: Request) -> Principal:
+        session = request.cookies.get("session")
+        user = await my_session_store.lookup(session)  # your async lookup
+        if user is None:
+            raise HTTPException(401, "Not signed in.", headers={"WWW-Authenticate": "Cookie"})
+        return Principal(
+            id=user.id,  # stable, unique: owns threads and A2A tasks
+            roles=user.roles,  # matched against AUTH_*_ROLES
+            permissions=set(ACTIONS),
+            attributes={"tenant": user.tenant},  # secrets only under "credentials"
+        )
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        if action not in principal.permissions:
+            raise HTTPException(403, f"{action} is not allowed.")
+
+    def startup_problems(self) -> list[str]:  # optional: stops startup outside dev
+        return [] if MY_SETTING else ["MY_SETTING is not set"]
+```
+
+Rules: raise 401 (with `WWW-Authenticate`) for a missing or invalid credential and 503 when
+the issuer cannot be reached; never put the credential in an error or a log line; do I/O
+asynchronously and cache briefly. Thread ownership is enforced outside the policy. A
+credential that tools must forward to an `auth: forward` API goes in
+`attributes["credentials"][<api name>]`, the only attribute that may hold a secret
+(`Principal.public_attributes()` is what gets persisted, logged or traced). Under
+`langgraph-server` with `LANGGRAPH_SERVER_URL`, `AUTH_FORWARD_HEADERS` (default
+`authorization,cookie`) lists the request headers passed on to the server's auth handler.
+Clients send the credential with `run --header 'Name: value'` or `--cookie name=value`.
+
+## Outbound API policy (`api-policy.yaml`)
+
+Tools reach external APIs only through `get_client("<api>")` of `app/app_utils/api_client.py`,
+which enforces `api-policy.yaml` at the project root (path from `API_POLICY_PATH`) and refuses,
+before sending, anything outside it. It fails closed: without the file, or for an API it does
+not declare, every call raises `ApiPolicyError`; the refusal becomes a tool error the model
+can read.
+
+```yaml
+apis:
+  orders:                                  # ^[a-z][a-z0-9_]{0,31}$
+    base_url_env: ORDERS_API_BASE_URL      # required; the URL may carry a path prefix (joined, never replaced)
+    auth: bearer                           # required: none | bearer | forward
+    token_env: ORDERS_API_TOKEN            # required iff auth: bearer (joins secrets.keys)
+    # forward_header: Authorization        # auth: forward only (default Authorization)
+    allowed_methods: [GET]                 # required, non-empty; ["*"] = every method, explicitly
+    allowed_operations:                    # optional; omitted = every operation within allowed_methods
+      - operationId: getOrder              # an entry may pin operationId and/or path (+ methods);
+        path: /orders/{order_id}           # pinning both requires both to match
+        methods: [GET]
+    denied_operations: []                  # same entry shape; denials win
+    openapi: specs/orders.yaml             # optional: lint checks declared calls against it
+    timeouts_ms: {connect: 2000, read: 5000}
+    pagination: {page_size_param: pageSize, max_page_size: 200}   # enforced at runtime
+```
+
+Auth modes: `none` sends no credential; `bearer` sends `Authorization: Bearer
+$<token_env>`; `forward` sends the caller's own `attributes["credentials"][<api name>]` as
+`forward_header` (nothing when the caller has none) and is refused under `langgraph-server`,
+which would persist it. The policy's credential always overrides a header the tool passes.
+
+Fail-closed rules, identical in `create`, `lint` and the runtime (one block of code is shared
+byte-for-byte and a test keeps the copies in sync):
+
+- Unknown keys and repeated keys are errors at every level, so a typo never widens access.
+- A denial covers a call that does not name a field the denial pins: a denial by
+  `operationId` alone refuses every call without `operation_id`. Pin `path` in denials, or
+  name `operation_id` on every call.
+- Paths match after decoding percent-encoded unreserved characters and ignoring one trailing
+  slash; denials also ignore letter case. Pass model input as `path_params` of a declared
+  template (each value is encoded as one segment; `.`, `..` and `/` are refused), never as
+  part of a concrete path.
+- The page-size parameter is capped in every spelling and shape of the query; redirects are
+  not followed.
+
+Each tool module declares its calls as one module-level literal list, and `graph-agents-cli
+lint` (and `lint --policy-only`) checks every `*.py` under `app/tools/`, subpackages included,
+against the policy and the OpenAPI spec:
+
+```python
+API_CALLS = [
+    {"api": "orders", "method": "GET", "operation_id": "getOrder", "path": "/orders/{order_id}"}
+]
+
+client = get_client("orders", context=runtime.context)
+order = await client.get(
+    "/orders/{order_id}", operation_id="getOrder", path_params={"order_id": order_id}
+)
+```
+
+`API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional assignment) is a lint
+error because lint cannot read it. `create --api-policy <file>` validates the file (exit 3 on
+errors), copies the OpenAPI specs it references into the project, renders
+`app/tools/example_api.py` with a call the first API allows, and adds every bearer
+`token_env` to `secrets.keys`. `scaffold enhance` and `scaffold upgrade` never touch the file.
+Both Dockerfiles copy it into the image.
 
 ## Environments and CD modes
 
-Every Kubernetes project has three environments, `dev`, `staging`, and `prod`, each with a
+Every Kubernetes project has three environments, `dev`, `staging` and `prod`, each with a
 values file (`deployment/helm/<name>/values-<env>.yaml`), a namespace (`<name>-<env>`), a
-Secret (`<name>-app`), and, under Argo CD, an `Application`. The manifest records the kube
-context and namespace per environment; `deploy --env <env>` reads `.env.<env>` when present,
-else `.env`. `values-dev.yaml` enables the bundled Postgres subchart and disables the
-gateway; staging and prod expect an external database via the Secret and a Gateway API
-`HTTPRoute` (or `Ingress`).
+Secret (`<name>-app`) and, under Argo CD, an `Application`. `values-dev.yaml` enables the
+bundled Postgres (and Redis for `langgraph-server`) and disables the Gateway; staging and
+prod expect an external database through the Secret and a Gateway API `HTTPRoute` (or an
+`Ingress`).
 
 The `--cd` choice at create time fixes how changes reach a cluster:
 
 | Mode | What `deploy` does | What CI does |
-|------|--------------------|--------------|
-| `skip` (default) | `docker build`, load or push the image, `helm upgrade --install` on the current context, for any environment | `pr_checks` only (ruff, tests, eval gate) |
-| `helm-push` | Direct deploy to `dev`; refuses `staging`/`prod` from a workstation unless `--force-direct` | `staging` workflow deploys from `main` on a self-hosted runner; `promote-to-prod` deploys behind the GitHub `production` environment |
-| `argocd` | Never runs helm; opens a pull request that bumps the image tag in the environment values file (`deploy/<env>/<short sha>` branch, built with git plumbing from `origin/main` so your checkout is never switched); `--status` and `--restart` talk to the cluster | CI builds, pushes, and opens or auto-merges the desired-state PR for staging; production is merged by a human after code-owner review, then Argo CD syncs (manual sync for prod) |
+|---|---|---|
+| `skip` (default) | Builds the image, side-loads it into a local cluster or pushes it, applies the Secret, `helm upgrade --install`, for any environment | `pr_checks` only (ruff, tests, eval gate) |
+| `helm-push` | Direct deploy to `dev`; `staging`/`prod` are refused outside CI (even with `--image`) unless `--force-direct` | `staging` builds and deploys from `main` on a self-hosted runner; `promote-to-prod` deploys behind the GitHub `production` environment; both verify the rollout (`/health`, `/ready`) |
+| `argocd` | Never runs helm and contacts no cluster: opens a pull request that changes only `image.tag` in `values-<env>.yaml` (branch `deploy/<env>/<short sha>`, built with git plumbing from `origin/main`, your checkout untouched); `--status` and `--restart` use the cluster | CI builds, pushes and opens the staging PR with auto-merge (newer PRs supersede older ones); production is a PR merged by a human after code-owner review, then an Argo CD sync (manual for prod) |
 
-Images are tagged with the short commit SHA (`${GITHUB_SHA::7}` in CI, `git rev-parse --short
-HEAD` for a workstation `deploy`, or `--tag`). The chart declares the bitnami `postgresql` and
-`redis` subcharts as conditional dependencies; `deploy` runs `helm dependency build` when they
-are missing from `charts/` (also under `--dry-run`, since the render needs them), which needs
-network to `registry-1.docker.io` unless the charts are vendored. `deploy --dry-run` prints the
-helm/kubectl/docker commands and rendered manifests without running them. Exit codes: 0 ok, 1
-refused by policy or mode, 2 tool failure (including a tool missing from `PATH`), 3
-configuration error. For a GitHub Enterprise Server remote set `GH_HOST=<host>` (and
-`GH_ENTERPRISE_TOKEN` or `GITHUB_TOKEN`) so `deploy` opens the PR against it.
+Rules `deploy` and `secrets apply` follow:
 
-Local-load dev clusters are detected from the kube context (`kind-*`, `k3d-*`, `k3s`,
-`minikube`, `docker-desktop`, `rancher-desktop`, `orbstack`); the k3s path runs
-`k3s ctr images import`, which needs root on most hosts.
+- **Env file.** `--env-file`, else `.env.<env>`. Only `dev` falls back to `.env`; any other
+  environment without an env file exits 3, so your development keys never reach staging or
+  prod.
+- **Kube context.** The context is `--context`, else `environments.<env>.context` in the
+  manifest, else the kubeconfig's current context. Outside `dev` the current context needs a
+  confirmation: a prompt at a terminal, `--yes` otherwise (exit 1 without). An explicit
+  context missing from the kubeconfig is exit 3. The resolved context and API server are
+  printed before anything happens; `--dry-run` never prompts.
+- **Order.** Everything that needs only the project (chart values, image reference, env file)
+  is checked first. Then the context is confirmed, the Secret the deploy would produce (the
+  live keys merged with the env file) is checked for every required key (exit 1 when one is
+  missing, before anything is built or changed), and the release is checked for a helm
+  operation in progress. Only then is the image built and loaded or pushed, the namespace
+  created when missing, the Secret applied and helm run.
+- **Rollout.** `helm upgrade --install --wait --timeout <--timeout, default 5m>`. When the
+  rollout fails, deploy prints the pods, container states, warning events and logs, then,
+  with `--atomic` (default), rolls back to the newest good revision or uninstalls a first
+  install that never succeeded. It only undoes the revision this run created: when another
+  helm operation holds the release (a `pending-*` revision), deploy refuses up front (exit 2)
+  and prints the command that clears a lock left by an interrupted helm.
+- **Images.** Workstation builds are tagged with the short commit sha, plus
+  `-dirty-<timestamp>` when the tree has uncommitted changes (outside `deployment/`,
+  `.github/`, `tests/`, `docs/`), with a warning; `--tag` overrides. A placeholder registry
+  (`ghcr.io/CHANGE-ME`) or an invalid reference is exit 3 before `docker` runs. `--image`
+  takes a tagged reference (digests are refused: the chart renders `repository:tag`).
+- **Local clusters.** Side-loading (kind, k3d, minikube; k3s through `k3s ctr images import`,
+  which usually needs root; Docker Desktop, Rancher Desktop and OrbStack share the daemon and
+  need none) is chosen from the cluster's nodes and confirmed with the tool's own cluster
+  listing (`kind get clusters`, `k3d cluster list`, `minikube profile list`). The context
+  name decides only when the nodes cannot be read, and a `kind-*` name is still confirmed.
+  Otherwise the image is pushed to the registry.
+- **Protected environments.** `deploy --env staging|prod` is refused while the manifest says
+  `auth_policy_implemented: false` (the `custom` stub).
+- **Chart dependencies.** `deploy` runs `helm dependency build` when a subchart is missing
+  (also under `--dry-run`), which needs `registry-1.docker.io` unless `charts/` is vendored.
 
-## Secrets procedure
+`deploy --status` shows the rollout, `deploy --restart` restarts the Deployment (after a
+Secret rotation), and `--dry-run` prints every command plus the rendered manifests without
+changing anything. For a GitHub Enterprise Server remote set `GH_HOST=<host>` (and
+`GH_ENTERPRISE_TOKEN` or `GITHUB_TOKEN`) so argocd-mode `deploy` opens the PR there.
 
-Secrets never live in values files or the chart. The manifest's `secrets.keys` allow-list
-(provider key, `JUDGE_API_KEY`, `POSTGRES_DSN` or `DATABASE_URI`/`REDIS_URI`, `API_KEY`,
-`LANGSMITH_API_KEY`, the `token_env` of every `auth: bearer` API in `api-policy.yaml`) is the
-only set of variables that can reach the cluster.
+### Chart
 
-1. Put the values in `.env.<env>` (or `.env`); `login --write-env` prompts for missing
-   keys without echoing them and generates a missing `API_KEY`.
-2. `graph-agents-cli secrets apply --env <env>` creates or replaces the Opaque Secret
-   `<name>-app` in the environment's namespace with one key per allow-listed variable
-   that is present (`kubectl create secret generic --from-env-file=<0600 temp file>
-   --dry-run=client -o yaml | kubectl apply -f -`, so no value appears on a command
-   line). `API_KEY` is generated (32 random bytes, hex) only when absent from the env file
-   and from the live Secret, and printed once; an existing key is kept. Values must be
-   single-line. `--dry-run` prints the pipeline and a redacted manifest (no key).
-3. `graph-agents-cli secrets status --env <env>` lists which keys are present, never the
-   values, and exits 1 when the Secret or any allow-listed key is missing. Rotate by
-   re-running `secrets apply` with the new value, then `deploy --restart --env <env>`.
+The chart runs the pod as uid/gid 1000 with a read-only root filesystem (a `/tmp` emptyDir
+is the only writable path), seccomp `RuntimeDefault`, every capability dropped, no privilege
+escalation and no service-account token. Readiness uses `/ready`, liveness and startup
+`/health`. Resource requests default to 100m CPU / 256Mi with a 1Gi memory limit (250m / 512Mi
+requests in prod). Values worth knowing:
 
-In Argo CD environments `secrets apply` is the only command besides `--status` and
-`--restart` that touches the cluster from a workstation. The CLI does not refuse
-`secrets apply` under CI; keeping application secrets out of CI is the procedure above
-(the scaffolded workflows never hold them).
+- `image.tag`: empty by default; the chart refuses to render without one and never defaults
+  to `latest`. Quote it (`tag: "0123456"`): an unquoted number is refused.
+- `route.publicPaths`: what the HTTPRoute or Ingress publishes, by default `/chat` (Exact),
+  `/threads` and `/a2a/<agent>` (PathPrefix); `route.devPaths` (`/playground`, `/docs`,
+  `/openapi.json`) are added only under `APP_ENV=dev`. `/health`, `/ready` and `/metrics`
+  are never published.
+- `secretOptional`: `true` in dev, `false` elsewhere, where pods do not start without the
+  app Secret.
+- `gateway.*` / `ingress.*` / `tls.*`: set `gateway.parentRef.name` and `gateway.hostname`
+  (staging and prod), or enable the Ingress; TLS from `tls.existingSecret` or cert-manager.
+- `metrics.scrapeAnnotations`, `metrics.serviceMonitor.enabled`: Prometheus scraping (off).
+- `networkPolicy.*`: an optional NetworkPolicy (off). It admits only the http port, from the
+  `ingressFrom` sources when listed; with `restrictEgress` it also limits egress to DNS and
+  `egressTo`.
+- `hpa.*`, `pdb.*`, `topologySpread.*` (on in prod), `probes.*`, `resources`,
+  `terminationGracePeriodSeconds`, `extraVolumes`, `extraVolumeMounts`.
+- `postgresql.*` / `redis.*`: the Bitnami subcharts for dev, pinned to exact chart versions
+  and image digests; the dev database password lives in a chart-managed Secret that survives
+  upgrades. Use an external database (or another chart) in staging and prod.
 
-## Required GitHub settings
+## Secrets
 
-For `cd: helm-push` or `cd: argocd` the scaffolded workflows assume:
+Secrets never live in values files or the chart. The manifest's `secrets.keys` allow-list is
+the only set of variables that can reach the cluster: the provider key, `JUDGE_API_KEY`,
+`POSTGRES_DSN` (or `DATABASE_URI` and `REDIS_URI`), `API_KEY`, `LANGSMITH_API_KEY` and the
+`token_env` of every `auth: bearer` API. Add any other secret your project uses (for example
+`METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`) to that list.
 
-- **Environments** `staging` and `production`, with required reviewers on `production`
-  (`promote-to-prod` waits on it).
-- **Branch protection on `main`**: `pr_checks` required, at least one review, code-owner
-  review required (`.github/CODEOWNERS` is generated), no self-approval, and auto-merge
-  permitted (the staging desired-state PR uses `gh pr merge --auto --squash`).
-- **Repository secrets**: `KUBECONFIG` for the self-hosted runner in `helm-push` mode;
-  registry credentials when the registry is not GHCR (`GITHUB_TOKEN` suffices for GHCR);
-  `GH_PR_TOKEN`, a fine-grained PAT or GitHub App token, for the desired-state pull
-  requests. A pull request opened with the workflow `GITHUB_TOKEN` does not trigger
-  `pr_checks` (GitHub never starts workflows from `GITHUB_TOKEN` events), so auto-merge
-  on a required check needs `GH_PR_TOKEN`; the workflows use
-  `secrets.GH_PR_TOKEN || secrets.GITHUB_TOKEN`.
-- **A self-hosted runner** with network access to the cluster for `helm-push`.
-- **Argo CD** with a repository credential for this repo and the `deployment/argocd/`
-  `Application` manifests applied once by an operator (`argocd` mode).
+1. Put the values in `.env.<env>` (dev may use `.env`).
+2. `graph-agents-cli secrets apply --env <env>` creates the namespace when missing and applies
+   the Opaque Secret `<name>-app` with server-side apply (`kubectl create secret generic
+   --from-env-file=<0600 temp file> --dry-run=client -o yaml | kubectl apply --server-side
+   ...`), so no value appears on a command line or in a `last-applied-configuration`
+   annotation (an old one is removed). Allow-listed keys the env file leaves out are kept from
+   the live Secret; remove a key by dropping it from `secrets.keys`. Values must be single-line.
+3. `API_KEY`: the live key wins. It is replaced only when the env file sets a different one
+   and `--rotate-api-key` is passed (clients with the old key then get 401). When neither the
+   env file nor the Secret has one, a key is generated, written to the env file (0600) and
+   never printed.
+4. `graph-agents-cli secrets status --env <env>` lists present, missing required, missing
+   optional and unexpected keys, never values. Required keys are the provider key (not for
+   `openai-compatible`), `API_KEY` under `shared-bearer`, `AUTH_JWT_SECRET` under `jwt` with
+   an HS* algorithm, and the database URIs unless the bundled subchart provides them.
+5. Rotate by changing the value in the env file, running `secrets apply` (with
+   `--rotate-api-key` for `API_KEY`), then `deploy --env <env> --restart`.
 
-`graph-agents-cli infra check --env <env>` reports these settings when `gh` is logged in
-(or `GITHUB_TOKEN` is set) and reports the cluster prerequisites (Gateway API CRDs and
-classes or ingress class, cert-manager when `tls.certManager.enabled`, Argo CD when
-`cd: argocd`, metrics-server when the HPA is enabled, namespace, image pull secret, the
-app Secret). It creates nothing.
+In `argocd` and `helm-push` modes CI never holds application secrets: an operator (the
+manifest's `secrets.owner`) runs `secrets apply` from a workstation with cluster access,
+once per environment. `--force-conflicts` in the server-side apply makes the CLI the owner of
+the allow-listed keys: do not let another controller (for example External Secrets) manage
+the same keys.
+
+### Required GitHub settings (`helm-push`, `argocd`)
+
+- Environments `staging` and `production`; required reviewers (and "prevent self-review")
+  on `production`; deployment branches limited to `main`.
+- Branch protection on `main`: `pr_checks` required, code-owner review required, no
+  self-approval, auto-merge allowed (the staging PR uses it). Replace the
+  `@CHANGE-ME/production-approvers` owner in `.github/CODEOWNERS`.
+- `GH_PR_TOKEN` (a fine-grained PAT or GitHub App token with pull-request and contents write
+  access): pull requests opened with the workflow's `GITHUB_TOKEN` never trigger
+  `pr_checks`, so auto-merge on a required check needs it.
+- `helm-push`: `DEPLOY_KUBECONFIG` as a secret of the `staging` and `production`
+  *environments* (never a repository secret), and a self-hosted runner with network access to
+  the cluster and `kubectl` and `curl` installed.
+- Registry credentials when the registry is not GHCR (`REGISTRY_USERNAME`,
+  `REGISTRY_PASSWORD`).
+- `argocd`: Argo CD with a repository credential, and the `deployment/argocd/` Applications
+  (with `repoURL` set) applied once by an operator.
+- Optional: the provider key secret (`OPENAI_API_KEY`, ...) or the `MODEL_PROVIDER` /
+  `MODEL_NAME` repository variables make the `pr_checks` eval gate use a real model; on the
+  fake model it warns that the gate is not a quality signal.
+
+`graph-agents-cli infra check --env <env>` reports these settings when `gh` is logged in (or
+`GITHUB_TOKEN` is set), the cluster prerequisites (Gateway API or ingress class,
+cert-manager, Argo CD, metrics-server when the HPA is on, namespace, pull secret, the app
+Secret and its required keys) and every unreplaced `CHANGE-ME` placeholder. It creates
+nothing.
+
+`.github/agent.env` holds the workflows' project settings (`IMAGE_REPOSITORY`,
+`RELEASE_NAME`, `CHART_PATH`, `RUNTIME`, `CD`, `GRAPH_AGENTS_CLI_SPEC`) and is read as
+`NAME=VALUE` data, never sourced: any other name, a duplicate or a control character fails
+the step before anything is exported.
+
+## Exit codes
+
+Every command follows one scheme:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (`eval`: gate met; `secrets status`: every required key present) |
+| 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `scaffold enhance`: required steps left) |
+| 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; an unexpected crash |
+| 3 | Configuration error: not in a project, an invalid manifest, env file, policy, port or context, a placeholder registry |
+
+Usage errors from Click (an unknown flag) are also 2. A signal ends a command with 128+N
+(130 for Ctrl-C, 143 for SIGTERM) after the local server it started is stopped.
+
+## Security model
+
+- **Authentication on every surface** except the probes, `/metrics` (unless
+  `METRICS_TOKEN`) and dev-only pages; unknown or misconfigured policies fail closed at
+  startup. Threads and A2A tasks belong to the principal that created them; read-across roles
+  may read, never write.
+- **Outbound calls are allow-listed** by `api-policy.yaml` and refused before sending; the
+  same rules are checked statically by `lint` in CI.
+- **Secrets** stay in the allow-listed Kubernetes Secret: never in values files, workflow
+  logs, command lines or printed output. Only `Principal.public_attributes()` is persisted,
+  logged or traced; principal ids are hashed in logs and traces.
+- **Data egress** is explicit: tracing is off by default and `TRACE_CAPTURE=metadata` keeps
+  prompts, completions and tool I/O out of traces. A hosted model provider receives the
+  prompts, tool results and context the agent assembles: decide what may leave your network
+  before connecting one.
+- **Deploys** need an explicit context outside dev, never reuse development keys, never
+  rotate the live `API_KEY` implicitly, and only roll back their own revision. Production
+  desired state changes only through a reviewed pull request (`argocd`) or the `production`
+  environment gate (`helm-push`).
+- **Supply chain**: the CLI installs from a pinned git tag; generated projects pin the CLI
+  version in `.github/agent.env`, install from committed lock files, and pin base images,
+  the uv version, subchart versions and subchart image digests. CI and CD jobs disable
+  extension overrides.
+- **Pods** run as non-root with a read-only root filesystem, no capabilities and no
+  service-account token; probes and metrics stay inside the cluster.
+
+What it does not do for you: rate limiting (do it at the gateway), web application firewall
+rules, TLS termination (the Gateway, Ingress or cert-manager), network isolation (the
+NetworkPolicy is off by default), and backups of the agent's database.
+
+## Production checklist
+
+- [ ] Pick the auth policy: `jwt` against your identity provider, or a `custom` policy you
+      implemented and tested (then set `auth_policy_implemented: true`). `shared-bearer` only
+      for trusted callers.
+- [ ] Set `AUTH_READ_ACROSS_ROLES` and `AUTH_ADMIN_ROLES` deliberately (both empty by default).
+- [ ] Declare every outbound API in `api-policy.yaml` with the narrowest `allowed_methods` and
+      operations; `graph-agents-cli lint` passes.
+- [ ] `eval run` passes on the real model, with cases for your tools, refusals and failure
+      modes; the `pr_checks` gate runs on the real provider (its key secret is set).
+- [ ] Record `environments.<env>.context` for staging and prod in the manifest; keep
+      `.env.staging` / `.env.prod` out of git.
+- [ ] `secrets apply --env <env>`, then `secrets status --env <env>` exits 0.
+- [ ] Replace every `CHANGE-ME` (registry, chart image, CODEOWNERS owner, Argo CD `repoURL`);
+      `infra check --env prod` reports no required item missing.
+- [ ] External Postgres for staging and prod, with backups; `max_connections` covers
+      replicas x (`DB_POOL_MAX_SIZE` + 1); no transaction-mode PgBouncer in front.
+- [ ] Gateway or Ingress with TLS; review `route.publicPaths`; rate limiting at the gateway.
+- [ ] `APP_URL` (or `appUrl`, or a hostname) so the A2A card advertises the public URL.
+- [ ] `METRICS_TOKEN` or a NetworkPolicy if anything outside the cluster can reach the pods;
+      Prometheus scraping configured; alerts on `agent_runs_total{status!="ok"}` and `/ready`.
+- [ ] `PRINCIPAL_HASH_SALT` set (and added to `secrets.keys`) if principal ids are guessable
+      (email addresses, for example).
+- [ ] Decide `RETENTION_DAYS`, `TRACING_ENABLED` and `TRACE_CAPTURE` with whoever owns the
+      data; publish a privacy notice for a hosted model provider.
+- [ ] Tune `RUN_TIMEOUT_S`, `RECURSION_LIMIT`, `resources`, `replicaCount` or the HPA, and
+      the PodDisruptionBudget for your traffic; run the load test in `tests/load_test/`.
+- [ ] GitHub settings above in place (`infra check` reports them); pin the actions in the
+      generated workflows to commit SHAs if your organisation requires it.
+- [ ] Mirror the base images and vendor the subcharts if the cluster cannot reach Docker Hub.
 
 ## Disconnected profile
 
 "Runs locally" means the orchestration runs on your machine; "runs disconnected" means the
 whole lifecycle works without internet access. The disconnected profile is:
 
-- `MODEL_PROVIDER=openai-compatible` with `OPENAI_BASE_URL` at an on-network server
-  (vLLM, TGI, Ollama) and a tool-capable model; the judge uses the same mechanism via
-  `JUDGE_*`.
-- Runtime `fastapi`. LangGraph Server is excluded: the licensing requirement of the
-  deployed `langchain/langgraph-api:3.12` image is unverified (the
-  local `langgraph dev` server was verified to start with no LangSmith key).
+- `MODEL_PROVIDER=openai-compatible` with `OPENAI_BASE_URL` at an on-network server (vLLM,
+  TGI, Ollama) and a tool-capable model; the judge uses the same mechanism via `JUDGE_*`.
+- Runtime `fastapi` (the LangGraph Server image needs a licence check, see
+  [Known limitations](#known-limitations)).
 - Dependencies from a private index (`UV_INDEX_URL`, `install --locked`); base images
-  mirrored into your registry; the chart's `postgresql` and `redis` subcharts vendored
-  under `deployment/helm/<name>/charts/` (otherwise `deploy` fetches them from
-  `registry-1.docker.io`, exit 2 when unreachable).
-- Tracing off, or `TRACING_ENABLED=true` with `OTEL_EXPORTER_OTLP_ENDPOINT` to an
-  in-cluster collector; no LangSmith.
-- `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` so the CLI skips the GitHub release and skills checks (they
-  also fail silently offline); skills installed from the wheel bundle.
+  mirrored into your registry; the chart's subcharts vendored under
+  `deployment/helm/<name>/charts/`.
+- Tracing off, or `TRACING_ENABLED=true` with `OTEL_EXPORTER_OTLP_ENDPOINT` at an in-cluster
+  collector; no LangSmith.
+- `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`; skills installed from the wheel bundle; the CLI
+  installed from a mirror (`GRAPH_AGENTS_CLI_INSTALL_SPEC`).
 - `cd: skip` with direct-mode `deploy`, unless an on-network GitHub Enterprise Server hosts
-  Actions.
+  Actions (declared with `GH_HOST`).
 
-CI/CD caveats: CI/CD is outside the disconnected profile unless a
-GitHub Enterprise Server is on-network. `infra check --profile disconnected` and
-`login --profile disconnected` treat GitHub-hosted runner labels (`ubuntu-*`, `windows-*`,
-`macos-*` in `.github/workflows`) or a `GITHUB_ACTIONS` environment as outside the
-profile, warn on `cd != skip` without such labels, and expect an on-network GHES to be
-declared with `GH_HOST` (or `GITHUB_HOST` / `GITHUB_SERVER_URL`), the same variable
-`deploy` uses to open pull requests against it. `login --profile disconnected` also
-warns (does not fail) when `OPENAI_BASE_URL` is unreachable and when
-`GRAPH_AGENTS_CLI_NO_UPDATE_CHECK` is not `1`.
+`login --profile disconnected` and `infra check --profile disconnected` verify these
+conditions and fail on any hosted dependency (a hosted model or judge, `LANGSMITH_API_KEY`,
+tracing without an OTLP endpoint, GitHub-hosted runner labels, `langgraph-server`, a
+registry that is not on-network).
 
-`graph-agents-cli login --profile disconnected` and `infra check --profile disconnected`
-verify these conditions and fail on any hosted dependency (hosted model provider or
-judge, `LANGSMITH_API_KEY`, `TRACING_ENABLED` without an OTLP endpoint, GitHub-hosted
-runners in the workflows, `langgraph-server`, a registry that is not on-network).
+## Compared with google-agents-cli
 
-## Egress and privacy
+graph-agents-cli started from google-agents-cli 1.6.1 and keeps its lifecycle (setup,
+scaffold, run, eval, deploy, extensions, skills) and its scaffold engine (template layering,
+remote templates, 3-way merge for enhance and upgrade). It targets LangGraph on any
+Kubernetes cluster instead of ADK on Google Cloud. As of google-agents-cli 1.7.0
+(September 2026):
 
-Selecting a hosted provider sends prompts, tool results, and whatever context the agent
-assembles to that provider; enabling LangSmith sends traces there. Tracing is off by default
-and `TRACE_CAPTURE=metadata` omits tool arguments and results from exported traces. Decide
-what may leave your network before connecting a hosted model.
+**Where it goes further**
+
+- An enforceable eval gate: every planned case accounted for, deterministic checks and
+  mandatory judges with no threshold, quality metrics with an explicit `min_pass_rate`,
+  exit codes CI can use, `eval compare --fail-on-regression`, and a deterministic fake model
+  for keyless CI.
+- An outbound API policy enforced at runtime and checked by `lint`.
+- Kubernetes Secrets management (`secrets apply/status`, allow-listed keys, pre-deploy
+  checks) and Argo CD GitOps through pull requests.
+- A disconnected profile, verified by `login` and `infra check`.
+- Self-hosted auth policies (shared bearer, OIDC/JWT, custom) enforced in the app on every
+  surface, instead of a cloud provider's identity layer.
+
+**Where it is behind**
+
+- Evaluation: no prompt optimization, dataset synthesis, user simulation or results fetch
+  (`eval optimize`, `eval dataset synthesize`, `eval results` upstream); eval cases are
+  written by hand.
+- Infrastructure: no provisioning. `infra check` only reports; upstream's `infra cicd`
+  creates the CI/CD setup with Terraform.
+- Templates and languages: one Python LangGraph template and no sample catalogue, against
+  upstream's ADK templates in several languages, samples and a LangChain template.
+- Lint: no type checker or spell checker in the generated project's `lint`.
+- Maturity: a documentation site, a long release history and PyPI distribution are upstream
+  strengths; this project has a README and skills, its first tagged release, and PyPI
+  publication pending.
+- Upstream fixes after 1.6.1 are ported by hand (see CONTRIBUTING.md); for example, remote
+  templates still skip symlinks.
+
+Google Cloud targets (Agent Runtime, Cloud Run, GKE-specific integrations), publishing to
+Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
+
+## Known limitations
+
+- **LangGraph Server licence.** The `langgraph-server` runtime's image
+  (`langchain/langgraph-api`) checks for a LangGraph licence at startup (a LangSmith API key
+  or a licence key; see LangChain's LangGraph Server documentation) and exits without one.
+  Add the variable LangChain documents to `secrets.keys`. The image was verified here only up
+  to that check; `langgraph dev` (used by `run` and `playground`) needs no licence.
+- **A2A task store** is in process memory, per replica: `GetTask` or a resubscribe routed to
+  another pod reads as not found, and tasks are dropped `A2A_TASK_TTL_S` after their last
+  update. Use one replica, or sticky routing, for long A2A tasks.
+- **No built-in rate limiting**: configure it at the gateway or ingress.
+- **Run lock across replicas** uses Postgres session advisory locks: one extra connection per
+  replica, and it does not hold behind a transaction-mode connection pooler.
+- **`jwt`**: one issuer; no tenant or scope claims mapped to permissions (every
+  authenticated principal may use every action; ownership is per thread); the JWKS URL must
+  answer directly (no redirects); for a PEM certificate only its public key is used.
+- **`langgraph-server` specifics**: `/threads` on the public route also exposes the server's
+  native thread routes, including native run creation, which skips `/chat`'s guardrails (run
+  timeout, one run per thread, run records); the auth handler still limits them to the
+  caller's threads. Runs started through the native API carry the caller's raw id in
+  checkpoint metadata (the server injects it). Store reads are open to every authenticated
+  principal: namespace per-user data by principal.
+- **Human-in-the-loop** interrupts are not exposed over `/chat` (`message.end` always has
+  status `ok`).
+- `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after
+  `enhance --runtime`, run `graph-agents-cli install` to bring `uv.lock` up to date; required
+  steps are reported only by the enhance that changes the settings.
+- Upgrading a 0.1.0 project needs manual steps (see CHANGELOG.md), and an authentic baseline
+  needs the `v0.1.0` tag.
+- The Bitnami subcharts come from `registry-1.docker.io`, which rate-limits anonymous pulls;
+  their images are pinned by digest, and a pin must be refreshed if the digest is withdrawn.
+- The generated workflows reference actions by version tag, not commit SHA.
 
 ## Documentation
 
-- [skills/README.md](skills/README.md): bundled coding-agent skills and references.
-- [CONTRIBUTING.md](CONTRIBUTING.md): development setup, tests, templates and locks.
+- [CHANGELOG.md](CHANGELOG.md): release notes and migration steps.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development setup, tests, templates, locks, releases
+  and the upstream-sync process.
+- [skills/README.md](skills/README.md): the bundled coding-agent skills and their references.
+- A generated project's `README.md` and `AGENTS.md` describe that project.
 - [NOTICE](NOTICE): attribution to google-agents-cli and the list of modifications.
 
 ## License

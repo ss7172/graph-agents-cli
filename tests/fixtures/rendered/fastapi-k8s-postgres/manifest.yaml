@@ -1,7 +1,7 @@
 # Project manifest written by `graph-agents-cli create`.
 # Authoritative for `info`, `upgrade`, `deploy` and `secrets`; edit deliberately.
 name: 'p2-k8s'
-cli_version: '0.1.0'
+cli_version: '0.2.0'
 agent_directory: 'app'
 base_template: 'langgraph'
 generated_at: <generated_at>

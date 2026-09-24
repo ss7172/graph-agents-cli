@@ -1,14 +1,15 @@
 # Secrets
 
-Plain Kubernetes Secrets, provisioned per mode, restricted to allow-listed keys. No secrets
-controller is required in this release.
+Plain Kubernetes Secrets, provisioned per environment, restricted to allow-listed keys. No
+secrets controller is required.
 
 ## Contract
 
 - The chart references the app Secret by name (`existingSecret`, default `<release>-app`) and
-  mounts it with `envFrom`. The chart never templates a Secret.
-- Type `Opaque`, one key per allow-listed variable present in the env file, in namespace
-  `<name>-<env>`.
+  mounts it with `envFrom`. The chart never templates the app Secret.
+- Type `Opaque`, one key per allow-listed variable, in namespace `<name>-<env>`.
+- Outside dev the Secret is required (`secretOptional: false`): pods do not start without it
+  (`CreateContainerConfigError`). `values-dev.yaml` sets `secretOptional: true`.
 - Non-secret configuration is the chart's ConfigMap plus Deployment `env` (which overrides
   `envFrom`).
 
@@ -22,62 +23,92 @@ Scaffold default:
 | `JUDGE_API_KEY` | always (defaults to the provider key at runtime) |
 | `POSTGRES_DSN` | runtime `fastapi` |
 | `DATABASE_URI`, `REDIS_URI` | runtime `langgraph-server` |
-| `API_KEY` | always (shared-bearer) |
+| `API_KEY` | always (used by `shared-bearer`) |
 | `LANGSMITH_API_KEY` | always (used only when tracing is enabled) |
 | each `auth: bearer` API's `token_env` | when `api-policy.yaml` declares that API |
+| `AUTH_JWT_SECRET` | added automatically (not listed) under `jwt` when the chart values or the env file opt into HS* (`AUTH_JWT_ALLOW_HS=true` or an HS* algorithm) |
 
-Only these are exported from the env file, never the whole file. Edit the list in the manifest
-when the project adds a secret variable (for example a tool credential); `scaffold enhance`
-updates it when the provider changes.
+Only these are exported from the env file, never the whole file. Add any other secret the
+project uses to the list: for example `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`, a LangGraph
+licence key, or a tool credential. `scaffold enhance` recomputes the list when the runtime or
+provider changes (keys you added are kept).
+
+## Required keys
+
+`deploy` and `secrets status` treat these as required, following the environment's merged chart
+values: the provider key (not for `openai-compatible` or `fake`), `API_KEY` under
+`shared-bearer`, `AUTH_JWT_SECRET` under `jwt` when the chart values list an HS* algorithm, and
+`POSTGRES_DSN` or `DATABASE_URI`/`REDIS_URI` unless the bundled subchart provides them or
+`CHECKPOINTER=memory`. A key set as a plain chart `env` value is satisfied. Only keys in
+`secrets.keys` can be required: removing one from the allow-list is how an environment opts out.
 
 ## Commands
 
 ```bash
-graph-agents-cli secrets apply  --env <env> [--env-file <file>] [--dry-run]   # default .env.<env>, else .env
-graph-agents-cli secrets status --env <env> [--dry-run]                        # key names present, no values
+graph-agents-cli secrets apply  --env <env> [--env-file <file>] [--context <ctx>] [--yes] [--rotate-api-key] [--dry-run]
+graph-agents-cli secrets status --env <env> [--context <ctx>] [--strict] [--dry-run]
 ```
 
-- `apply` creates or updates `<name>-app` with
-  `kubectl create secret generic <name>-app --from-env-file=<0600 temporary file> --dry-run=client -o yaml | kubectl apply -f -`
-  (the temporary file holds only the allow-listed keys and is deleted afterwards, so no value
-  appears on a command line or in the echoed command). It generates `API_KEY` (32 random bytes,
-  hex) only when it is absent from the env file **and** from the live Secret, and prints it once;
-  store it where the client application keeps its credentials. An existing key is read back
-  (`kubectl get secret -o json`) and re-included, so a repeated `apply` or direct-mode `deploy`
-  never rotates it: one key per environment. Values must be single-line (the env-file format
-  cannot carry a newline; exit 3 naming the key). Exit 3 when no env file is found or it holds
-  none of the allow-listed keys; exit 2 when kubectl fails (including a `get secret` failure that
-  is not `NotFound`, which is never treated as "generate a new key").
-- `apply --dry-run` prints the pipeline and a redacted manifest (`API_KEY: <redacted>`); it reads
-  nothing from the cluster and prints no key, only a note that `API_KEY` would be kept or generated.
-- `apply` is **not** refused under CI: the CLI does not check `CI` or `GITHUB_ACTIONS`. Keeping
-  application secrets out of CI is the procedure below (the scaffolded workflows never hold
-  them), not a runtime guard.
-- `status` runs `kubectl get secret <name>-app -o json` and lists present and missing allow-listed
-  keys (and any key outside the allow-list, dimmed); it exits 1 when the Secret is absent
-  (kubectl's `(NotFound)`) or any allow-listed key is missing, 0 when all are present, and 2 with
-  kubectl's own message when the call fails for another reason (connection, credentials, RBAC),
-  never a fabricated "missing" list. `--dry-run` prints the command only.
-- In `helm-push` and `argocd` modes `deploy` never touches Secrets.
+- **Env file:** `--env-file`, else `.env.<env>`. Only `dev` falls back to `.env` (a developer's
+  local keys never reach staging or prod); any other environment without one exits 3 with the
+  list of allow-listed keys.
+- **Kube context:** `--context`, else `environments.<env>.context`, else the kubeconfig's
+  current context, which outside dev needs a confirmation (`Apply the Secret for <env> on
+  context '<ctx>'? [y/N]`) or `--yes`. The context and API server are printed first. An explicit
+  context missing from the kubeconfig is exit 3.
+- **`apply`** creates the namespace when it is missing, then applies `<name>-app` with
+  `kubectl create secret generic <name>-app --from-env-file=<0600 temporary file> --dry-run=client -o yaml | kubectl apply --server-side --field-manager=graph-agents-cli --force-conflicts -f -`.
+  The temporary file holds only the allow-listed keys and is deleted afterwards, so no value
+  appears on a command line; server-side apply writes no `last-applied-configuration` annotation
+  (one left by an older client-side apply is removed and reported). `--force-conflicts` makes
+  the CLI the owner of the allow-listed keys: do not let another controller manage them.
+- **Merge:** a key the env file sets replaces the live value; an allow-listed key the env file
+  leaves out is kept from the live Secret (so a partial env file never deletes keys). Remove a key
+  by dropping it from `secrets.keys` (the next apply removes it) or with `kubectl`.
+- **`API_KEY`:** the live key wins. When the env file sets a different one, the live key is kept
+  with a warning unless `--rotate-api-key` is passed (clients with the old key then get 401;
+  restart the pods with `deploy --restart`). When it is in neither the env file nor the live
+  Secret, a key (32 random bytes, hex) is generated, applied, and written to the env file (mode
+  0600) after the apply succeeds; it is never printed. If writing the file fails, the kubectl
+  command to read it back is printed.
+- Values must be single-line (the env-file format cannot carry a newline; exit 3 naming the
+  key). Exit 2 when kubectl fails (including a `get secret` failure that is not `NotFound`, which
+  is never treated as "generate a new key").
+- **`apply --dry-run`** prints the pipeline and a redacted manifest; it reads nothing from the
+  cluster, prints no key, and notes that allow-listed keys absent from the env file would be kept
+  from the live Secret.
+- **`status`** runs `kubectl get secret <name>-app -o json` and lists `present`, `missing
+  required`, `missing optional` and `not in the allow-list` keys, never values. Exit codes
+  (usable as a gate): 0 every required key present, 1 the Secret or a required key is missing
+  (any allow-listed key with `--strict`), 2 kubectl failed (connection, credentials, RBAC), 3
+  configuration error (unknown environment or context, no manifest). `--dry-run` prints the
+  command only.
+- `apply` is **not** refused under CI: keeping application secrets out of CI is the procedure
+  below (the scaffolded workflows never hold them), not a runtime guard.
+- In `helm-push` and `argocd` modes `deploy` never applies Secrets (`--env-file` and
+  `--rotate-api-key` are refused there); helm-push `deploy` still checks the live Secret's
+  required keys before helm runs.
 
-## Per-environment inputs
+## Direct-mode `deploy`
 
-`deploy --env <env>` (direct modes) and `secrets apply --env <env>` read `--env-file`, defaulting
-to `.env.<env>` when present, else `.env`. Keep `.env.staging` and `.env.prod` out of git; local
-development uses `.env`.
+`deploy --env <env>` in `cd: skip` applies the Secret with the same rules as `secrets apply`,
+but first checks, read-only, that the Secret it would produce holds every required key: when
+one is missing it exits 1 before anything is built, pushed or changed, naming the keys and the
+env file to add them to. `dev` without an env file leaves the Secret as it is (and still checks
+it).
 
 ## Ownership in CD modes
 
 The manifest records `secrets.owner` (free text: a team or role). That owner creates the Secret
-once per environment with `graph-agents-cli secrets apply --env <env> --env-file <file>` from a
+once per environment with `graph-agents-cli secrets apply --env <env>` (from `.env.<env>`) from a
 workstation with cluster access, or with `kubectl create secret generic`. CI never holds
-application secrets. Argo never manages the Secret. External Secrets Operator or Sealed Secrets
-can replace this procedure later.
+application secrets. Argo never manages the app Secret. External Secrets Operator or Sealed
+Secrets can replace this procedure; drop the keys they manage from `secrets.keys`.
 
 ## Rotation
 
-1. Put the new value in the env file.
-2. `graph-agents-cli secrets apply --env <env>`.
+1. Put the new value in `.env.<env>`.
+2. `graph-agents-cli secrets apply --env <env>` (add `--rotate-api-key` for `API_KEY`).
 3. `graph-agents-cli deploy --restart --env <env>` (`kubectl rollout restart`), because an
    externally managed Secret does not change the pod template checksum. In argocd environments,
    prefer an Argo resource action; self-heal may revert the restart annotation.
@@ -86,13 +117,16 @@ can replace this procedure later.
 ## What is never a secret
 
 `MODEL_PROVIDER`, `MODEL_NAME`, `OPENAI_BASE_URL`, `CHECKPOINTER`, `AUTH_POLICY`,
-`AUTH_READ_ACROSS_ROLES`, each API's `base_url_env`, `TRACING_ENABLED`, `TRACE_CAPTURE`,
-`LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `APP_ENV`, `PORT`: these
-live in `values-<env>.yaml` `env:`.
+`AUTH_READ_ACROSS_ROLES`, `AUTH_ADMIN_ROLES`, the `AUTH_JWT_*` settings except
+`AUTH_JWT_SECRET`, each API's `base_url_env`, the limits and logging settings, `TRACING_ENABLED`,
+`TRACE_CAPTURE`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`APP_ENV`, `PORT`: these live in `values-<env>.yaml` `env:`. Settings that appear only in the
+env file never reach the pods (the CLI warns about HS* JWT settings found there).
 
 ## Checks
 
-- `secrets status --env <env>` after `apply`: every allow-listed key you expect should be listed.
-- A pod in `CreateContainerConfigError` means the Secret or a key is missing.
-- `infra check --env <env>` reports whether the image pull secret named in `imagePullSecrets`
-  exists; that secret is an operator prerequisite, not managed by `secrets apply`.
+- `secrets status --env <env>` after `apply`: exit 0 means every required key is there.
+- A pod in `CreateContainerConfigError` means the Secret is missing (outside dev).
+- `infra check --env <env>` reports the app Secret's missing required keys and whether the image
+  pull secret named in `imagePullSecrets` exists; that pull secret is an operator prerequisite,
+  not managed by `secrets apply`.

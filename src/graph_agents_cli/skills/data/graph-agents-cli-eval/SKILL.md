@@ -14,11 +14,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.1.0"
+  version: "0.2.0"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
 ---
 
 # Agent evaluation guide
@@ -90,8 +90,10 @@ graph-agents-cli eval metric list [--json]
   `API_KEY` from `.env`). `--dataset` defaults to `tests/eval/datasets/basic-dataset.json`, else
   every `*.json` there. Each case runs on a fresh `thread_id`; multi-message cases send messages
   in order on that thread and the trace records the final turn (plus every turn under `turns`).
-  Exit 3 on a configuration error (no project, no dataset, malformed case), 2 when a case is
-  `error` or `missing`.
+  Exit 3 on a configuration error (no project, no dataset, malformed case, a local server port
+  that is taken), 2 when a case is `error` or `missing` or the local server cannot start. The
+  local server's port is the first free one of 18080-18089, or `GRAPH_AGENTS_CLI_RUN_PORT`; a
+  SIGTERM or Ctrl-C stops it before the command exits.
 - `eval grade` runs the deterministic checks in the CLI process first; judge and custom metrics
   then run **inside the project's environment**: the CLI stages `.graph-agents-cli/judge_runner.py`
   into the project and runs it with `uv run python`, and the runner calls the template's
@@ -99,13 +101,15 @@ graph-agents-cli eval metric list [--json]
   them for the run). Judges run only for the metrics a case declares and only for cases that
   passed the deterministic checks. No evaluation service; no LangChain in the CLI. `--traces`
   defaults to the newest traces file; a directory merges every `*.json` from one dataset.
-- `eval run` chains both on a fresh traces file and honours extension overrides of both
-  `eval.generate` and `eval.grade`.
+- `eval run` validates the eval config and every case's metrics **before** generating (exit 3,
+  no model calls spent; skipped when an `eval.grade` override is installed), then chains both on a
+  fresh traces file and honours extension overrides of both `eval.generate` and `eval.grade`.
 - `eval compare` takes two results files positionally; `eval analyze` reads the newest results
   file unless `--results` is given and clusters non-passed cases deterministically (the judge
   summarises clusters only with `--judge`).
 - `eval submit` needs `LANGSMITH_API_KEY` and the `langsmith` extra; it is never required and is
-  disabled in the disconnected profile.
+  disabled in the disconnected profile. A LangSmith failure is one line (could not reach, refused
+  the credentials, refused the upload) and exit 2.
 - Artifact names are `<prefix>_<YYYYMMDD_HHMMSS>.json`; two runs within one second get a `_2`,
   `_3`, ... suffix.
 
@@ -126,7 +130,8 @@ that profile.
    from the spec's use cases. Datasets are versioned in the repo and reviewed in PRs.
 2. **Run.** `graph-agents-cli eval run`. Paste the per-status counts and the exit code.
 3. **Analyze.** Open the latest `results_<ts>.json`: each case has `status`, `reasons`, `checks`,
-   `judge_scores` (an object per metric: `score`, `threshold`, `passed`, `quality`, `reasoning`).
+   `judge_scores` (an object per metric: `score`, `threshold`, `passed`, `quality`, `reasoning`,
+   `kind` = `judge` or `custom`).
    For 10+ failures, `eval analyze` clusters them by status, check or metric, and masked reason
    (`--judge` adds root causes and fixes from the judge model).
 4. **Fix.** Adjust the system prompt, tool descriptions, graph routing, or the case itself when it
@@ -204,13 +209,18 @@ passes on the `fake` provider with the fake judge.
 
 ## CI
 
-`pr_checks.yaml` runs `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli eval run` when `tests/eval/datasets/*.json` exists
-and fails on non-zero, with `MODEL_PROVIDER=${{ vars.MODEL_PROVIDER || 'fake' }}`: until the
-repository variable `MODEL_PROVIDER` is set, the agent and the judge run on the deterministic
-`fake` provider and need no key (the scaffolded dataset passes that way). To grade against the
-real provider in CI, set the `MODEL_PROVIDER` repository variable and the matching key secret
-(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or `MODEL_API_KEY`), which is also the
-judge key unless `JUDGE_*` is configured; that sends eval prompts to the provider on every PR.
+`pr_checks.yaml` runs `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli eval run` when
+`tests/eval/datasets/*.json` exists and fails on non-zero, with extension overrides disabled
+(`GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1`), so a project extension cannot replace the gate. The unit
+and integration tests always run on the fake model. The eval gate uses the project's real
+provider and model (from the manifest) when that provider's key is a repository secret
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or `MODEL_API_KEY`), or the
+`MODEL_PROVIDER` / `MODEL_NAME` repository variables when set (`MODEL_NAME` is required when the
+provider differs from the project's); `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL`
+variables and a `JUDGE_API_KEY` secret configure a separate judge. Without a key the gate runs on
+the deterministic `fake` provider (the scaffolded dataset passes that way) and prints the warning
+"Eval gate is not a quality signal": it then only proves the plumbing. A real provider sends
+eval prompts to it on every PR.
 
 ## Not covered by this skill
 

@@ -14,15 +14,17 @@ A LangGraph agent scaffolded by graph-agents-cli.
 ## Quick start
 
 ```bash
-cp .env.example .env            # set {{cookiecutter.provider_key_var}}{% if cookiecutter.auth_policy == 'shared-bearer' %} and API_KEY{% endif %}
-uv sync                          # from the committed uv.lock
-graph-agents-cli playground      # http://127.0.0.1:8000/playground (APP_ENV=dev)
+cp .env.example .env                  # set {{cookiecutter.provider_key_var}} (or MODEL_PROVIDER=fake to try it without a key)
+graph-agents-cli login --write-env    # checks the setup; prompts for missing keys{% if cookiecutter.auth_policy == 'shared-bearer' %}, generates API_KEY{% endif %}
+graph-agents-cli install              # uv sync from the committed uv.lock
 graph-agents-cli run "What's the weather in San Francisco?"
+graph-agents-cli playground           # http://127.0.0.1:8000/playground (APP_ENV=dev)
 ```
 
 {%- if cookiecutter.auth_policy == 'shared-bearer' %}
-`API_KEY` is the shared bearer key every client sends (`Authorization: Bearer ...`);
-generate one with `python -c "import secrets; print(secrets.token_hex(32))"`.
+`API_KEY` is the shared bearer key every client sends (`Authorization: Bearer ...`); the local
+server answers 503 until it is set. `login --write-env` generates one, or run
+`python -c "import secrets; print(secrets.token_hex(32))"`.
 {%- else %}
 Authentication follows `AUTH_POLICY={{cookiecutter.auth_policy}}` (see Authentication below).
 {%- endif %}
@@ -33,8 +35,8 @@ Local development needs no database: `.env.example` sets `CHECKPOINTER=memory`.
 ```
 {{cookiecutter.agent_directory}}/
 ├── agent.py                 # exports `graph` (compiled LangGraph agent, no checkpointer bound)
-├── fast_api_app.py          # exports `app`: POST /chat (SSE), GET /health, /threads/{id}/messages, /playground, A2A
-├── app_utils/               # model, checkpointer, db (run records), threads, auth, api_client, telemetry, a2a, chat
+├── fast_api_app.py          # exports `app`: the HTTP API below
+├── app_utils/               # auth, api_client, chat, threads, db, limits, metrics, middleware, model, telemetry, a2a
 ├── policies/                # AuthPolicy implementations (custom.py is a fail-closed stub)
 └── tools/                   # every module declares API_CALLS and TOOLS
 tests/{unit,integration,eval,load_test}
@@ -44,12 +46,13 @@ deployment/helm/{{cookiecutter.project_name}}/   # chart, values.yaml, values-{d
 deployment/argocd/           # application-{dev,staging,prod}.yaml
 {%- endif %}
 {%- endif %}
+.github/                     # workflows, agent.env (their settings), CODEOWNERS
 langgraph.json               # graph, custom app and auth handler (LangGraph Studio / Server)
 {%- if cookiecutter.has_api_policy %}
 api-policy.yaml              # the external APIs tools may call, and how (enforced at runtime and by lint)
 {%- endif %}
-Dockerfile                   # {{cookiecutter.runtime}} image
-.env.example                 # the full environment contract
+Dockerfile                   # {{cookiecutter.runtime}} image (runs as uid 1000)
+.env.example                 # the full environment contract, with defaults
 graph-agents-cli-manifest.yaml
 ```
 
@@ -59,27 +62,61 @@ graph-agents-cli-manifest.yaml
 |---|---|
 | `graph-agents-cli playground` | Run the app with reload; `--graph` opens LangGraph Studio (bypasses the auth policy) |
 | `graph-agents-cli run "prompt" [--mode a2a] [--url URL] [--thread-id ID]` | One-shot chat; `--url` targets a deployed agent with `--header` / `GRAPH_AGENTS_CLI_API_KEY` |
-| `uv run pytest tests/unit tests/integration` | Tests with the deterministic `fake` model and the in-memory checkpointer |
+| `uv run pytest` | Unit and integration tests with the deterministic `fake` model and the in-memory checkpointer (`TEST_POSTGRES_DSN` opts the Postgres tests in) |
 | `graph-agents-cli eval run` | Generate traces (`artifacts/traces/`) and grade them against the gate in `tests/eval/eval_config.yaml` |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool's `API_CALLS` |
 | `graph-agents-cli build` | `docker build` with the runtime's Dockerfile |
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
-| `graph-agents-cli infra check --env <env>` | Read-only report of cluster and GitHub prerequisites |
-| `graph-agents-cli secrets apply --env <env> [--env-file FILE]` | Create or update the environment's app Secret from the allow-listed keys |
+| `graph-agents-cli infra check --env <env>` | Read-only report of cluster, GitHub and placeholder prerequisites |
+| `graph-agents-cli secrets apply --env <env>` | Create or update the environment's app Secret from the allow-listed keys of `.env.<env>` |
+| `graph-agents-cli secrets status --env <env>` | Which keys the Secret holds (never values); exit 1 when a required key is missing |
 | `graph-agents-cli deploy --env <env> [--image REF] [--status] [--restart] [--dry-run]` | Deploy per the CD mode (see below) |
 {%- endif %}
 
 ## The API
 
-`POST /chat` with `Accept: text/event-stream` and `{"thread_id": "optional", "message": "...", "metadata": {}}`
-streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status)
-or `error`. Send the same `thread_id` to continue a conversation. `GET /threads/{id}/messages` returns
-the thread (ownership enforced), `GET /health` reports runtime and checkpointer, and the A2A agent card is at
-`/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` with JSON-RPC at `/a2a/{{cookiecutter.agent_directory}}`.
+| Route | Behaviour |
+|---|---|
+| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Send the same `thread_id` to continue a thread |
+| `GET /threads` | The caller's threads, most recent first (`?limit=1..100&offset=`) |
+| `GET /threads/{id}/messages` | A thread's messages (owner, or a role in `AUTH_READ_ACROSS_ROLES`) |
+| `DELETE /threads/{id}` | Delete a thread, its checkpoints and run records (owner only; 409 while a run is in progress) |
+| `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
+| `GET /ready` | Readiness: 200 when the database answers within 2 s, else 503 (no auth) |
+| `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
+| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json`; tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S` |
+| `/playground`, `/docs`, `/openapi.json` | Only under `APP_ENV=dev` |
 {%- if cookiecutter.runtime == 'langgraph-server' %}
+
 Under LangGraph Server these routes are mounted beside the native Assistants/Threads/Runs API
-(`langgraph.json` `http.app`) and the same policy is the server's auth handler (`langgraph.json` `auth`).
+(`langgraph.json` `http.app`) and the same policy is the server's auth handler (`langgraph.json`
+`auth`). Thread ids must be UUIDs, and `DELETE /threads/{id}` is the server's own route with the
+same owner rule. Assistants, crons and store writes need a role in `AUTH_ADMIN_ROLES`; every
+other native action a handler does not allow is denied. The server image disables the server's
+unauthenticated `/docs`, `/openapi.json`, `/info` and `/metrics`.
 {%- endif %}
+
+Behaviour and its settings (defaults in `.env.example`; a value that does not parse stops the app
+at startup):
+
+- **One run per thread:** a second `/chat` on a busy thread gets 409 `{"code": "thread_busy"}`.
+- **Guardrails:** a run is cancelled after `RUN_TIMEOUT_S` (300); each model request has
+  `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2); `RECURSION_LIMIT` (25) caps graph steps.
+  A client disconnect cancels the run. Idle streams get a keep-alive comment every
+  `SSE_HEARTBEAT_S` (15).
+- **Limits:** bodies over `MAX_REQUEST_BYTES` get 413; metadata beyond `MAX_METADATA_KEYS` /
+  `MAX_METADATA_VALUE_CHARS` gets 422.
+- **Errors:** the `error` event is `{"code", "message", "error_id", "run_id"}`; an unhandled error
+  answers 500 with an `error_id`. Details are only in the server log under that id. Every
+  response carries `X-Request-ID`.
+- **Retention:** `RETENTION_DAYS=N` deletes threads idle for more than N days (hourly; 0 keeps
+  everything).
+- **Logging:** JSON lines outside `APP_ENV=dev` (`LOG_FORMAT`, `LOG_LEVEL`) with request id, run
+  id, thread id and a hashed principal (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set).
+- **CORS:** off unless `CORS_ALLOW_ORIGINS` lists origins.
+- **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`).
+
+No rate limiting is built in: configure it at the gateway or ingress.
 
 ## Model and judge
 
@@ -117,27 +154,44 @@ No example tool was generated: the first API allows no GET the example could mak
 No policy is declared yet: seed one with `graph-agents-cli create --api-policy <file>`, or write
 `api-policy.yaml` by hand and add `api_policy: {policy_file: api-policy.yaml}` to the manifest.
 {%- endif %}
-Every tool module declares `API_CALLS` as one module-level literal list; `graph-agents-cli lint` fails on an
-undeclared or disallowed call, and on `API_CALLS` changed anywhere else (`+=`, `.append()`, a conditional
-assignment), because it cannot read those calls.
+Every `*.py` under `{{cookiecutter.agent_directory}}/tools/` (subpackages included) declares `API_CALLS` as one
+module-level literal list; `graph-agents-cli lint` fails on an undeclared or disallowed call, and on `API_CALLS`
+changed anywhere else (`+=`, `.append()`, a conditional assignment), because it cannot read those calls.
 
 ## Authentication
 
-`AUTH_POLICY=shared-bearer` (default) checks `Authorization: Bearer <API_KEY>` with a constant-time compare;
-every caller is the same principal. `AUTH_POLICY=jwt` gives each user their own principal from a verified
-OIDC/JWT bearer token (`AUTH_JWT_JWKS_URL` or `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`;
-see `.env.example`). `AUTH_POLICY=custom` ships as a fail-closed stub in
-`{{cookiecutter.agent_directory}}/policies/custom.py` for anything else (for example an existing application's
-session): implement it, then set `auth_policy_implemented: true` in the manifest. Thread ownership is enforced
-per principal; roles listed in `AUTH_READ_ACROSS_ROLES` may read other principals' threads.
+One policy (`AUTH_POLICY`) guards `/chat`, the thread routes and A2A{% if cookiecutter.runtime == 'langgraph-server' %}, and the server's native API{% endif %}.
+An unknown policy never starts, and a misconfigured one stops the app outside `APP_ENV=dev` (under dev
+requests get 503 and the problem is logged).
+
+- `shared-bearer` (default): `Authorization: Bearer <API_KEY>`, compared in constant time; every caller is the
+  same principal, so use it for trusted callers only.
+- `jwt`: each user gets their own principal from a verified OIDC/JWT bearer token. Set
+  `AUTH_JWT_JWKS_URL` (https outside dev) or `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER` and
+  `AUTH_JWT_AUDIENCE` (both required outside dev); optionally `AUTH_JWT_ALGORITHMS` (default `RS256,ES256`;
+  HS* only with `AUTH_JWT_ALLOW_HS=true` and a 32-byte `AUTH_JWT_SECRET` in the Secret),
+  `AUTH_JWT_PRINCIPAL_CLAIM` (`sub`), `AUTH_JWT_ROLES_CLAIM` (`roles`; dotted paths such as
+  `realm_access.roles`), `AUTH_JWT_LEEWAY_S` (60), `AUTH_JWT_JWKS_CACHE_S` (300). A missing or invalid token
+  gets 401 with a `WWW-Authenticate` challenge; unreachable issuer keys (after a 1 hour grace) get 503.
+- `custom`: a fail-closed stub in `{{cookiecutter.agent_directory}}/policies/custom.py` for anything else (for
+  example an existing application's session cookie). Implement `authenticate` (return a `Principal` with a
+  stable `id` and its `roles`; 401 when the credential is missing or invalid, 503 when the issuer is
+  unreachable), `authorize`, and optionally `startup_problems()`, then set `auth_policy_implemented: true` in
+  the manifest (`deploy --env staging|prod` refuses until then).
+
+Thread and A2A task ownership is enforced per principal. Roles in `AUTH_READ_ACROSS_ROLES` may read, never
+continue or delete, other principals' threads; roles in `AUTH_ADMIN_ROLES` manage assistants, crons and the
+store under langgraph-server (both empty by default). Secrets a principal carries live only in
+`attributes["credentials"]` and are never persisted, logged or traced.
 
 ## Tracing
 
 Off unless `TRACING_ENABLED=true`. With `LANGSMITH_API_KEY` traces go to LangSmith (`LANGSMITH_PROJECT`,
 `LANGSMITH_ENDPOINT`); otherwise over OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`. `TRACE_CAPTURE=metadata`
 (default) records structure, timing, token counts, tool names, error types and hashed identifiers only;
-`TRACE_CAPTURE=full` adds prompts, completions, tool arguments and results, and error messages. Run records
-(`runs` table under postgres, in-process under memory) follow the same policy.
+`TRACE_CAPTURE=full` adds prompts, completions, tool arguments and results, error messages and the client's
+`/chat` metadata. Run records (`runs` table under postgres, in-process under memory) follow the same policy;
+client metadata is kept in the run record, never in checkpoints.
 {%- if cookiecutter.deployment_target == 'kubernetes' %}
 
 ## Environments
@@ -149,42 +203,58 @@ Off unless `TRACING_ENABLED=true`. With `LANGSMITH_API_KEY` traces go to LangSmi
 | `prod` | `{{cookiecutter.project_name}}-prod` | `values.yaml` + `values-prod.yaml` | external, from the Secret |
 
 The Helm release name is `{{cookiecutter.project_name}}`. Contexts and namespaces are recorded under `environments:`
-in `graph-agents-cli-manifest.yaml`; `deploy --env <env>` and `secrets apply --env <env>` read `.env.<env>`
-when present, else `.env`. Traffic enters through a Gateway API `HTTPRoute` (set `gateway.parentRef` and
-`gateway.hostname` in the values file) or an `Ingress` (`ingress.enabled=true`); TLS comes from
-`tls.existingSecret` or cert-manager (`tls.certManager.enabled=true`). Nothing is installed by the CLI or the
-chart: `graph-agents-cli infra check --env <env>` reports what the cluster has.
+in `graph-agents-cli-manifest.yaml`. Traffic enters through a Gateway API `HTTPRoute` (set `gateway.parentRef` and
+`gateway.hostname` in the values file) or an `Ingress` (`ingress.enabled=true`); only `route.publicPaths`
+(`/chat`, `/threads`, `/a2a/{{cookiecutter.agent_directory}}`) are published, so `/health`, `/ready` and
+`/metrics` stay inside the cluster. TLS comes from `tls.existingSecret` or cert-manager
+(`tls.certManager.enabled=true`). The pod runs as uid 1000 with a read-only root filesystem; readiness uses
+`/ready`. `image.tag` is set per deploy (the chart refuses an empty or unquoted numeric tag). Nothing is
+installed by the CLI or the chart: `graph-agents-cli infra check --env <env>` reports what the cluster has.
 
-Before the first deploy, fetch the chart dependencies once: `helm dependency build deployment/helm/{{cookiecutter.project_name}}`.
+`deploy` and `secrets apply` follow these rules:
+
+- The env file is `--env-file`, else `.env.<env>`; only `dev` falls back to `.env`.
+- The kube context is `--context`, else `environments.<env>.context`, else the kubeconfig's current one, which
+  outside `dev` needs a confirmation (or `--yes`). Record the staging and prod contexts in the manifest.
+- Direct mode checks that the Secret holds every required key before it builds anything (exit 1 otherwise),
+  runs `helm upgrade --install --wait --timeout 5m`, and on a failed rollout prints the pods' states, events
+  and logs, then rolls back its own revision (`--atomic`, default).
+- A workstation build of a tree with uncommitted changes is tagged `<sha>-dirty-<time>`.
 
 ## Secrets
 
-The chart never templates the app Secret; it mounts `<release>-app` (`existingSecret`) with `envFrom`.
-Only the keys listed under `secrets.keys` in the manifest are exported from an env file:
-`{{ cookiecutter.secret_keys | join('`, `') }}` (the token of every `auth: bearer` API in `api-policy.yaml` included).
+The chart never templates the app Secret; it mounts `<release>-app` (`existingSecret`) with `envFrom`, and
+outside dev the pods do not start without it. Only the keys listed under `secrets.keys` in the manifest are
+exported from an env file: `{{ cookiecutter.secret_keys | join('`, `') }}` (the token of every `auth: bearer`
+API in `api-policy.yaml` included). Add other secrets you use (`METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`) to that
+list.
 
 ```bash
-graph-agents-cli secrets apply --env staging --env-file .env.staging   # create or update
-graph-agents-cli secrets status --env staging                          # which keys are present (no values)
-graph-agents-cli deploy --env staging --restart                        # roll the pods after a rotation
+graph-agents-cli secrets apply --env staging     # from .env.staging; creates the namespace if needed
+graph-agents-cli secrets status --env staging    # which keys are present (no values); exit 1 on a missing required key
+graph-agents-cli deploy --env staging --restart  # roll the pods after a rotation
 ```
 
-`secrets apply` generates `API_KEY` (32 random bytes, hex) when the env file has none and prints it once.
-In `argocd` and `helm-push` modes CI never holds application secrets: the owner named in the manifest
-(`secrets.owner`) runs `secrets apply` from a workstation with cluster access, once per environment.
+Secrets are applied with server-side apply; allow-listed keys the env file leaves out are kept. The live
+`API_KEY` wins: it changes only when the env file sets another one and `--rotate-api-key` is passed. A missing
+`API_KEY` is generated and written to the env file (mode 0600), never printed. In `argocd` and `helm-push`
+modes CI never holds application secrets: the owner named in the manifest (`secrets.owner`) runs
+`secrets apply` from a workstation with cluster access, once per environment.
 
 ## Deploying (`cd: {{cookiecutter.cd}}`)
 {%- if cookiecutter.cd == 'skip' %}
 
-Direct mode. `graph-agents-cli deploy --env dev` builds the image, loads it into a kind/k3s/minikube/Docker
-Desktop node (or pushes it to `{{cookiecutter.registry}}` for a remote cluster), applies the Secret from the
-allow-listed keys and runs `helm upgrade --install`. `deploy --env staging|prod` works the same way from a
-workstation. Add CD later with `graph-agents-cli scaffold enhance --cd argocd|helm-push`.
+Direct mode. `graph-agents-cli deploy --env dev` builds the image, loads it into a local cluster (kind, k3d, k3s,
+minikube; nothing for Docker Desktop) or pushes it to `{{cookiecutter.registry}}` for a remote cluster, applies the
+Secret from the allow-listed keys and runs `helm upgrade --install`. `deploy --env staging|prod` works the same way
+from a workstation, with the context rules above. Add CD later with
+`graph-agents-cli scaffold enhance --cd argocd|helm-push`.
 {%- elif cookiecutter.cd == 'argocd' %}
 
 Pull-based. On every push to `main` the `staging` workflow builds and pushes
-`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (`${GITHUB_SHA::7}`, the tag a workstation `deploy` also uses), writes the tag into `values-staging.yaml`
-and opens a PR with auto-merge; Argo CD reconciles `main` into `{{cookiecutter.project_name}}-staging`.
+`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses),
+writes the tag into `values-staging.yaml` on a branch built on the latest `main` (closing older staging PRs it
+supersedes) and opens a PR with auto-merge; Argo CD reconciles `main` into `{{cookiecutter.project_name}}-staging`.
 Production changes only through a PR that touches `values-prod.yaml`: the `promote-to-prod` workflow (GitHub
 `production` environment) or a workstation `graph-agents-cli deploy --env prod --image <ref>` opens it, and its
 merge (code-owner review, no self-approval, `pr_checks` green) is the single production gate. `deploy` never
@@ -194,10 +264,12 @@ Point `deployment/argocd/application-*.yaml` at this repository (`repoURL`) and 
 {%- elif cookiecutter.cd == 'helm-push' %}
 
 Push-based. On every push to `main` the `staging` workflow builds and pushes
-`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (`${GITHUB_SHA::7}`, the tag a workstation `deploy` also uses) and a **self-hosted runner** inside the network
-runs `graph-agents-cli deploy --env staging --image <ref>` with the kubeconfig from the `KUBECONFIG` repository
-secret. `promote-to-prod` (GitHub `production` environment) does the same for production. From a workstation
-`deploy` is allowed for `dev` and refused for `staging`/`prod` unless `--force-direct`.
+`{{cookiecutter.registry}}/{{cookiecutter.project_name}}:<short sha>` (the tag a workstation `deploy` also uses), and a
+**self-hosted runner** inside the network runs `graph-agents-cli deploy --env staging --image <ref> --context <ctx> --yes`
+with the kubeconfig from the `DEPLOY_KUBECONFIG` secret of the `staging` environment, then verifies the rollout
+(`/health`, `/ready`). `promote-to-prod` does the same for production with the `production` environment's secret
+and reviewers. From a workstation `deploy` is allowed for `dev` and refused for `staging`/`prod` (even with
+`--image`) unless `--force-direct`.
 {%- endif %}
 
 ## GitHub settings the workflows rely on (not created by the CLI)
@@ -208,16 +280,20 @@ reports whether they exist when a `GITHUB_TOKEN` is available.
 - Environment `production`: required reviewers (at least one), "prevent self-review" enabled, deployment
   branches restricted to `main`, optional wait timer.
 - Environment `staging`: deployment branches restricted to `main`; no reviewers.
-- The production job declares `environment: production` and runs only from `main`.
 - Branch protection on `main` (`argocd` and `helm-push`): pull requests required; required review from code
   owners; "dismiss stale approvals" and "prevent self-approval" enabled; `pr_checks` as a required status
-  check; no bypass for the Actions token except allowing auto-merge for the staging PR.
-- `.github/CODEOWNERS` maps `values-prod.yaml` and `application-prod.yaml` to the production approvers;
-  replace the `@CHANGE-ME/production-approvers` placeholder.
+  check; auto-merge allowed for the staging PR.
+- `.github/CODEOWNERS` owns the chart and prod values, the workflows, `api-policy.yaml`, `tests/eval/`, the
+  extensions and the manifest; replace the `@CHANGE-ME/production-approvers` placeholder.
+- `GH_PR_TOKEN` (a fine-grained PAT or GitHub App token with pull-request and contents write access): pull
+  requests opened with the workflow token never trigger `pr_checks`.
 - Registry credentials: GHCR works with the workflow token; other registries take `REGISTRY_USERNAME` /
-  `REGISTRY_PASSWORD` secrets. `helm-push` additionally needs the `KUBECONFIG` secret and a self-hosted runner.
-- Optional CI model access: repository variables `MODEL_PROVIDER` / `MODEL_NAME` and the matching key secret
-  make `pr_checks` run the tests and the eval gate against a real model instead of the `fake` one.
+  `REGISTRY_PASSWORD` secrets.
+- `helm-push`: the `DEPLOY_KUBECONFIG` secret in each of the `staging` and `production` environments (never a
+  repository secret) and a self-hosted runner with `kubectl` and `curl`.
+- Optional CI model access: the provider key as a repository secret (or the `MODEL_PROVIDER` / `MODEL_NAME`
+  repository variables) makes the `pr_checks` eval gate use a real model; tests always run on the `fake` one,
+  and on the fake model the gate warns that it is not a quality signal.
 {%- endif %}
 
 ## Evals

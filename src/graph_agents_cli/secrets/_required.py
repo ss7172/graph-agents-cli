@@ -13,9 +13,11 @@
 # limitations under the License.
 """Which allow-listed Secret keys an environment cannot run without.
 
-The chart mounts the Secret with ``optional: true``, so a missing Secret or key
-only shows up once the pods start: a crash loop (no provider key, no database
-URI) or every request answered 503 (no ``API_KEY`` under ``shared-bearer``).
+A missing key only shows up once the pods start: a crash loop (no provider key,
+no database URI) or every request answered 503 (no ``API_KEY`` under
+``shared-bearer``). Outside dev the chart requires the Secret itself
+(``secretOptional: false``), so a missing Secret keeps the pods from starting,
+but it cannot tell which keys the Secret holds.
 ``deploy`` checks the live Secret against this list before ``helm upgrade``,
 and ``secrets status`` exits 1 only when one of these is missing, so both work
 as gates while optional keys (judge key, LangSmith key, API tokens) stay

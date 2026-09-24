@@ -9,10 +9,15 @@ choosing flags or editing configuration.
 |---|---|
 | "LangGraph", "a graph", "StateGraph", "ReAct agent", "create_agent" | `--agent langgraph` (the only bundled template); the graph lives in `app/agent.py` |
 | "plain FastAPI", "just a container", "no license", "simplest thing" | `--runtime fastapi` (default) |
-| "LangGraph Platform", "LangGraph Server", "Agent Server", "langgraph-api", "Assistants/Threads/Runs API", "Studio-compatible server" | `--runtime langgraph-server` (needs Postgres and Redis; the deployed `langgraph-api` image's licensing is unverified, so it is outside the disconnected profile; the local `langgraph dev` server needs no LangSmith key) |
+| "LangGraph Platform", "LangGraph Server", "Agent Server", "langgraph-api", "Assistants/Threads/Runs API", "Studio-compatible server" | `--runtime langgraph-server` (needs Postgres and Redis; the deployed `langgraph-api` image checks for a LangGraph licence at startup, so it is outside the disconnected profile; the local `langgraph dev` server needs no licence) |
 | "LangGraph Studio", "visual graph debugger" | `graph-agents-cli playground --graph` (`langgraph dev`, bypasses auth) |
 | "chat page", "try it in the browser" | `graph-agents-cli playground` (`/playground`, only when `APP_ENV=dev`) |
-| "A2A", "agent-to-agent", "agent card" | built in: `/a2a/<agent_directory>/.well-known/agent-card.json`; `run --mode a2a` |
+| "A2A", "agent-to-agent", "agent card" | built in: `/a2a/<agent_directory>/.well-known/agent-card.json`; `run --mode a2a`; tasks are private to their principal and kept in memory per replica (`A2A_TASK_TTL_S`) |
+| "health check", "liveness", "readiness", "probe" | `GET /health` (liveness), `GET /ready` (the database answers) |
+| "metrics", "Prometheus", "monitoring" | `GET /metrics` (`METRICS_ENABLED`, optional `METRICS_TOKEN`); chart `metrics.serviceMonitor` / `metrics.scrapeAnnotations` |
+| "timeout", "runaway agent", "loop" | `RUN_TIMEOUT_S`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`, `RECURSION_LIMIT` |
+| "concurrent requests on one conversation" | one run per thread: 409 `{"code": "thread_busy"}` |
+| "rate limiting", "throttling" | not built in: configure it at the Gateway or ingress |
 
 ## Models
 
@@ -33,6 +38,8 @@ choosing flags or editing configuration.
 | "Postgres", "durable", "survives restarts", "multiple replicas" | `--checkpointer postgres`; `CHECKPOINTER=postgres` + `POSTGRES_DSN` (fastapi) or `DATABASE_URI` + `REDIS_URI` (langgraph-server) |
 | "in-memory", "no database locally" | `CHECKPOINTER=memory` (the `.env.example` default; run records are in-process) |
 | "run history", "usage records" | run records (follow the checkpointer; payload only under `TRACE_CAPTURE=full`) |
+| "list my conversations", "delete a conversation" | `GET /threads`, `DELETE /threads/{thread_id}` (owner only) |
+| "data retention", "purge old conversations" | `RETENTION_DAYS` (0 keeps everything; an hourly best-effort purge of idle threads) |
 
 ## Auth and outbound API access
 
@@ -40,7 +47,8 @@ choosing flags or editing configuration.
 |---|---|
 | "API key", "bearer token", "shared secret", "internal tool" | `--auth-policy shared-bearer`; `API_KEY` in the Secret; clients send `Authorization: Bearer` |
 | "OIDC", "SSO", "JWT", "access token", "per-user identity", "who owns the conversation" | `--auth-policy jwt` (per-user principals from a verified token: `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, JWKS or public key) |
-| "our app's session cookie", "existing roles", "custom header" | `--auth-policy custom` (stub fails closed until implemented in `app/policies/custom.py`); clients use `--header` or `--cookie` |
+| "our app's session cookie", "existing roles", "custom header", "gateway identity headers" | `--auth-policy custom` (stub fails closed until implemented in `app/policies/custom.py`); clients use `--header` or `--cookie` |
+| "support staff may read conversations", "admins" | `AUTH_READ_ACROSS_ROLES` (read others' threads), `AUTH_ADMIN_ROLES` (manage assistants, crons and the store under `langgraph-server`) |
 | "which endpoints may the agent call", "read-only", "GET only", "allow-list" | `api-policy.yaml` (`apis: <name>:` with `allowed_methods`, `allowed_operations`, `denied_operations`), seeded by `create --api-policy <file>` |
 | "call our backend API", "backend client", "call the service as the user" | `get_client("<api>")` from `app/app_utils/api_client.py`, the only HTTP path to external APIs (`auth: none`, `bearer`, or `forward` for the caller's own credential); tools declare `API_CALLS` |
 
@@ -52,12 +60,13 @@ choosing flags or editing configuration.
 | "kind", "k3s", "k3d", "minikube", "Docker Desktop", "local cluster" | environment `dev` with local-load (image loaded into the node, no registry) |
 | "prototype", "just locally", "no deployment yet" | `--prototype` (target `none`, `cd: skip`) |
 | "GitOps", "Argo", "pull-based", "PR to deploy" | `--cd argocd` |
-| "runner in our network", "push-based", "CI deploys" | `--cd helm-push` (self-hosted GitHub runner with a kubeconfig secret) |
+| "runner in our network", "push-based", "CI deploys" | `--cd helm-push` (self-hosted GitHub runner; the `DEPLOY_KUBECONFIG` secret of the `staging` / `production` environment) |
 | "CI only", "I'll deploy by hand" | `--cd skip` (direct modes) |
 | "registry", "GHCR", "Harbor", "where do images go" | `--registry <url/org>` (default `ghcr.io/<org>`) |
 | "ingress", "route", "hostname", "TLS" | chart values: `gateway` (Gateway API `HTTPRoute`, default) or `ingress`; `tls.existingSecret` or `tls.certManager` |
 | "dev / staging / prod", "namespaces" | environments `dev`, `staging`, `prod`; namespace `<name>-<env>`; `values-<env>.yaml`; Secret `<name>-app` |
-| "secrets", "rotate the key" | `secrets apply --env <env>` then `deploy --restart --env <env>` |
+| "secrets", "rotate the key" | `secrets apply --env <env>` (from `.env.<env>`; `--rotate-api-key` for `API_KEY`) then `deploy --restart --env <env>` |
+| "which cluster", "kube context" | `environments.<env>.context` in the manifest, or `--context`; outside dev the current context needs a confirmation or `--yes` |
 | "who approves production" | the merge of the PR touching `values-prod.yaml` (code owners, no self-approval, `pr_checks` green); the GitHub `production` environment gates promotion from CI |
 | "air-gapped", "disconnected", "no internet", "offline" | the disconnected profile (`infra check --profile disconnected`, `login --profile disconnected`) |
 
@@ -73,6 +82,17 @@ choosing flags or editing configuration.
 | "tracing", "traces", "spans" | `TRACING_ENABLED=true` (off by default) |
 | "log the prompts", "full payloads" | `TRACE_CAPTURE=full` (default `metadata`) |
 | "OpenTelemetry", "OTLP", "our collector", "Jaeger", "Tempo" | `OTEL_EXPORTER_OTLP_ENDPOINT` (used when no `LANGSMITH_API_KEY`) |
+
+## Renamed in graph-agents-cli 0.2.0
+
+| 0.1.0 name | 0.2.0 name |
+|---|---|
+| `--auth-policy product-session`, `ProductSessionPolicy` | `--auth-policy custom`, `CustomPolicy` in `app/policies/custom.py` (the old name is read as `custom` with a warning) |
+| `product-policy.yaml`, `--product-policy`, manifest `product_api:` | `api-policy.yaml` (`apis: {<name>: ...}`), `--api-policy`, `api_policy: {policy_file: api-policy.yaml}` |
+| `PRODUCT_CALLS`, `product_client` | `API_CALLS` (with `"api"`), `api_client.get_client("<api>")` |
+| `CLI_VERSION_PIN` in `.github/agent.env` | `GRAPH_AGENTS_CLI_SPEC` (a full install spec) |
+| default guidance file `GEMINI.md` | `AGENTS.md` |
+| repository secret `KUBECONFIG` (helm-push) | environment secret `DEPLOY_KUBECONFIG` |
 
 ## Migration note
 

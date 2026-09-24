@@ -38,7 +38,7 @@ schema: graph-agents-cli-extension/v1alpha1
 name: my-extension
 description: What this extension does.
 requires:
-  agents_cli: ">=0.1,<1"    # derive from `graph-agents-cli --version`, see below
+  agents_cli: ">=0.2,<0.3"  # derive from `graph-agents-cli --version`, see below
   on_incompatible: warn     # warn (install + warn) | error (refuse at add/update, block its commands if the CLI drifts out)
 
 commands:
@@ -81,8 +81,9 @@ commands:
   shebang and never runs on Windows (the CLI warns).
 - **Conflicts** (same scope, shown in `extension list` and `info`): two extensions claiming one
   command is first-wins. Cross-scope is fine; project wins over user (`--global`).
-- **Declare a compatibility range** with `requires`, always. Run `graph-agents-cli --version`, set
-  the lower bound to that `major.minor` and the upper bound to the next major. Let the user pick
+- **Declare a compatibility range** with `requires`, always. Run `graph-agents-cli --version` and
+  set the lower bound to that `major.minor`. The upper bound is the next minor while the CLI is
+  0.x (a 0.x minor release may break compatibility: `>=0.2,<0.3`), the next major from 1.0 on. Let the user pick
   `on_incompatible`; default `warn`.
   - `warn`: installs, runs, warns when out of range.
   - `error`: `extension add`/`update` refuse an out-of-range install, and if a later CLI upgrade
@@ -110,7 +111,7 @@ graph-agents-cli info                           # active extensions + sources + 
 | `acme/gacli-extensions#soc2-deploy` | select one extension from a multi-extension repo |
 | `https://git.example.com/acme/gacli-extensions` | any git host: `https://`, `http://`, or `ssh://` |
 | `git@git.example.com:acme/gacli-extensions` | the same host, scp form |
-| `local@../my-extension` | a local path (for development) |
+| `../my-extension`, `./ext`, `/abs/path`, `~/ext`, `C:\ext`, or `local@<path>` | a local directory (for development); recorded relative to the project root (absolute with `--global`) and resolved from there by `install` and `update`. A bad local path is exit 3; a git or network failure resolving a repository is exit 2 |
 | `<name>` | first-party shorthand (resolves to the graph-agents-cli repository) |
 | `--ref <branch\|tag\|sha>` | pin a branch, tag, or commit SHA |
 

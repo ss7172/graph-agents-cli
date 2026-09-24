@@ -100,9 +100,6 @@ DEFAULT_REGISTRY_PLACEHOLDER = "ghcr.io/CHANGE-ME"
 
 DEFAULT_AGENT_GUIDANCE_FILENAME = "AGENTS.md"
 
-# LangGraph Server base image; verify licensing and runtime behavior before use.
-LANGGRAPH_API_IMAGE = "langchain/langgraph-api:3.12"
-
 
 def default_secret_keys(
     model_provider: str, runtime: str, api_token_envs: Sequence[str] = ()

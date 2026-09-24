@@ -9,19 +9,22 @@ scaffolding files implement them.
 <name>/
 ├── app/
 │   ├── agent.py                 # exports `graph` (unbound compiled StateGraph)
-│   ├── fast_api_app.py          # exports `app`: /chat SSE, A2A, /health, /threads, /playground (dev only), policy middleware, checkpointer binding
+│   ├── fast_api_app.py          # exports `app`: /chat SSE, A2A, /health, /ready, /metrics, /threads, /playground (dev only), policy middleware, checkpointer binding
 │   ├── app_utils/
-│   │   ├── model.py             # get_model(), get_judge_model() via init_chat_model; FakeChatModel (provider `fake`)
-│   │   ├── chat.py              # the single invocation path shared by /chat, A2A and the playground; emits the SSE events
-│   │   ├── checkpointer.py      # memory | postgres from CHECKPOINTER (fastapi only)
-│   │   ├── auth.py              # Principal (public_attributes()), AuthPolicy, SharedBearerPolicy, JwtPolicy, get_policy(), `auth` for langgraph.json
+│   │   ├── model.py             # get_model(), get_judge_model() via init_chat_model (timeout, retries); FakeChatModel (provider `fake`)
+│   │   ├── chat.py              # the single invocation path shared by /chat, A2A and the playground: run lock (409), timeouts, error events, run records, retention
+│   │   ├── checkpointer.py      # memory | postgres from CHECKPOINTER (fastapi only); one health-checked pool per process
+│   │   ├── auth.py              # Principal (hashed_id(), public_attributes()), AuthPolicy, SharedBearerPolicy, JwtPolicy, check_startup(), require(), `auth` for langgraph.json
 │   │   ├── threads.py           # thread ownership table (fastapi) / thread metadata (langgraph-server)
 │   │   ├── api_client.py        # get_client(), ApiClient, ApiPolicy, ApiPolicyError, ApiCallError; enforces api-policy.yaml
+│   │   ├── limits.py            # RUN_TIMEOUT_S, MODEL_*, RECURSION_LIMIT, request and metadata caps, SSE heartbeat, RETENTION_DAYS (a bad value stops startup)
+│   │   ├── metrics.py           # Prometheus registry for /metrics (METRICS_TOKEN)
+│   │   ├── middleware.py        # request id and JSON logging, body size cap, CORS, auth-error and thread-delete hooks (langgraph-server)
 │   │   ├── telemetry.py         # opt-in tracing, capture policy
-│   │   ├── db.py                # run records (`runs` table under postgres)
+│   │   ├── db.py                # run records (`runs` table under postgres; `agent_runs` under langgraph-server), schema setup under an advisory lock
 │   │   ├── content.py           # message content helpers
 │   │   ├── playground.py        # the /playground page (APP_ENV=dev only)
-│   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events
+│   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events; tasks per principal, A2A_TASK_TTL_S
 │   ├── policies/
 │   │   └── custom.py            # CustomPolicy stub (fails closed with HTTPException 503)
 │   └── tools/
@@ -30,21 +33,29 @@ scaffolding files implement them.
 │       └── example_api.py       # call_<api>_api: one GET the policy's first API allows (API_CALLS);
 │                                #   only with --api-policy, and only when that API allows such a GET
 ├── tests/
-│   ├── unit/test_policy.py      # auth policies (shared-bearer, the jwt placeholder, the custom stub)
-│   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging
+│   ├── unit/test_policy.py      # auth policies (shared-bearer, custom stub, startup checks, aliases)
+│   ├── unit/test_jwt_policy.py  # jwt with locally generated keys: JWKS caching and rotation, claims, algorithms, 401/503
+│   ├── unit/test_server_auth.py # langgraph-server handlers: owners, read-across, AUTH_ADMIN_ROLES, default deny
+│   ├── unit/test_a2a_scoping.py # A2A tasks private per principal, TTL eviction
+│   ├── unit/test_api_client.py  # the API client: fail closed, rules, auth modes, path templates, traversal, paging; every tool's API_CALLS
+│   ├── unit/test_limits.py      # the limit settings and their parsing
+│   ├── unit/test_logging.py     # JSON logs, request ids, hashed principals
 │   ├── unit/test_threads.py     # ownership: owner / read-across role / stranger; tool-args redaction
 │   ├── unit/test_telemetry.py   # no error message or stack trace leaves under metadata capture
-│   ├── integration/test_server_e2e.py       # fastapi runtime in process (error event, 503 stub, ownership)
-│   ├── integration/test_server_runtime.py   # langgraph-server branch against a fake SDK client
+│   ├── integration/test_server_e2e.py         # fastapi runtime in process (error event, 503 stub, ownership)
+│   ├── integration/test_runtime_guardrails.py # 409, timeouts, recursion limit, body and metadata caps, /ready, /metrics
+│   ├── integration/test_server_runtime.py     # langgraph-server branch against a fake SDK client
+│   ├── integration/test_postgres.py           # opt-in: TEST_POSTGRES_DSN (a server where the user may create databases)
+│   ├── integration/test_chart.py              # kubernetes target: helm template/lint of every environment (needs helm)
 │   ├── eval/datasets/basic-dataset.json, eval/eval_config.yaml   # judges: {} (built-in rubrics); cases pass on the fake model
-│   └── load_test/
+│   └── load_test/               # excluded from a plain `pytest`
 ├── deployment/helm/<name>/      # Chart.yaml, values.yaml, values-{dev,staging,prod}.yaml, templates/, charts/
 ├── deployment/argocd/           # application-{dev,staging,prod}.yaml (cd = argocd only)
 ├── .github/workflows/{pr_checks,staging,promote-to-prod}.yaml   # staging/promote only when cd != skip
-├── .github/agent.env            # GRAPH_AGENTS_CLI_SPEC (where CI installs the CLI) + chart settings
-├── .github/CODEOWNERS           # values-prod.yaml, application-prod.yaml -> production approvers (cd != skip)
+├── .github/agent.env            # GRAPH_AGENTS_CLI_SPEC (where CI installs the CLI) + chart settings; data, never sourced
+├── .github/CODEOWNERS           # deployment/ (not the dev/staging values), .github/, api-policy.yaml, tests/eval/, extensions, manifest
 ├── langgraph.json               # always generated: graphs, http.app, auth
-├── Dockerfile                   # runtime-specific
+├── Dockerfile                   # runtime-specific; runs as 1000:1000, read-only root filesystem compatible
 ├── .dockerignore                # keeps .env, .venv, .git, artifacts, tests, deployment out of the image
 ├── .env.example                 # full env contract
 ├── api-policy.yaml              # only when --api-policy was given
@@ -79,11 +90,23 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `CHECKPOINTER` (`memory`\|`postgres`) | `.env`=memory, chart=postgres | fastapi only |
 | `POSTGRES_DSN` | Secret (external) or chart env (subchart) | fastapi only |
 | `DATABASE_URI`, `REDIS_URI` | Secret (external) or chart env (subchart) | langgraph-server only |
-| `AUTH_POLICY` (`shared-bearer`\|`jwt`\|`custom`) | `.env` / chart | `product-session` is read as `custom` (deprecated) |
+| `AUTH_POLICY` (`shared-bearer`\|`jwt`\|`custom`) | `.env` / chart | an unknown value never starts; `product-session` is read as `custom` (deprecated) |
 | `API_KEY` | Secret | shared-bearer key |
 | `AUTH_JWT_JWKS_URL` \| `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE` | `.env` / chart | jwt only; issuer and audience required outside dev |
+| `AUTH_JWT_ALGORITHMS` (`RS256,ES256`), `AUTH_JWT_PRINCIPAL_CLAIM` (`sub`), `AUTH_JWT_ROLES_CLAIM` (`roles`), `AUTH_JWT_LEEWAY_S` (60), `AUTH_JWT_JWKS_CACHE_S` (300), `AUTH_JWT_JWKS_ALLOW_HTTP` (false), `AUTH_JWT_ALLOW_HS` (false) | `.env` / chart | jwt only |
+| `AUTH_JWT_SECRET` | Secret | jwt with HS* only (at least 32 bytes) |
 | `AUTH_READ_ACROSS_ROLES` | chart | comma-separated roles allowed to read (never write) others' threads; empty default |
 | `AUTH_ADMIN_ROLES` | chart | langgraph-server: roles allowed to manage assistants, crons and the store; empty = nobody |
+| `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
+| `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (25) | `.env` / chart | run guardrails |
+| `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
+| `RETENTION_DAYS` (0) | `.env` / chart | purge threads idle longer than N days, hourly; 0 keeps everything |
+| `LOG_LEVEL` (INFO), `LOG_FORMAT` (`json`, `text` under dev) | `.env` / chart | structured logs with request id, run id, thread id, hashed principal |
+| `METRICS_ENABLED` (true) | `.env` / chart | `GET /metrics` |
+| `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT` | Secret (add to `secrets.keys`) | bearer token required by `/metrics`; HMAC key of the principal hash |
+| `CORS_ALLOW_ORIGINS` | `.env` / chart | comma list; empty = no CORS |
+| `DB_POOL_MIN_SIZE` (1), `DB_POOL_MAX_SIZE` (10) | `.env` / chart | connection pool per process |
+| `A2A_TASK_TTL_S` (3600) | `.env` / chart | in-memory A2A tasks dropped this long after their last update (0 = until restart) |
 | `APP_URL` | chart (`appUrl` / hostname) / `.env` | public base URL in the A2A agent card; unset = bind address (warned outside dev) |
 | `<API>_BASE_URL` (each API's `base_url_env`) | `.env` / chart | one per API in `api-policy.yaml` |
 | each `auth: bearer` API's `token_env` | Secret | joins `secrets.keys` at create |
@@ -116,16 +139,31 @@ Response: SSE. Each event is `event: <type>\ndata: <json>\n\n`.
 | `tool.call` | `{"id": "...", "name": "...", "args": {...}}` (args omitted when `TRACE_CAPTURE=metadata` and the caller is not the owner; always present to the caller) |
 | `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}` |
 | `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok"}` |
-| `error` | `{"code": "...", "message": "..."}` then the stream closes |
+| `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
 
 `"status": "ok"` is the only `message.end` status in this milestone (an `error` event replaces
 `message.end` on failure); there is no `interrupted` status and no `metadata.resume` convention.
+Idle streams get a `: keep-alive` comment every `SSE_HEARTBEAT_S`. Run records (and `/metrics`)
+carry the run status `ok`, `error`, `timeout` or `cancelled` (a client disconnect cancels the
+run); a stopped run answers its open tool calls with an error result so the next turn is valid.
+
+Request rules: a second `/chat` on a thread with a run in progress gets 409
+`{"code": "thread_busy"}`; a body over `MAX_REQUEST_BYTES` gets 413; metadata outside the caps (or
+with non-scalar values), `NaN`/`Infinity`, or a `thread_id` outside 1-128 characters of
+`[A-Za-z0-9_.:-]` (a non-UUID under langgraph-server) gets 422; a database or server outage gets
+503 with a reference; an unhandled error gets 500 `{"detail": "Internal server error. Reference:
+<id>.", "error_id": ...}`. Every response carries `X-Request-ID`. Client metadata is stored in the
+run record, never in checkpoints, and exported to traces only under `TRACE_CAPTURE=full`.
 
 Other routes:
 
-- `GET /health` -> `{"status": "ok", "runtime": "fastapi|langgraph-server", "checkpointer": "memory|postgres"}`
+- `GET /health` -> `{"status": "ok", "runtime": "fastapi|langgraph-server", "checkpointer": "memory|postgres"}` (liveness, no auth)
+- `GET /ready` -> 200 `{"status": "ready"}` when the database (and run store) answer within 2 s, else 503 `{"status": "not_ready"}` (no auth)
+- `GET /metrics` -> Prometheus text (no auth unless `METRICS_TOKEN`; 404 when `METRICS_ENABLED=false`)
+- `GET /threads?limit=&offset=` -> the caller's threads, most recent first (`thread.list`)
 - `GET /threads/{thread_id}/messages` -> ordered messages (ownership enforced)
-- `GET /playground` -> HTML page, only when `APP_ENV=dev`
+- `DELETE /threads/{thread_id}` -> 204; the thread, its checkpoints and run records (owner only; 409 while a run is in progress). Under langgraph-server it is the server's native route
+- `GET /playground`, `/docs`, `/openapi.json` -> only when `APP_ENV=dev`
 - A2A: card at `/a2a/<agent_directory>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<agent_directory>`;
   the card advertises only the A2A 1.0 JSON-RPC interface (0.3 clients are served on the same URL
   via compat) and the security scheme of the active auth policy
@@ -142,18 +180,39 @@ class Principal:
     roles: list[str] = field(default_factory=list)
     permissions: set[str] = field(default_factory=set)
     attributes: dict[str, Any] = field(default_factory=dict)
-    def hashed_id(self) -> str: ...   # sha256, first 16 hex chars, used in traces
+
+    def hashed_id(
+        self,
+    ) -> str: ...  # sha256 (HMAC with PRINCIPAL_HASH_SALT when set), first 16 hex chars
+    def public_attributes(self) -> dict: ...  # attributes without "credentials"
+
 
 class AuthPolicy(Protocol):
-    async def authenticate(self, request: Request) -> Principal: ...        # raise HTTPException(401)
-    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None: ...  # raise HTTPException(403)
+    async def authenticate(self, request: Request) -> Principal: ...  # raise HTTPException(401)
+    async def authorize(
+        self, principal: Principal, action: str, resource: str | None
+    ) -> None: ...  # raise HTTPException(403)
 
-ACTIONS = {"chat.send", "thread.read", "thread.list", "thread.delete", "run.read", "a2a.invoke", "card.read"}
+
+ACTIONS = {
+    "chat.send",
+    "thread.read",
+    "thread.list",
+    "thread.delete",
+    "run.read",
+    "a2a.invoke",
+    "card.read",
+}
 ```
 
-`get_policy()` returns the instance for `AUTH_POLICY`. `SharedBearerPolicy` checks
-`Authorization: Bearer <API_KEY>` (constant-time compare) and returns `Principal(id="shared")`.
-`JwtPolicy` (`jwt`) maps a verified OIDC/JWT bearer token to a per-user principal. `CustomPolicy`
+`get_policy()` returns the instance for `AUTH_POLICY` (the registry is `app/policies/__init__.py`).
+`check_startup()` builds it when the app is assembled and when LangGraph Server loads `auth`: an
+unknown policy never starts, and a policy whose optional `startup_problems() -> list[str]` reports
+a problem stops the process outside `APP_ENV=dev` (under dev the problem is logged and requests
+get 503). `SharedBearerPolicy` checks `Authorization: Bearer <API_KEY>` (constant-time compare)
+and returns `Principal(id="shared")`; an unset `API_KEY` is 503. `JwtPolicy` (`jwt`) maps a
+verified OIDC/JWT bearer token to a per-user principal (401 with an RFC 6750 challenge for a
+missing or invalid token, 503 when misconfigured or the issuer's keys are unavailable). `CustomPolicy`
 lives in `app/policies/custom.py` and fails closed with an `HTTPException(503)` carrying the
 implementation instructions (`require()` also maps a `NotImplementedError` to 503) until
 implemented. `Principal.attributes` may hold secrets only under `credentials` (api name ->
@@ -200,7 +259,7 @@ apis:
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
   the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the
   caller has none; `forward` is refused at create and lint under `langgraph-server`.
-- Every module under `app/tools/` declares a module-level **literal**
+- Every `*.py` under `app/tools/` (subpackages included, the top-level `__init__.py` excluded) declares one module-level **literal**
   `API_CALLS = [{"api": ..., "method": ..., "operation_id": ..., "path": ...}]` (`[]` when it
   calls no external API) and `TOOLS`. `graph-agents-cli lint` runs the CLI's
   `dev/policy_check.py`, which reads those literals with `ast` (no import, no model SDK),
@@ -220,7 +279,7 @@ apis:
 
 ```yaml
 name: my-agent
-cli_version: 0.1.0
+cli_version: 0.2.0
 agent_directory: app
 base_template: langgraph
 generated_at: 2026-09-22T00:00:00+00:00

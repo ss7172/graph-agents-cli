@@ -47,7 +47,7 @@ EXPECTED_SKILLS = {
     "graph-agents-cli-deploy",
     "graph-agents-cli-observability",
 }
-EXPECTED_VERSION = "0.1.0"
+EXPECTED_VERSION = "0.2.0"
 
 # Editor and OS droppings that must not affect the byte-identical comparison.
 IGNORED_NAMES = {".DS_Store", "__pycache__", "Thumbs.db"}

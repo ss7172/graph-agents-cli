@@ -15,16 +15,16 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.1.0"
+  version: "0.2.0"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
 ---
 
 # Project scaffolding guide
 
-> **Requires:** `graph-agents-cli` (`uv tool install git+https://github.com/ss7172/graph-agents-cli`).
+> **Requires:** `graph-agents-cli` (`uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0`).
 > [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md) first if needed.
 
 Use `graph-agents-cli create`, `scaffold enhance`, and `scaffold upgrade` to create a LangGraph
@@ -92,11 +92,15 @@ workflows. The image pull secret is an operator prerequisite reported by `infra 
 
 Needs Postgres and Redis in the cluster (the chart enables the Redis subchart in
 `values-dev.yaml` for this runtime and sets `LANGGRAPH_SERVER=1`, `DATABASE_URI`, `REDIS_URI`)
-and the `langchain/langgraph-api:3.12` base image (mirrored into your registry on disconnected
-networks). Licensing: the local `langgraph dev` server (langgraph-cli[inmem]) was verified to
-start and serve `/chat`, `/health` and `/playground` with no `LANGSMITH_API_KEY` and no network;
-whether the deployed `langgraph-api` image needs a LangSmith license key at startup is still
-unverified, so the runtime stays excluded from the disconnected profile. Under the in-memory
+and the `langchain/langgraph-api:0.14.4-py3.12` base image (its tag moves together with the
+`langgraph-api` pin in `uv.lock`; the image build refuses a mismatch; mirror it into your registry
+on disconnected networks). The server image disables LangGraph Server's unauthenticated meta
+routes (`/docs`, `/openapi.json`, `/info`, `/metrics`). Licensing: the deployed image checks for a
+LangGraph licence at startup (a LangSmith API key or a licence key, per LangChain's
+documentation; add the variable to `secrets.keys`) and exits without one; the local
+`langgraph dev` server (langgraph-cli[inmem]) needs none, so `run` and `playground` work
+keyless. The runtime stays excluded from the disconnected profile. Thread ids must be UUIDs
+under this runtime, and `DELETE /threads/{id}` is the server's own route. Under the in-memory
 `langgraph dev` a one-off `run` advertises `--thread-id` resume, but the thread is gone once the
 temporary server stops; use `--start-server` to keep it. Choose `fastapi` unless the team wants
 the native Assistants/Threads/Runs API.
@@ -132,11 +136,23 @@ graph-agents-cli create <project-name> \
   `--agent langgraph`, `--runtime fastapi`, `--model-provider openai`, `--cd skip`, ...); `-y`
   skips prompts; `-i` shows menus for a human at a terminal. An invalid combination is a
   `UsageError` (exit 2) with the table's reason.
-- `create` also renders `.github/agent.env` (read only by the workflows): `GRAPH_AGENTS_CLI_SPEC`,
-  the pinned source CI installs the CLI from (`uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli ...`),
-  plus the chart settings for kubernetes projects. `pr_checks.yaml` runs the eval gate with
-  `MODEL_PROVIDER=${{ vars.MODEL_PROVIDER || 'fake' }}`, so CI passes without a provider key until
-  the repository variable is set.
+- `create` also renders `.github/agent.env` (read as data only by the workflows):
+  `GRAPH_AGENTS_CLI_SPEC`, the pinned source CI installs the CLI from
+  (`git+https://github.com/ss7172/graph-agents-cli@v<creating version>`, used as
+  `uvx --from "$GRAPH_AGENTS_CLI_SPEC" graph-agents-cli ...`), plus the chart settings for
+  kubernetes projects, and one `.github/CODEOWNERS` for every project. `pr_checks.yaml` runs the
+  tests on the fake model and the eval gate on the project's real provider when its key is a
+  repository secret (or the `MODEL_PROVIDER` / `MODEL_NAME` variables); without one the gate runs
+  on the fake model with a warning that it is not a quality signal.
+- `create --api-policy <file>` validates the policy first (exit 3 on errors), copies the OpenAPI
+  specs it references into the project (a spec outside the policy's directory goes to
+  `openapi/<api>/<file>` and the reference is rewritten), adds every `auth: bearer` API's
+  `token_env` to `secrets.keys`, and renders `app/tools/example_api.py` with the first GET the
+  first API allows (none, with a note, when it allows no GET).
+- After `create`, the printed "Get Started" is `cp .env.example .env`,
+  `graph-agents-cli login --write-env`, `install`, `playground`, `eval run` (and `deploy --env
+  dev` for kubernetes): the local server answers 503 until `.env` has the provider key and, under
+  `shared-bearer`, an `API_KEY`.
 
 ### Enhance an existing project
 
@@ -149,12 +165,26 @@ graph-agents-cli scaffold enhance . --auth-policy custom
 Run from inside the project (the positional argument names a template to apply, not the project;
 it is ignored when the manifest records one). Enhance renders the template for the new
 parameters and applies the 3-way merge; a backup goes to
-`~/.graph-agents-cli/backups/<project>_<timestamp>/` first. When the agent code is not in `app/`,
-pass `--agent-directory <dir>`. `--api-policy` is refused by `enhance` (copy the file into the
-project as `api-policy.yaml` and set `api_policy.policy_file` in the manifest instead). When the merge changes the
-manifest (for example `enhance --cd argocd`), `graph-agents-cli-manifest.yaml` is rewritten in
+`~/.graph-agents-cli/backups/<dir>_<project id>_<timestamp>/` first (private, the newest 5 per
+project kept). When the agent code is not in `app/`, pass `--agent-directory <dir>`.
+`--api-policy` is refused by `enhance` (copy the file into the project as `api-policy.yaml` and
+set `api_policy: {policy_file: api-policy.yaml}` in the manifest instead). When the merge changes
+the manifest (for example `enhance --cd argocd`), `graph-agents-cli-manifest.yaml` is rewritten in
 block style and its comments are dropped; app files stay byte-identical. **Always ask before
 choosing the CD mode or auth policy.**
+
+`--runtime` and `--model-provider` changes are reconciled everywhere they matter, so the result
+matches a fresh `create` for the affected files: it prints "Recomputed for the new settings"
+(runtime, provider, model, `secrets.keys` added and removed; keys you added are kept), updates
+untouched `.env.example`, values files and Argo CD Applications, and merges the change into
+edited ones (the chart's `values.yaml` and `.github/agent.env` key by key, keeping the keys you
+changed and listing them). It ends with a numbered **Left for you** list. Items marked
+`(required)` (a chart key still on the old runtime or model, an edited `Dockerfile`, whose new
+version is written beside it as `Dockerfile.new`, dependency changes uv could not write) make
+`enhance` exit 1: do them before building or deploying. A provider change keeps the model only
+when it was the old provider's default; a model chosen for the old provider is refused (exit 2):
+pass `--model` as well. After a runtime change run `graph-agents-cli install` to update
+`uv.lock`. Exit codes: 0 applied, 1 required steps left, 2 usage error, 3 configuration error.
 
 ### Upgrade a project
 
@@ -176,6 +206,12 @@ non-zero exit and no changes**, because an inauthentic baseline would misclassif
 `--baseline current` compares against the current templates instead; it is an explicit opt-in,
 logged, and the result summary is labelled as such. Do not pass it just to make the error go
 away; tell the user why the baseline is unavailable.
+
+A project created with 0.1.0 needs the `v0.1.0` tag for its authentic baseline (otherwise use
+`--baseline current` knowingly), and manual steps afterwards: see the CHANGELOG's "Upgrading a
+project created with 0.1.0" (a new `app/policies/__init__.py` and `app/agent.py`, `API_CALLS`
+instead of `PRODUCT_CALLS`, `secretOptional: true` in `values-dev.yaml`). Outside a project
+`upgrade` exits 3.
 
 **What upgrade never touches:**
 
@@ -262,8 +298,8 @@ in-cluster, and `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`.
 
 **Project with its own process**
 
-`graph-agents-cli create fabric-agent --process agentic-template/workflow.md ...` writes
-`process: agentic-template/workflow.md` to the manifest and the guidance file; the workflow skill
+`graph-agents-cli create claims-agent --process docs/delivery-process.md ...` writes
+`process: docs/delivery-process.md` to the manifest and the guidance file; the workflow skill
 then follows that process's gates.
 
 ---
@@ -275,7 +311,11 @@ then follows that process's gates.
 | `create` refuses the combination | consult the table; pick `postgres` for kubernetes |
 | `upgrade` stops: "authentic baseline unavailable" | the old CLI version could not be fetched; fix index access or use `--baseline current` knowingly |
 | `enhance` misplaces files | pass `--agent-directory` matching where the code lives |
-| `ghcr.io/CHANGE-ME` in values | pass `--registry` or set a git `origin` remote before `create` |
+| `ghcr.io/CHANGE-ME` in values | pass `--registry` or set a git `origin` remote before `create`; `build` and `deploy` refuse the placeholder (exit 3) until it is replaced |
+| `enhance` exits 1: "item(s) marked (required) above must be done by hand" | do each `(required)` step in the "Left for you" list (for example merge `Dockerfile.new` into your `Dockerfile`, or set the chart key it names) |
+| `enhance` exits 2: "--model-provider X changes the provider, but the recorded model ..." | the model was chosen for the old provider: pass `--model <name>` for the new one |
+| any command exits 3: "This project uses the retired product API policy" | follow the printed steps (rename to `api-policy.yaml`, `apis:` with `allowed_methods`, `API_CALLS`) |
+| `create` exits 3: "GRAPH_AGENTS_CLI_INSTALL_SPEC contains ..." | the override has whitespace or a control character; fix or unset it |
 | `graph-agents-cli` not found | `/graph-agents-cli-workflow` -> Setup |
 
 ## Not covered by this skill
