@@ -133,6 +133,22 @@ class ServerInfo(NamedTuple):
         return f"http://127.0.0.1:{self.port}"
 
 
+def dotenv_settings(path: Path) -> dict[str, str]:
+    """The ``KEY=value`` settings of a ``.env`` file (empty when absent or unreadable).
+
+    A key without a value (``KEY`` alone) is left out, as ``load_dotenv`` leaves it.
+    """
+    if not path.is_file():
+        return {}
+    from dotenv import dotenv_values
+
+    try:
+        values = dotenv_values(path)
+    except Exception:  # an unreadable file: the app's own load_dotenv reports it
+        return {}
+    return {key: value for key, value in values.items() if value is not None}
+
+
 def build_serve_command(*, agent_dir: str, port: int, runtime: str) -> list[str]:
     """Return the command that serves the application locally for ``runtime``."""
     if runtime == RUNTIME_FASTAPI:
@@ -506,7 +522,12 @@ def _start_server(
 
     cmd = build_serve_command(agent_dir=agent_dir, port=port, runtime=runtime)
 
-    env = os.environ.copy()
+    # The app loads .env only when its graph module is imported, which the
+    # fastapi server does at startup, after the app is assembled: settings read
+    # while assembling it (the auth policy's startup check, the A2A card's
+    # security scheme, /docs) would miss .env. Hand .env to the child up front,
+    # as load_dotenv does (the environment wins).
+    env = {**dotenv_settings(project_root / ".env"), **os.environ}
     env.setdefault("PYTHONUNBUFFERED", "1")
     # The app reads PORT for its own logging; keep it consistent with --port.
     env["PORT"] = str(port)

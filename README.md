@@ -92,6 +92,25 @@ the server. `eval run` does the same for every case in `tests/eval/datasets/` an
 when the gate is met. With a real provider, keep `MODEL_PROVIDER` as generated and put the
 key in `.env` (`login --write-env` prompts for it without echoing).
 
+A `jwt` project (`create my-agent --auth-policy jwt`) needs a token on every request. For local
+runs, after `install`:
+
+```bash
+export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"
+graph-agents-cli run "What's the weather in San Francisco?"
+graph-agents-cli eval run
+```
+
+`auth dev-token` keeps a dev key pair in `.graph-agents-cli/dev-jwt/` (git ignored), fills the
+blank `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` in `.env`, and prints a
+token; it refuses unless `APP_ENV=dev`. `run` and `eval` send `GRAPH_AGENTS_CLI_API_KEY` as the
+bearer, which keeps the token out of the process list and your shell history. `login` reports
+whether the key and the token are in place.
+
+The example tool (`app/tools/weather.py`) and its eval case are starting points: replace or
+delete them. The project's own tests use a test-only tool and read neither `.env` nor your
+shell's app settings, so they keep passing as the agent changes.
+
 Useful `create` options: `--runtime fastapi|langgraph-server`,
 `--model-provider openai|anthropic|gemini|openai-compatible`, `--model`,
 `--checkpointer memory|postgres`, `-d/--deployment-target kubernetes|none`, `--registry`,
@@ -122,12 +141,13 @@ line naming the file that implements it.
 |---|---|
 | `setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...` | Install the CLI (`uv tool install` of the pinned spec) and the skills into detected coding agents |
 | `update [--workspace] [-i] [-y]` | Reinstall the skills and the CLI from the latest GitHub release |
-| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, `LANGSMITH_API_KEY` when tracing is on, kubeconfig. `--write-env` prompts for missing keys (never echoed), generates `API_KEY`, fills blank `KEY=` lines in place and keeps `.env` at 0600. Exit 1 on a failed check (0 with `--status`) |
+| `login [--profile default\|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]` | Preflight: provider key or `OPENAI_BASE_URL`, `API_KEY` under `shared-bearer`, the verification key and the local token under `jwt`, `LANGSMITH_API_KEY` when tracing is on, a `.env` other users can read, kubeconfig. `--write-env` prompts for missing keys (never echoed), generates `API_KEY`, fills blank `KEY=` lines in place and leaves `.env` at 0600 (even when nothing is missing). Exit 1 on a failed check (0 with `--status`) |
+| `auth dev-token --sub USER [--roles R,...] [--ttl 12h]` | A JWT for local runs of a `jwt` project, printed alone for `GRAPH_AGENTS_CLI_API_KEY`: a dev key pair in `.graph-agents-cli/dev-jwt/`, blank `AUTH_JWT_PUBLIC_KEY` / `AUTH_JWT_ISSUER` / `AUTH_JWT_AUDIENCE` filled in `.env`. Refused (exit 3) unless the policy is `jwt` and `APP_ENV` is exactly `dev`, or when `.env` names a JWKS URL or another public key |
 | `create [NAME]` / `scaffold create [NAME]` | Create a project: `-a/--agent`, `-o/--output-dir`, `--runtime`, `--model-provider`, `--model`, `--checkpointer`, `-d/--deployment-target`, `--registry`, `--cd`, `--auth-policy`, `--api-policy FILE`, `--process`, `-p/--prototype`, `-dir/--agent-directory`, `--agent-guidance-filename` (default `AGENTS.md`), `-bt/--base-template`, `-i`, `-y`, `-s/--skip-checks`, `--debug` |
 | `scaffold enhance [TEMPLATE_PATH]` | Add or change the deployment target, CD mode, runtime or model provider of an existing project (the `create` flags except `--api-policy`, which it refuses (the policy changes through `api`), plus `-n/--name`, `--force`, `--dry-run`, `--prefer-new`). 3-way merge after a backup; exit 1 when steps marked `(required)` are left for you |
 | `scaffold upgrade [PROJECT_PATH] [--dry-run] [-y] [-i] [--baseline authentic\|current] [--debug]` | Upgrade a project to this CLI version with a 3-way merge against the exact prior version's templates; stops unchanged when that baseline cannot be built (exit 2; exit 3 when the manifest's `cli_version` or the install-spec override is the reason) |
 | `playground [--port INT] [--graph] [--no-open]` | Run the app with reload and the dev chat page (`/playground`, port 8000, refused when the port is taken); `--graph` opens LangGraph Studio (bypasses the auth policy) |
-| `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL |
+| `run MESSAGE [--mode chat\|a2a] [--url URL] [--thread-id ID] [-H/--header]... [--cookie]... [-f/--file]... [--start-server] [--stop-server] [--port INT] [-v]` | Send one prompt to a local server (started on demand) or a deployed URL. A bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, not `--header`; the footer names the thread and how to resume it, after an error too; `-v` adds one line per event |
 | `install [--clean] [--locked]` | `uv sync` the project |
 | `lint [--fix] [--policy-only]` | `ruff check`, `ruff format --check` and the API-policy check (`api-policy.yaml` against the strict schema, every tool's `API_CALLS` against it; a refused call comes with the `api` command that would allow it) |
 | `api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] [--forward-header H] --access read-only\|read-write\|custom [--methods M,...] [--openapi PATH] [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]` | Declare an outbound API (creates `api-policy.yaml` when absent); `--access` is required, there is no default |
@@ -148,12 +168,14 @@ line naming the file that implements it.
 | `secrets apply --env ENV [--env-file FILE] [--context NAME] [-y/--yes] [--rotate-api-key] [--dry-run]` | Create or update the `<release>-app` Secret from the allow-listed keys of an env file (server-side apply; values are never printed) |
 | `secrets status --env ENV [--context NAME] [--strict] [--dry-run]` | Which allow-listed keys the Secret holds (never values); exit 1 when a required key is missing |
 | `infra check [--env ENV] [--profile disconnected] [--json]` | Read-only report of cluster, repository and placeholder prerequisites; creates nothing |
-| `extension add REFERENCE [--global] [--ref] [-i] [-y]` / `list` / `remove NAME` / `update [NAME]` | Manage command overrides and additions from extension repositories or local paths (experimental) |
+| `extension add REFERENCE [--global] [--ref] [-i] [-y]` / `list` / `remove NAME` / `update [NAME]` | Manage command overrides and additions from extension repositories or local paths (experimental). New third-party code needs a trust prompt or `-y` (never prompted without a terminal); `update` asks only when the code changed |
 | `info [--json]` | Project configuration, paths, extensions, CLI version |
 
 CLI environment variables: `GRAPH_AGENTS_CLI_INSTALL_SPEC` (install source),
 `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` (no GitHub release check), `GRAPH_AGENTS_CLI_API_KEY`
-(bearer key for `run --url` and `eval generate --url`), `GRAPH_AGENTS_CLI_RUN_PORT` (port of
+(the bearer credential `run` and `eval` send, locally and with `--url`, when no `Authorization`
+header is given: an `API_KEY` or a JWT; it keeps the credential out of argv and shell history),
+`GRAPH_AGENTS_CLI_RUN_PORT` (port of
 the local server `run` and `eval` start), `GRAPH_AGENTS_CLI_DEBUG=1` (tracebacks behind
 one-line errors), `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` (ignore extension overrides; set in
 every generated CI and CD job).
@@ -295,6 +317,11 @@ policy answers 503 (details in the server log). Keys: one fetch at a time, an un
 triggers at most one refetch per 30 s, an expired cache is refreshed in the background while
 the cached keys keep verifying, and the last good keys stay usable for 1 hour when the issuer
 is unreachable (then 503). Nothing from the token is logged.
+
+Clients put the token in `GRAPH_AGENTS_CLI_API_KEY` for `run` and `eval` (never `--header`,
+which exposes it in argv). Local runs without an identity provider use
+`graph-agents-cli auth dev-token` (see [Quick start](#quick-start)); the dev key lives only in
+`.env` and `.graph-agents-cli/dev-jwt/` and must never reach a deployed environment.
 
 ### `custom`
 

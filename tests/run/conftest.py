@@ -20,7 +20,9 @@ network beyond 127.0.0.1, no model, no framework.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -93,6 +95,9 @@ class FakeChatServer:
         self.url = ""
         # Seconds to pause after the first chunk (a silent agent turn).
         self.stall_seconds = 0.0
+        # Close the connection after this many body bytes of POST /chat (a server
+        # that dies mid-stream); 0 closes it before any response is sent.
+        self.drop_after_bytes: int | None = None
 
     def events_for(self, body: dict[str, Any]) -> list[tuple[str, Any]]:
         if callable(self.script):
@@ -170,6 +175,9 @@ def _make_handler(server: FakeChatServer) -> type[BaseHTTPRequestHandler]:
                 if server.raw_body is not None
                 else render_sse(server.events_for(body))
             )
+            if server.drop_after_bytes == 0:
+                self._drop()
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -177,10 +185,20 @@ def _make_handler(server: FakeChatServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             # Write in chunks so the client really streams.
             for i in range(0, len(payload), 64):
+                if server.drop_after_bytes is not None and i >= server.drop_after_bytes:
+                    self._drop()
+                    return
                 self.wfile.write(payload[i : i + 64])
                 self.wfile.flush()
                 if i == 0 and server.stall_seconds:
                     time.sleep(server.stall_seconds)
+
+        def _drop(self) -> None:
+            """Close the socket at once, as a crashed server does."""
+            self.wfile.flush()
+            self.close_connection = True
+            with contextlib.suppress(OSError):
+                self.connection.shutdown(socket.SHUT_RDWR)
 
     return Handler
 

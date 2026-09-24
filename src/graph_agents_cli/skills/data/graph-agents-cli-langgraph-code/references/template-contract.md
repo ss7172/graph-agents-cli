@@ -29,10 +29,12 @@ scaffolding files implement them.
 │   │   └── custom.py            # CustomPolicy stub (fails closed with HTTPException 503)
 │   └── tools/
 │       ├── __init__.py          # collects TOOLS from every module; warns on a module without API_CALLS
-│       ├── weather.py           # get_weather (API_CALLS = [])
+│       ├── weather.py           # get_weather (API_CALLS = []): an example, yours to replace or delete
 │       └── example_api.py       # call_<api>_api: the first operation the policy's first API allows,
 │                                #   any method (a JSON `body` for POST/PUT/PATCH); only with a policy
 ├── tests/
+│   ├── conftest.py              # isolation: no .env, no app settings from the shell; `use_test_tools` fixture
+│   ├── unit/test_fake_model.py  # the fake model calls whichever bound tool a request mentions
 │   ├── unit/test_policy.py      # auth policies (shared-bearer, custom stub, startup checks, aliases)
 │   ├── unit/test_jwt_policy.py  # jwt with locally generated keys: JWKS caching and rotation, claims, algorithms, 401/503
 │   ├── unit/test_server_auth.py # langgraph-server handlers: owners, read-across, AUTH_ADMIN_ROLES, default deny
@@ -42,11 +44,11 @@ scaffolding files implement them.
 │   ├── unit/test_logging.py     # JSON logs, request ids, hashed principals
 │   ├── unit/test_threads.py     # ownership: owner / read-across role / stranger; tool-args redaction
 │   ├── unit/test_telemetry.py   # no error message or stack trace leaves under metadata capture
-│   ├── integration/test_server_e2e.py         # fastapi runtime in process (error event, 503 stub, ownership)
+│   ├── integration/test_server_e2e.py         # fastapi runtime in process (tool events with a test tool, error event, 503 stub, ownership)
 │   ├── integration/test_runtime_guardrails.py # 409, timeouts, recursion limit, body and metadata caps, /ready, /metrics
 │   ├── integration/test_server_runtime.py     # langgraph-server branch against a fake SDK client
 │   ├── integration/test_postgres.py           # opt-in: TEST_POSTGRES_DSN (a server where the user may create databases)
-│   ├── integration/test_chart.py              # kubernetes target: helm template/lint of every environment (needs helm)
+│   ├── integration/test_chart.py              # kubernetes target: helm template/lint of every environment, expectations read from the values files (needs helm)
 │   ├── eval/datasets/basic-dataset.json, eval/eval_config.yaml   # judges: {} (built-in rubrics); cases pass on the fake model
 │   └── load_test/               # excluded from a plain `pytest`
 ├── deployment/helm/<name>/      # Chart.yaml, values.yaml, values-{dev,staging,prod}.yaml, templates/, charts/
@@ -118,7 +120,9 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | chart | OTLP fallback |
 | `PORT` | chart | default 8000 |
 
-Client side (not in the app): `GRAPH_AGENTS_CLI_API_KEY` for `run --url` / `eval generate --url`.
+Client side (not in the app): `GRAPH_AGENTS_CLI_API_KEY`, the bearer credential `run` and `eval`
+send locally and with `--url` (the `API_KEY`, or a JWT; `graph-agents-cli auth dev-token` mints a
+local one for a `jwt` project).
 
 ## Chat API (both runtimes)
 
@@ -220,7 +224,8 @@ credential, forwarded by `auth: forward` APIs); `Principal.public_attributes()` 
 what may be persisted, logged, traced or passed into LangGraph Server run context. Under
 `fastapi`, thread ownership is enforced by the app-owned `threads` table check before any
 checkpointer access. `auth` (a `langgraph_sdk.Auth`) is built from the same policy for
-`langgraph.json`. Client flags: `--header 'Authorization: Bearer ...'`, `--cookie name=value`.
+`langgraph.json`. Clients: a bearer credential in `GRAPH_AGENTS_CLI_API_KEY` (never on the command
+line), `--header 'Name: value'` or `--cookie name=value` for what a custom policy reads.
 
 ## API client (`app/app_utils/api_client.py`) and `api-policy.yaml`
 

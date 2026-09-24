@@ -38,6 +38,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import NamedTuple
 
 import click
@@ -51,7 +52,7 @@ from graph_agents_cli._project import (
     read_project_config,
     require_agent_directory,
 )
-from graph_agents_cli.run._local_server import PortUnavailableError, port_problem
+from graph_agents_cli.run._local_server import PortUnavailableError, dotenv_settings, port_problem
 from graph_agents_cli.run._signals import shielded, terminate_like_interrupt
 
 _console = Console()
@@ -228,7 +229,10 @@ def _run_foreground(args: list[str], env: dict[str, str]) -> int:
     gets SIGTERM (it forwards it), then anything still running after
     ``_STOP_GRACE`` seconds (a reloader's worker, say) is killed.
     """
-    proc = _runner.popen_resolved(args, env={**os.environ, **env})
+    # .env reaches the server from its start, below the environment (as
+    # load_dotenv does); the playground's own settings (APP_ENV=dev) win.
+    dotenv = dotenv_settings(Path.cwd() / ".env")
+    proc = _runner.popen_resolved(args, env={**dotenv, **os.environ, **env})
     try:
         with terminate_like_interrupt():
             return proc.wait()

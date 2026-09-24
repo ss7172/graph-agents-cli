@@ -198,17 +198,19 @@ def fake_model(monkeypatch):
 ```
 
 `get_model()` returns the template's deterministic `FakeChatModel` (`app/app_utils/model.py`):
-`hi` -> `Hello! How can I help you today?`; `What is the weather in Paris?` -> a
-`get_weather(query="Paris")` tool call when a tool named `get_weather` is bound, then
+`hi` -> `Hello! How can I help you today?`; a request that mentions a bound tool (its name, or a
+distinctive word of it: `What is the weather in Paris?` with `get_weather` bound) -> a call of that
+tool with every required argument filled (text arguments get the request's subject, `Paris`), then
 `Here is what I found: <tool result>`; a prompt mentioning "score" and "json" -> the JSON judge
-verdict `{"score": 5, ...}`; anything else -> `I am a fake model. I can check the weather. You said: <text>`.
-There is no scripted-response list or `FAKE_MODEL_RESPONSES` variable; to exercise a new tool
-under the fake model, drive it through a `ToolMessage` or test the tool function directly. Use it
-to test:
+verdict `{"score": 5, ...}`; anything else -> `I am a fake model. I can use these tools: ... You
+said: <text>`. There is no scripted-response list or `FAKE_MODEL_RESPONSES` variable. The
+template's `tests/conftest.py` keeps `.env` and the shell's app settings out of the tests and
+offers `use_test_tools(tool, ...)`, which serves the graph with test-only tools, so plumbing tests
+never depend on the project's own tools. Use it to test:
 
 - the SSE mapping (`/chat` returns `message.start`, deltas, `tool.call`/`tool.result`,
   `message.end`);
-- tool routing (`get_weather`) and the middleware turning `ApiPolicyError` / `ApiCallError`
+- tool routing (with a test-only tool) and the middleware turning `ApiPolicyError` / `ApiCallError`
   into a tool error;
 - policy enforcement (401 without the bearer, 403 on a foreign thread under a per-user policy
   such as `jwt` or an implemented `custom`).

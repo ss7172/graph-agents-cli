@@ -91,13 +91,13 @@ class FakeSdk:
                 "type": "ai",
                 "id": "m2",
                 "content": "",
-                "tool_calls": [{"id": "c1", "name": "get_weather", "args": {"query": "SF"}}],
+                "tool_calls": [{"id": "c1", "name": "probe", "args": {"query": "SF"}}],
             },
             {
                 "type": "tool",
                 "id": "m3",
                 "tool_call_id": "c1",
-                "name": "get_weather",
+                "name": "probe",
                 "content": "sunny",
             },
             {"type": "ai", "id": "m4", "content": "It is sunny."},
@@ -179,7 +179,7 @@ class FakeSdk:
                                     "id": "ai-1",
                                     "content": "",
                                     "tool_calls": [
-                                        {"id": "c1", "name": "get_weather", "args": {"query": "SF"}}
+                                        {"id": "c1", "name": "probe", "args": {"query": "SF"}}
                                     ],
                                     "usage_metadata": {"input_tokens": 3, "output_tokens": 4},
                                 }
@@ -195,7 +195,7 @@ class FakeSdk:
                                 {
                                     "type": "tool",
                                     "tool_call_id": "c1",
-                                    "name": "get_weather",
+                                    "name": "probe",
                                     "content": "sunny",
                                 }
                             ]
@@ -252,7 +252,7 @@ async def _events(rt: ChatRuntime, principal: Principal, req: ChatRequest, threa
 async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_events(server) -> None:
     rt, sdk = server
     req = ChatRequest(
-        message="weather?",
+        message="probe?",
         thread_id=THREAD,
         metadata={"source": "web"},
         forward_headers={
@@ -273,7 +273,7 @@ async def test_owner_continues_its_thread_and_the_stream_maps_the_contract_event
         "message.delta",
         "message.end",
     ]
-    assert events[1][1] == {"id": "c1", "name": "get_weather", "args": {"query": "SF"}}
+    assert events[1][1] == {"id": "c1", "name": "probe", "args": {"query": "SF"}}
     end = events[-1][1]
     assert end["usage"] == {"input_tokens": 3, "output_tokens": 4} and end["status"] == "ok"
     assert end["thread_id"] == THREAD and end["run_id"] == events[0][1]["run_id"]
@@ -344,7 +344,7 @@ async def test_read_across_role_reads_without_tool_args_and_cannot_write(
     monkeypatch.setenv("AUTH_READ_ACROSS_ROLES", "auditor")
     messages = await rt.messages(AUDITOR, THREAD)
     assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]
-    assert messages[1]["tool_calls"] == [{"id": "c1", "name": "get_weather"}]  # args omitted
+    assert messages[1]["tool_calls"] == [{"id": "c1", "name": "probe"}]  # args omitted
     monkeypatch.setenv("TRACE_CAPTURE", "full")
     messages = await rt.messages(AUDITOR, THREAD)
     assert messages[1]["tool_calls"][0]["args"] == {"query": "SF"}

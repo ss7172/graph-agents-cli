@@ -83,7 +83,7 @@ from graph_agents_cli._api_policy import (
     refusal_reason,
     summarize,
 )
-from graph_agents_cli._output import Console
+from graph_agents_cli._output import Console, print_table
 
 TOOLS_SUBDIR = "tools"
 _CALL_KEYS = ("api", "method", "operation_id", "path")
@@ -910,12 +910,9 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
         console.print("[green]API policy check: nothing to check.[/]")
         return
     table = Table(title="API policy check", show_lines=False)
-    table.add_column("Tool")
-    table.add_column("API")
-    table.add_column("Method")
-    table.add_column("Operation")
-    table.add_column("Status")
-    table.add_column("Reason")
+    # fold: a narrow terminal wraps a long tool or path onto more lines, never cuts it.
+    for header in ("Tool", "API", "Method", "Operation", "Status", "Reason"):
+        table.add_column(header, overflow="fold")
     styles = {
         STATUS_ALLOWED: "green",
         STATUS_DENIED: "red",
@@ -932,7 +929,7 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
             f"[{style}]{result.status}[/]" if style else result.status,
             escape(result.reason),
         )
-    console.print(table)
+    print_table(console, table)
     hints = list(dict.fromkeys(r.hint for r in report.results if r.is_violation and r.hint))
     if hints:
         console.print(

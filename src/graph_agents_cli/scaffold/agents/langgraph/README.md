@@ -17,18 +17,39 @@ A LangGraph agent scaffolded by graph-agents-cli.
 cp .env.example .env                  # set {{cookiecutter.provider_key_var}} (or MODEL_PROVIDER=fake to try it without a key)
 graph-agents-cli login --write-env    # checks the setup; prompts for missing keys{% if cookiecutter.auth_policy == 'shared-bearer' %}, generates API_KEY{% endif %}
 graph-agents-cli install              # uv sync from the committed uv.lock
-graph-agents-cli run "What's the weather in San Francisco?"
+{%- if cookiecutter.auth_policy == 'jwt' %}
+export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"
+{%- endif %}
+graph-agents-cli run "What's the weather in San Francisco?"   # the example tool (tools/weather.py)
+graph-agents-cli eval run             # generate traces, grade them, enforce the gate
 graph-agents-cli playground           # http://127.0.0.1:8000/playground (APP_ENV=dev)
 ```
 
 {%- if cookiecutter.auth_policy == 'shared-bearer' %}
 `API_KEY` is the shared bearer key every client sends (`Authorization: Bearer ...`); the local
 server answers 503 until it is set. `login --write-env` generates one, or run
-`python -c "import secrets; print(secrets.token_hex(32))"`.
+`python -c "import secrets; print(secrets.token_hex(32))"`. `run` and `eval` send the `API_KEY`
+in `.env`; for a deployed agent put its key in `GRAPH_AGENTS_CLI_API_KEY` (kept out of argv and
+shell history, unlike `--header`).
+{%- elif cookiecutter.auth_policy == 'jwt' %}
+Every request needs a JWT the server can verify. For local runs without an identity provider,
+`graph-agents-cli auth dev-token --sub <user> [--roles r1,r2]` creates a dev key pair in
+`.graph-agents-cli/dev-jwt/` (git ignored), fills the blank `AUTH_JWT_PUBLIC_KEY`,
+`AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` in `.env`, and prints a token; it refuses unless
+`APP_ENV=dev`. `run` and `eval` send whatever `GRAPH_AGENTS_CLI_API_KEY` holds as the bearer
+token, which keeps it out of argv and shell history (do not pass tokens with `--header`). Mint one
+token per test user to exercise thread ownership and roles; restart a kept server
+(`graph-agents-cli run --stop-server`) after the first `dev-token`. Deployed environments verify
+tokens from your identity provider (`AUTH_JWT_JWKS_URL`, see Authentication below); never deploy
+the dev key.
 {%- else %}
-Authentication follows `AUTH_POLICY={{cookiecutter.auth_policy}}` (see Authentication below).
+Authentication follows `AUTH_POLICY={{cookiecutter.auth_policy}}` (see Authentication below): until
+`{{cookiecutter.agent_directory}}/policies/custom.py` is implemented every request gets 503. Send
+what your policy reads with `run --header 'Name: value'` or `--cookie name=value`.
 {%- endif %}
-Local development needs no database: `.env.example` sets `CHECKPOINTER=memory`.
+Local development needs no database: `.env.example` sets `CHECKPOINTER=memory`. The example tool
+and the eval dataset are starting points: replace or delete `{{cookiecutter.agent_directory}}/tools/weather.py`
+and its eval case when you write your own; the tests under `tests/` do not depend on either.
 
 ## Layout
 
@@ -48,9 +69,7 @@ deployment/argocd/           # application-{dev,staging,prod}.yaml
 {%- endif %}
 .github/                     # workflows, agent.env (their settings), CODEOWNERS
 langgraph.json               # graph, custom app and auth handler (LangGraph Studio / Server)
-{%- if cookiecutter.has_api_policy %}
-api-policy.yaml              # the external APIs tools may call, and how (enforced at runtime and by lint)
-{%- endif %}
+api-policy.yaml              # when present: the external APIs tools may call, and how (`api show`)
 Dockerfile                   # {{cookiecutter.runtime}} image (runs as uid 1000)
 .env.example                 # the full environment contract, with defaults
 graph-agents-cli-manifest.yaml
@@ -61,7 +80,10 @@ graph-agents-cli-manifest.yaml
 | Command | Purpose |
 |---|---|
 | `graph-agents-cli playground` | Run the app with reload; `--graph` opens LangGraph Studio (bypasses the auth policy) |
-| `graph-agents-cli run "prompt" [--mode a2a] [--url URL] [--thread-id ID]` | One-shot chat; `--url` targets a deployed agent with `--header` / `GRAPH_AGENTS_CLI_API_KEY` |
+| `graph-agents-cli run "prompt" [--mode a2a] [--url URL] [--thread-id ID]` | One-shot chat; `--url` targets a deployed agent. A bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY` (locally and with `--url`), never on the command line |
+{%- if cookiecutter.auth_policy == 'jwt' %}
+| `graph-agents-cli auth dev-token --sub USER [--roles R,...] [--ttl 12h]` | A token for local runs (dev key in `.graph-agents-cli/dev-jwt/`, `APP_ENV=dev` only) |
+{%- endif %}
 | `uv run pytest` | Unit and integration tests with the deterministic `fake` model and the in-memory checkpointer (`TEST_POSTGRES_DSN` opts the Postgres tests in) |
 | `graph-agents-cli eval run` | Generate traces (`artifacts/traces/`) and grade them against the gate in `tests/eval/eval_config.yaml` |
 | `graph-agents-cli lint` | ruff plus the API-policy check of every tool's `API_CALLS` |
@@ -154,17 +176,10 @@ only knows that label: pin the denial's `path` too. With `openapi`, `lint` also 
 unreserved characters and ignoring one trailing slash; letter case counts for allows and is ignored for
 denials. Pass model input as `path_params`
 of a declared template, never as part of a concrete path.
-{%- if cookiecutter.has_api_policy %}
-This project declares {% for api in cookiecutter.apis %}`{{ api.name }}` (`{{ api.base_url_env }}`{% if api.auth == 'bearer' %}, token in `{{ api.token_env }}`{% endif %}){{ ", " if not loop.last else "" }}{% endfor %}.
-{%- if cookiecutter.example_api %}
-`{{cookiecutter.agent_directory}}/tools/example_api.py` shows the pattern with one call the policy allows
-(`{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }}` on `{{ cookiecutter.example_api.api }}`): replace it with your own.
-{%- else %}
-No example tool was generated: the first API allows no operation the example could make.
-{%- endif %}
-{%- else %}
-No policy is declared yet: add an API with `graph-agents-cli api add` (below).
-{%- endif %}
+`graph-agents-cli api show` lists the APIs `api-policy.yaml` declares now, what each allows, and every
+tool's declared calls; without the file, declare the first API with `graph-agents-cli api add` (below). When
+`{{cookiecutter.agent_directory}}/tools/example_api.py` exists (a project created with a policy), it shows
+the pattern with one call the policy allows: replace it with your own.
 Every `*.py` under `{{cookiecutter.agent_directory}}/tools/` (subpackages included) declares `API_CALLS` as one
 module-level literal list; `graph-agents-cli lint` fails on an undeclared or disallowed call (and prints the
 `graph-agents-cli api` command that would allow it), and on `API_CALLS` changed anywhere else (`+=`,
@@ -276,10 +291,11 @@ installed by the CLI or the chart: `graph-agents-cli infra check --env <env>` re
 ## Secrets
 
 The chart never templates the app Secret; it mounts `<release>-app` (`existingSecret`) with `envFrom`, and
-outside dev the pods do not start without it. Only the keys listed under `secrets.keys` in the manifest are
-exported from an env file: `{{ cookiecutter.secret_keys | join('`, `') }}` (the token of every `auth: bearer`
-API in `api-policy.yaml` included). Add other secrets you use (`METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`) to that
-list.
+outside dev the pods do not start without it. Only the keys listed under `secrets.keys` in
+`graph-agents-cli-manifest.yaml` are exported from an env file: the provider key, the database settings, the
+policy's own keys and the token of every `auth: bearer` API in `api-policy.yaml` (`api add` and `api remove`
+keep that list in step). `graph-agents-cli secrets status --env <env>` shows which of them the Secret holds.
+Add other secrets you use (`METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`) to that list.
 
 ```bash
 graph-agents-cli secrets apply --env staging     # from .env.staging; creates the namespace if needed

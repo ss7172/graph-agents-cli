@@ -7,7 +7,7 @@ startup.
 
 | Phase | Commands |
 |---|---|
-| Setup | `setup` · `update` · `login` |
+| Setup | `setup` · `update` · `login` · `auth dev-token` |
 | Scaffold | `create` (alias of `scaffold create`) · `scaffold enhance` · `scaffold upgrade` |
 | Develop | `playground` · `run` · `install` · `lint` · `build` |
 | Evaluate | `eval run` · `eval generate` · `eval grade` · `eval compare` · `eval analyze` · `eval submit` · `eval metric list` |
@@ -32,6 +32,7 @@ missing (`--strict`: any allow-listed key). `eval` exit codes are in `/graph-age
 graph-agents-cli setup [--workspace] [--dry-run] [--dev] [--skills-source TEXT] [--agent TEXT]...
 graph-agents-cli update [--workspace] [-i/--interactive] [-y/--yes]
 graph-agents-cli login [--profile default|disconnected] [--cluster] [--write-env] [--env-file FILE] [--status] [--json]
+graph-agents-cli auth dev-token --sub TEXT [--roles TEXT] [--ttl TEXT]
 ```
 
 - `setup` installs the CLI (`uv tool install <install spec>`: the running version's git tag, or
@@ -55,12 +56,27 @@ graph-agents-cli login [--profile default|disconnected] [--cluster] [--write-env
   under the disconnected profile) and `JUDGE_MODEL_PROVIDER=fake` is ok. `--write-env` prompts for
   missing keys without echoing and writes them to `.env` (default `<project>/.env`, or
   `--env-file`): a blank `KEY=` line (also `export KEY=` and `KEY=""`) is filled in place, other
-  keys are appended, the file is written atomically and kept at mode 0600. Under the
-  `shared-bearer` auth policy it also generates a missing `API_KEY` (an unset one is a warning,
-  since the local server answers 503 without it). With stdin closed it writes what it has and
-  names the keys left unset. Exit `1` when any check fails; `--status` prints the report and
+  keys are appended, the file is written atomically and kept at mode 0600 (an existing `.env` is
+  made 0600 even when nothing is missing; plain `login` warns about one other users can read).
+  Under the `shared-bearer` auth policy it also generates a missing `API_KEY` (an unset one is a
+  warning, since the local server answers 503 without it). Under `jwt` it warns when no
+  verification key is set (`AUTH_JWT_JWKS_URL` or `AUTH_JWT_PUBLIC_KEY`) and when
+  `GRAPH_AGENTS_CLI_API_KEY` holds no token for `run` and `eval`, pointing at `auth dev-token`.
+  With stdin closed it writes what it has and names the keys left unset. Exit `1` when any check fails; `--status` prints the report and
   exits `0`; `--json` emits the report. `--profile disconnected` fails on any hosted dependency. The CLI stores no
   credentials.
+- `auth dev-token` makes local runs of a `jwt` project work without an identity provider: it
+  creates an RSA key pair in `.graph-agents-cli/dev-jwt/` (git ignored, private key 0600) with
+  the project's Python (`uv run`, so `install` first), fills blank `AUTH_JWT_PUBLIC_KEY`,
+  `AUTH_JWT_ISSUER` (`graph-agents-cli-dev`) and `AUTH_JWT_AUDIENCE` (the project name) in
+  `.env` (values already set are used), and prints only the token on stdout, with the principal
+  in `AUTH_JWT_PRINCIPAL_CLAIM` and `--roles` in `AUTH_JWT_ROLES_CLAIM` (dotted paths nested);
+  `--ttl` defaults to `12h` (at most `7d`). Use it as
+  `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"`.
+  Exit 3 unless the effective policy is `jwt` and `APP_ENV` is exactly `dev`, or when
+  `AUTH_JWT_JWKS_URL` is set, `AUTH_JWT_ALGORITHMS` excludes RS256 or `AUTH_JWT_PUBLIC_KEY`
+  holds another key; exit 2 when the project's environment cannot sign. Restart a kept local
+  server afterwards (`run --stop-server`). Never deploy the dev key.
 
 ## Scaffold
 
@@ -118,12 +134,18 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   either runtime for LangGraph Studio; it bypasses the auth policy and the chat API.
 - `run`: default `--mode chat` against the local server it starts (tracked in
   `.graph-agents-cli/run_server.json`) on the first free port of 18080-18089, or on `--port` /
-  `GRAPH_AGENTS_CLI_RUN_PORT` (exit 3 when that port is taken), or against `--url`. Credentials per auth policy:
-  `--header` or `GRAPH_AGENTS_CLI_API_KEY` for `shared-bearer` (a local run falls back to the
-  `API_KEY` in `.env`); `--header 'Authorization: Bearer <token>'` for `jwt`; `--header` or
-  `--cookie` for `custom`. `--file` attaches UTF-8 text files as extra context. `--start-server` keeps
-  the local server for later runs (idle timeout 30 minutes); `--stop-server` stops it. `-v` prints
-  every SSE event as JSON. The footer's "Resume with" line prints credential flags redacted
+  `GRAPH_AGENTS_CLI_RUN_PORT` (exit 3 when that port is taken), or against `--url`. Credentials per auth policy,
+  locally and with `--url`: a bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, sent as
+  `Authorization: Bearer <value>` and kept out of argv and shell history (`shared-bearer`: the
+  `API_KEY`, and a local run falls back to the one in `.env`; `jwt`: a token, locally from
+  `auth dev-token`); `--header` or `--cookie` for `custom`. An explicit `--header
+  'Authorization: ...'` wins over the variable. The 401 and 503 hints name what the project's
+  policy needs. `--file` attaches UTF-8 text files as extra context. `--start-server` keeps
+  the local server for later runs (idle timeout 30 minutes); `--stop-server` stops it. `-v` adds
+  one compact line per SSE event (a run of text deltas is one counted line). The footer (thread
+  id and resume command) is printed after an `error` event too, with the run id; a stream that
+  drops after the run started is reported as such (not as "could not reach"), with the thread
+  to continue. The footer's "Resume with" line prints credential flags redacted
   (`--header 'Authorization: <redacted>'`, `--cookie name=<redacted>`);
   re-supply them. A turn silent for 600 s is reported as "no event from the agent" and leaves the
   server running (a one-off server is still stopped). `--mode a2a` needs the optional `a2a` extra
@@ -282,7 +304,10 @@ graph-agents-cli info [--json]
 `extension add` takes a git reference (`org/repo`, a URL, `--ref`) or a local path (`/abs`,
 `./rel`, `../rel`, `~/dir`, or `local@<path>`); a local source is recorded relative to the project
 root (absolute with `--global`). A bad local path is exit 3, a git or network failure exit 2.
-`extension update` reports "Already up to date" when nothing changed.
+`extension update` resolves the tracked ref first and reports "Already up to date" when nothing
+changed, without a trust prompt; new third-party code needs a prompt or `-y`. Without a terminal
+(CI, a pipe) the trust gate never prompts: `add` and `update` of untrusted code exit 1 with a hint
+to pass `-y`, and `update` keeps the old pin.
 
 `info` prints the CLI version and install path plus, inside a project: name, base template,
 agent directory, runtime, model provider and model, checkpointer, deployment target, registry,
@@ -297,7 +322,7 @@ namespaces, and active extensions with their sources and conflicts.
 | `GRAPH_AGENTS_CLI_INSTALL_SPEC` | where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install the CLI from (a mirror, a wheel); `{version}` is replaced by the version needed; control characters and whitespace are refused (exit 3), except the spaces of `name @ url` |
 | `GRAPH_AGENTS_CLI_RUN_PORT` | port of the local server `run` and `eval generate` start |
 | `GRAPH_AGENTS_CLI_DEBUG=1` | print the traceback behind a one-line network, file or parse error |
-| `GRAPH_AGENTS_CLI_API_KEY` | bearer key that `run --url` and `eval generate --url` send when `--header` is absent |
+| `GRAPH_AGENTS_CLI_API_KEY` | bearer credential `run` and `eval` send (locally and with `--url`) when no `Authorization` header is given: the `API_KEY` (`shared-bearer`) or a JWT (`jwt`; locally from `auth dev-token`); keeps it out of argv |
 | `GRAPH_AGENTS_CLI_E2E=1` | opts the CLI repository's slow end-to-end test suite in (contributors only) |
 | `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` | bypass extension overrides (set automatically inside an override) |
 | `GRAPH_AGENTS_CLI_EXTENSION_DIR` | set for an override's process: the extension's directory |

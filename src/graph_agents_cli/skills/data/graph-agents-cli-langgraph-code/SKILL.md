@@ -34,7 +34,7 @@ metadata:
 | Path | Category | Rule |
 |---|---|---|
 | `app/agent.py` | agent code | yours; exports `graph`, an unbound compiled `StateGraph` |
-| `app/tools/**` | agent code | yours; one module per tool or tool group, each with `API_CALLS` |
+| `app/tools/**` | agent code | yours; one module per tool or tool group, each with `API_CALLS`. `weather.py` is only an example: replace or delete it (and its eval case); no template test depends on it |
 | `app/policies/**` | agent code | yours; `AuthPolicy` implementations (`custom.py` ships as a fail-closed stub) |
 | `app/prompts/**`, `app/graph/**` | agent code (reserved) | yours to create; `upgrade` never touches them |
 | `app/fast_api_app.py`, `app/app_utils/**`, `Dockerfile`, `langgraph.json`, workflows, chart templates | scaffolding | template-owned; 3-way merged on upgrade; change only when the user asks and expect merge conflicts later |
@@ -335,14 +335,17 @@ test-only and never offered by `create`. Its replies:
 | Input | Reply |
 |---|---|
 | last message is a tool result | `Here is what I found: <tool result>` |
-| a question mentioning "weather" while a `get_weather` tool is bound | a `get_weather(query=<place>)` tool call (`<place>` parsed after "in") |
+| a request mentioning a bound tool: its name, or a distinctive word of it (`weather` for `get_weather`, `orders` or `order` for `list_orders`; generic verbs such as get, list, create, update do not count) | a call of the first such tool; each required argument filled by type: text with the request's subject (after its last "in", "for" or "about", else the whole request), an enum with its first value, a number with 1, a flag with false, a list or an object empty |
 | a judge prompt (mentions "score" and "json") | `{"score": 5, "explanation": "fake judge: deterministic pass"}` |
 | a greeting (`hi`, `hello`, `hey`, `good morning`...) | `Hello! How can I help you today?` |
-| anything else | `I am a fake model. I can check the weather. You said: <text>` |
+| anything else | `I am a fake model. I can use these tools: <name> (<first sentence of its description>), ... You said: <text>` (no tools part when none is bound) |
 
 There is no `FAKE_MODEL_RESPONSES` variable and no scripted-response list. Use it in unit tests
 and CI for the graph's plumbing (state, tool routing, the SSE mapping, policy enforcement), not
-for behaviour. Behaviour belongs in eval (`/graph-agents-cli-eval`); the scaffolded
+for behaviour. The template's server tests bring their own tool (`use_test_tools` in
+`tests/conftest.py` serves the graph with a test-only `probe` tool), and `tests/conftest.py`
+keeps `.env` and the shell's app settings out of every test, so the suite passes whatever tools,
+`.env` and values files the project has. Behaviour belongs in eval (`/graph-agents-cli-eval`); the scaffolded
 `basic-dataset.json` is written so every case passes on the fake model. `references/langgraph.md`
 shows the fixture. `JUDGE_MODEL_PROVIDER=fake` makes the judge score every metric at the scale
 maximum.

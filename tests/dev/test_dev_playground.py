@@ -252,3 +252,26 @@ def test_wait_and_open_opens_once_ready(monkeypatch):
         cmd_playground._wait_and_open("http://x/playground", "http://x/health", timeout=5) is True
     )
     assert opened == ["http://x/playground"]
+
+
+def test_run_foreground_gives_the_server_env_settings_below_the_shell(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("AUTH_POLICY=jwt\nAPP_ENV=staging\nLOG_LEVEL=DEBUG\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    seen = {}
+
+    class FakeProc:
+        pid = 1
+
+        def wait(self):
+            return 0
+
+    def fake_popen(args, env):
+        seen.update(env)
+        return FakeProc()
+
+    monkeypatch.setattr(cmd_playground._runner, "popen_resolved", fake_popen)
+    assert cmd_playground._run_foreground(["uv", "run", "x"], {"APP_ENV": "dev"}) == 0
+    assert seen["AUTH_POLICY"] == "jwt"  # from .env
+    assert seen["LOG_LEVEL"] == "INFO"  # the shell wins over .env
+    assert seen["APP_ENV"] == "dev"  # the playground's own setting wins over both

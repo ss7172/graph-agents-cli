@@ -103,12 +103,32 @@ def test_render_chat_events_raises_agent_error(capsys):
     assert capsys.readouterr().out == "[agent]: partial\n"
 
 
-def test_render_chat_events_verbose_dumps_payloads(capsys):
-    render_chat_events(
-        [SseEvent("message.start", {"thread_id": "t", "run_id": "r"}, "")], verbose=True
-    )
+def test_render_chat_events_verbose_prints_one_line_per_event(capsys):
+    events = [SseEvent(name, data, "") for name, data in contract_sequence()]
+    render_chat_events(events, verbose=True)
     out = capsys.readouterr().out
-    assert '"event": "message.start"' in out and '"thread_id": "t"' in out
+    assert 'event: message.start {"thread_id": "thread-1", "run_id": "run-1"}\n' in out
+    assert (
+        'event: tool.call {"id": "call-1", "name": "get_weather", "args": {"query": "SF"}}' in out
+    )
+    # Deltas are on screen as text; -v counts them instead of repeating each one.
+    assert "event: message.delta x1 (5 characters)" in out
+    assert "event: message.delta x1 (7 characters)" in out
+    assert '"text"' not in out
+    # One line per event (the answer text lines aside): no pretty-printed JSON.
+    assert len(out.splitlines()) == 10, out
+    assert out.rstrip().splitlines()[-1].startswith('event: message.end {"thread_id"')
+
+
+def test_verbose_counts_a_run_of_deltas_on_one_line(capsys):
+    events = [SseEvent("message.start", {"thread_id": "t"}, "")]
+    events += [SseEvent("message.delta", {"text": w}, "") for w in ("one ", "two ", "three")]
+    events.append(SseEvent("message.end", {"thread_id": "t"}, ""))
+    render_chat_events(events, verbose=True)
+    out = capsys.readouterr().out
+    assert "[agent]: one two three\n" in out
+    assert "event: message.delta x3 (13 characters)" in out
+    assert out.count("message.delta") == 1
 
 
 def test_compose_message_attaches_text_files(tmp_path):
@@ -201,6 +221,94 @@ def test_error_event_exits_1_after_partial_output(local_project, chat_server):
     assert local_project.stop_calls
 
 
+def test_an_error_event_still_prints_the_thread_and_how_to_resume(
+    chat_server, monkeypatch, tmp_path
+):
+    """The thread survives a failed turn: the footer names it, as after a success."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
+    chat_server.script = [
+        ("message.start", {"thread_id": "srv-thread-5", "run_id": "run-5"}),
+        ("message.delta", {"text": "partial"}),
+        (
+            "error",
+            {
+                "code": "recursion_limit",
+                "message": "The run reached the step limit. Reference: e1.",
+                "error_id": "e1",
+                "run_id": "run-5",
+            },
+        ),
+    ]
+    result = invoke("hi", "--url", chat_server.url)
+    assert result.exit_code == 1, result.output
+    out = result.output
+    assert "[error: recursion_limit]: The run reached the step limit. Reference: e1." in out
+    assert "Run: run-5" in out and "Thread: srv-thread-5" in out
+    assert f'Resume with: graph-agents-cli run "<message>" --url {chat_server.url}' in out
+    assert "--thread-id srv-thread-5" in out
+    assert "(no response content)" not in out
+    assert out.index("[error: recursion_limit]") < out.index("Thread: srv-thread-5")
+
+
+def test_an_error_event_on_a_one_off_local_server_says_the_thread_is_gone(
+    local_project, chat_server
+):
+    chat_server.script = [
+        ("message.start", {"thread_id": "t-local", "run_id": "r"}),
+        ("error", {"code": "timeout", "message": "The run timed out."}),
+    ]
+    result = invoke("hi")
+    assert result.exit_code == 1
+    assert "Thread: t-local" in result.output
+    assert "One-off server with an in-memory checkpointer" in result.output
+    assert "(no response content)" not in result.output
+
+
+def test_a_stream_that_drops_mid_run_is_not_reported_as_unreachable(
+    chat_server, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
+    chat_server.script = contract_sequence(thread_id="srv-thread-9", deltas=("Hello",) * 8)
+    chat_server.drop_after_bytes = 128
+    result = invoke("hi", "--url", chat_server.url)
+    assert result.exit_code == 2, result.output  # a transport failure, as before
+    out = result.output
+    assert "Could not reach" not in out
+    assert f"The connection to the remote agent at {chat_server.url} dropped after the run" in out
+    assert "The answer above is incomplete" in out
+    assert "Thread: srv-thread-9" in out
+    assert f"--url {chat_server.url} --thread-id srv-thread-9" in out
+
+
+def test_a_connection_closed_before_any_answer_says_so(chat_server, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
+    chat_server.drop_after_bytes = 0
+    result = invoke("hi", "--url", chat_server.url, "--thread-id", "t-1")
+    assert result.exit_code == 2, result.output
+    assert "failed before the run started" in result.output
+    assert "Could not reach" not in result.output and "Resume with" not in result.output
+
+
+def test_a_local_server_that_dies_mid_run_is_stopped_and_the_thread_named(
+    local_project, chat_server
+):
+    local_project.started = False  # even a reused server is stopped: it is gone or wedged
+    chat_server.script = contract_sequence(thread_id="t-mem", deltas=("Hello",) * 8)
+    chat_server.drop_after_bytes = 128
+    result = invoke("hi")
+    assert result.exit_code == 2, result.output
+    out = result.output
+    assert "The connection to the local server dropped after the run started" in out
+    assert "The local server has been stopped" in out
+    assert "Thread: t-mem" in out
+    # The fake ensure_server reports a memory checkpointer: nothing survives the stop.
+    assert "One-off server with an in-memory checkpointer" in out
+    assert local_project.stop_calls == [{"root": Path.cwd(), "pid": 4242}]
+
+
 def test_http_401_surfaces_body_and_auth_hint(local_project, chat_server):
     chat_server.status = 401
     chat_server.error_body = '{"detail": "invalid token"}'
@@ -209,6 +317,84 @@ def test_http_401_surfaces_body_and_auth_hint(local_project, chat_server):
     assert "HTTP 401" in result.output
     assert "invalid token" in result.output
     assert "GRAPH_AGENTS_CLI_API_KEY" in result.output
+
+
+DEV_TOKEN_EXPORT = (
+    'export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user>)"'
+)
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected", "absent"),
+    [
+        ("jwt", DEV_TOKEN_EXPORT, "--header 'Authorization"),
+        ("shared-bearer", "export GRAPH_AGENTS_CLI_API_KEY=<API_KEY>", "dev-token"),
+        ("custom", "--cookie name=value", "dev-token"),
+    ],
+)
+def test_the_401_hint_follows_the_projects_policy_and_keeps_tokens_out_of_argv(
+    local_project, chat_server, policy, expected, absent
+):
+    with open(".env", "a", encoding="utf-8") as env:
+        env.write(f"AUTH_POLICY={policy}\n")
+    (Path.cwd() / "graph-agents-cli-manifest.yaml").write_text("name: x\n")
+    chat_server.status = 401
+    chat_server.error_body = '{"detail": "Missing bearer token."}'
+    result = invoke("hi")
+    assert result.exit_code == 1
+    assert expected in result.output
+    assert absent not in result.output
+
+
+def test_the_401_hint_outside_a_project_leads_with_the_variable(chat_server, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
+    chat_server.status = 401
+    result = invoke("hi", "--url", chat_server.url)
+    assert result.exit_code == 1
+    assert "export GRAPH_AGENTS_CLI_API_KEY=<credential>" in result.output
+    assert "out of argv and shell history" in result.output
+    assert "--header 'Authorization" not in result.output
+
+
+def test_a_403_is_not_reported_as_failed_authentication(local_project, chat_server):
+    chat_server.status = 403
+    chat_server.error_body = '{"detail": "This thread belongs to another principal."}'
+    result = invoke("hi", "--thread-id", "x")
+    assert result.exit_code == 1
+    assert "Authentication failed" not in result.output
+    assert "refused the request" in result.output
+
+
+@pytest.mark.parametrize(
+    ("body", "remote", "expected"),
+    [
+        ("AUTH_POLICY=jwt is not configured on the server", False, "auth dev-token --sub"),
+        ("AUTH_POLICY=jwt is not configured on the server", True, "AUTH_JWT_ISSUER"),
+        ("API_KEY is not configured on the server", False, "login --write-env"),
+        ("API_KEY is not configured on the server", True, "secrets apply --env"),
+        ("AUTH_POLICY=custom is not implemented", False, "policies/custom.py"),
+        ("database unavailable", False, "see its log"),
+    ],
+)
+def test_the_503_hint_names_what_the_server_misses(
+    local_project, chat_server, body, remote, expected
+):
+    chat_server.status = 503
+    chat_server.error_body = json.dumps({"detail": body})
+    result = invoke("hi", "--url", chat_server.url) if remote else invoke("hi")
+    assert result.exit_code == 1
+    assert expected in result.output
+    assert "is the auth policy implemented" not in result.output
+
+
+def test_run_help_recommends_the_variable_for_bearer_credentials():
+    result = CliRunner().invoke(cmd_run.cmd_run, ["--help"], terminal_width=120)
+    assert result.exit_code == 0
+    text = " ".join(result.output.split())
+    assert "jwt GRAPH_AGENTS_CLI_API_KEY=<token> (locally: auth dev-token)" in text
+    assert "shared-bearer GRAPH_AGENTS_CLI_API_KEY=<API_KEY>" in text
+    assert "Bearer <token>'" not in text
 
 
 def test_http_404_with_thread_id_explains_lost_thread(local_project, chat_server):
@@ -255,7 +441,7 @@ def test_session_token_is_not_advertised_in_help():
 def test_verbose_prints_event_payloads(local_project):
     result = invoke("hi", "-v")
     assert result.exit_code == 0, result.output
-    assert '"event": "tool.call"' in result.output
+    assert 'event: tool.call {"id": "call-1", "name": "get_weather"' in result.output
 
 
 def test_local_a2a_mode_without_sdk_gives_install_hint(local_project, monkeypatch):

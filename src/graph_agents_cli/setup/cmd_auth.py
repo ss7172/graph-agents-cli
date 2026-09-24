@@ -28,6 +28,10 @@ process environment and the project's ``.env``, and reports whether:
   ``kubectl cluster-info`` succeeds);
 * under the ``shared-bearer`` auth policy, ``API_KEY`` is set (the local
   server answers 503 to every request without it);
+* under ``jwt``, a verification key is set (``AUTH_JWT_JWKS_URL`` or
+  ``AUTH_JWT_PUBLIC_KEY``; ``auth dev-token`` makes a local one) and
+  ``GRAPH_AGENTS_CLI_API_KEY`` holds the token ``run`` and ``eval`` send;
+* ``.env`` is not open to other users;
 * under ``--profile disconnected``, nothing hosted is configured: no
   hosted model provider, no LangSmith, no GitHub-hosted CI, ``fastapi`` runtime.
 
@@ -35,7 +39,8 @@ process environment and the project's ``.env``, and reports whether:
 without echoing the values (a blank ``KEY=`` line copied from ``.env.example``
 is filled in place, anything else is appended; the file is kept at mode 0600);
 inside a ``shared-bearer`` project it also generates a missing ``API_KEY`` (as
-``secrets apply`` does). The CLI itself stores nothing.
+``secrets apply`` does). It always leaves ``.env`` at mode 0600, even when
+nothing is missing. The CLI itself stores nothing.
 """
 
 from __future__ import annotations
@@ -64,6 +69,7 @@ from graph_agents_cli._defaults import (
 )
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import ManifestError, find_project_root
+from graph_agents_cli._remote import API_KEY_ENV
 from graph_agents_cli._runner import run_resolved
 from graph_agents_cli._skills_check import NO_UPDATE_CHECK_ENV
 from graph_agents_cli._tools import ToolNotFoundError, install_hint
@@ -583,12 +589,101 @@ def check_api_key(info: ProjectInfo, env: EnvView) -> Check | None:
     return None
 
 
+def effective_auth_policy(info: ProjectInfo, env: EnvView) -> str | None:
+    """The policy the local server runs: ``AUTH_POLICY`` (environment or .env), else the manifest."""
+    if info.root is None:
+        return None
+    return normalize_auth_policy(env.get("AUTH_POLICY").strip() or info.auth_policy, warn=False)
+
+
+DEV_TOKEN_EXPORT = (
+    'export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user>)"'
+)
+
+
+def check_jwt(info: ProjectInfo, env: EnvView) -> list[Check]:
+    """Under ``jwt``: can the local server verify tokens, and will run/eval send one?"""
+    if effective_auth_policy(info, env) != "jwt":
+        return []
+    checks: list[Check] = []
+    key_vars = [name for name in ("AUTH_JWT_JWKS_URL", "AUTH_JWT_PUBLIC_KEY") if env.has(name)]
+    if not key_vars:
+        checks.append(
+            Check(
+                "jwt_key",
+                WARN,
+                "AUTH_POLICY=jwt without AUTH_JWT_JWKS_URL or AUTH_JWT_PUBLIC_KEY: the local "
+                "server answers 503 to every request (run, eval, playground)",
+                "For local runs: 'graph-agents-cli auth dev-token --sub <user>' writes a dev "
+                "key, issuer and audience to .env and prints a token. Or set AUTH_JWT_JWKS_URL "
+                "to your issuer's keys.",
+            )
+        )
+    else:
+        sources = ", ".join(f"{name} ({env.where(name)})" for name in key_vars)
+        checks.append(Check("jwt_key", OK, f"verification key: {sources}"))
+        missing = [n for n in ("AUTH_JWT_ISSUER", "AUTH_JWT_AUDIENCE") if not env.has(n)]
+        if missing and env.get("APP_ENV") != "dev":
+            checks.append(
+                Check(
+                    "jwt_claims",
+                    FAIL,
+                    f"{' and '.join(missing)} unset: outside APP_ENV=dev the server refuses to "
+                    "start without them",
+                    "Set them in .env (APP_ENV=dev relaxes this for local runs).",
+                )
+            )
+    # run and eval read the token from the process environment only (never .env).
+    if os.environ.get(API_KEY_ENV, "").strip():
+        checks.append(
+            Check("jwt_token", OK, f"{API_KEY_ENV} set (environment): run and eval send it")
+        )
+    else:
+        checks.append(
+            Check(
+                "jwt_token",
+                WARN,
+                f"{API_KEY_ENV} is not set: a local run or eval sends no token (401 Missing "
+                "bearer token)",
+                f"Put a token there (kept out of argv and shell history): {DEV_TOKEN_EXPORT}",
+            )
+        )
+    return checks
+
+
+def env_file_mode_problem(path: Path) -> str | None:
+    """Why ``path`` is open to other users (group/world bits), or None."""
+    if os.name == "nt" or not path.is_file():
+        return None
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        return f"{path.name} is readable or writable by other users (mode {mode:04o})"
+    return None
+
+
+def check_env_file(env: EnvView) -> Check | None:
+    problem = env_file_mode_problem(env.env_file)
+    if problem is None:
+        return None
+    return Check(
+        "env_file",
+        WARN,
+        f"{problem}; it holds keys",
+        f"chmod 600 {env.env_file.name} (or run 'graph-agents-cli login --write-env', which "
+        "keeps it 0600).",
+    )
+
+
 def run_preflight(info: ProjectInfo, env: EnvView, *, profile: str, cluster: bool) -> list[Check]:
     provider, source = resolve_provider(info, env)
     checks = check_provider(provider, source, env, profile=profile)
     api_key = check_api_key(info, env)
     if api_key is not None:
         checks.append(api_key)
+    checks.extend(check_jwt(info, env))
+    env_file = check_env_file(env)
+    if env_file is not None:
+        checks.append(env_file)
     checks.append(check_judge(env, profile=profile))
     checks.append(check_tracing(env, profile=profile))
     checks.extend(check_kubeconfig(info, cluster=cluster))
@@ -663,6 +758,20 @@ def write_env(env_file: Path, entries: dict[str, str]) -> None:
     _write_private(target, text)
 
 
+def _keep_private(path: Path, console: Console) -> None:
+    """Make an existing env file owner-only (0600), as a write would leave it."""
+    problem = env_file_mode_problem(path)
+    if problem is None:
+        return
+    target = path.resolve() if path.is_symlink() else path
+    try:
+        target.chmod(ENV_FILE_MODE)
+    except OSError as exc:
+        console.print(f"  {problem}; could not make it 0600: {exc}", style="yellow")
+        return
+    console.print(f"  {problem}: now 0600 (owner only).", style="green", highlight=False)
+
+
 def _write_private(path: Path, text: str) -> None:
     """Replace ``path`` with ``text``, readable by the owner only (0600)."""
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -692,6 +801,7 @@ def prompt_and_write_env(info: ProjectInfo, env: EnvView, *, profile: str, conso
     generate = needs_api_key(info, env)
     if not missing and not generate:
         console.print("  Nothing to write: every required key is already set.", style="dim")
+        _keep_private(env.env_file, console)
         return 0
     console.print()
     console.print(f"  Writing missing keys to {env.env_file} (leave blank to skip).", style="bold")

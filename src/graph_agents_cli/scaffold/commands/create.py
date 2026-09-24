@@ -1013,7 +1013,9 @@ def _resolve_create_params(
     elif final_auth_policy == "jwt" and not quiet:
         console.print(
             "Info: jwt verifies OIDC bearer tokens: set AUTH_JWT_JWKS_URL (or "
-            "AUTH_JWT_PUBLIC_KEY), AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE (see .env.example).",
+            "AUTH_JWT_PUBLIC_KEY), AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE (see .env.example). "
+            "For local runs, `graph-agents-cli auth dev-token --sub <user>` sets a dev key and "
+            "prints a token for GRAPH_AGENTS_CLI_API_KEY.",
             style="cyan",
         )
 
@@ -1327,6 +1329,13 @@ def _print_next_steps(
     console.print("   [bold bright_green]cp .env.example .env[/]")
     console.print("   [bold bright_green]graph-agents-cli login --write-env[/]")
     console.print("   [bold bright_green]graph-agents-cli install[/]")
+    if params.auth_policy == "jwt":
+        # Every request needs a token; a dev key makes local runs work without an issuer.
+        console.print(
+            '   [bold bright_green]export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth '
+            'dev-token --sub alice)"[/]',
+            highlight=False,
+        )
     console.print("   [bold bright_green]graph-agents-cli playground[/]")
     console.print("   [bold bright_green]graph-agents-cli eval run[/]")
     if params.deployment_target == "kubernetes":

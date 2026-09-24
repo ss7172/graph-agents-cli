@@ -183,6 +183,85 @@ def get_judge_model(**kwargs: Any) -> BaseChatModel:
 
 _GREETINGS = ("hi", "hello", "hey", "good morning", "good afternoon", "good evening")
 
+# Words of a tool name that say nothing about what the tool is for: `list_orders`
+# is picked by "orders", never by "list".
+_GENERIC_NAME_WORDS = frozenset(
+    "all and api call create delete fetch find for from get list look lookup make new "
+    "query run search set the tool update with".split()
+)
+# The subject of a request: the text after its last "in", "for" or "about".
+_SUBJECT_MARKER = re.compile(r"\b(?:in|for|about)\s+", re.IGNORECASE)
+# A value per JSON-schema type for the arguments a fake tool call must fill.
+_PLACEHOLDER_BY_TYPE: dict[str, Any] = {
+    "integer": 1,
+    "number": 1,
+    "boolean": False,
+    "array": [],
+    "object": {},
+}
+
+
+def _tool_spec(tool: Any) -> dict[str, Any] | None:
+    """``{"name", "description", "parameters"}`` of a bound tool, or None when unreadable."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    try:
+        function = convert_to_openai_tool(tool).get("function") or {}
+    except Exception:  # an unusual tool object: bound, but never called by the fake model
+        return None
+    name = function.get("name")
+    if not name:
+        return None
+    return {
+        "name": str(name),
+        "description": str(function.get("description") or ""),
+        "parameters": function.get("parameters") or {},
+    }
+
+
+def _name_words(name: str) -> set[str]:
+    words = {w for w in re.split(r"[^a-z0-9]+", name.lower()) if w}
+    return {w for w in words if w not in _GENERIC_NAME_WORDS and len(w) > 2}
+
+
+def _mentions(prompt: str, name: str) -> bool:
+    """The prompt names the tool, or a distinctive word of its name (a plural counts)."""
+    lowered = prompt.lower()
+    if name.lower() in lowered:
+        return True
+    words = set(re.findall(r"[a-z0-9]+", lowered))
+    for word in _name_words(name):
+        singular = word[:-1] if word.endswith("s") else word
+        if {word, singular, f"{singular}s"} & words:
+            return True
+    return False
+
+
+def _subject(prompt: str) -> str:
+    text = prompt.strip()
+    last = None
+    for match in _SUBJECT_MARKER.finditer(text):
+        last = match
+    subject = text[last.end() :] if last is not None else text
+    return subject.strip().rstrip("?.!").strip() or text
+
+
+def _fake_args(parameters: dict[str, Any], prompt: str) -> dict[str, Any]:
+    """A value for every required argument: the request's subject for text, a fixed one else."""
+    properties = parameters.get("properties") or {}
+    args: dict[str, Any] = {}
+    for name in parameters.get("required") or []:
+        schema = properties.get(name) or {}
+        if schema.get("enum"):
+            args[name] = schema["enum"][0]
+        else:
+            args[name] = _PLACEHOLDER_BY_TYPE.get(schema.get("type"), _subject(prompt))
+    return args
+
+
+def _first_sentence(text: str) -> str:
+    return text.strip().split("\n")[0].split(". ")[0].rstrip(".")
+
 
 def _text_of(message: BaseMessage) -> str:
     content = message.content
@@ -204,16 +283,27 @@ def _usage(prompt: str, completion: str) -> dict[str, int]:
 class FakeChatModel(BaseChatModel):
     """Deterministic chat model for tests: the reply depends only on the input.
 
-    Replies (all stable across calls and safe under concurrency):
+    It knows no tool by name: it calls whichever bound tool the request
+    mentions, so the tests and the eval smoke cases keep working when the
+    project's tools change. Replies (all stable across calls and safe under
+    concurrency):
       * after a tool result: ``Here is what I found: <tool result>``
-      * a question mentioning "weather" with a `get_weather` tool bound: a
-        `get_weather(query=<place>)` tool call
       * a judge prompt (mentions "score" and "JSON"): ``{"score": 5, "explanation": ...}``
+      * a request that mentions a bound tool (its name, or a distinctive word of
+        it: "weather" for `get_weather`, "orders" for `list_orders`): a call of
+        the first such tool. Every required argument is filled: text with the
+        request's subject (what follows its last "in", "for" or "about", else
+        the whole request; "Paris" in "What is the weather in Paris?"), an enum
+        with its first value, a number with 1, a flag with false, a list or an
+        object empty
       * a greeting: ``Hello! How can I help you today?``
-      * anything else: ``I am a fake model. I can check the weather. You said: <text>``
+      * anything else: ``I am a fake model. I can use these tools: <name> (<first
+        sentence of its description>), ... You said: <text>`` (without the tools
+        part when none is bound)
     """
 
     bound_tools: list[str] = Field(default_factory=list)
+    tool_specs: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -224,14 +314,21 @@ class FakeChatModel(BaseChatModel):
         return {"bound_tools": list(self.bound_tools)}
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Any:  # type: ignore[override]
-        names: list[str] = []
-        for t in tools:
-            name = getattr(t, "name", None) or getattr(t, "__name__", None)
-            if name is None and isinstance(t, dict):
-                name = t.get("name") or (t.get("function") or {}).get("name")
-            if name:
-                names.append(str(name))
-        return self.model_copy(update={"bound_tools": names})
+        specs = [spec for spec in (_tool_spec(t) for t in tools) if spec is not None]
+        return self.model_copy(
+            update={"bound_tools": [s["name"] for s in specs], "tool_specs": specs}
+        )
+
+    def _tool_call(self, prompt: str) -> AIMessage | None:
+        for spec in self.tool_specs:
+            if _mentions(prompt, spec["name"]):
+                args = _fake_args(spec["parameters"], prompt)
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": spec["name"], "args": args, "id": f"call_{spec['name']}"}],
+                    usage_metadata=_usage(prompt, spec["name"]),
+                )
+        return None
 
     def _reply(self, messages: list[BaseMessage]) -> AIMessage:
         last = messages[-1]
@@ -243,20 +340,18 @@ class FakeChatModel(BaseChatModel):
         if "score" in lowered and "json" in lowered:
             text = json.dumps({"score": 5, "explanation": "fake judge: deterministic pass"})
             return AIMessage(content=text, usage_metadata=_usage(prompt, text))
-        if "weather" in lowered and "get_weather" in self.bound_tools:
-            match = re.search(r"\bin\s+([A-Za-z][A-Za-z .'-]*?)\s*[?.!]*$", prompt.strip())
-            place = match.group(1).strip() if match else prompt.strip()
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "get_weather", "args": {"query": place}, "id": "call_get_weather"}
-                ],
-                usage_metadata=_usage(prompt, "get_weather"),
-            )
+        call = self._tool_call(prompt)
+        if call is not None:
+            return call
         if lowered.strip(" !.?,") in _GREETINGS or lowered.startswith(_GREETINGS):
             text = "Hello! How can I help you today?"
             return AIMessage(content=text, usage_metadata=_usage(prompt, text))
-        text = f"I am a fake model. I can check the weather. You said: {prompt}"
+        tools = ", ".join(
+            f"{s['name']} ({_first_sentence(s['description'])})" if s["description"] else s["name"]
+            for s in self.tool_specs
+        )
+        can = f" I can use these tools: {tools}." if tools else ""
+        text = f"I am a fake model.{can} You said: {prompt}"
         return AIMessage(content=text, usage_metadata=_usage(prompt, text))
 
     def _generate(

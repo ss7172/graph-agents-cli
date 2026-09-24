@@ -1,4 +1,5 @@
 # Copyright 2026 Google LLC
+# Modifications Copyright 2026 graph-agents-cli contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,7 +44,7 @@ from graph_agents_cli.extension._resolver import (
     resolve_sha,
 )
 from graph_agents_cli.extension._spec import ExtensionSpecError
-from graph_agents_cli.extension._trust import confirm_trust
+from graph_agents_cli.extension._trust import confirm_trust, stdin_is_interactive
 
 
 def _restore_pin(entry: ExtensionEntry, root: Path) -> None:
@@ -68,11 +69,16 @@ def cmd_update(
 ) -> None:
     """Advance extension pins (re-resolve the tracked ref).
 
-    Updates every installed extension when NAME is omitted.
+    Updates every installed extension when NAME is omitted. The tracked ref is
+    resolved first: an extension whose code did not change is reported as up
+    to date without a trust prompt. New third-party code needs your trust
+    (a prompt, or -y); without a terminal to ask on it keeps its pin and the
+    command exits 1.
     """
     updated: list[str] = []
     current: list[str] = []
     skipped: list[str] = []
+    untrusted: list[str] = []
     for scope, root in installed_scope_roots():
         manifest = root / EXTENSIONS_FILE
         for entry in read_extension_entries(manifest):
@@ -91,11 +97,9 @@ def cmd_update(
                 logging.warning("Skipping extension %r: %s", entry.name, e)
                 skipped.append(entry.name)
                 continue
-            if not confirm_trust(ref, auto_approve=auto_approve):
-                click.secho(f"Skipped {entry.name!r} (not trusted).", fg="yellow")
-                skipped.append(entry.name)
-                continue
             try:
+                # Resolving reads the source (the remote's refs, or a local tree's
+                # hash); it runs none of the extension's code, so it needs no trust.
                 new_sha = resolve_sha(ref)
                 extension_dir = vendored_extensions_dir(root) / entry.name
                 if (
@@ -104,9 +108,22 @@ def cmd_update(
                     and read_stamp(extension_dir) == expected_stamp(ref, new_sha)
                 ):
                     # Same commit (or, for a local source, the same tree) as the
-                    # copy on disk: nothing to do, and nothing to claim.
+                    # copy on disk: nothing to do, nothing to claim, nothing to trust.
                     current.append(entry.name)
                     continue
+            except ResolverError as e:
+                logging.warning("Could not update %r: %s", entry.name, e)
+                skipped.append(entry.name)
+                continue
+            if not confirm_trust(ref, auto_approve=auto_approve):
+                click.secho(
+                    f"Skipped {entry.name!r} (not trusted; the installed copy is kept).",
+                    fg="yellow",
+                )
+                skipped.append(entry.name)
+                untrusted.append(entry.name)
+                continue
+            try:
                 # name=entry.name pins the vendored dir to the stable id (see
                 # materialize) so an update survives an upstream rename.
                 materialize(
@@ -170,3 +187,9 @@ def cmd_update(
         click.secho(f"Updated: {', '.join(updated)}.", fg="green")
     if current:
         click.secho(f"Already up to date: {', '.join(current)}.", dim=True)
+    if untrusted and not stdin_is_interactive():
+        # Nobody could answer: a script must not take "kept the old pin" for success.
+        raise click.ClickException(
+            f"Not updated: {', '.join(untrusted)} changed and needs your trust; rerun with -y "
+            "to trust the new code."
+        )

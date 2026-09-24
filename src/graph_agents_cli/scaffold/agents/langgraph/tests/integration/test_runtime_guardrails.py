@@ -186,21 +186,23 @@ async def test_run_timeout_cancels_the_run_and_frees_the_thread(
 
 
 async def test_a_run_stopped_mid_tool_call_leaves_a_usable_thread(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools
 ) -> None:
     """The open tool call gets an error result, so the next turn's history is valid."""
     import time
 
-    from {{cookiecutter.agent_directory}}.tools import weather
+    from langchain_core.tools import tool
 
-    def slow_weather(query: str) -> str:
+    @tool
+    def slow_probe(query: str) -> str:
+        """Test-only tool that outlives the run timeout."""
         time.sleep(1.0)
         return "late"
 
-    monkeypatch.setattr(weather.get_weather, "func", slow_weather)
+    use_test_tools(slow_probe)
     monkeypatch.setenv("RUN_TIMEOUT_S", "0.4")
     thread_id = str(uuid.uuid4())
-    events = parse_sse((await chat(client, "What's the weather in Paris?", thread_id)).text)
+    events = parse_sse((await chat(client, "Run the slow probe for Paris", thread_id)).text)
     assert [e for e, _ in events] == ["message.start", "tool.call", "error"]
     messages = (await client.get(f"/threads/{thread_id}/messages", headers=AUTH)).json()
     assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
@@ -222,10 +224,18 @@ async def test_idle_streams_get_heartbeat_comments(
 
 
 async def test_recursion_limit_stops_a_looping_run(
-    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch, use_test_tools
 ) -> None:
+    from langchain_core.tools import tool
+
+    @tool
+    def probe(query: str) -> str:
+        """Test-only tool."""
+        return "ok"
+
     monkeypatch.setenv("RECURSION_LIMIT", "1")
-    events = parse_sse((await chat(client, "What's the weather in San Francisco?")).text)
+    use_test_tools(probe)
+    events = parse_sse((await chat(client, "Run the probe for San Francisco")).text)
     assert events[-1][0] == "error"
     assert events[-1][1]["code"] == "recursion_limit" and "(1 steps)" in events[-1][1]["message"]
 

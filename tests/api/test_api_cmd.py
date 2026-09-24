@@ -754,3 +754,81 @@ def test_add_names_the_secrets_step_only_for_kubernetes(target: str, secrets_ste
     assert "B_TOKEN" in todos
     assert ("secrets apply" in todos) is secrets_step
     assert (".env.<env>" in todos) is secrets_step
+
+
+# --- output: copied specs, entries without effect, tables off a terminal -----------
+
+
+def test_a_copied_spec_is_summarised_after_the_policy_diff(project: Path, tmp_path: Path) -> None:
+    spec = tmp_path / "orders-openapi.yaml"
+    spec.write_text(SPEC)
+    result = ok(*ORDERS_ADD, "--openapi", str(spec), "--dry-run")
+    out = result.output
+    assert "+++ b/api-policy.yaml" in out
+    assert "operationId: listOrders" not in out  # the spec's content is not printed
+    summary = (
+        f"openapi/orders/orders-openapi.yaml: new file, a copy of {spec} "
+        f"({len(SPEC.splitlines())} lines; not shown)"
+    )
+    assert summary in " ".join(out.split())
+    assert out.index("+++ b/api-policy.yaml") < out.index("openapi/orders/orders-openapi.yaml:")
+    assert not (project / "openapi").exists()
+    ok(*ORDERS_ADD, "--openapi", str(spec))
+    assert (project / "openapi/orders/orders-openapi.yaml").read_text() == SPEC
+
+
+def test_an_allow_the_methods_do_not_cover_has_no_effect_yet(project: Path) -> None:
+    ok(*ORDERS_ADD[:-6], "--access", "read-only")  # GET, HEAD
+    ok("api", "allow", "orders", "listOrders", "--method", "GET", "--path", "/orders")
+    result = ok(
+        "api", "allow", "orders", "updateOrder", "--method", "PATCH", "--path", "/orders/{id}"
+    )
+    assert "PATCH is not in orders's allowed_methods" in result.output
+    assert "No effect on access to orders yet" in result.output
+    assert "This widens access" not in result.output
+    # Once PATCH is allowed, the change that makes it effective is the widening one.
+    widened = ok("api", "access", "orders", "custom", "--methods", "GET,HEAD,PATCH")
+    assert "This widens access to orders" in widened.output
+
+
+def test_an_allow_a_denial_still_refuses_has_no_effect_yet(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    ok("api", "deny", "orders", "deleteOrder", "--method", "DELETE", "--path", "/orders/{id}")
+    ok("api", "allow", "orders", "listOrders", "--method", "GET", "--path", "/orders")
+    result = ok(
+        "api", "allow", "orders", "deleteOrder", "--method", "DELETE", "--path", "/orders/{id}"
+    )
+    assert "still refuses it (denials win)" in result.output
+    assert "No effect on access to orders yet" in result.output
+
+
+def test_tables_keep_long_cells_whole_off_a_terminal(project: Path) -> None:
+    """CI logs and pipes: no COLUMNS, not a terminal; Rich would cut cells at 80 columns."""
+    ok(*ORDERS_ADD)
+    tools = project / "app" / "tools"
+    (tools / "orders_with_a_rather_long_module_name.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "orders", "method": "GET", "operation_id": "listOrdersForACustomer",'
+        ' "path": "/customers/{customer_id}/orders/{order_id}/lines"},\n'
+        "]\nTOOLS: list = []\n"
+    )
+    env = {**ENV, "COLUMNS": ""}
+    result = CliRunner().invoke(main, ["api", "check"], env=env)
+    assert "orders_with_a_rather_long_module_name" in result.output, result.output
+    assert "/customers/{customer_id}/orders/{order_id}/lines" in result.output
+    assert "…" not in result.output
+    shown = CliRunner().invoke(main, ["api", "show", "orders"], env=env)
+    assert shown.exit_code == 0, shown.output
+    assert "…" not in shown.output
+
+
+def test_the_generated_readme_never_goes_stale_with_the_policy(project: Path) -> None:
+    """The README points at `api show` instead of embedding policy state `api` commands change."""
+    readme = project / "README.md"
+    before = readme.read_text()
+    assert "No policy is declared yet" not in before
+    assert "graph-agents-cli api show" in before
+    assert "`graph-agents-cli-manifest.yaml` are exported" in before  # secrets.keys, not a copy
+    ok(*ORDERS_ADD)
+    assert readme.read_text() == before  # nothing in it became wrong
+    assert "ORDERS_API_TOKEN" in manifest(project)["secrets"]["keys"]

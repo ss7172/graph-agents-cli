@@ -135,7 +135,8 @@ graph-agents-cli create <project-name> \
 - `--agent-guidance-filename` defaults to `AGENTS.md` (read by Codex and most coding agents);
   pass `CLAUDE.md` (Claude Code) or `GEMINI.md` (Gemini CLI, Antigravity) when that agent is in use.
 - `create` copies the runtime's bundled lock (`uv-fastapi.lock` or `uv-langgraph-server.lock`)
-  to `uv.lock` and runs `uv sync`.
+  to `uv.lock`; it installs nothing. Run `graph-agents-cli install` (`uv sync` from that lock)
+  before `run`, `eval` or the project's tests.
 - Non-interactive by default: every parameter has a default (`--deployment-target kubernetes`,
   `--agent langgraph`, `--runtime fastapi`, `--model-provider openai`, `--cd skip`, ...); `-y`
   skips prompts; `-i` shows menus for a human at a terminal. An invalid combination is a
@@ -161,7 +162,9 @@ graph-agents-cli create <project-name> \
 - After `create`, the printed "Get Started" is `cp .env.example .env`,
   `graph-agents-cli login --write-env`, `install`, `playground`, `eval run` (and `deploy --env
   dev` for kubernetes): the local server answers 503 until `.env` has the provider key and, under
-  `shared-bearer`, an `API_KEY`.
+  `shared-bearer`, an `API_KEY`. Under `jwt`, after `install`,
+  `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user>)"` gives local
+  runs a token (a dev key in `.env`, `APP_ENV=dev` only).
 
 ### Enhance an existing project
 

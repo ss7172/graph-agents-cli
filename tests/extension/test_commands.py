@@ -136,6 +136,46 @@ def test_update_says_already_up_to_date_when_nothing_changed(project: Path, tmp_
     assert vendored["commands"]["add"]["hello"]["run"] == ["echo", "v2"]
 
 
+def test_update_checks_for_changes_before_asking_for_trust(project: Path, tmp_path: Path) -> None:
+    """Nothing changed: no trust prompt, even without a terminal or -y."""
+    src = write_extension(tmp_path / "ext", "team-tools", add={"hello": ["echo", "v1"]})
+    assert cli("extension", "add", str(src), "-y").exit_code == 0
+    result = cli("extension", "update", "team-tools", input="")
+    assert result.exit_code == 0, result.output
+    assert "Already up to date: team-tools." in result.output
+    assert "trust" not in result.output.lower()
+
+
+def test_update_of_changed_code_without_a_terminal_keeps_the_pin_and_exits_1(
+    project: Path, tmp_path: Path
+) -> None:
+    src = write_extension(tmp_path / "ext", "team-tools", add={"hello": ["echo", "v1"]})
+    assert cli("extension", "add", str(src), "-y").exit_code == 0
+    before = _entries(project)[0].sha
+    write_extension(src, "team-tools", add={"hello": ["echo", "v2"]})
+    result = cli("extension", "update", input="")
+    assert result.exit_code == 1, result.output
+    assert "Pass -y" in result.output and "rerun with -y" in result.output
+    assert "Updated:" not in result.output
+    assert _entries(project)[0].sha == before
+    vendored = yaml.safe_load(
+        (project / "extensions" / "team-tools" / "graph-agents-cli-extension.yaml").read_text()
+    )
+    assert vendored["commands"]["add"]["hello"]["run"] == ["echo", "v1"]
+    # -y trusts the new code.
+    result = cli("extension", "update", "-y")
+    assert result.exit_code == 0, result.output
+    assert "Updated: team-tools." in result.output
+
+
+def test_add_without_a_terminal_says_to_pass_y(project: Path, tmp_path: Path) -> None:
+    src = write_extension(tmp_path / "ext", "team-tools", add={"hello": ["echo", "v1"]})
+    result = cli("extension", "add", str(src), input="y\n")
+    assert result.exit_code == 1, result.output
+    assert "Pass -y" in result.output
+    assert not _entries(project)
+
+
 def test_added_and_overriding_commands_run_and_can_be_bypassed(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
