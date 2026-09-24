@@ -40,6 +40,11 @@ or A2A run ends (`end_run`), and otherwise (LangGraph Server runs included)
 after `RUN_COUNTER_TTL_S` without a call or beyond `MAX_TRACKED_RUNS` runs, so
 memory does not grow across runs.
 
+An API's optional `approval` block names the calls a human must approve before
+they are sent (`gated`, `ApiPolicy.gate`). Approval never widens access: a
+gated call must pass the policy first. This client refuses a gated call
+before sending it (fail closed), since it cannot pause the run for a decision.
+
 Every tool module declares `API_CALLS`, a module-level list of
 `{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
 `graph-agents-cli lint` checks those declarations against the same rules.
@@ -108,16 +113,28 @@ _API_KEYS = (
     "timeouts_ms",
     "pagination",
     "limits",
+    "approval",
 )
 _OPERATION_KEYS = ("operationId", "path", "methods")
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
+_APPROVAL_KEYS = ("required_for", "approvers", "timeout_s")
+_REQUIRED_FOR_KEYS = ("methods", "operations")
 
-# Recognised on an API and on an operation entry, and refused: a policy must
-# never count on a human approval step that the runtime would silently skip.
+# An API's `approval` block names the calls a human must approve before they are
+# sent (`required_for`), who may approve them (`approvers`) and how long a
+# pending approval waits before it expires, which rejects the call
+# (`timeout_s`). It never widens access: a gated call must still be allowed,
+# and denials still win. It belongs to the API only: on an operation entry the
+# key is refused, with a pointer to `approval.required_for.operations`.
 APPROVAL_KEY = "approval"
-APPROVAL_NOT_SUPPORTED = "approval gates are not supported yet (planned); remove the approval key"
+REQUESTER_APPROVER = "requester"  # the principal who started the run confirms
+ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
+DEFAULT_APPROVAL_TIMEOUT_S = 900
+MIN_APPROVAL_TIMEOUT_S = 30
+MAX_APPROVAL_TIMEOUT_S = 86400
+_ROLE_NAME_RE = re.compile(r"[^\s,\x00-\x1f\x7f]{1,256}")
 
 LEGACY_POLICY_HINT = (
     "product_api: is the retired single-API format: move its fields under "
@@ -203,10 +220,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
     if not isinstance(api, Mapping):
         errors.append(f"{where}: must be a mapping")
         return errors
-    for key in sorted(set(api) - set(_API_KEYS) - {APPROVAL_KEY}, key=str):
+    for key in sorted(set(api) - set(_API_KEYS), key=str):
         errors.append(f"{where}: unknown key {key!r}")
-    if APPROVAL_KEY in api:
-        errors.append(f"{where}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
 
     if "base_url_env" not in api:
         errors.append(f"{where}.base_url_env: required")
@@ -241,11 +256,16 @@ def _api_errors(name: Any, api: Any) -> list[str]:
 
     if "allowed_operations" in api:
         errors.extend(
-            _operations_errors(f"{where}.allowed_operations", api["allowed_operations"], False)
+            _operations_errors(
+                f"{where}.allowed_operations",
+                api["allowed_operations"],
+                where,
+                "must not be empty; omit the key to allow every operation within allowed_methods",
+            )
         )
     if "denied_operations" in api:
         errors.extend(
-            _operations_errors(f"{where}.denied_operations", api["denied_operations"], True)
+            _operations_errors(f"{where}.denied_operations", api["denied_operations"], where)
         )
 
     if "openapi" in api:
@@ -259,6 +279,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         errors.extend(_pagination_errors(f"{where}.pagination", api["pagination"]))
     if "limits" in api:
         errors.extend(_limits_errors(f"{where}.limits", api["limits"]))
+    if APPROVAL_KEY in api:
+        errors.extend(_approval_errors(where, api[APPROVAL_KEY]))
     return errors
 
 
@@ -278,14 +300,14 @@ def _methods_errors(where: str, value: Any, allow_any: bool) -> list[str]:
     return errors
 
 
-def _operations_errors(where: str, value: Any, allow_empty: bool) -> list[str]:
+def _operations_errors(
+    where: str, value: Any, api_where: str, empty_error: str | None = None
+) -> list[str]:
+    """Errors of a list of operation entries; ``empty_error`` refuses an empty list."""
     if not isinstance(value, list):
         return [f"{where}: must be a list of operations"]
-    if not value and not allow_empty:
-        return [
-            f"{where}: must not be empty; omit the key to allow every operation "
-            "within allowed_methods"
-        ]
+    if not value and empty_error:
+        return [f"{where}: {empty_error}"]
     errors: list[str] = []
     for index, entry in enumerate(value):
         at = f"{where}[{index}]"
@@ -295,7 +317,10 @@ def _operations_errors(where: str, value: Any, allow_empty: bool) -> list[str]:
         for key in sorted(set(entry) - set(_OPERATION_KEYS) - {APPROVAL_KEY}, key=str):
             errors.append(f"{at}: unknown key {key!r}")
         if APPROVAL_KEY in entry:
-            errors.append(f"{at}.{APPROVAL_KEY}: {APPROVAL_NOT_SUPPORTED}")
+            errors.append(
+                f"{at}.{APPROVAL_KEY}: not valid on an operation entry; gate the operation "
+                f"with {api_where}.{APPROVAL_KEY}.required_for.operations"
+            )
         if "operationId" not in entry and "path" not in entry:
             errors.append(f"{at}: needs operationId and/or path")
         if "operationId" in entry:
@@ -355,6 +380,80 @@ def _limits_errors(where: str, value: Any) -> list[str]:
     for key in _LIMIT_KEYS:
         if key in value and not _is_positive_int(value[key]):
             errors.append(f"{where}.{key}: must be an integer >= 1")
+    return errors
+
+
+def _approval_errors(api_where: str, value: Any) -> list[str]:
+    where = f"{api_where}.{APPROVAL_KEY}"
+    if not isinstance(value, Mapping):
+        return [f"{where}: must be a mapping with required_for and approvers"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_APPROVAL_KEYS), key=str)
+    ]
+    if "required_for" not in value:
+        errors.append(f"{where}.required_for: required (the methods and/or operations it gates)")
+    else:
+        errors.extend(
+            _required_for_errors(f"{where}.required_for", value["required_for"], api_where)
+        )
+    if "approvers" not in value:
+        errors.append(f'{where}.approvers: required (a list of "requester" and/or "role:<name>")')
+    else:
+        errors.extend(_approvers_errors(f"{where}.approvers", value["approvers"]))
+    if "timeout_s" in value:
+        timeout = value["timeout_s"]
+        if not (
+            isinstance(timeout, int)
+            and not isinstance(timeout, bool)
+            and MIN_APPROVAL_TIMEOUT_S <= timeout <= MAX_APPROVAL_TIMEOUT_S
+        ):
+            errors.append(
+                f"{where}.timeout_s: must be an integer from {MIN_APPROVAL_TIMEOUT_S} to "
+                f"{MAX_APPROVAL_TIMEOUT_S} (seconds)"
+            )
+    return errors
+
+
+def _required_for_errors(where: str, value: Any, api_where: str) -> list[str]:
+    if not isinstance(value, Mapping) or not value:
+        return [f"{where}: must be a mapping with methods and/or operations"]
+    errors = [
+        f"{where}: unknown key {key!r}"
+        for key in sorted(set(value) - set(_REQUIRED_FOR_KEYS), key=str)
+    ]
+    if "methods" not in value and "operations" not in value:
+        errors.append(f"{where}: needs methods and/or operations")
+    if "methods" in value:
+        errors.extend(_methods_errors(f"{where}.methods", value["methods"], True))
+    if "operations" in value:
+        errors.extend(
+            _operations_errors(
+                f"{where}.operations",
+                value["operations"],
+                api_where,
+                "must not be empty; omit the key when no operation needs approval",
+            )
+        )
+    return errors
+
+
+def _approvers_errors(where: str, value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return [f'{where}: must be a non-empty list of "requester" and/or "role:<name>"']
+    errors: list[str] = []
+    for index, approver in enumerate(value):
+        if approver == REQUESTER_APPROVER:
+            continue
+        if (
+            isinstance(approver, str)
+            and approver.startswith(ROLE_APPROVER_PREFIX)
+            and _ROLE_NAME_RE.fullmatch(approver[len(ROLE_APPROVER_PREFIX) :])
+        ):
+            continue
+        errors.append(
+            f'{where}[{index}]: {approver!r} is not an approver ("requester", or "role:<name>" '
+            "with a role name of 1-256 characters without spaces or commas)"
+        )
     return errors
 
 
@@ -543,6 +642,68 @@ def refusal_reason(
     return None
 
 
+@dataclass(frozen=True)
+class ApprovalGate:
+    """The human approval an API's policy requires before a call is sent (``gated``)."""
+
+    # "requester" and/or "role:<name>" entries, in the policy's order.
+    approvers: tuple[str, ...]
+    # Seconds a pending approval waits for a decision; then it expires (= rejected).
+    timeout_s: int
+    # The approval.required_for rule that gates the call, for messages.
+    rule: str
+
+
+def gated(
+    api: Mapping[str, Any],
+    method: str,
+    operation_id: str | None = None,
+    path: str | None = None,
+) -> ApprovalGate | None:
+    """The approval the API's policy (a validated one) requires before the call, or None.
+
+    Ask it only about a call ``refusal_reason`` allows: approval never widens
+    access, so a refused call stays refused whatever its gate, and denials
+    still win. The call is gated when ``approval.required_for.methods`` holds
+    its method (``["*"]``: every method), or when an entry of
+    ``approval.required_for.operations`` covers it. Such an entry fails
+    closed, as a denial does (``denial_match``), not as an allow: with its
+    ``methods`` (when pinned) covering the call's method, its ``path`` gates
+    every call to that path whatever operation id the call names, its
+    ``operationId`` gates the calls that name it, and a call that leaves out
+    what the entry knows the operation by is gated too. Paths are compared
+    normalised and ignoring letter case. At runtime, ask with the path that is
+    sent (and with the template too, when there is one: gated if either is).
+    """
+    approval = api.get(APPROVAL_KEY)
+    if approval is None:
+        return None
+    required_for = approval.get("required_for") or {}
+    method = method.upper()
+    operation_id = operation_id or None
+    path = path or None
+    rule = None
+    methods = [str(m).upper() for m in required_for.get("methods") or []]
+    if ANY_METHOD in methods or method in methods:
+        rule = f"approval.required_for.methods {methods}"
+    else:
+        for entry in required_for.get("operations") or []:
+            unnamed = denial_match(entry, method, operation_id, path)
+            if unnamed is None:
+                continue
+            rule = f"approval.required_for.operations ({describe_operation(entry)})"
+            if unnamed:
+                rule += f": the call names no {unnamed}, so it cannot be ruled out"
+            break
+    if rule is None:
+        return None
+    return ApprovalGate(
+        approvers=tuple(str(a) for a in approval.get("approvers") or ()),
+        timeout_s=int(approval.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
+        rule=rule,
+    )
+
+
 # --- END SHARED API POLICY RULES ---
 
 
@@ -712,6 +873,19 @@ class ApiPolicy:
                 f"{api_name}: {method.upper()} {what} refused by the API policy: {reason}.",
                 reason=reason,
             )
+
+    def gate(
+        self,
+        api_name: str,
+        method: str,
+        operation_id: str | None = None,
+        path: str | None = None,
+    ) -> ApprovalGate | None:
+        """The human approval the API's policy requires before the call is sent, or None.
+
+        See `gated`. Ask only after `check` passed: approval never widens access.
+        """
+        return gated(self.api(api_name), method, operation_id, path)
 
 
 def _beside_pyproject() -> Path | None:
@@ -1230,8 +1404,36 @@ class ApiClient:
         secrets = tuple(credentials.values()) + tuple(
             value.split(" ", 1)[1] for value in credentials.values() if " " in value
         )
+        self.refuse_gated(method, operation_id, path, wire_path, path_params is not None)
         self.take_limits(method, operation_id or path)
         return wire_path, url, query, request_headers, secrets
+
+    def refuse_gated(
+        self,
+        method: str,
+        operation_id: str | None,
+        path: str,
+        wire_path: str,
+        templated: bool,
+    ) -> None:
+        """Refuse (`ApiPolicyError`, nothing sent) a call the API's `approval` gates.
+
+        Gated when the sent path is, or the template it was rendered from.
+        This client cannot yet pause the run for a human decision, and a
+        policy must never count on an approval step that is skipped, so a
+        gated call fails closed.
+        """
+        gate = self.policy.gate(self.name, method, operation_id, wire_path)
+        if gate is None and templated:
+            gate = self.policy.gate(self.name, method, operation_id, path)
+        if gate is None:
+            return
+        raise ApiPolicyError(
+            f"{self.name}: {method} {operation_id or path} needs human approval "
+            f"({', '.join(gate.approvers)}) before it is sent, which this agent cannot request: "
+            "refused, nothing was sent.",
+            reason=f"approval required by {gate.rule}",
+        )
 
     def _log_call(
         self,

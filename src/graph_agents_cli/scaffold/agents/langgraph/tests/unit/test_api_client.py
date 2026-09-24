@@ -192,7 +192,24 @@ def test_undeclared_api_is_refused(policy_file: Path) -> None:
         (
             "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
             "    approval: required\n",
-            "approval gates are not supported yet (planned); remove the approval key",
+            "approval: must be a mapping with required_for and approvers",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    approval: {required_for: {methods: [POST]}, approvers: [anyone]}\n",
+            "approval.approvers[0]: 'anyone' is not an approver",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    approval: {required_for: {methods: [POST]}, approvers: [requester], "
+            "timeout_s: 5}\n",
+            "approval.timeout_s: must be an integer from 30 to 86400",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    allowed_operations:\n      - operationId: createOrder\n        approval: true\n",
+            "not valid on an operation entry; gate the operation with "
+            "apis.a.approval.required_for.operations",
         ),
         (
             "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [PUT]\n"
@@ -457,6 +474,97 @@ async def test_missing_base_url_is_a_call_error(
 
 def test_current_context_outside_a_run_is_none() -> None:
     assert current_context() is None
+
+
+# --- approval gates -------------------------------------------------------------
+
+GATED_POLICY = """
+apis:
+  shop:
+    base_url_env: SHOP_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST, PATCH]
+    denied_operations:
+      - {path: "/orders/{order_id}/purge", methods: [POST]}
+    approval:
+      required_for:
+        methods: [PATCH]
+        operations:
+          - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+          - {path: "/orders/{order_id}/purge"}
+      approvers: [requester, "role:ops"]
+      timeout_s: 60
+"""
+
+
+@pytest.fixture
+def gated_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "api-policy.yaml"
+    path.write_text(GATED_POLICY, encoding="utf-8")
+    monkeypatch.setenv("API_POLICY_PATH", str(path))
+    monkeypatch.setenv("SHOP_API_BASE_URL", "http://shop.test")
+    reset_policy_cache()
+    yield path
+    reset_policy_cache()
+
+
+def test_the_policy_names_gated_calls_and_their_approvers(gated_policy: Path) -> None:
+    policy = ApiPolicy.load(gated_policy)
+    gate = policy.gate("shop", "post", "cancelOrder", "/orders/7/cancel")
+    assert gate is not None
+    assert gate.approvers == ("requester", "role:ops") and gate.timeout_s == 60
+    # A path gate holds whatever label the call gives it.
+    assert policy.gate("shop", "POST", "archiveOrder", "/ORDERS/7/cancel/") is not None
+    assert policy.gate("shop", "PATCH", "updateOrder", "/orders/7").rule == (
+        "approval.required_for.methods ['PATCH']"
+    )
+    assert policy.gate("shop", "GET", "getOrder", "/orders/7") is None
+    assert policy.gate("shop", "POST", "createOrder", "/orders") is None
+
+
+async def test_a_gated_call_is_refused_before_sending(gated_policy: Path) -> None:
+    """This client cannot pause a run for a decision: a gated call fails closed."""
+    calls: list[httpx.Request] = []
+    client = get_client("shop", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError) as exc:
+        await client.post(
+            "/orders/{order_id}/cancel",
+            operation_id="cancelOrder",
+            path_params={"order_id": "7"},
+            json_body={"reason": "customer asked"},
+        )
+    assert "needs human approval (requester, role:ops)" in str(exc.value)
+    assert "nothing was sent" in str(exc.value)
+    with pytest.raises(ApiPolicyError, match="needs human approval"):
+        await client.patch("/orders/7", operation_id="updateOrder", json_body={"note": "x"})
+    # Relabelled: the gate on the path still holds.
+    with pytest.raises(ApiPolicyError, match="needs human approval"):
+        await client.post("/orders/7/cancel", operation_id="closeOrder")
+    assert calls == []
+    assert await client.get("/orders/7", operation_id="getOrder") == {
+        "ok": True,
+        "path": "/orders/7",
+    }
+    assert await client.post("/orders", operation_id="createOrder", json_body={}) == {
+        "ok": True,
+        "path": "/orders",
+    }
+    assert [(r.method, r.url.path) for r in calls] == [("GET", "/orders/7"), ("POST", "/orders")]
+
+
+async def test_approval_never_widens_access(gated_policy: Path) -> None:
+    """A gated call outside the policy is refused by the policy, not held for approval."""
+    calls: list[httpx.Request] = []
+    client = get_client("shop", transport=_transport(calls))
+    # Gated (the purge path) but denied: the denial wins.
+    with pytest.raises(ApiPolicyError) as denied:
+        await client.post("/orders/7/purge", operation_id="purgeOrder")
+    assert "denied by denied_operations" in str(denied.value)
+    assert "approval" not in str(denied.value)
+    # Gated (the purge path, every method) but DELETE is not allowed: allowed_methods refuses.
+    with pytest.raises(ApiPolicyError, match="not in allowed_methods"):
+        await client.delete("/orders/{order_id}/purge", path_params={"order_id": "7"})
+    assert calls == []
 
 
 # --- every method against a real server ------------------------------------------

@@ -520,21 +520,100 @@ def test_limits_set_change_and_clear(project: Path) -> None:
     assert "# end of orders" in (project / "api-policy.yaml").read_text()
 
 
-def test_the_approval_key_is_reserved_and_refused(project: Path) -> None:
+@pytest.mark.parametrize(
+    ("block", "error"),
+    [
+        (
+            "    approval: required\n",
+            "apis.orders.approval: must be a mapping with required_for and approvers",
+        ),
+        (
+            "    approval:\n      required_for: {methods: [POST]}\n      approvers: [admin]\n",
+            "apis.orders.approval.approvers[0]: 'admin' is not an approver",
+        ),
+        (
+            "    allowed_operations:\n      - operationId: cancelOrder\n        approval: true\n",
+            "apis.orders.allowed_operations[0].approval: not valid on an operation entry; gate "
+            "the operation with apis.orders.approval.required_for.operations",
+        ),
+    ],
+)
+def test_an_invalid_approval_is_refused(project: Path, block: str, error: str) -> None:
     ok(*ORDERS_ADD)
     path = project / "api-policy.yaml"
-    path.write_text(path.read_text() + "    approval: required\n")
+    path.write_text(path.read_text() + block)
     for args in (["api", "show"], ["api", "access", "orders", "read-only"]):
         result = cli(*args)
         assert result.exit_code == 3, result.output
-        assert "approval gates are not supported yet (planned); remove the approval key" in (
-            result.output
-        )
+        assert error in " ".join(result.output.split())
     # An invalid policy is a configuration error for the check too, as for lint.
     for args in (["api", "check"], ["lint", "--policy-only"]):
         result = cli(*args)
         assert result.exit_code == 3, (args, result.output)
-        assert "approval gates are not supported yet" in result.output
+        assert error in " ".join(result.output.split())
+
+
+APPROVAL_BLOCK = """\
+    # every write waits for the caller, or for ops
+    approval:
+      required_for:
+        methods: [POST, DELETE]
+        operations:
+          - operationId: updateOrder
+      approvers: [requester, role:ops]
+"""
+UPDATE_ORDER_TOOL = """\
+API_CALLS = [
+    {"api": "orders", "method": "PATCH", "operation_id": "updateOrder", "path": "/orders/{id}"},
+]
+TOOLS: list = []
+"""
+
+
+def test_show_check_and_lint_report_gated_calls_and_their_approvers(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    path = project / "api-policy.yaml"
+    path.write_text(path.read_text() + APPROVAL_BLOCK)
+    (project / "app/tools/orders_read.py").write_text(GET_TOOL)
+    (project / "app/tools/orders_write.py").write_text(POST_TOOL)
+    (project / "app/tools/orders_update.py").write_text(UPDATE_ORDER_TOOL)
+
+    data = json.loads(ok("api", "show", "--json").output)
+    assert data["apis"]["orders"]["approval"] == {
+        "required_for": {
+            "methods": ["POST", "DELETE"],
+            "operations": [{"operationId": "updateOrder"}],
+        },
+        "approvers": ["requester", "role:ops"],
+        "timeout_s": 900,
+    }
+    calls = {c["tool"]: c for c in data["calls"]}
+    assert calls["orders_read.py"]["approval"] is None
+    assert calls["orders_write.py"]["status"] == "allowed"
+    assert calls["orders_write.py"]["approval"] == {
+        "approvers": ["requester", "role:ops"],
+        "timeout_s": 900,
+        "rule": "approval.required_for.methods ['POST', 'DELETE']",
+    }
+    assert calls["orders_update.py"]["approval"]["rule"] == (
+        "approval.required_for.operations (operationId=updateOrder)"
+    )
+    assert data["gated"] == 2 and data["violations"] == 0
+
+    text = " ".join(ok("api", "show").output.split())
+    assert "approved by requester, role:ops; expires after 900 s" in text
+    assert "2 declared call(s) wait for a human approval before they are sent" in text
+    for args in (["api", "check"], ["lint", "--policy-only"]):
+        checked = " ".join(ok(*args).output.split())
+        assert "requester, role:ops (approval.required_for.methods ['POST', 'DELETE']" in checked
+        assert "All declared API calls are allowed" in checked
+
+    # The other commands keep the block (and its comment) as it is.
+    ok("api", "limits", "orders", "--rate-per-minute", "60")
+    ok("api", "deny", "orders", "--method", "DELETE", "--path", "/orders/{id}")
+    text = path.read_text()
+    assert text.endswith(APPROVAL_BLOCK)
+    assert policy(project)["orders"]["approval"]["approvers"] == ["requester", "role:ops"]
 
 
 def test_an_invalid_result_is_refused_and_nothing_is_written(project: Path) -> None:

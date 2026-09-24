@@ -43,7 +43,9 @@ error under the ``langgraph-server`` runtime.
 
 Every refused call carries a hint: the ``graph-agents-cli api`` command that
 would allow it (a reviewed change to ``api-policy.yaml``), or what to change in
-the tool.
+the tool. An allowed call that the API's ``approval`` block gates (``gated``,
+the runtime's rule) carries its gate: the report says who must approve it
+before it is sent. Approval never widens access: a refused call stays refused.
 
 ``example_call`` uses the same judgement to pick the call that ``create``
 renders into the example tool, so a fresh project passes this check.
@@ -73,9 +75,13 @@ from graph_agents_cli._api_policy import (
     LEGACY_CALLS_NAME,
     POLICY_FILENAME,
     ApiPolicyFileError,
+    ApprovalGate,
     ExampleCall,
+    approval_notes,
     denial_match,
+    describe_gate,
     forward_runtime_problem,
+    gated,
     load_policy_document,
     operation_matches,
     path_matches,
@@ -120,6 +126,9 @@ class CheckResult:
     # For a refused call: the `graph-agents-cli api` command that would allow it,
     # or what to change in the tool.
     hint: str = ""
+    # For a call the policy allows: the human approval it needs before it is
+    # sent (the API's `approval` block), or None.
+    gate: ApprovalGate | None = None
 
     @property
     def is_violation(self) -> bool:
@@ -141,6 +150,11 @@ class PolicyReport:
     @property
     def violations(self) -> int:
         return sum(1 for r in self.results if r.is_violation)
+
+    @property
+    def gated(self) -> int:
+        """Declared calls the policy allows only after a human approves them."""
+        return sum(1 for r in self.results if r.gate is not None)
 
     def invalid(self, where: str, reason: str) -> None:
         self.results.append(
@@ -541,7 +555,8 @@ def check_call(
     command that would allow it). With a spec, a call it does not define as
     declared is ``unknown`` (a declared ``operation_id`` must be the spec's
     one for that method and path); a call that is both says so, and its hint
-    fixes the declaration first.
+    fixes the declaration first. A call the policy allows carries the
+    approval its API requires before sending it (``gate``), if any.
     """
     if document is None:
         return CheckResult(
@@ -579,19 +594,25 @@ def check_call(
             + (f"; also, {mismatch}" if id_mismatch else ""),
             _spec_fix_hint(call, by_id) if id_mismatch else refusal_hint(call, api, path),
         )
+    # Only now, with the call allowed: approval never widens access.
+    gate = gated(api, call.method, call.operation_id, path)
     if mismatch is not None:
         return CheckResult(
-            call, STATUS_UNKNOWN, mismatch, _spec_fix_hint(call, by_id) if id_mismatch else ""
+            call,
+            STATUS_UNKNOWN,
+            mismatch,
+            _spec_fix_hint(call, by_id) if id_mismatch else "",
+            gate=gate,
         )
     if spec is not None:
         if call.operation_id:
             spec_path, spec_method = by_id[call.operation_id]
-            return CheckResult(call, STATUS_ALLOWED, f"spec: {spec_method} {spec_path}")
+            return CheckResult(call, STATUS_ALLOWED, f"spec: {spec_method} {spec_path}", gate=gate)
         spec_path = next(
             p for p, m in sorted(pairs) if m == call.method and path_matches(p, str(call.path))
         )
-        return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}")
-    return CheckResult(call, STATUS_ALLOWED, "")
+        return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}", gate=gate)
+    return CheckResult(call, STATUS_ALLOWED, "", gate=gate)
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +890,7 @@ def build_report(
         if problem:
             report.invalid_policy(policy_file, problem)
         for name, api in document["apis"].items():
+            report.notes.extend(approval_notes(name, api))
             openapi_ref = api.get("openapi")
             if not openapi_ref:
                 continue
@@ -910,8 +932,12 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
         console.print("[green]API policy check: nothing to check.[/]")
         return
     table = Table(title="API policy check", show_lines=False)
+    # The Approval column (who approves a gated call) only when some call is gated.
+    headers = ["Tool", "API", "Method", "Operation", "Status", "Reason"]
+    if report.gated:
+        headers.append("Approval")
     # fold: a narrow terminal wraps a long tool or path onto more lines, never cuts it.
-    for header in ("Tool", "API", "Method", "Operation", "Status", "Reason"):
+    for header in headers:
         table.add_column(header, overflow="fold")
     styles = {
         STATUS_ALLOWED: "green",
@@ -921,14 +947,17 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
     }
     for result in report.results:
         style = styles.get(result.status, "")
-        table.add_row(
+        row = [
             escape(result.call.tool),
             escape(result.call.api or "-"),
             escape(result.call.method),
             escape(result.call.operation),
             f"[{style}]{result.status}[/]" if style else result.status,
             escape(result.reason),
-        )
+        ]
+        if report.gated:
+            row.append(escape(describe_gate(result.gate)) if result.gate else "-")
+        table.add_row(*row)
     print_table(console, table)
     hints = list(dict.fromkeys(r.hint for r in report.results if r.is_violation and r.hint))
     if hints:
@@ -938,6 +967,11 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
         )
         for hint in hints:
             console.print(f"  {escape(hint)}", style="cyan", highlight=False)
+    if report.gated:
+        console.print(
+            f"[yellow]{report.gated} declared call(s) wait for a human approval before they are "
+            "sent (the Approval column: who approves, and why).[/]"
+        )
     if report.violations:
         console.print(f"[red]{report.violations} violation(s).[/]")
     else:

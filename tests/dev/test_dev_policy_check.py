@@ -865,7 +865,7 @@ def test_an_invalid_policy_file_is_a_configuration_error(tmp_path):
     with pytest.raises(pc.InvalidPolicyFile) as raised:
         pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=300))
     assert raised.value.exit_code == 3
-    assert "approval gates are not supported yet" in buf.getvalue()
+    assert "apis.orders.approval: must be a mapping with required_for and" in buf.getvalue()
     # The manifest names the file, but it is missing: the same.
     (tmp_path / "api-policy.yaml").unlink()
     with pytest.raises(pc.InvalidPolicyFile):
@@ -886,3 +886,114 @@ def test_the_report_prints_each_hint_once(tmp_path):
     out = buf.getvalue()
     assert out.count("graph-agents-cli api access orders custom --methods GET,PUT") == 1
     assert "reviewed pull request" in out
+
+
+# ---------------------------------------------------------------------------
+# approval gates: which declared calls wait for a human, and who approves them
+# ---------------------------------------------------------------------------
+
+GATED_TOOL = """API_CALLS = [
+    {"api": "orders", "method": "GET", "operation_id": "listOrders", "path": "/orders"},
+    {"api": "orders", "method": "POST", "operation_id": "createOrder", "path": "/orders"},
+    {"api": "orders", "method": "POST", "operation_id": "cancelOrder",
+     "path": "/orders/{order_id}/cancel"},
+    {"api": "orders", "method": "POST", "operation_id": "archiveOrder",
+     "path": "/orders/{order_id}/cancel"},
+    {"api": "orders", "method": "DELETE", "operation_id": "deleteOrder",
+     "path": "/orders/{order_id}"},
+    {"api": "orders", "method": "PUT", "operation_id": "replaceOrder",
+     "path": "/orders/{order_id}"},
+]
+"""
+
+GATED_POLICY = {
+    "base_url_env": "ORDERS_API_BASE_URL",
+    "auth": "none",
+    "allowed_methods": ["GET", "POST", "PUT"],
+    "denied_operations": [{"path": "/orders/{order_id}/cancel", "methods": ["PUT"]}],
+    "approval": {
+        "required_for": {
+            "methods": ["PUT", "DELETE"],
+            "operations": [{"path": "/orders/{order_id}/cancel", "methods": ["POST"]}],
+        },
+        "approvers": ["requester", "role:ops"],
+        "timeout_s": 600,
+    },
+}
+
+
+def _gated_project(root: Path) -> None:
+    write_policy(root, orders=GATED_POLICY)
+    tools = root / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "orders.py").write_text(GATED_TOOL)
+
+
+def test_the_check_reports_which_allowed_calls_are_gated_and_by_whom(tmp_path):
+    _gated_project(tmp_path)
+    report = pc.build_report(tmp_path, "app")
+    by_id = {r.call.operation_id: r for r in report.results}
+    assert by_id["listOrders"].gate is None and by_id["createOrder"].gate is None
+    for op in ("cancelOrder", "archiveOrder"):  # the path gate holds whatever the label
+        gate = by_id[op].gate
+        assert by_id[op].status == pc.STATUS_ALLOWED
+        assert gate.approvers == ("requester", "role:ops") and gate.timeout_s == 600
+        assert "path=/orders/{order_id}/cancel" in gate.rule
+    assert "approval.required_for.methods ['PUT', 'DELETE']" in by_id["replaceOrder"].gate.rule
+    # Approval never widens access: DELETE is not allowed, so the call stays refused.
+    assert by_id["deleteOrder"].status == pc.STATUS_DENIED
+    assert by_id["deleteOrder"].gate is None
+    assert "not in allowed_methods" in by_id["deleteOrder"].reason
+    assert report.gated == 3 and report.violations == 1
+    assert report.notes == [
+        "apis.orders.approval gates DELETE, which allowed_methods does not allow: approval "
+        "never widens access, so those calls stay refused"
+    ]
+
+    buf = io.StringIO()
+    assert pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=400)) == 1
+    out = buf.getvalue()
+    assert "Approval" in out
+    assert "requester, role:ops (approval.required_for.methods ['PUT', 'DELETE']; expires " in out
+    assert "3 declared call(s) wait for a human approval before they are sent" in out
+    assert "approval never widens access" in out
+
+
+def test_no_approval_column_without_a_gated_call(tmp_path):
+    write_policy(tmp_path, orders=api(allowed_methods=["GET"]))
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "a.py").write_text(
+        'API_CALLS = [{"api": "orders", "method": "GET", "path": "/orders"}]\n'
+    )
+    buf = io.StringIO()
+    assert pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=300)) == 0
+    assert "Approval" not in buf.getvalue() and "human approval" not in buf.getvalue()
+
+
+def test_a_call_declared_by_operation_id_alone_is_gated_by_the_spec_path(tmp_path):
+    """The check judges the path the spec gives the operation, as for denials."""
+    spec = {
+        "openapi": "3.1.0",
+        "paths": {"/orders/{id}/cancel": {"post": {"operationId": "cancelOrder"}}},
+    }
+    (tmp_path / "orders.json").write_text(json.dumps(spec))
+    write_policy(
+        tmp_path,
+        orders=api(
+            openapi="orders.json",
+            approval={
+                "required_for": {"operations": [{"path": "/orders/{id}/cancel"}]},
+                "approvers": ["role:ops"],
+            },
+        ),
+    )
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "a.py").write_text(
+        'API_CALLS = [{"api": "orders", "method": "POST", "operation_id": "cancelOrder"}]\n'
+    )
+    (result,) = pc.build_report(tmp_path, "app").results
+    assert result.status == pc.STATUS_ALLOWED
+    assert result.gate.approvers == ("role:ops",) and result.gate.timeout_s == 900
+    assert "cannot be ruled out" not in result.gate.rule

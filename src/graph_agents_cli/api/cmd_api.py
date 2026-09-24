@@ -46,8 +46,10 @@ from graph_agents_cli._api_policy import (
     HTTP_METHODS,
     POLICY_FILENAME,
     denial_match,
+    effective_approval,
     ensure_no_legacy_api_policy,
     forward_runtime_problem,
+    gate_payload,
     parse_policy_yaml,
     policy_errors,
     summarize,
@@ -218,6 +220,7 @@ _API_KEY_ORDER = (
     "timeouts_ms",
     "pagination",
     "limits",
+    "approval",
 )
 
 
@@ -1006,6 +1009,8 @@ def _effective(name: str, api: dict[str, Any]) -> dict[str, Any]:
         "openapi": api.get("openapi"),
         "timeouts_ms": timeouts,
         "pagination": api.get("pagination"),
+        # None: no call waits for a human approval.
+        "approval": effective_approval(api),
     }
 
 
@@ -1013,7 +1018,11 @@ def _effective(name: str, api: dict[str, Any]) -> dict[str, Any]:
 @click.argument("name", required=False)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Print JSON.")
 def cmd_show(name: str | None, as_json: bool) -> None:
-    """Show the effective policy per API and the calls every tool declares."""
+    """Show the effective policy per API and the calls every tool declares.
+
+    Each call's status says whether the policy allows it, and a gated call
+    names who must approve it before it is sent (the API's approval block).
+    """
     project = _load_project()
     if name is not None:
         project.api(name)
@@ -1044,10 +1053,13 @@ def cmd_show(name: str | None, as_json: bool) -> None:
                     "status": r.status,
                     "reason": r.reason,
                     "hint": r.hint or None,
+                    # {approvers, timeout_s, rule} for a gated call, else None.
+                    "approval": gate_payload(r.gate),
                 }
                 for r in results
             ],
             "violations": sum(1 for r in results if r.is_violation),
+            "gated": sum(1 for r in results if r.gate is not None),
         }
         click.echo(json.dumps(payload, indent=2))
         return
@@ -1093,12 +1105,32 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
         rows.append(
             ("pagination", f"{pagination['page_size_param']} <= {pagination['max_page_size']}")
         )
+    rows.append(("approval", _describe_approval(api["approval"])))
     table = Table(title=f"API {api['name']}", show_header=False, title_justify="left")
     table.add_column(style="bold", no_wrap=True)
     table.add_column(overflow="fold")
     for label, value in rows:
         table.add_row(label, escape(str(value)))
     print_table(console, table)
+
+
+def _describe_approval(approval: dict[str, Any] | None) -> str:
+    """``POST, DELETE and operations cancelOrder any method; approved by requester; ...``."""
+    if approval is None:
+        return "none (no call waits for a human approval)"
+    required_for = approval["required_for"]
+    gates = []
+    if "methods" in required_for:
+        methods = required_for["methods"]
+        gates.append('"*" (every method)' if "*" in methods else ", ".join(methods))
+    if "operations" in required_for:
+        gates.append(
+            "operations " + "; ".join(ch.describe_entry(e) for e in required_for["operations"])
+        )
+    return (
+        f"{' and '.join(gates)}; approved by {', '.join(approval['approvers'])}; "
+        f"expires after {approval['timeout_s']} s (approval never widens access)"
+    )
 
 
 @api_group.command("check")
