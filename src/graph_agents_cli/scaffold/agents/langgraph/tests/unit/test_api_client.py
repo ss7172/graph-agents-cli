@@ -523,7 +523,10 @@ def test_the_policy_names_gated_calls_and_their_approvers(gated_policy: Path) ->
 
 
 async def test_a_gated_call_is_refused_before_sending(gated_policy: Path) -> None:
-    """This client cannot pause a run for a decision: a gated call fails closed."""
+    """Outside an agent run nothing can pause for a decision: a gated call fails closed.
+
+    (Inside a run it pauses for approval: see `test_approval_ledger.py`.)
+    """
     calls: list[httpx.Request] = []
     client = get_client("shop", transport=_transport(calls))
     with pytest.raises(ApiPolicyError) as exc:

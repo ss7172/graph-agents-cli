@@ -19,18 +19,31 @@ Routes:
   * `POST /chat` (SSE): `message.start`, `message.delta`, `tool.call`,
     `tool.result`, `message.end`, `error`; `thread_id` continues a thread
     (omit it to start one: the server generates a random id).
-    409 `{"code": "thread_busy"}` while the thread has a run in progress.
-    A failed tool call's `tool.result` carries an `error_id` and, outside
-    `APP_ENV=dev`, a generic `result` (the error text is for the model only).
+    409 `{"code": "thread_busy"}` while the thread has a run in progress, and
+    409 `{"code": "approval_pending", "approvals": [...]}` while it waits for
+    the approval of a gated API call. A failed tool call's `tool.result`
+    carries an `error_id` and, outside `APP_ENV=dev`, a generic `result` (the
+    error text is for the model only). A run that pauses before a gated call
+    ends with `message.end` status `awaiting_approval`, with `approval` (and
+    `approvals`: every one the run waits for).
+  * `GET /threads/{thread_id}/approvals` (`approval.read`): the thread's
+    approvals (owner and read-across roles: all; a decider: the ones it may
+    decide). `GET /approvals?status=&limit=&offset=`: across threads, the
+    caller's own and the ones a role of theirs may decide (read-across: all).
+  * `POST /threads/{thread_id}/approvals/{approval_id}` (`approval.decide`),
+    body `{"decision": "approve" | "reject", "comment": "..."}`: 404, 403 for
+    a principal the approvers do not name, 409 `approval_not_pending`, 410
+    `approval_expired`, 409 `thread_busy`; else the resumed run streams with
+    the `/chat` events (`message.start` names `approval_id` and `decision`).
   * `GET /threads`: the caller's threads, most recent first (`limit`, `offset`);
     `scope=all` lists every principal's (read-across roles only). Each row
     names its owner hashed (`owner`).
   * `GET /threads/{thread_id}/messages`: ordered messages, ownership enforced.
-  * `DELETE /threads/{thread_id}`: the thread, its checkpoints and run records (owner
-    only), and the A2A tasks of that conversation. Under langgraph-server this
-    is the server's native route (owner-only through the auth handler); once it
-    succeeds, the app drops the thread's run records and A2A tasks
-    (`ThreadDeleteHookMiddleware`).
+  * `DELETE /threads/{thread_id}`: the thread, its checkpoints, run records and
+    approvals (owner only), and the A2A tasks of that conversation. Under
+    langgraph-server this is the server's native route (owner-only through the
+    auth handler); once it succeeds, the app drops the thread's run records,
+    approvals and A2A tasks (`ThreadDeleteHookMiddleware`).
   * `GET /health`: liveness, process only: `{"status", "runtime", "checkpointer"}`.
   * `GET /ready`: readiness: 200 when the database answers within 2 s, else
     503 `{"status": "not_ready"}`.
@@ -83,7 +96,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import dotenv_values
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -119,6 +132,7 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     legacy_request_error,
     task_ttl_s,
 )
+from {{cookiecutter.agent_directory}}.app_utils.approvals import CODE_APPROVAL_PENDING, STATUSES
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
     authenticate_and_authorize,
@@ -129,6 +143,8 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     FASTAPI,
     LANGGRAPH_SERVER,
     RUNTIME,
+    ApprovalError,
+    ApprovalPending,
     ChatRequest,
     detect_runtime,
     dev_mode,
@@ -337,7 +353,8 @@ if detect_runtime() == FASTAPI and cors_origins():
 
 
 async def _server_thread_deleted(thread_id: str) -> None:
-    """langgraph-server: after the server deleted a thread, its run records and A2A tasks."""
+    """langgraph-server: after the server deleted a thread, its run records, approvals and
+    A2A tasks."""
     try:
         await RUNTIME.forget_thread_runs(thread_id)
     finally:
@@ -355,6 +372,19 @@ add_a2a_routes(app)
 @app.exception_handler(ThreadBusy)
 async def thread_busy_handler(request: Request, exc: ThreadBusy) -> JSONResponse:
     return JSONResponse(status_code=409, content={"code": THREAD_BUSY, "detail": str(exc)})
+
+
+@app.exception_handler(ApprovalPending)
+async def approval_pending_handler(request: Request, exc: ApprovalPending) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"code": CODE_APPROVAL_PENDING, "detail": str(exc), "approvals": exc.approvals},
+    )
+
+
+@app.exception_handler(ApprovalError)
+async def approval_error_handler(request: Request, exc: ApprovalError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content=exc.body())
 
 
 def _request_id_header(request: Request) -> dict[str, str] | None:
@@ -499,12 +529,24 @@ async def chat(
     thread_id = await RUNTIME.resolve_thread(principal, req)
     # ThreadBusy -> 409 before streaming; the owner is checked again under the lock.
     lease = await RUNTIME.acquire_thread(thread_id, principal)
+    try:
+        # A thread waiting for an approval takes no new message: 409 approval_pending.
+        await RUNTIME.assert_no_pending_approval(thread_id)
+    except BaseException:
+        await lease.release()
+        raise
+    return _run_stream(RUNTIME.stream(principal, req, thread_id, lease=lease), thread_id, lease)
 
+
+def _run_stream(
+    stream: AsyncIterator[tuple[str, dict[str, Any]]], thread_id: str, lease: Any
+) -> RunStreamingResponse:
+    """The SSE response of one run (`/chat`, or a decision's resumed run)."""
     dev = dev_mode()
 
     async def events() -> AsyncIterator[str]:
-        async with aclosing(RUNTIME.stream(principal, req, thread_id, lease=lease)) as stream:
-            async for event, data in stream:
+        async with aclosing(stream) as run:
+            async for event, data in run:
                 if event == EVENT_TOOL_RESULT:
                     # A failed call's text (policy rules, limits, upstream
                     # errors) is for the model; the client gets an error id.
@@ -517,6 +559,73 @@ async def chat(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class DecisionBody(BaseModel):
+    decision: Literal["approve", "reject"]
+    comment: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("comment")
+    @classmethod
+    def _plain_comment(cls, value: str | None) -> str | None:
+        if value is not None and _has_surrogate(value):
+            raise ValueError("comment is not valid Unicode text (an unpaired surrogate).")
+        return value
+
+
+@app.get("/threads/{thread_id}/approvals")
+async def thread_approvals(
+    thread_id: str,
+    request: Request,
+    principal: Principal = Depends(principal_for("approval.read")),
+) -> list[dict[str, Any]]:
+    """The thread's approvals of gated API calls, newest first.
+
+    The owner and read-across roles see them all, a decider the ones it may
+    decide (anyone else: 403). `query` and `body` are shown to the owner and
+    the deciders while an approval is pending.
+    """
+    return await RUNTIME.thread_approvals(principal, thread_id, _forward_headers(request))
+
+
+@app.post("/threads/{thread_id}/approvals/{approval_id}")
+async def decide_approval(
+    thread_id: str,
+    approval_id: str,
+    body: DecisionBody,
+    request: Request,
+    principal: Principal = Depends(principal_for("approval.decide")),
+) -> RunStreamingResponse:
+    """Approve or reject a pending approval; stream the resumed run (the `/chat` events).
+
+    404 `approval_not_found`, 403 `not_an_approver`, 409 `approval_not_pending`
+    (decided already), 410 `approval_expired`, 409 `thread_busy`.
+    """
+    lease, resume, acting = await RUNTIME.decide(
+        principal,
+        thread_id,
+        approval_id,
+        body.decision,
+        body.comment,
+        _forward_headers(request),
+    )
+    req = ChatRequest(
+        message="", thread_id=lease.thread_id, forward_headers=_forward_headers(request)
+    )
+    stream = RUNTIME.stream(acting, req, lease.thread_id, lease=lease, resume=resume)
+    return _run_stream(stream, lease.thread_id, lease)
+
+
+@app.get("/approvals")
+async def list_approvals(
+    status: str | None = Query(default=None, pattern="^(" + "|".join(STATUSES) + ")$"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    principal: Principal = Depends(principal_for("approval.read")),
+) -> list[dict[str, Any]]:
+    """Approvals across threads: the caller's own, the ones it may decide (a role
+    in their approvers), and every one for a read-across role; newest first."""
+    return await RUNTIME.visible_approvals(principal, status=status, limit=limit, offset=offset)
 
 
 @app.get("/health")

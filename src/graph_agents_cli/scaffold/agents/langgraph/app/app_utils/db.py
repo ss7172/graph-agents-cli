@@ -18,7 +18,10 @@ Run records are durable rows in Postgres whenever the app has a Postgres
 database: `POSTGRES_DSN` under `CHECKPOINTER=postgres` (fastapi; tables `runs`
 and `threads`), `DATABASE_URI` under langgraph-server (table `agent_runs`, so
 nothing collides with the server's own schema). Otherwise they live in a
-bounded in-process dict (the newest `MEMORY_RUNS_CAP` records).
+bounded in-process dict (the newest `MEMORY_RUNS_CAP` records). Approvals of
+gated API calls (`approvals.py`) live beside them the same way: table
+`approvals` (fastapi) or `agent_approvals` (langgraph-server), else in process
+memory.
 
 A run's record is written when it starts, with status `running`, and
 updated when it ends (`ok`, `step_limit`, `error`, `timeout`, `cancelled` or
@@ -62,6 +65,8 @@ RUNS_TABLE = "runs"
 SERVER_RUNS_TABLE = "agent_runs"
 LOCKS_TABLE = "thread_locks"
 SERVER_LOCKS_TABLE = "agent_thread_locks"
+APPROVALS_TABLE = "approvals"
+SERVER_APPROVALS_TABLE = "agent_approvals"
 MEMORY_RUNS_CAP = 10_000
 
 # Run statuses owned by the store (the others are set by `chat.py`).
@@ -102,6 +107,41 @@ CREATE TABLE IF NOT EXISTS {locks} (
     acquired_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE SEQUENCE IF NOT EXISTS {locks}_token_seq;
+"""
+
+# Human approvals of gated outbound API calls (see `approvals.py`). The requester
+# and the decider are hashed ids; `payload` is what approvers are shown (the
+# call, masked fields masked); `requester_context` the requester's roles and
+# public attributes, which a run resumed by another principal acts with.
+APPROVALS_DDL = """
+CREATE TABLE IF NOT EXISTS {approvals} (
+    approval_id       TEXT PRIMARY KEY,
+    thread_id         TEXT NOT NULL,
+    run_id            TEXT NOT NULL,
+    interrupt_id      TEXT NOT NULL,
+    requester_hash    TEXT NOT NULL,
+    requester_context JSONB,
+    api               TEXT NOT NULL,
+    method            TEXT NOT NULL,
+    path              TEXT NOT NULL,
+    operation_id      TEXT,
+    call_hash         TEXT NOT NULL,
+    tool_call_id      TEXT,
+    approvers         JSONB NOT NULL,
+    payload           JSONB NOT NULL,
+    status            TEXT NOT NULL,
+    decided_by        TEXT,
+    decided_at        TIMESTAMPTZ,
+    comment           TEXT,
+    used_at           TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at        TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS {approvals}_thread_id_idx ON {approvals} (thread_id);
+CREATE INDEX IF NOT EXISTS {approvals}_pending_idx ON {approvals} (expires_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS {approvals}_requester_idx ON {approvals} (requester_hash);
+CREATE INDEX IF NOT EXISTS {approvals}_approvers_idx ON {approvals} USING gin (approvers);
 """
 
 THREADS_DDL = """
@@ -174,12 +214,14 @@ class Database:
         *,
         runs_table: str = RUNS_TABLE,
         locks_table: str = LOCKS_TABLE,
+        approvals_table: str = APPROVALS_TABLE,
         with_threads: bool = True,
     ) -> None:
         self.kind = kind
         self.dsn = dsn
         self.runs_table = runs_table
         self.locks_table = locks_table
+        self.approvals_table = approvals_table
         self.with_threads = with_threads
         self.health = DbHealth()
         self.pool: Any = None
@@ -202,7 +244,11 @@ class Database:
         `langgraph dev` sets `DATABASE_URI=:memory:`; only a postgres URL is a database.
         """
         uri = (os.environ.get("DATABASE_URI") or "").strip()
-        tables = {"runs_table": SERVER_RUNS_TABLE, "locks_table": SERVER_LOCKS_TABLE}
+        tables = {
+            "runs_table": SERVER_RUNS_TABLE,
+            "locks_table": SERVER_LOCKS_TABLE,
+            "approvals_table": SERVER_APPROVALS_TABLE,
+        }
         if is_postgres_url(uri):
             return cls(POSTGRES, uri, with_threads=False, **tables)
         return cls(MEMORY, with_threads=False, **tables)
@@ -235,6 +281,7 @@ class Database:
         return (
             RUNS_DDL.format(runs=self.runs_table)
             + LOCKS_DDL.format(locks=self.locks_table)
+            + APPROVALS_DDL.format(approvals=self.approvals_table)
             + (THREADS_DDL if self.with_threads else "")
         )
 

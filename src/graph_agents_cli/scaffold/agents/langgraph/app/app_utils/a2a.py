@@ -44,6 +44,20 @@ at INFO; see `LegacyJsonRpcAdapter`). The reply is one `response` artifact:
 in chunks (the last with `lastChunk`), and the stored task keeps the chunks
 joined into one part.
 
+Approvals: a run that pauses before a gated API call moves the task to
+`input-required`; its status message holds a text part saying what waits
+for approval and a data part `{"type": "approval_request", "approval": {...},
+"approvals": [...]}` (the approvals as `/chat`'s `message.end` has them). The
+client answers with a message on the same task whose data part is
+`{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`
+(no text needed): the decision goes through the same checks as `POST
+/threads/{thread_id}/approvals/{approval_id}` (the task's principal is the
+requester, so this works when `requester` is an approver), and the resumed
+run completes the task or pauses it again. A text message while an approval
+is pending, or a decision refused (not an approver, expired, decided
+already), leaves the task `input-required` with the pending approvals, or
+fails it when none is pending any more.
+
 The card's description (and its one skill's) is `A2A_DESCRIPTION`, its
 version `AGENT_VERSION`, its name the mount name `A2A_NAME`.
 """
@@ -56,6 +70,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import aclosing
 from typing import Any
 
 from a2a.auth.user import User
@@ -99,9 +114,15 @@ from a2a.utils.errors import (
     TaskNotFoundError,
 )
 from fastapi import FastAPI, HTTPException
+from google.protobuf import json_format, struct_pb2
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from {{cookiecutter.agent_directory}}.app_utils.approvals import (
+    CODE_APPROVAL_PENDING,
+    COMMENT_MAX_CHARS,
+    DECISIONS,
+)
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     CUSTOM,
     JWT,
@@ -111,15 +132,22 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
     EVENT_DELTA,
+    EVENT_END,
     EVENT_ERROR,
     LANGGRAPH_SERVER,
     RUNTIME,
+    STATUS_AWAITING_APPROVAL,
+    ApprovalError,
     ChatRequest,
     detect_runtime,
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.middleware import max_message_chars
-from {{cookiecutter.agent_directory}}.app_utils.threads import DELETE_LISTENERS
+from {{cookiecutter.agent_directory}}.app_utils.threads import (
+    DELETE_LISTENERS,
+    THREAD_BUSY,
+    ThreadBusy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -386,17 +414,78 @@ async def forget_context(thread_id: str) -> None:
         logger.info("dropped %d A2A task(s) of a deleted thread", dropped)
 
 
-def message_problem(from_user: bool, texts: list[str]) -> str | None:
+APPROVAL_REQUEST_TYPE = "approval_request"
+_APPROVAL_ID_MAX_CHARS = 64
+
+
+def decision_problem(data: Any) -> str | None:
+    """Why a data part naming an approval is not a valid decision, or None.
+
+    A decision is `{"approval_id": str, "decision": "approve" | "reject",
+    "comment": str (optional)}`.
+    """
+    if not isinstance(data, dict):
+        return "An approval decision must be an object."
+    unknown = sorted(set(data) - {"approval_id", "decision", "comment"})
+    if unknown:
+        return (
+            f"An approval decision has only approval_id, decision and comment (not {unknown[0]})."
+        )
+    approval_id = data.get("approval_id")
+    if not isinstance(approval_id, str) or not 0 < len(approval_id) <= _APPROVAL_ID_MAX_CHARS:
+        return "approval_id must be the approval's id."
+    if data.get("decision") not in DECISIONS:
+        return "decision must be 'approve' or 'reject'."
+    comment = data.get("comment")
+    if comment is not None and (not isinstance(comment, str) or len(comment) > COMMENT_MAX_CHARS):
+        return f"comment must be text of at most {COMMENT_MAX_CHARS} characters."
+    if any(_has_lone_surrogate(text) for text in _strings(data)):
+        return "The approval decision is not valid Unicode text (an unpaired surrogate)."
+    return None
+
+
+def _names_approval(data: Any) -> bool:
+    """Whether a data part is meant as an approval decision (it names an approval)."""
+    return isinstance(data, dict) and ("approval_id" in data or "decision" in data)
+
+
+def _part_data(part: Part) -> Any:
+    if not part.HasField("data"):
+        return None
+    try:
+        return json_format.MessageToDict(part.data)
+    except Exception:
+        return None
+
+
+def approval_decision(message: Message | None) -> dict[str, Any] | None:
+    """The approval decision a message's data part carries (checked), or None."""
+    for part in message.parts if message is not None else []:
+        data = _part_data(part)
+        if _names_approval(data) and decision_problem(data) is None:
+            return data
+    return None
+
+
+def _decision_parts_problem(datas: list[Any]) -> tuple[bool, str | None]:
+    """Whether data parts carry an approval decision, and why they cannot when they try."""
+    for data in datas:
+        if _names_approval(data):
+            return True, decision_problem(data)
+    return False, None
+
+
+def message_problem(from_user: bool, texts: list[str], decides: bool = False) -> str | None:
     """Why a message cannot start a run, or None.
 
-    It needs the user role, at least one text part, no empty text part (the
-    SDK cannot start a task from one), and at most `MAX_MESSAGE_CHARS`
-    characters of text in all (joined as the executor joins them), the limit
-    `/chat` applies.
+    It needs the user role, at least one text part (unless it carries an
+    approval decision, `decides`), no empty text part (the SDK cannot start a
+    task from one), and at most `MAX_MESSAGE_CHARS` characters of text in all
+    (joined as the executor joins them), the limit `/chat` applies.
     """
     if not from_user:
         return "The message must have the user role."
-    if not texts:
+    if not texts and not decides:
         return "The message needs a text part."
     if any(not text for text in texts):
         return "The message has an empty text part."
@@ -411,7 +500,8 @@ def message_problem(from_user: bool, texts: list[str]) -> str | None:
 def check_user_message(message: Message) -> None:
     """An invalid-params error (-32602) for a message the agent cannot run."""
     texts = [part.text for part in message.parts if part.HasField("text")]
-    problem = message_problem(message.role == Role.ROLE_USER, texts)
+    decides, problem = _decision_parts_problem([_part_data(part) for part in message.parts])
+    problem = problem or message_problem(message.role == Role.ROLE_USER, texts, decides)
     if problem:
         raise InvalidParamsError(problem)
 
@@ -516,7 +606,10 @@ def legacy_message_problem(payload: Any) -> str | None:
         for part in message["parts"]
         if isinstance(part, dict) and isinstance(part.get("text"), str)
     ]
-    return message_problem(message.get("role") == "user", texts)
+    decides, problem = _decision_parts_problem(
+        [part.get("data") for part in message["parts"] if isinstance(part, dict)]
+    )
+    return problem or message_problem(message.get("role") == "user", texts, decides)
 
 
 def legacy_error(exc: A2AError) -> dict[str, Any] | None:
@@ -664,6 +757,36 @@ def _client_message(exc: Exception) -> str:
     return f"The agent could not process this request (error id {error_id})."
 
 
+def approval_request(
+    updater: TaskUpdater, approvals: list[Any], note: str | None = None
+) -> Message:
+    """The input-required status message: what waits for approval, as text and as data."""
+    approvals = [a for a in approvals if isinstance(a, dict)]
+    lines = [note] if note else []
+    for approval in approvals:
+        what = f"{approval.get('method')} {approval.get('path')}"
+        reason = approval.get("reason")
+        lines.append(
+            f"Waiting for approval {approval.get('approval_id')}: {what}"
+            + (f" ({reason})" if reason else "")
+            + f", until {approval.get('expires_at')}."
+        )
+    lines.append(
+        'Answer with a data part {"approval_id": "...", "decision": "approve"} '
+        '(or "reject"; an optional "comment").'
+    )
+    data = struct_pb2.Value()
+    json_format.ParseDict(
+        {
+            "type": APPROVAL_REQUEST_TYPE,
+            "approval": approvals[0] if approvals else None,
+            "approvals": approvals,
+        },
+        data,
+    )
+    return updater.new_agent_message([Part(text="\n".join(lines)), Part(data=data)])
+
+
 class _Reply:
     """The `response` artifact of one task.
 
@@ -733,35 +856,101 @@ class LangGraphAgentExecutor(AgentExecutor):
                 )
             )
             return
-        if not user_input or len(user_input) > max_message_chars():
+        decision = approval_decision(context.message)
+        if decision is None and (not user_input or len(user_input) > max_message_chars()):
             # The request handler refuses these first; this guards any other caller.
             await updater.failed(
                 updater.new_agent_message([Part(text="The message is empty or too long.")])
             )
             return
-        req = ChatRequest(message=user_input, thread_id=task.context_id or None)
+        req = ChatRequest(message=user_input or "", thread_id=task.context_id or None)
         try:
             thread_id = await RUNTIME.resolve_thread(principal, req)
         except Exception as exc:  # ownership or server errors end the task
             await updater.failed(updater.new_agent_message([Part(text=_client_message(exc))]))
             return
 
+        lease = None
+        if decision is not None:
+            try:
+                lease, resume, acting = await RUNTIME.decide(
+                    principal,
+                    thread_id,
+                    decision["approval_id"],
+                    decision["decision"],
+                    decision.get("comment"),
+                )
+            except (ApprovalError, ThreadBusy, HTTPException) as exc:
+                await self._decision_refused(updater, thread_id, exc)
+                return
+            run = RUNTIME.stream(
+                acting,
+                ChatRequest(message="", thread_id=thread_id),
+                thread_id,
+                lease=lease,
+                resume=resume,
+            )
+        else:
+            run = RUNTIME.stream(principal, req, thread_id)
+        try:
+            # Closed here, whatever happens: the run's own cleanup (which waits
+            # for the graph to stop, then releases the thread) runs first.
+            async with aclosing(run) as events:
+                await self._relay(updater, events, streaming=bool(state.get(STREAMING_STATE_KEY)))
+        finally:
+            if lease is not None:
+                # The run released it when it ended; this covers one that never started.
+                await lease.release()
+
+    @staticmethod
+    async def _relay(updater: TaskUpdater, run: Any, *, streaming: bool) -> None:
+        """Turn a run's events into the task's artifact and final state."""
         # The reply is the `response` artifact (A2A clients read it from
         # artifacts, not from the final status message).
-        reply = _Reply(updater, uuid.uuid4().hex, streaming=bool(state.get(STREAMING_STATE_KEY)))
-        async for event, data in RUNTIME.stream(principal, req, thread_id):
+        reply = _Reply(updater, uuid.uuid4().hex, streaming=streaming)
+        async for event, data in run:
             if event == EVENT_DELTA and data.get("text"):
                 await reply.add(data["text"])
             elif event == EVENT_ERROR:
                 await reply.finish()
+                if data.get("code") == CODE_APPROVAL_PENDING:
+                    # A new message while an approval is pending: ask for the decision.
+                    await updater.requires_input(
+                        approval_request(updater, data.get("approvals") or [], note=None)
+                    )
+                    return
                 await updater.failed(
                     updater.new_agent_message(
                         [Part(text=f"{data.get('code')}: {data.get('message')}")]
                     )
                 )
                 return
+            elif event == EVENT_END and data.get("status") == STATUS_AWAITING_APPROVAL:
+                await reply.finish()
+                await updater.requires_input(
+                    approval_request(updater, data.get("approvals") or [data.get("approval")])
+                )
+                return
         await reply.finish()
         await updater.complete()
+
+    @staticmethod
+    async def _decision_refused(updater: TaskUpdater, thread_id: str, exc: Exception) -> None:
+        """A decision that could not be taken: still waiting (input-required) or failed."""
+        if isinstance(exc, ApprovalError):
+            note = f"{exc.code}: {exc.detail}"
+        elif isinstance(exc, ThreadBusy):
+            note = f"{THREAD_BUSY}: {exc}"
+        else:
+            note = _client_message(exc)
+        try:
+            pending = await RUNTIME.pending_approvals(thread_id)
+        except Exception:
+            pending = []
+        if pending:
+            await updater.requires_input(approval_request(updater, pending, note=note))
+        else:
+            await updater.failed(updater.new_agent_message([Part(text=note)]))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # The request handler has already checked that the caller owns the task

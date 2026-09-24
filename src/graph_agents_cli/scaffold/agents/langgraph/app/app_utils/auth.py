@@ -70,7 +70,10 @@ from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
-# Every action a policy may be asked to authorize.
+# Every action a policy may be asked to authorize. `approval.read` lists the
+# approvals of gated API calls and `approval.decide` approves or rejects one;
+# who may decide a given approval is then the policy's `approvers`
+# (`app_utils.approvals.may_decide`).
 ACTIONS: frozenset[str] = frozenset(
     {
         "chat.send",
@@ -80,6 +83,8 @@ ACTIONS: frozenset[str] = frozenset(
         "run.read",
         "a2a.invoke",
         "card.read",
+        "approval.read",
+        "approval.decide",
     }
 )
 
@@ -1019,6 +1024,10 @@ def build_sdk_auth() -> Any:
       A copy (`POST /threads/{id}/copy`) is a write: it creates a thread that
       keeps the source's metadata, owner included, so its source must be the
       caller's own thread whatever the caller's roles.
+    * a run that carries a `command` (a resume of a paused run) is refused:
+      a run paused for the approval of a gated API call resumes only through
+      the app's approval routes, which check who may decide (the app's
+      approvals ledger refuses a forged resume anyway).
     * the raw principal id is kept only in the thread metadata, where the
       owner filters need it. The server merges thread metadata into every
       run's metadata (and from there into traced config metadata and
@@ -1173,6 +1182,17 @@ def build_sdk_auth() -> Any:
 
     @auth.on.threads.create_run
     async def on_threads_create_run(ctx: Any, value: Any) -> dict[str, Any] | None:
+        kwargs = value.get("kwargs") if isinstance(value, dict) else None
+        if isinstance(kwargs, dict) and kwargs.get("command") and not _is_studio(ctx):
+            # A command resumes a paused run: a gated API call waits there for a
+            # human decision, which only the app's approval routes may deliver
+            # (they check who may decide). The app's own loopback calls do not
+            # pass through here.
+            raise Auth.exceptions.HTTPException(
+                status_code=403,
+                detail="Resuming a run is done through the app's approval routes "
+                "(POST /threads/{thread_id}/approvals/{approval_id}).",
+            )
         metadata = _metadata_of(value)
         if value.get("thread_id") is None or value.get("if_not_exists") == "create":
             # The run may create its thread, whose metadata is then the run's

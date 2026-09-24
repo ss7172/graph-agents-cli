@@ -105,12 +105,15 @@ async def users(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict[str, Any]
             yield item
 
     monkeypatch.setattr(chat_module.ChatRuntime, "stream", stream)
+    # Principals of their own: the A2A task store lives as long as the app, and
+    # other test modules (run first by a plain `pytest`) create tasks for "alice".
+    suffix = uuid.uuid4().hex[:8]
     async with app.router.lifespan_context(app):
         https = [
             httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://testserver",
-                headers={"X-User": name},
+                headers={"X-User": f"{name}-{suffix}"},
                 timeout=30,
             )
             for name in ("alice", "bob")
