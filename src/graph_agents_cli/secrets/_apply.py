@@ -24,8 +24,14 @@ the live key always wins unless the env file sets a different one *and*
 ``--rotate-api-key`` is passed, because replacing it logs out every client of
 the environment. An allow-listed key the env file does not set is kept from the
 live Secret, so a partial env file never deletes the rest. ``API_KEY`` is
-generated (32 random bytes, hex) only when it is in neither, and is then
-written into the env file (mode 0600) after the apply succeeds, never printed.
+generated (32 random bytes, hex) only for the ``shared-bearer`` policy (the
+only one that reads it) and only when it is in neither, and is then written
+into the env file (mode 0600) after the apply succeeds, never printed.
+
+``METRICS_TOKEN``, when the Secret holds it, is also written alone into a
+second Secret ``<name>-metrics``: the Prometheus ServiceMonitor reads its
+bearer token from there, so the scraper never needs access to the app Secret
+and every other credential in it.
 
 How: the manifest is built with ``kubectl create secret generic
 --from-env-file=<0600 temp file> --dry-run=client -o yaml`` and piped into
@@ -56,6 +62,7 @@ from graph_agents_cli.deploy import _kube, _modes
 from graph_agents_cli.deploy._kube import ConfigError, Target, echo_cmd
 
 GENERATED_KEY = "API_KEY"
+METRICS_TOKEN_KEY = "METRICS_TOKEN"
 # Placeholder shown in a --dry-run manifest for a key that the real run keeps
 # from the live Secret or generates (the cluster is not read under --dry-run).
 PENDING_PLACEHOLDER = "<kept-or-generated>"
@@ -77,6 +84,20 @@ def resolve_env_file(env: str, explicit: str | None) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def provision_hint(env: str) -> str:
+    """The command that provisions the Secret, as it can be run from the project root.
+
+    ``secrets apply`` finds the environment's env file itself (``.env.<env>``;
+    dev also falls back to ``.env``); naming a file that does not exist would
+    make the printed command fail.
+    """
+    command = f"graph-agents-cli secrets apply --env {env}"
+    if resolve_env_file(env, None) is not None:
+        return command
+    where = f".env.{env} (or .env)" if _modes.is_dev_env(env) else f".env.{env}"
+    return f"create {where} with the allow-listed keys, then run {command}"
 
 
 def missing_env_file_error(env: str, allowed: list[str]) -> ConfigError:
@@ -151,6 +172,9 @@ class LiveSecret:
     values: dict[str, str] = field(default_factory=dict)  # UTF-8 text values
     undecodable: set[str] = field(default_factory=set)  # binary values (cannot be carried)
     has_last_applied: bool = False
+    # The base64 ``data`` exactly as the cluster holds it, to restore it byte for byte.
+    raw: dict[str, str] = field(default_factory=dict)
+    resource_version: str = ""
 
     @property
     def keys(self) -> set[str]:
@@ -179,15 +203,18 @@ def read_live_secret(name: str, target: Target) -> LiveSecret:
     except json.JSONDecodeError as e:
         raise _kube.ToolFailed(f"kubectl returned invalid JSON: {e}") from e
     live = LiveSecret(exists=True)
+    live.resource_version = str((body.get("metadata") or {}).get("resourceVersion") or "")
     annotations = (body.get("metadata") or {}).get("annotations") or {}
     live.has_last_applied = LAST_APPLIED_ANNOTATION in annotations
     for key, raw in (body.get("data") or {}).items():
+        live.raw[key] = str(raw)
         try:
             live.values[key] = base64.b64decode(str(raw), validate=True).decode("utf-8")
         except (binascii.Error, UnicodeDecodeError, ValueError):
             live.undecodable.add(key)
     for key, raw in (body.get("stringData") or {}).items():
         live.values[key] = str(raw)
+        live.raw[key] = base64.b64encode(str(raw).encode("utf-8")).decode("ascii")
     return live
 
 
@@ -207,6 +234,18 @@ class SecretPlan:
     rotate_requested: bool = False
     source: Path | None = None  # the env file (a generated API_KEY is saved there)
     env: str = ""  # the environment, for the hints printed after the apply
+    # --dry-run with the live Secret read: API_KEY is in neither and would be generated.
+    would_generate: list[str] = field(default_factory=list)
+    # --dry-run: why the live Secret could not be read (its keys are then unknown).
+    live_unread: str = ""
+    # The Secret that receives METRICS_TOKEN alone (for the ServiceMonitor); "" for none.
+    metrics_name: str = ""
+
+    @property
+    def metrics_token(self) -> str | None:
+        """The METRICS_TOKEN this apply writes (``None`` when absent or unknown)."""
+        token = self.data.get(METRICS_TOKEN_KEY)
+        return token if token and token != PENDING_PLACEHOLDER else None
 
     def manifest(self, *, redact: bool = True) -> str:
         body = {
@@ -229,6 +268,7 @@ def build_plan(
     dry_run: bool = False,
     rotate_api_key: bool = False,
     source: Path | None = None,
+    mint_api_key: bool = True,
 ) -> SecretPlan:
     """Decide the Secret's content from the env file ``values`` and the live ``existing`` values.
 
@@ -236,7 +276,8 @@ def build_plan(
     is ``None`` when it was not read (``--dry-run``). File values win over live
     ones except ``API_KEY`` (the live key wins unless ``rotate_api_key``);
     allow-listed live keys the file does not set are kept; a missing
-    ``API_KEY`` is generated (recorded as pending under ``dry_run``).
+    ``API_KEY`` is generated when ``mint_api_key`` (the ``shared-bearer``
+    policy; recorded as pending or would-generate under ``dry_run``).
     """
     file_values = select_allowed(values, allowed)
     _reject_multiline(file_values)
@@ -262,10 +303,10 @@ def build_plan(
         elif existing is None and dry_run and key != GENERATED_KEY:
             plan.kept_if_live.append(key)
     _reject_multiline({k: plan.data[k] for k in plan.reused}, where=" (kept from the live Secret)")
-    if GENERATED_KEY in allowed and GENERATED_KEY not in plan.data:
+    if mint_api_key and GENERATED_KEY in allowed and GENERATED_KEY not in plan.data:
         if dry_run:
             plan.data[GENERATED_KEY] = PENDING_PLACEHOLDER
-            plan.pending.append(GENERATED_KEY)
+            (plan.pending if existing is None else plan.would_generate).append(GENERATED_KEY)
         else:
             plan.data[GENERATED_KEY] = generate_api_key()
             plan.generated.append(GENERATED_KEY)
@@ -367,6 +408,20 @@ def _print_plan_notes(plan: SecretPlan, *, dry_run: bool, console: Console) -> N
         console.print(f"  API_KEY rotated to the value in {source}.", style="yellow", markup=False)
     if not dry_run:
         return
+    if plan.live_unread:
+        console.print(
+            f"  [dry-run] could not read the live Secret ({plan.live_unread}); the keys it "
+            "holds are unknown.",
+            style="yellow",
+            markup=False,
+        )
+    for key in plan.would_generate:
+        console.print(
+            f"  {key} is in neither the env file nor the live Secret: the real run generates "
+            "one and saves it to the env file (nothing is written under --dry-run).",
+            style="yellow",
+            markup=False,
+        )
     for key in plan.pending:
         console.print(
             f"  {key} is not in the env file: it would be kept from the live Secret if "
@@ -381,7 +436,11 @@ def _print_plan_notes(plan: SecretPlan, *, dry_run: bool, console: Console) -> N
             style="yellow",
             markup=False,
         )
-    if GENERATED_KEY in plan.data and GENERATED_KEY not in plan.pending:
+    if (
+        GENERATED_KEY in plan.data
+        and GENERATED_KEY not in plan.pending + plan.would_generate
+        and GENERATED_KEY not in plan.reused
+    ):
         verb = "replaces" if plan.rotate_requested else "does not replace"
         console.print(
             f"  API_KEY from the env file {verb} a different live API_KEY"
@@ -392,37 +451,11 @@ def _print_plan_notes(plan: SecretPlan, *, dry_run: bool, console: Console) -> N
         )
 
 
-def apply_plan(
-    plan: SecretPlan,
-    *,
-    dry_run: bool = False,
-    console: Console | None = None,
-    live: LiveSecret | None = None,
-) -> None:
-    """Create the namespace if needed, then create or update the Secret (server-side apply).
+def _server_side_apply(plan: SecretPlan, *, console: Console) -> None:
+    """``kubectl create secret generic --from-env-file | kubectl apply --server-side``.
 
-    With ``dry_run`` print the pipeline and a redacted manifest. A generated
-    ``API_KEY`` is saved to ``plan.source`` only after the apply succeeded.
+    The values go through a 0600 temp file and a pipe, never a command line.
     """
-    console = console or Console()
-    if not plan.data:
-        raise ConfigError(
-            "No allow-listed secret values to apply. The env file has none of: "
-            + ", ".join(plan.skipped)
-        )
-    _print_plan_notes(plan, dry_run=dry_run, console=console)
-    if dry_run:
-        _kube.ensure_namespace(plan.target, dry_run=True, console=console)
-        create = _create_cmd(plan, "TMP_ENV_FILE_WITH_ALLOW_LISTED_KEYS")
-        console.print(
-            f"  [dry-run] {_kube.pipe_description(create, _apply_cmd(plan))}",
-            style="cyan",
-            highlight=False,
-            markup=False,
-        )
-        console.print(plan.manifest(redact=True), highlight=False, markup=False)
-        return
-    _kube.ensure_namespace(plan.target, console=console)
     fd, tmp_path = tempfile.mkstemp(prefix="graph-agents-cli-secret-", suffix=".env")
     try:
         os.chmod(tmp_path, 0o600)
@@ -440,6 +473,60 @@ def apply_plan(
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def metrics_plan(plan: SecretPlan) -> SecretPlan | None:
+    """The ``<name>-metrics`` Secret this apply also writes (METRICS_TOKEN alone), if any."""
+    token = plan.metrics_token
+    if not plan.metrics_name or token is None:
+        return None
+    return SecretPlan(
+        name=plan.metrics_name,
+        target=plan.target,
+        data={METRICS_TOKEN_KEY: token},
+        env=plan.env,
+        source=plan.source,
+    )
+
+
+def apply_plan(
+    plan: SecretPlan,
+    *,
+    dry_run: bool = False,
+    console: Console | None = None,
+    live: LiveSecret | None = None,
+) -> None:
+    """Create the namespace if needed, then create or update the Secret (server-side apply).
+
+    With ``dry_run`` print the pipeline and a redacted manifest. A generated
+    ``API_KEY`` is saved to ``plan.source`` only after the apply succeeded.
+    When the Secret holds ``METRICS_TOKEN`` and ``plan.metrics_name`` is set,
+    the token alone is applied to that Secret too (the ServiceMonitor's).
+    """
+    console = console or Console()
+    if not plan.data:
+        raise ConfigError(
+            "No allow-listed secret values to apply. The env file has none of: "
+            + ", ".join(plan.skipped)
+        )
+    _print_plan_notes(plan, dry_run=dry_run, console=console)
+    metrics = metrics_plan(plan)
+    if dry_run:
+        _kube.ensure_namespace(plan.target, dry_run=True, console=console)
+        for each in (plan, metrics):
+            if each is None:
+                continue
+            create = _create_cmd(each, "TMP_ENV_FILE_WITH_ALLOW_LISTED_KEYS")
+            console.print(
+                f"  [dry-run] {_kube.pipe_description(create, _apply_cmd(each))}",
+                style="cyan",
+                highlight=False,
+                markup=False,
+            )
+            console.print(each.manifest(redact=True), highlight=False, markup=False)
+        return
+    _kube.ensure_namespace(plan.target, console=console)
+    _server_side_apply(plan, console=console)
     if live is not None and live.has_last_applied:
         # Written by an earlier client-side `kubectl apply`: it holds a copy of the values.
         _kube.run_cmd(_remove_last_applied_cmd(plan), console=console)
@@ -452,6 +539,12 @@ def apply_plan(
         f"  Secret {plan.name} applied in namespace {plan.target.namespace} "
         f"({len(plan.data)} key(s): {', '.join(plan.data)})."
     )
+    if metrics is not None:
+        _server_side_apply(metrics, console=console)
+        console.print(
+            f"  Secret {metrics.name} applied ({METRICS_TOKEN_KEY} only: the Prometheus "
+            "ServiceMonitor reads its bearer token there, never the app Secret)."
+        )
     for key in plan.generated:
         _save_generated(plan, key, console=console)
     if plan.skipped:
@@ -512,9 +605,26 @@ def prepare(
     values: dict[str, str],
     rotate_api_key: bool,
     dry_run: bool,
+    mint_api_key: bool = True,
+    metrics_name: str = "",
+    read_live_on_dry_run: bool = False,
 ) -> tuple[SecretPlan, LiveSecret | None]:
-    """Read the live Secret (not under ``dry_run``) and plan the apply; changes nothing."""
-    live = None if dry_run else read_live_secret(name, target)
+    """Read the live Secret and plan the apply; changes nothing.
+
+    Under ``dry_run`` the live Secret is read only with ``read_live_on_dry_run``
+    (``deploy --dry-run``, whose required-key check needs it), and a failed read
+    is then reported instead of raised: the keys it holds are unknown.
+    """
+    live: LiveSecret | None = None
+    unread = ""
+    if not dry_run:
+        live = read_live_secret(name, target)
+    elif read_live_on_dry_run:
+        try:
+            live = read_live_secret(name, target)
+        except _kube.ToolFailed as e:
+            lines = [line.strip() for line in str(e).splitlines() if line.strip()]
+            unread = lines[-1] if lines else "kubectl failed"
     if live is not None:
         from_file = select_allowed(values, allowed)
         carried = [k for k in allowed if k in live.undecodable and k not in from_file]
@@ -539,8 +649,11 @@ def prepare(
         dry_run=dry_run,
         rotate_api_key=rotate_api_key,
         source=path,
+        mint_api_key=mint_api_key,
     )
     plan.env = env
+    plan.live_unread = unread
+    plan.metrics_name = metrics_name
     return plan, live
 
 
@@ -555,6 +668,8 @@ def provision(
     rotate_api_key: bool,
     dry_run: bool,
     console: Console,
+    mint_api_key: bool = True,
+    metrics_name: str = "",
 ) -> SecretPlan:
     """Plan and apply (``secrets apply``): :func:`prepare` then :func:`apply_plan`."""
     plan, live = prepare(
@@ -566,6 +681,8 @@ def provision(
         values=values,
         rotate_api_key=rotate_api_key,
         dry_run=dry_run,
+        mint_api_key=mint_api_key,
+        metrics_name=metrics_name,
     )
     apply_plan(plan, dry_run=dry_run, console=console, live=live)
     return plan
@@ -605,13 +722,170 @@ def secret_keys_present(
     return set(data) | set(string_data)
 
 
+def _env_file_note(env: str) -> str:
+    fallback = ", else .env" if _modes.is_dev_env(env) else ""
+    return f"reads .env.{env}{fallback}; --env-file <file> reads another"
+
+
+# --------------------------------------------------------------------------- snapshot / restore
+
+
+@dataclass
+class Snapshot:
+    """A Secret as it was before this run applied it, to restore after a failed deploy.
+
+    ``applied`` is what this run wrote (plain values, never printed) and
+    ``managed`` the keys it manages (the allow-list, or ``METRICS_TOKEN``).
+    """
+
+    name: str
+    target: Target
+    before: LiveSecret
+    applied: dict[str, str]
+    managed: frozenset[str]
+    env: str = ""
+
+    @property
+    def changed(self) -> list[str]:
+        """Keys this run added or changed (names only)."""
+        return sorted(
+            k
+            for k, v in self.applied.items()
+            if k in self.before.undecodable or self.before.values.get(k) != v
+        )
+
+
+def snapshot(plan: SecretPlan, live: LiveSecret | None, *, managed: list[str]) -> list[Snapshot]:
+    """The app Secret (``live``, read by :func:`prepare`) and the metrics Secret before the apply.
+
+    Changes nothing; the metrics Secret is read only when this apply writes it.
+    """
+    snaps: list[Snapshot] = []
+    if live is not None:
+        snaps.append(
+            Snapshot(plan.name, plan.target, live, dict(plan.data), frozenset(managed), plan.env)
+        )
+    metrics = metrics_plan(plan)
+    if metrics is not None:
+        snaps.append(
+            Snapshot(
+                metrics.name,
+                metrics.target,
+                read_live_secret(metrics.name, metrics.target),
+                dict(metrics.data),
+                frozenset({METRICS_TOKEN_KEY}),
+                plan.env,
+            )
+        )
+    return snaps
+
+
+def _restore_manifest(snap: Snapshot, current: LiveSecret) -> str:
+    """The previous values of the keys this run manages, plus any key it removed.
+
+    Keys this run added are left out, so the server-side apply removes them (the
+    graph-agents-cli field manager owns them). ``resourceVersion`` makes the apply
+    fail rather than overwrite a change made after the check.
+    """
+    data = {
+        k: raw for k, raw in snap.before.raw.items() if k in snap.managed or k not in current.raw
+    }
+    body: dict[str, object] = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": snap.name, "namespace": snap.target.namespace},
+        "type": "Opaque",
+        "data": data,
+    }
+    if current.resource_version:
+        body["metadata"]["resourceVersion"] = current.resource_version  # type: ignore[index]
+    return yaml.safe_dump(body, sort_keys=False)
+
+
+def restore(snaps: list[Snapshot], *, console: Console) -> list[str]:
+    """Put each Secret back as it was before this run; returns one line per Secret for the error.
+
+    A Secret is restored only while it still holds exactly what this run applied:
+    if anything changed it since (another deploy, a ``secrets apply``), it is left
+    alone and the line says so. One this run created is deleted. Never raises.
+    """
+    notes: list[str] = []
+    for snap in snaps:
+        if not snap.changed:
+            continue
+        keys = ", ".join(snap.changed)
+        try:
+            current = read_live_secret(snap.name, snap.target)
+            if current.exists == snap.before.exists and all(
+                current.raw.get(k) == snap.before.raw.get(k) for k in snap.applied
+            ):
+                continue  # the apply never landed: nothing to put back
+            if not current.exists or any(
+                current.values.get(k) != v for k, v in snap.applied.items()
+            ):
+                notes.append(
+                    f"Secret {snap.name} was changed by someone else after this deploy applied "
+                    f"it, so it was left as it is (this deploy had changed {keys})."
+                )
+                continue
+            if not snap.before.exists:
+                _kube.kubectl(
+                    ["delete", "secret", snap.name, "--ignore-not-found"],
+                    snap.target,
+                    console=console,
+                )
+                notes.append(f"Secret {snap.name}, which this deploy created, was deleted.")
+                continue
+            result = _kube.run_cmd(
+                _apply_cmd(SecretPlan(snap.name, snap.target, {})),
+                input_text=_restore_manifest(snap, current),
+                check=False,
+                console=console,
+            )
+            if result.returncode != 0 and "has been modified" in (result.stderr or ""):
+                # The resourceVersion precondition: changed between the check and the apply.
+                notes.append(
+                    f"Secret {snap.name} was changed by someone else while this deploy restored "
+                    f"it, so it was left as it is (this deploy had changed {keys})."
+                )
+                continue
+            if result.returncode != 0:
+                raise _kube.ToolFailed(
+                    (result.stderr or result.stdout or "").strip()
+                    or f"kubectl apply exited {result.returncode}"
+                )
+            notes.append(
+                f"Secret {snap.name} was restored to its values from before this deploy ({keys})."
+            )
+        except _kube.DeployError as e:
+            first = next((line for line in str(e).splitlines() if line.strip()), "kubectl failed")
+            notes.append(
+                f"Secret {snap.name} could NOT be restored ({first.strip()}): it still holds "
+                f"this deploy's values for {keys}, which running pods read at their next "
+                f"restart. Re-apply the previous values with `graph-agents-cli secrets apply "
+                f"--env {snap.env or '<env>'} --env-file <previous env file>`."
+            )
+    return notes
+
+
+def describe_unrestored(snaps: list[Snapshot], env: str, why: str) -> list[str]:
+    """Lines for Secrets this run changed and left in place (the release was not restored)."""
+    return [
+        f"Secret {snap.name} keeps this deploy's values for {', '.join(snap.changed)} ({why}); "
+        "running pods read them at their next restart. To go back, re-apply the previous "
+        f"values: `graph-agents-cli secrets apply --env {env} --env-file <previous env file>`."
+        for snap in snaps
+        if snap.changed
+    ]
+
+
 def provisioning_procedure(*, project: str, env: str, owner: str, mode: str) -> str:
     """Text printed when deploy refuses to touch Secrets in a CD mode."""
     who = owner or "the platform operator named in secrets.owner"
     return (
         f"In {mode} mode `deploy` never touches Secrets. {who} provisions the Secret "
         f"once per environment from a workstation with cluster access:\n"
-        f"    graph-agents-cli secrets apply --env {env} --env-file .env.{env}\n"
+        f"    graph-agents-cli secrets apply --env {env}   ({_env_file_note(env)})\n"
         f"  (or `kubectl create secret generic {project}-app ...`). Rotate with `secrets apply` "
         f"followed by `graph-agents-cli deploy --env {env} --restart`."
     )

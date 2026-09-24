@@ -19,7 +19,7 @@ import click
 
 from graph_agents_cli._click import LazyGroup
 from graph_agents_cli._output import Console
-from graph_agents_cli.deploy import _modes
+from graph_agents_cli.deploy import _modes, _preflight
 from graph_agents_cli.deploy._config import DeploySettings, load_settings
 from graph_agents_cli.deploy._kube import Target
 from graph_agents_cli.deploy._values import load_chart_values
@@ -116,7 +116,7 @@ def cmd_secrets_apply(
     _required.print_unreached_hs_settings(
         settings, env, chart_values, values, source=path, console=console
     )
-    _apply.provision(
+    plan = _apply.provision(
         name=settings.secret_name,
         env=env,
         target=target,
@@ -126,7 +126,21 @@ def cmd_secrets_apply(
         rotate_api_key=rotate_api_key,
         dry_run=dry_run,
         console=console,
+        # Only the shared-bearer policy reads API_KEY: never mint one it would not use.
+        mint_api_key=_preflight.effective_auth_policy(settings, chart_values) == "shared-bearer",
+        metrics_name=settings.metrics_secret_name,
     )
+    if not _modes.is_dev_env(env):
+        for key in _preflight.dsn_keys(settings, chart_values):
+            dsn = plan.data.get(key) or ""
+            if (
+                dsn
+                and dsn != _apply.PENDING_PLACEHOLDER
+                and _preflight.dsn_without_tls(chart_values, dsn)
+            ):
+                console.print(
+                    f"  Warning: {_preflight.dsn_tls_warning(key)}", style="yellow", markup=False
+                )
 
 
 @secrets_group.command("status")

@@ -63,6 +63,11 @@ class DeploySettings:
         return f"{self.project_name}-app"
 
     @property
+    def metrics_secret_name(self) -> str:
+        """The Secret holding only ``METRICS_TOKEN``, for the Prometheus ServiceMonitor."""
+        return f"{self.project_name}-metrics"
+
+    @property
     def chart_dir(self) -> Path:
         return Path("deployment") / "helm" / self.project_name
 

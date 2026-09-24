@@ -56,7 +56,9 @@ metadata:
 Local-load is decided from the cluster itself (its nodes), confirmed with `kind get clusters`,
 `k3d cluster list` or `minikube profile list`; the context name decides only when the nodes
 cannot be read. `deploy --dry-run` prints the docker, helm, kubectl, and gh commands plus the
-rendered manifests without running anything and never prompts, with one exception:
+rendered manifests, changes nothing and never prompts. It runs the same checks as the real run,
+including a read-only read of the live Secret, so it refuses (exit 1) a deploy the real run
+would refuse for a missing required key (and says so when the cluster cannot be read).
 `helm dependency build deployment/helm/<name>` is printed with the `[dry-run]` prefix and still
 executed when a declared subchart is missing from `charts/`, because it only writes into the
 chart directory and the `helm template` render needs the subcharts. Use `--dry-run` to show the
@@ -71,10 +73,13 @@ placeholder registry (`ghcr.io/CHANGE-ME`) or an invalid image reference is exit
 `docker` runs. The chart refuses an empty `image.tag` and an unquoted numeric one.
 
 Exit codes: `0` ok; `1` refused (policy or mode, a declined or missing context confirmation, a
-Secret missing a required key); `2` tool failure (helm/kubectl/docker non-zero or missing from
-`PATH`, a failed rollout, another helm operation holding the release, `helm dependency build`
-failing because `registry-1.docker.io` is unreachable); `3` configuration error (no env file
-outside dev, an unknown context, a placeholder registry, a blank `gateway.parentRef.name`).
+Secret missing a required key, `--status` on a rollout that is not complete within `--timeout`);
+`2` tool failure (helm/kubectl/docker non-zero or missing from `PATH`, a failed rollout, a
+`--restart` whose new pods do not become ready, another helm operation holding the release,
+`helm dependency build` failing because `registry-1.docker.io` is unreachable); `3`
+configuration error (no env file outside dev, an unknown context, a placeholder registry, a
+`CHANGE-ME` left in the chart `env` outside dev, `jwt` without a verification key, issuer or
+audience outside dev, a blank `gateway.parentRef.name`).
 
 ## Environments
 
@@ -97,16 +102,31 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
   `--yes` otherwise; exit 1 without). An explicit context missing from the kubeconfig is exit 3.
   The resolved context and API server are printed before anything happens. Prefer recording the
   context in the manifest for staging and prod.
-- **Order (direct mode):** project checks (chart, values, image reference, env file); the context;
-  a read-only check that the Secret the deploy would produce holds every required key (exit 1
-  before anything is built); a refusal (exit 2) while another helm operation holds the release,
-  with the command that clears a lock left by an interrupted helm; then build, load or push, the
-  namespace (created when missing), the Secret, and `helm upgrade --install --wait --timeout
-  <--timeout, default 5m>`.
-- **Failed rollout:** the pods' states, warning events and logs are printed, then with `--atomic`
-  (default) the release is rolled back to the newest good revision, or a first install that
-  never succeeded is uninstalled. Only the revision this run created is ever undone.
-  `--no-atomic` leaves it in place.
+- **Order (direct mode):** project checks (chart, values, image reference, env file, chart `env`
+  placeholders, `jwt` settings the chart lists); the context; a read-only check that the Secret
+  the deploy would produce holds every required key (exit 1 before anything is built) and that
+  `jwt` can verify tokens with it; a refusal (exit 2) while another helm operation holds the
+  release, with the command that clears a lock left by an interrupted helm; then build, load or
+  push, the namespace (created when missing), the Secret, and `helm upgrade --install --wait
+  --timeout <--timeout, default 5m>`.
+- **Chart env placeholders:** a `CHANGE-ME` left in the merged chart `env` (an API base URL from
+  `api add`, `OPENAI_BASE_URL` of an `openai-compatible` project) is refused outside dev in every
+  mode (exit 3, naming the key and the values file) and a warning in dev.
+- **`jwt` settings:** outside dev (or when `APP_ENV` is not `dev`) the chart env or the Secret
+  must provide a verification key (`AUTH_JWT_JWKS_URL` or `AUTH_JWT_PUBLIC_KEY`), the issuer and
+  the audience, or `deploy` exits 3 (the pods would refuse to start). A setting the chart env
+  lists, even empty, overrides the Secret. In dev a missing key source is a warning (the pods
+  start and answer 503).
+- **Failed rollout:** the pods' states, this release's warning events since the deploy started
+  and the logs are printed, then with `--atomic` (default) the release is rolled back to the
+  newest good revision, or a first install that never succeeded is uninstalled. Only the
+  revision this run created is ever undone. Once the release is back where it was, the app
+  Secret (and `<name>-metrics`) this deploy applied is restored to its previous values, or
+  deleted if this deploy created it, unless someone changed it since. `--no-atomic` leaves the
+  failed revision and the new Secret values in place and says so.
+- **Same image:** when the release already runs the image being deployed, `deploy` says so up
+  front; after the upgrade it reports when no pod was replaced and, if the Secret changed, that
+  `deploy --restart` is what makes the pods read it.
 - **Protected environments:** `deploy --env staging|prod` refuses while the manifest says
   `auth_policy_implemented: false` (the `custom` stub).
 
@@ -114,14 +134,20 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
 
 1. **Gate:** `graph-agents-cli eval run` exits 0 and the user approved deploying.
 2. **Prerequisites:** `graph-agents-cli infra check --env <env>`. Read-only; reports the required
-   tools and the kube context, Gateway API CRDs and classes / Ingress classes, cert-manager (only
-   when `tls.certManager.enabled`), Argo CD (only when `cd: argocd`), metrics-server (only when
-   `hpa.enabled`), the namespace, the image pull secret, the app Secret and its required keys,
-   every `CHANGE-ME` placeholder (registry, chart image and env, CODEOWNERS, Argo CD `repoURL`),
-   and, when `gh` is logged in, the environment protection, branch protection and (helm-push)
-   `DEPLOY_KUBECONFIG` settings. Nothing is created; install hints are printed for the operator.
+   tools and the kube context, Gateway API CRDs and classes (only when `gateway.enabled`) /
+   Ingress classes, cert-manager (only when `tls.certManager.enabled`), Argo CD (only when `cd:
+   argocd`), metrics-server (only when `hpa.enabled`), the namespace, the image pull secret, the
+   app Secret and its required keys, the `jwt` verification settings, the ServiceMonitor's token
+   Secret, whether an external DSN requires TLS, every `CHANGE-ME` placeholder (registry, chart
+   image and env, CODEOWNERS, Argo CD `repoURL`), and, when `gh` is logged in, the environment
+   protection, branch protection and (helm-push) `DEPLOY_KUBECONFIG` settings. Nothing is created;
+   install hints are printed for the operator, and every printed command runs as is.
 3. **Values:** fill `hostname`, `parentRef`, `tls`, `resources` in `values-<env>.yaml` and review
-   `route.publicPaths` (what the Gateway or Ingress publishes). These are config files: never
+   `route.publicPaths` (what the Gateway or Ingress publishes). For network isolation copy the
+   `networkPolicy` block of `deployment/helm/<name>/examples/networkpolicy.yaml` (DNS, the
+   database, the model endpoint, public HTTPS for hosted APIs) and set its addresses. For an
+   external database use a least-privileged role and `sslmode=verify-full` (see
+   `references/kubernetes.md`). These are config files: never
    overwritten by upgrade, never containing secrets. `gateway.parentRef.name` is **required**
    whenever `gateway.enabled` (the staging/prod default): `deploy` checks the merged values
    before building or pushing anything and exits 3 naming the file when it is blank. Set
@@ -135,8 +161,10 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
    in `helm-push` and `argocd` modes and prints the procedure.
 5. **Deploy:** `graph-agents-cli deploy --env <env>` (direct), or let CI run it (`helm-push`), or
    open the PR (`argocd`).
-6. **Verify:** `graph-agents-cli deploy --status --env <env>` (rollout status or `argocd app
-   get`), then `graph-agents-cli run --url https://<host> "hello"` with the environment's
+6. **Verify:** `graph-agents-cli deploy --status --env <env>` (a bounded rollout status, 60 s by
+   default, with the image, helm revision and each pod's readiness and restarts; diagnostics and
+   exit 1 when not ready; `argocd app get` in argocd mode), then
+   `graph-agents-cli run --url https://<host> "hello"` with the environment's
    credential (`--header 'Authorization: Bearer ...'` or `GRAPH_AGENTS_CLI_API_KEY`; a user's
    token under `jwt`; `--header` / `--cookie` under `custom`). Readiness is `/ready` (probed
    inside the cluster; not published on the route).
@@ -151,12 +179,16 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
   secrets (`METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`) to the list.
 - Server-side apply; allow-listed keys the env file leaves out are kept from the live Secret.
 - `API_KEY`: the live key wins; it is replaced only when the env file sets another **and**
-  `--rotate-api-key` is passed. When neither has one, a key is generated, applied and written to
-  the env file (0600), never printed. Values must be single-line.
+  `--rotate-api-key` is passed. Under `shared-bearer` (the only policy that reads it), when
+  neither has one, a key is generated, applied and written to the env file (0600), never printed;
+  `jwt` and `custom` never get one generated. Values must be single-line.
+- `METRICS_TOKEN` is also written alone into `<name>-metrics`, the Secret the ServiceMonitor
+  reads (Prometheus never needs the app Secret).
 - **Rotation:** put the new value in `.env.<env>`, `secrets apply` (with `--rotate-api-key` for
-  `API_KEY`), then `deploy --restart --env <env>` (`kubectl rollout restart`), because an
-  externally managed Secret does not change the pod template. In argocd environments the restart
-  is drift that self-heal may revert; the warning suggests an Argo resource action instead.
+  `API_KEY`), then `deploy --restart --env <env>` (`kubectl rollout restart`, then it waits for
+  the new pods and prints diagnostics if they do not become ready), because an externally
+  managed Secret does not change the pod template. In argocd environments the restart is drift
+  that self-heal may revert; the warning suggests an Argo resource action instead.
 - Details: `references/secrets.md`.
 
 ## argocd PR flow and the single production gate (summary)
@@ -241,7 +273,14 @@ disconnected" (this profile).
 | `deploy` exit 3 "Kube context 'x' ... is not in the kubeconfig" | fix the manifest's context or `--context`; the known contexts are listed |
 | `deploy` exit 1 "Secret ... is missing required key(s)" | add them to `.env.<env>` and re-run (direct), or run `secrets apply` (helm-push); or drop the key from `secrets.keys` if the environment does not need it |
 | `deploy` exit 2 "Another helm operation ... is in progress" | wait for it (`helm history`); if nothing else runs, the printed `helm rollback` / `helm uninstall` clears the lock an interrupted helm left |
-| `deploy` exit 2 "helm upgrade failed ... rolled back to revision N" | read the printed pod diagnostics (states, events, logs); fix and deploy again |
+| `deploy` exit 2 "helm upgrade failed ... rolled back to revision N" | read the printed pod diagnostics (states, this rollout's events, logs); the Secret was restored too ("Secret ... was restored"); fix and deploy again |
+| "Secret ... keeps this deploy's values for ..." after a failed deploy | the release stayed on the failed revision (`--no-atomic`, another deploy): roll it back, then re-apply the previous values with `secrets apply --env-file <previous file>` |
+| `deploy` exit 3 "still hold(s) the placeholder CHANGE-ME" | set the real value (an API base URL, `OPENAI_BASE_URL`) in `values-<env>.yaml` or `values.yaml` |
+| `deploy` / `infra check` "The jwt auth policy cannot verify tokens" | set `AUTH_JWT_JWKS_URL` (or `AUTH_JWT_PUBLIC_KEY`), `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` under `env:` in `values-<env>.yaml` (an empty value there overrides the Secret) |
+| `deploy --status` exit 1 "did not complete within" | read the printed pods, events and logs; `--timeout` waits longer |
+| `deploy --restart` exit 2 "did not become ready" | the old pods keep serving; fix the cause (often a Secret value) and restart again, or `kubectl rollout undo` |
+| "No pods were replaced" / "The Secret changed ... run deploy --restart" | same image and chart values: the pods read a changed Secret only at start |
+| Warning "POSTGRES_DSN does not require TLS" | add `sslmode=verify-full` (and `sslrootcert`) to the DSN; see `references/kubernetes.md` |
 | `deploy` exit 1 "Refusing to deploy <env> from outside CI in helm-push mode" | run from the CI runner, or `--force-direct` for a deliberate workstation deploy (dev is always allowed) |
 | `deploy` exit 1 "--env-file is not accepted in argocd mode" (or helm-push) | Secrets are applied separately: `secrets apply --env <env>`; `deploy --env <env> --image <ref>` only opens the PR (argocd) or runs helm (helm-push) |
 | `deploy` exit 1 "the manifest records auth_policy_implemented: false" | implement `app/policies/custom.py`, flip the manifest flag |

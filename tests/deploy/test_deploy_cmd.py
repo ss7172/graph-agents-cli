@@ -654,7 +654,9 @@ def test_dry_run_prints_commands_and_runs_helm_template_only(project: SimpleName
     assert "[dry-run] kubectl create namespace my-agent-dev" in result.output
     assert "[dry-run] kubectl create secret generic my-agent-app" in result.output
     assert f"| {SSA} -n my-agent-dev" in result.output
-    assert "[dry-run] would check that Secret my-agent-app holds the required key(s)" in (
+    # The required-key check runs for real (a read of the live Secret): the preview
+    # refuses what the real run would.
+    assert "Secret my-agent-app would hold the required key(s): OPENAI_API_KEY, API_KEY" in (
         result.output
     )
     assert "[dry-run] helm upgrade --install my-agent" in result.output
@@ -667,18 +669,15 @@ def test_dry_run_prints_commands_and_runs_helm_template_only(project: SimpleName
     )
     executed = fake.joined
     assert not any(
-        j.startswith(
-            (
-                "docker",
-                "kind load",
-                "kubectl create",
-                "kubectl apply",
-                "helm upgrade",
-                "kubectl get secret",
-            )
-        )
+        j.startswith(("docker", "kind load", "kubectl create", "kubectl apply", "helm upgrade"))
         for j in executed
     )
+    # Only reads touch the cluster.
+    assert fake.find("kubectl get secret my-agent-app -o json")
+    assert all(
+        j.startswith(("kubectl get", "kubectl config", "kind get", "git", "helm template"))
+        for j in executed
+    ), executed
     assert any(j.startswith("helm template my-agent deployment/helm/my-agent") for j in executed)
     assert "Would deploy my-agent" in result.output
 
@@ -1069,7 +1068,8 @@ def test_helm_push_refuses_when_the_secret_lacks_required_keys(
     result = invoke("--env", "prod", "--image", "ghcr.io/my-org/my-agent:deadbeef")
     assert result.exit_code == 1, result.output
     assert "missing required key(s): POSTGRES_DSN, API_KEY" in result.output
-    assert "secrets apply --env prod --env-file .env.prod" in result.output
+    # The printed command runs as is (no --env-file naming a file that may not exist).
+    assert "`graph-agents-cli secrets apply --env prod`" in result.output
     assert not fake.find("helm upgrade")
 
 
@@ -1430,15 +1430,135 @@ def test_argocd_without_image_uses_git_sha_and_warns(project: SimpleNamespace, f
 # --------------------------------------------------------------------------- status / restart
 
 
-def test_status_runs_rollout_status(project: SimpleNamespace, fake):
+def _pod(name: str, *, ready: bool, restarts: int = 0, waiting: str = "") -> dict:
+    status: dict = {
+        "phase": "Running",
+        "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+        "containerStatuses": [
+            {
+                "name": "agent",
+                "restartCount": restarts,
+                "state": {"waiting": {"reason": waiting}} if waiting else {"running": {}},
+                **(
+                    {"lastState": {"terminated": {"reason": "Error", "exitCode": 3}}}
+                    if restarts
+                    else {}
+                ),
+            }
+        ],
+    }
+    return {"kind": "Pod", "metadata": {"name": name}, "status": status}
+
+
+def _cluster_state(fake, pods: list[dict], *, ready: int, image: str = "x/y:1") -> None:
+    """A Deployment (and its pods) as `kubectl get ... -o json` report them."""
+    fake.respond(
+        "kubectl get pods -l app.kubernetes.io/instance=my-agent -o json",
+        stdout=json.dumps({"items": pods}),
+    )
+    fake.respond(
+        "kubectl get deployment my-agent -o json",
+        stdout=json.dumps(
+            {
+                "metadata": {"generation": 4},
+                "spec": {
+                    "replicas": 1,
+                    "template": {"spec": {"containers": [{"name": "agent", "image": image}]}},
+                },
+                "status": {"readyReplicas": ready, "updatedReplicas": 1},
+            }
+        ),
+    )
+
+
+def _events(*events: tuple[str, str, str, str, str]) -> str:
+    """``kubectl get events -o json``: (kind, name, reason, message, lastTimestamp)."""
+    return json.dumps(
+        {
+            "items": [
+                {
+                    "involvedObject": {"kind": kind, "name": name},
+                    "reason": reason,
+                    "message": message,
+                    "lastTimestamp": when,
+                    "type": "Warning",
+                }
+                for kind, name, reason, message, when in events
+            ]
+        }
+    )
+
+
+def _ago(seconds: int) -> str:
+    import datetime as dt
+
+    return (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_status_runs_a_bounded_rollout_status_and_reports_the_pods(project: SimpleNamespace, fake):
+    _cluster_state(fake, [_pod("my-agent-abc", ready=True, restarts=5)], ready=1)
+    fake.respond("helm history", stdout=json.dumps([{"revision": 3, "status": "deployed"}]))
     result = invoke("--env", "dev", "--status")
     assert result.exit_code == 0, result.output
     assert "Kube context: kind-dev" in result.output
     assert (
-        "kubectl rollout status deployment/my-agent -n my-agent-dev --context kind-dev"
-        in fake.joined
+        "kubectl rollout status deployment/my-agent --timeout=60s -n my-agent-dev "
+        "--context kind-dev" in fake.joined
     )
-    assert not fake.find("helm")
+    out = result.output
+    assert "deployment/my-agent: 1/1 ready, 1 up to date, image x/y:1" in out
+    assert "helm release my-agent: revision 3 (deployed)" in out
+    # A healthy rollout still shows a restarting pod.
+    assert "pod my-agent-abc: ready, restarts 5 (last exit: Error 3)" in out
+    assert "rollout complete" in out
+    assert not fake.find("helm upgrade") and not fake.find("kubectl rollout restart")
+
+
+def test_status_of_a_rollout_that_does_not_finish_prints_diagnostics_and_exits_1(
+    project: SimpleNamespace, fake
+):
+    """Before: `kubectl rollout status` blocked forever and printed only 'Waiting for ...'."""
+    fake.respond(
+        "kubectl rollout status",
+        rc=1,
+        stdout='Waiting for deployment "my-agent" rollout to finish: 0 of 1 updated replicas '
+        "are available...\n",
+        stderr="error: timed out waiting for the condition\n",
+    )
+    _cluster_state(fake, [_pod("my-agent-new", ready=False, waiting="CrashLoopBackOff")], ready=0)
+    fake.respond("kubectl logs my-agent-new", stdout="psycopg.OperationalError: refused\n")
+    result = invoke("--env", "staging", "--status", "--timeout", "15")
+    assert result.exit_code == 1, result.output
+    out = result.output
+    assert "--timeout=15s" in fake.find("kubectl rollout status")[0]
+    assert "deployment/my-agent: 0/1 ready" in out
+    assert "pod my-agent-new: NOT ready" in out
+    assert "is not ready after 15s; diagnostics" in out
+    assert "agent: waiting CrashLoopBackOff" in out
+    assert "psycopg.OperationalError: refused" in out
+    assert "did not complete within 15s (error: timed out waiting for the condition)" in out
+
+
+def test_status_of_a_missing_deployment_exits_1(project: SimpleNamespace, fake):
+    fake.respond(
+        "kubectl rollout status",
+        rc=1,
+        stderr='Error from server (NotFound): deployments.apps "my-agent" not found',
+    )
+    result = invoke("--env", "dev", "--status")
+    assert result.exit_code == 1, result.output
+    assert "does not exist (not deployed yet?)" in result.output
+
+
+def test_status_when_kubectl_fails_is_a_tool_failure(project: SimpleNamespace, fake):
+    fake.respond(
+        "kubectl rollout status",
+        rc=1,
+        stderr="The connection to the server localhost:8080 was refused",
+    )
+    result = invoke("--env", "dev", "--status")
+    assert result.exit_code == 2, result.output
+    assert "was refused" in result.output
 
 
 @pytest.mark.parametrize(
@@ -1476,9 +1596,11 @@ def test_status_argocd_falls_back_to_kubectl(project: SimpleNamespace, fake):
     result = invoke("--env", "staging", "--status")
     assert result.exit_code == 0, result.output
     assert (
-        "kubectl rollout status deployment/my-agent -n my-agent-staging --context staging-cluster"
-        in fake.joined
+        "kubectl rollout status deployment/my-agent --timeout=60s -n my-agent-staging "
+        "--context staging-cluster" in fake.joined
     )
+    # Argo CD renders the chart itself: there is no helm release to report.
+    assert not fake.find("helm")
 
 
 def test_status_with_an_implicit_context_is_read_only_and_needs_no_confirmation(
@@ -1491,14 +1613,85 @@ def test_status_with_an_implicit_context_is_read_only_and_needs_no_confirmation(
     assert "Kube context: somewhere (the kubeconfig's current context" in result.output
 
 
-def test_restart_runs_rollout_restart(project: SimpleNamespace, fake):
+def test_restart_runs_rollout_restart_and_waits_for_the_new_pods(project: SimpleNamespace, fake):
+    """Before: --restart returned at once, while the new pod was still ContainerCreating."""
+    old = _pod("my-agent-old", ready=False)
+    old["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+    _cluster_state(fake, [_pod("my-agent-new", ready=True), old], ready=1)
     result = invoke("--env", "dev", "--restart")
     assert result.exit_code == 0, result.output
-    assert (
-        "kubectl rollout restart deployment/my-agent -n my-agent-dev --context kind-dev"
-        in fake.joined
+    # The pod being replaced is reported as terminating, not as a failure.
+    assert "pod my-agent-old: terminating" in result.output
+    assert "NOT ready" not in result.output
+    joined = fake.joined
+    restart = "kubectl rollout restart deployment/my-agent -n my-agent-dev --context kind-dev"
+    wait = (
+        "kubectl rollout status deployment/my-agent --timeout=5m -n my-agent-dev --context kind-dev"
+    )
+    assert restart in joined and wait in joined
+    assert joined.index(restart) < joined.index(wait)
+    assert "Restarted deployment/my-agent in my-agent-dev: the new pods are ready." in (
+        result.output
     )
     assert "self-heal" not in result.output
+
+
+def test_restart_whose_pods_never_get_ready_prints_diagnostics_and_exits_2(
+    project: SimpleNamespace, fake
+):
+    fake.respond(
+        "kubectl rollout status",
+        rc=1,
+        stderr='error: deployment "my-agent" exceeded its progress deadline',
+    )
+    _cluster_state(
+        fake,
+        [
+            _pod("my-agent-old", ready=True),
+            _pod("my-agent-new", ready=False, restarts=2, waiting="CrashLoopBackOff"),
+        ],
+        ready=1,
+    )
+    fake.respond("kubectl logs my-agent-new", stdout="orders: GET /orders -> HTTP 401\n")
+    fake.respond(
+        "kubectl get events",
+        stdout=_events(
+            ("Pod", "my-agent-new", "BackOff", "Back-off restarting failed container", _ago(5)),
+            # Before this restart: not printed.
+            ("Pod", "my-agent-old", "Unhealthy", "Startup probe failed", _ago(2700)),
+        ),
+    )
+    fake.respond(
+        "kubectl get pods,replicasets",
+        stdout=json.dumps(
+            {
+                "items": [
+                    {"kind": "Pod", "metadata": {"name": "my-agent-new"}},
+                    {"kind": "Pod", "metadata": {"name": "my-agent-old"}},
+                ]
+            }
+        ),
+    )
+    result = invoke("--env", "dev", "--restart", "--timeout", "2m")
+    assert result.exit_code == 2, result.output
+    out = result.output
+    assert "The restart of deployment/my-agent in my-agent-dev did not finish within 2m" in out
+    assert "my-agent-new: agent: waiting CrashLoopBackOff" in out
+    assert "Back-off restarting failed container" in out
+    assert "Startup probe failed" not in out
+    assert "1 older warning event(s) for this release" in out
+    assert "orders: GET /orders -> HTTP 401" in out
+    assert "exceeded its progress deadline" in out
+    assert "The pods that were running keep serving" in out
+    assert "kubectl rollout undo deployment/my-agent -n my-agent-dev" in out
+
+
+def test_restart_dry_run_prints_the_restart_and_the_wait(project: SimpleNamespace, fake):
+    result = invoke("--env", "dev", "--restart", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] kubectl rollout restart deployment/my-agent" in result.output
+    assert "[dry-run] kubectl rollout status deployment/my-agent --timeout=5m" in result.output
+    assert not fake.any("rollout")
 
 
 def test_restart_in_argocd_env_warns_about_self_heal(project: SimpleNamespace, fake):

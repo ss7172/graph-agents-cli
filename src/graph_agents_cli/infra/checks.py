@@ -20,6 +20,8 @@ prerequisite is a row in the table, never an exception.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -29,10 +31,11 @@ from pathlib import Path
 from typing import Any
 
 from graph_agents_cli._defaults import REGISTRY_FIX_COMMAND, REGISTRY_FIX_EFFECT
-from graph_agents_cli.deploy import _image, _kube, _modes, gitops, local_load
+from graph_agents_cli.deploy import _image, _kube, _modes, _preflight, gitops, local_load
 from graph_agents_cli.deploy._config import DeploySettings
 from graph_agents_cli.deploy._kube import Target, ToolFailed
 from graph_agents_cli.deploy._values import load_chart_values
+from graph_agents_cli.secrets import _apply as secrets_apply
 from graph_agents_cli.secrets import _required
 
 MIN_KUBERNETES = (1, 28)
@@ -222,69 +225,11 @@ def check_cluster(
         )
     )
 
-    gateway_on = _enabled(values, "gateway", "enabled", default=True)
-    rc, _data, _ = _kubectl(["get", "crd", "httproutes.gateway.networking.k8s.io"], target)
-    have_gateway_crd = rc == 0
-    checks.append(
-        Check(
-            "gateway api crds",
-            OK if have_gateway_crd else MISSING,
-            gateway_on,
-            "httproutes.gateway.networking.k8s.io present"
-            if have_gateway_crd
-            else "HTTPRoute CRD absent",
-            ""
-            if have_gateway_crd
-            else "install the Gateway API CRDs (https://gateway-api.sigs.k8s.io/guides/) or set ingress.enabled=true",
-        )
-    )
-    class_names: list[str] = []
-    if have_gateway_crd:
-        rc, listing, _ = _kubectl(["get", "gatewayclass"], target)
-        class_names = _names(listing) if rc == 0 else []
-    wanted = str(_get(values, "gateway", "className", default="") or "")
-    if wanted:
-        found = wanted in class_names
-        checks.append(
-            Check(
-                "gateway class",
-                OK if found else MISSING,
-                gateway_on,
-                f"{wanted} {'found' if found else 'not found'}; available: {', '.join(class_names) or 'none'}",
-                ""
-                if found
-                else "set gateway.className to one of the GatewayClasses in the cluster",
-            )
-        )
+    if _enabled(values, "gateway", "enabled", default=True):
+        checks += _gateway_checks(target, values)
     else:
-        checks.append(
-            Check(
-                "gateway classes",
-                OK if class_names else MISSING,
-                gateway_on,
-                ", ".join(class_names) if class_names else "no GatewayClass in the cluster",
-                ""
-                if class_names
-                else "install a Gateway API implementation (Envoy Gateway, Cilium, Istio, Traefik, NGINX Gateway Fabric, Kong) and set gateway.className",
-            )
-        )
-    # The chart's HTTPRoute marks gateway.parentRef.name as `required`, and `deploy`
-    # refuses (exit 3) before any tool runs when it is blank; report it here so the
-    # operator sees it before the first deploy.
-    parent_name = str(_get(values, "gateway", "parentRef", "name", default="") or "").strip()
-    checks.append(
-        Check(
-            "gateway parentRef",
-            OK if parent_name else MISSING,
-            gateway_on,
-            f"gateway.parentRef.name = {parent_name}"
-            if parent_name
-            else "gateway.parentRef.name is blank",
-            ""
-            if parent_name
-            else "set gateway.parentRef.name to the Gateway to attach to in values-<env>.yaml (or set gateway.enabled: false / ingress.enabled: true)",
-        )
-    )
+        # Like cert-manager and metrics-server below: nothing to install, no hint.
+        checks.append(Check("gateway api", SKIP, False, "not needed: gateway.enabled is false"))
 
     ingress_on = _enabled(values, "ingress", "enabled")
     rc, listing, _ = _kubectl(["get", "ingressclass"], target)
@@ -410,7 +355,7 @@ def check_cluster(
     if isinstance(secret, dict):
         present = set(secret.get("data") or {}) | set(secret.get("stringData") or {})
     missing = [k for k in required if k not in present]
-    provision = f"graph-agents-cli secrets apply --env {env} --env-file .env.{env}"
+    provision = secrets_apply.provision_hint(env)
     if rc != 0:
         status, detail, hint = MISSING if cd_mode else WARN, "absent", provision
     elif missing and isinstance(secret, dict):
@@ -426,7 +371,170 @@ def check_cluster(
     # In cd skip, `deploy` applies the Secret from the env file itself, then
     # refuses before helm when a required key is still missing.
     checks.append(Check(f"app secret {settings.secret_name}", status, cd_mode, detail, hint))
+    checks += _jwt_checks(settings, env, values, present if rc == 0 else set())
+    checks += _database_tls_checks(settings, env, values, secret if rc == 0 else None)
+    checks += _metrics_token_checks(settings, env, target, values)
     return checks
+
+
+def _database_tls_checks(
+    settings: DeploySettings, env: str, values: dict[str, Any], secret: Any
+) -> list[Check]:
+    """Outside dev: whether the external database's DSN requires TLS (read, never printed)."""
+    if _modes.is_dev_env(env) or not isinstance(secret, dict):
+        return []
+    checks: list[Check] = []
+    data = secret.get("data") or {}
+    for key in _preflight.dsn_keys(settings, values):
+        raw = data.get(key)
+        if not raw:
+            continue
+        try:
+            dsn = base64.b64decode(str(raw)).decode("utf-8", errors="replace")
+        except (binascii.Error, ValueError):
+            continue
+        insecure = _preflight.dsn_without_tls(values, dsn)
+        checks.append(
+            Check(
+                f"database tls ({key})",
+                WARN if insecure else OK,
+                False,
+                "no sslmode=require/verify-ca/verify-full"
+                if insecure
+                else f"sslmode={_preflight.sslmode(dsn) or 'from PGSSLMODE'}",
+                "append ?sslmode=verify-full&sslrootcert=<CA file mounted into the pod> (or "
+                "sslrootcert=system) to the DSN, and connect as a least-privileged role"
+                if insecure
+                else "",
+            )
+        )
+    return checks
+
+
+def _gateway_checks(target: Target, values: dict[str, Any]) -> list[Check]:
+    """Gateway API CRDs, a GatewayClass and the parentRef (only called while the gateway is on)."""
+    checks: list[Check] = []
+    gateway_on = True
+    rc, _data, _ = _kubectl(["get", "crd", "httproutes.gateway.networking.k8s.io"], target)
+    have_gateway_crd = rc == 0
+    checks.append(
+        Check(
+            "gateway api crds",
+            OK if have_gateway_crd else MISSING,
+            gateway_on,
+            "httproutes.gateway.networking.k8s.io present"
+            if have_gateway_crd
+            else "HTTPRoute CRD absent",
+            ""
+            if have_gateway_crd
+            else "install the Gateway API CRDs (https://gateway-api.sigs.k8s.io/guides/) or set ingress.enabled=true",
+        )
+    )
+    class_names: list[str] = []
+    if have_gateway_crd:
+        rc, listing, _ = _kubectl(["get", "gatewayclass"], target)
+        class_names = _names(listing) if rc == 0 else []
+    wanted = str(_get(values, "gateway", "className", default="") or "")
+    if wanted:
+        found = wanted in class_names
+        checks.append(
+            Check(
+                "gateway class",
+                OK if found else MISSING,
+                gateway_on,
+                f"{wanted} {'found' if found else 'not found'}; available: {', '.join(class_names) or 'none'}",
+                ""
+                if found
+                else "set gateway.className to one of the GatewayClasses in the cluster",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "gateway classes",
+                OK if class_names else MISSING,
+                gateway_on,
+                ", ".join(class_names) if class_names else "no GatewayClass in the cluster",
+                ""
+                if class_names
+                else "install a Gateway API implementation (Envoy Gateway, Cilium, Istio, Traefik, NGINX Gateway Fabric, Kong) and set gateway.className",
+            )
+        )
+    # The chart's HTTPRoute marks gateway.parentRef.name as `required`, and `deploy`
+    # refuses (exit 3) before any tool runs when it is blank; report it here so the
+    # operator sees it before the first deploy.
+    parent_name = str(_get(values, "gateway", "parentRef", "name", default="") or "").strip()
+    checks.append(
+        Check(
+            "gateway parentRef",
+            OK if parent_name else MISSING,
+            gateway_on,
+            f"gateway.parentRef.name = {parent_name}"
+            if parent_name
+            else "gateway.parentRef.name is blank",
+            ""
+            if parent_name
+            else "set gateway.parentRef.name to the Gateway to attach to in values-<env>.yaml (or set gateway.enabled: false / ingress.enabled: true)",
+        )
+    )
+    return checks
+
+
+def _jwt_checks(
+    settings: DeploySettings, env: str, values: dict[str, Any], secret_keys: set[str]
+) -> list[Check]:
+    """The ``jwt`` policy's verification settings (a key source; issuer and audience outside dev)."""
+    if _preflight.effective_auth_policy(settings, values) != "jwt":
+        return []
+    findings = _preflight.jwt_findings(settings, env, values, secret_keys)
+    name = "auth: jwt settings"
+    if not findings:
+        return [Check(name, OK, findings.strict, "verification key (and issuer and audience) set")]
+    hint = f"set them in {findings.where}"
+    if findings.strict:
+        detail = "; ".join(findings.problems) + " (the pods refuse to start)"
+        return [Check(name, MISSING, True, detail, hint)]
+    detail = "; ".join(findings.problems) + " (the pods answer every request with 503)"
+    return [Check(name, WARN, False, detail, hint)]
+
+
+def _metrics_token_checks(
+    settings: DeploySettings, env: str, target: Target, values: dict[str, Any]
+) -> list[Check]:
+    """The ServiceMonitor's token Secret, when the ServiceMonitor sends one."""
+    monitor = _get(values, "metrics", "serviceMonitor", default={}) or {}
+    bearer = monitor.get("bearerToken") if isinstance(monitor, dict) else None
+    if not (
+        _enabled(values, "metrics", "serviceMonitor", "enabled")
+        and isinstance(bearer, dict)
+        and bearer.get("enabled")
+    ):
+        return []
+    name = str(bearer.get("secretName") or settings.metrics_secret_name)
+    key = str(bearer.get("key") or secrets_apply.METRICS_TOKEN_KEY)
+    rc, secret, _ = _kubectl(["get", "secret", name], target, namespaced=True)
+    present = set((secret or {}).get("data") or {}) if isinstance(secret, dict) else set()
+    ok = rc == 0 and key in present
+    hint = ""
+    if not ok:
+        hint = (
+            f"add {secrets_apply.METRICS_TOKEN_KEY} to secrets.keys and the env file, then "
+            f"{secrets_apply.provision_hint(env)} (it writes {settings.metrics_secret_name})"
+            if name == settings.metrics_secret_name
+            else f"create Secret {name} with the key {key} in {target.namespace}"
+        )
+    return [
+        Check(
+            f"metrics token secret {name}",
+            OK if ok else WARN,
+            False,
+            f"present with {key}"
+            if ok
+            else (f"absent from {target.namespace}" if rc != 0 else f"has no key {key}")
+            + ": the ServiceMonitor's scrapes get 401",
+            hint,
+        )
+    ]
 
 
 def _codeowners_placeholders() -> list[str]:
@@ -461,13 +569,14 @@ def _argocd_placeholders() -> list[str]:
     return found
 
 
-def _env_placeholders(values: dict[str, Any]) -> list[str]:
-    env = values.get("env") if isinstance(values.get("env"), dict) else {}
-    return sorted(k for k, v in env.items() if isinstance(v, str) and _image.has_placeholder(v))
+def check_placeholders(
+    settings: DeploySettings, values: dict[str, Any], env: str | None = None
+) -> list[Check]:
+    """Scaffold placeholders (``CHANGE-ME``) that break a build, a rollout or the production gate.
 
-
-def check_placeholders(settings: DeploySettings, values: dict[str, Any]) -> list[Check]:
-    """Scaffold placeholders (``CHANGE-ME``) that break a build, a rollout or the production gate."""
+    A placeholder in the chart env is what ``deploy`` refuses outside dev and
+    warns about in dev (the pods would call it); ``env`` selects which.
+    """
     checks: list[Check] = []
     registry = settings.registry
     problem = (
@@ -504,12 +613,13 @@ def check_placeholders(settings: DeploySettings, values: dict[str, Any]) -> list
             "values.yaml (Argo CD renders it as is; `deploy` overrides it with --set)",
         )
     )
-    env_keys = _env_placeholders(values)
+    env_keys = _preflight.env_placeholders(values)
+    env_required = not (env and _modes.is_dev_env(env))
     checks.append(
         Check(
             "placeholder: chart env",
-            MISSING if env_keys else OK,
-            True,
+            (MISSING if env_required else WARN) if env_keys else OK,
+            env_required,
             f"CHANGE-ME in env.{', env.'.join(env_keys)}" if env_keys else "none",
             ""
             if not env_keys
@@ -973,7 +1083,7 @@ def run_checks(
         report.checks += check_cluster(settings, env or "", target, values)
     else:
         report.checks.append(Check("cluster", SKIP, False, "pass --env to check the cluster"))
-    report.checks += check_placeholders(settings, values)
+    report.checks += check_placeholders(settings, values, env)
     report.checks += check_github(settings)
     if profile == DISCONNECTED:
         report.checks += check_disconnected(settings, values)

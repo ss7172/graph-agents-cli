@@ -168,8 +168,35 @@ def test_gateway_parent_ref_ok_when_named_and_not_required_when_gateway_off(
         "gateway:\n  enabled: false\ningress:\n  enabled: true\n  className: traefik\n"
     )
     fake.respond("kubectl get ingressclass -o json", stdout=items("traefik"))
-    check = by_name(report_of(invoke("--env", "prod", "--json")), "gateway parentRef")
-    assert check["required"] is False
+    report = report_of(invoke("--env", "prod", "--json"))
+    names = [c["name"] for c in report["checks"]]
+    assert "gateway parentRef" not in names and "gateway api crds" not in names
+    check = by_name(report, "gateway api")
+    assert check == {
+        "name": "gateway api",
+        "status": "skip",
+        "required": False,
+        "detail": "not needed: gateway.enabled is false",
+        "hint": "",
+    }
+
+
+def test_a_disabled_gateway_is_skipped_without_hints(project: SimpleNamespace, fake):
+    """values-dev.yaml disables the gateway: no 'missing' rows, no install hints."""
+    healthy_cluster(fake)
+    # No Gateway API at all in this cluster.
+    fake.respond("kubectl get crd httproutes.gateway.networking.k8s.io", rc=1, stderr="NotFound")
+    fake.respond("kubectl get gatewayclass -o json", rc=1, stderr="no matches for kind")
+    result = invoke("--env", "dev")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "gateway api" in out and "missing" not in out and "Hints:" not in out
+    assert "Gateway API CRDs" not in out and "set gateway.enabled: false" not in out
+    report = report_of(invoke("--env", "dev", "--json"))
+    assert by_name(report, "gateway api")["detail"] == "not needed: gateway.enabled is false"
+    assert not [c for c in report["checks"] if c["name"].startswith("gateway") and c["hint"]]
+    assert not fake.any("httproutes.gateway.networking.k8s.io")
+    assert not fake.any("gatewayclass")
 
 
 def test_named_gateway_class_must_exist(project: SimpleNamespace, fake):
@@ -192,7 +219,7 @@ def test_ingress_mode_requires_ingress_class(project: SimpleNamespace, fake):
     assert result.exit_code == 0, result.output
     report = report_of(result)
     assert by_name(report, "ingress classes")["status"] == "ok"
-    assert by_name(report, "gateway classes")["required"] is False
+    assert by_name(report, "gateway api")["status"] == "skip"
 
 
 def test_cert_manager_and_metrics_server_required_only_when_enabled(project: SimpleNamespace, fake):
@@ -608,15 +635,150 @@ def test_placeholder_argocd_repo_url_and_chart_repository(project: SimpleNamespa
     assert chart["status"] == "missing" and chart["required"] is True
 
 
-def test_placeholder_chart_env_url_fails(project: SimpleNamespace, fake):
-    (project.chart / "values-dev.yaml").write_text(
+@pytest.mark.parametrize(("env", "status", "code"), [("staging", "missing", 1), ("dev", "warn", 0)])
+def test_placeholder_chart_env_url_fails_outside_dev(
+    project: SimpleNamespace, fake, env: str, status: str, code: int
+):
+    """The same rule as `deploy`: refused outside dev, a warning in dev."""
+    (project.chart / f"values-{env}.yaml").write_text(
         "gateway:\n  enabled: false\nenv:\n  OPENAI_BASE_URL: http://CHANGE-ME:11434/v1\n"
     )
-    healthy_cluster(fake)
-    result = invoke("--env", "dev", "--json")
-    assert result.exit_code == 1
+    healthy_cluster(fake, ns=f"my-agent-{env}")
+    result = invoke("--env", env, "--json")
+    assert result.exit_code == code, result.output
     check = by_name(report_of(result), "placeholder: chart env")
-    assert check["status"] == "missing" and "env.OPENAI_BASE_URL" in check["detail"]
+    assert check["status"] == status and "env.OPENAI_BASE_URL" in check["detail"]
+    assert check["required"] is (env != "dev")
+
+
+@pytest.mark.parametrize(
+    ("files", "hint"),
+    [
+        # Only .env: dev falls back to it, so no --env-file (the old hint named .env.dev).
+        ({".env": "OPENAI_API_KEY=k\n"}, "graph-agents-cli secrets apply --env dev"),
+        (
+            {},
+            "create .env.dev (or .env) with the allow-listed keys, then run "
+            "graph-agents-cli secrets apply --env dev",
+        ),
+    ],
+)
+def test_missing_dev_secret_hint_is_runnable_as_printed(
+    project: SimpleNamespace, fake, files: dict[str, str], hint: str
+):
+    healthy_cluster(fake)
+    fake.secrets.clear()
+    (project.root / ".env").unlink()
+    for name, text in files.items():
+        (project.root / name).write_text(text)
+    check = by_name(report_of(invoke("--env", "dev", "--json")), "app secret my-agent-app")
+    assert check["status"] == "warn" and check["hint"] == hint
+    assert "--env-file" not in check["hint"]
+
+
+JWT_VALUES = """env:
+  APP_ENV: {app_env}
+  AUTH_POLICY: jwt
+  AUTH_JWT_JWKS_URL: "{jwks}"
+  AUTH_JWT_ISSUER: "{issuer}"
+  AUTH_JWT_AUDIENCE: "{audience}"
+gateway:
+  enabled: false
+"""
+
+
+@pytest.mark.parametrize(
+    ("env", "jwks", "issuer", "audience", "status", "fragment"),
+    [
+        # The scaffolded jwt values: every setting blank.
+        ("staging", "", "", "", "missing", "no verification key"),
+        ("staging", "https://idp/jwks", "", "agents", "missing", "AUTH_JWT_ISSUER is empty"),
+        ("staging", "https://idp/jwks", "https://idp", "agents", "ok", "set"),
+        # dev: the pods start and answer 503, so it is a warning; issuer/audience optional.
+        ("dev", "", "", "", "warn", "no verification key"),
+        ("dev", "https://idp/jwks", "", "", "ok", "set"),
+    ],
+)
+def test_jwt_settings_are_checked(
+    project: SimpleNamespace,
+    fake,
+    env: str,
+    jwks: str,
+    issuer: str,
+    audience: str,
+    status: str,
+    fragment: str,
+):
+    healthy_cluster(fake, ns=f"my-agent-{env}")
+    project.cfg.auth_policy = "jwt"
+    app_env = "dev" if env == "dev" else env
+    (project.chart / f"values-{env}.yaml").write_text(
+        JWT_VALUES.format(app_env=app_env, jwks=jwks, issuer=issuer, audience=audience)
+    )
+    result = invoke("--env", env, "--json")
+    check = by_name(report_of(result), "auth: jwt settings")
+    assert check["status"] == status and fragment in check["detail"], check
+    assert (result.exit_code == 1) is (status == "missing")
+
+
+def test_jwt_settings_may_come_from_the_secret_unless_the_chart_env_lists_them(
+    project: SimpleNamespace, fake
+):
+    """A setting the chart env lists (even empty) wins over the Secret: envFrom order."""
+    healthy_cluster(fake, ns="my-agent-staging")
+    project.cfg.auth_policy = "jwt"
+    (project.chart / "values-staging.yaml").write_text(
+        "env:\n  APP_ENV: staging\n  AUTH_JWT_ISSUER: https://idp\ngateway:\n  enabled: false\n"
+    )
+    fake.secrets["my-agent-app"] = {
+        "OPENAI_API_KEY": "k",
+        "POSTGRES_DSN": "d",
+        "AUTH_JWT_JWKS_URL": "https://idp/jwks",
+        "AUTH_JWT_AUDIENCE": "agents",
+    }
+    check = by_name(report_of(invoke("--env", "staging", "--json")), "auth: jwt settings")
+    assert check["status"] == "ok", check
+    (project.chart / "values-staging.yaml").write_text(
+        "env:\n  APP_ENV: staging\n  AUTH_JWT_ISSUER: https://idp\n  AUTH_JWT_AUDIENCE: ''\n"
+        "gateway:\n  enabled: false\n"
+    )
+    check = by_name(report_of(invoke("--env", "staging", "--json")), "auth: jwt settings")
+    assert check["status"] == "missing" and "AUTH_JWT_AUDIENCE is empty" in check["detail"]
+
+
+def test_no_jwt_row_for_other_policies(project: SimpleNamespace, fake):
+    healthy_cluster(fake)
+    names = [c["name"] for c in report_of(invoke("--env", "dev", "--json"))["checks"]]
+    assert "auth: jwt settings" not in names
+
+
+MONITOR_VALUES = """gateway:
+  enabled: false
+metrics:
+  serviceMonitor:
+    enabled: true
+    bearerToken:
+      enabled: true
+"""
+
+
+def test_the_service_monitor_token_secret_is_checked(project: SimpleNamespace, fake):
+    healthy_cluster(fake)
+    (project.chart / "values-dev.yaml").write_text(MONITOR_VALUES)
+    check = by_name(
+        report_of(invoke("--env", "dev", "--json")), "metrics token secret my-agent-metrics"
+    )
+    assert check["status"] == "warn" and "absent" in check["detail"]
+    assert "METRICS_TOKEN to secrets.keys" in check["hint"]
+    fake.secrets["my-agent-metrics"] = {"METRICS_TOKEN": "t"}
+    check = by_name(
+        report_of(invoke("--env", "dev", "--json")), "metrics token secret my-agent-metrics"
+    )
+    assert check["status"] == "ok"
+    # Not reported unless the ServiceMonitor sends a token.
+    (project.chart / "values-dev.yaml").write_text("gateway:\n  enabled: false\n")
+    names = [c["name"] for c in report_of(invoke("--env", "dev", "--json"))["checks"]]
+    assert not any(n.startswith("metrics token secret") for n in names)
 
 
 def test_mode_is_detected_from_the_cluster_not_the_context_name(project: SimpleNamespace, fake):

@@ -91,8 +91,12 @@ reports whether `DEPLOY_KUBECONFIG` exists as a secret of each environment and w
 repository-level (or shared organization) `KUBECONFIG` / `DEPLOY_KUBECONFIG` secret; these rows
 are informational when the account cannot read secrets. When the GitHub API does not answer, the
 GitHub rows collapse into one informational row. Independently of GitHub it reports every
-`CHANGE-ME` placeholder (registry, chart `image.repository` and `env`, CODEOWNERS, Argo CD
-`repoURL`). It never changes anything.
+`CHANGE-ME` placeholder (registry, chart `image.repository` and `env` (required outside dev,
+a warning in dev, as `deploy` treats it), CODEOWNERS, Argo CD `repoURL`), and with `--env` the
+`jwt` policy's verification settings (a JWKS URL or public key; issuer and audience outside
+dev), the ServiceMonitor's token Secret and whether an external DSN requires TLS. Rows for
+components the environment does not use (a disabled Gateway, cert-manager, metrics-server,
+Argo CD) are `skip` with no install hint. It never changes anything.
 
 ```bash
 GITHUB_TOKEN=... graph-agents-cli infra check --env prod --json

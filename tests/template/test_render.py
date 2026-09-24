@@ -753,6 +753,8 @@ def test_helm_chart_lints_and_renders(rendered: dict[str, Path]) -> None:
         _check_app_url(chart)
         _check_optional_resources(chart)
         _check_database_secret_options(chart)
+        _check_shutdown_options(chart)
+        _check_network_policy_example(name, chart)
 
 
 @pytest.mark.slow
@@ -810,6 +812,16 @@ def _check_environment(name: str, env: str, out: str) -> None:
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert {"name": "tmp", "mountPath": "/tmp"} in container["volumeMounts"]
     assert {"name": "HOME", "value": "/tmp"} in container["env"]
+    # Graceful shutdown: keep serving while the endpoints drain, then a bounded drain
+    # that ends before the kubelet's kill (5 + 20 < 30).
+    assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sh", "-c", "sleep 5"]
+    assert pod["terminationGracePeriodSeconds"] == 30
+    drain = (
+        "BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS"
+        if name == "server-helm-push"
+        else "UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN"
+    )
+    assert {"name": drain, "value": "20"} in container["env"]
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsGroup"] == 1000
     assert ("topologySpreadConstraints" in pod) == (env == "prod")
@@ -849,11 +861,124 @@ def _check_environment(name: str, env: str, out: str) -> None:
     )
     assert "weather-agent-postgresql-auth" in json.dumps(database)
     assert "bitnami/postgresql@sha256:" in json.dumps(database)
+    # A restart shuts the dev database down in fast mode (the pooled sessions would
+    # hold a smart shutdown until the kubelet's SIGKILL, then crash recovery).
+    postgres = database["spec"]["template"]["spec"]["containers"][0]
+    assert postgres["lifecycle"]["preStop"]["exec"]["command"] == [
+        "/bin/sh",
+        "-c",
+        'pg_ctl -D "$PGDATA" -m fast --no-wait stop',
+    ]
+    assert {"name": "PGDATA", "value": "/bitnami/postgresql/data"} in postgres["env"]
     env_vars = {e["name"]: e for e in container["env"]}
     assert env_vars["POSTGRES_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
         "name": "weather-agent-postgresql-auth",
         "key": "password",
     }
+
+
+def _check_shutdown_options(chart: Path) -> None:
+    """No pause and no drain limit are valid choices; an env override keeps its own value."""
+    result = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set",
+        "shutdown.preStopSleepSeconds=0",
+        "--set",
+        "shutdown.drainSeconds=0",
+        "--set",
+        "terminationGracePeriodSeconds=5",
+    )
+    assert result.returncode == 0, result.stderr
+    container = _agent_deployment(result.stdout)["spec"]["template"]["spec"]["containers"][0]
+    assert "lifecycle" not in container
+    names = {e["name"] for e in container["env"]}
+    assert not names & {"UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN", "BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS"}
+    longer = _template(
+        chart,
+        *DEPLOY_SET,
+        "--set",
+        "shutdown.drainSeconds=280",
+        "--set",
+        "terminationGracePeriodSeconds=300",
+        "--set-string",
+        "env.UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=200",
+    )
+    assert longer.returncode == 0, longer.stderr
+    container = _agent_deployment(longer.stdout)["spec"]["template"]["spec"]["containers"][0]
+    # The ConfigMap's value (env) is the one the pod reads; the chart sets none on top.
+    set_by_chart = [e for e in container["env"] if e["name"] == "UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN"]
+    assert set_by_chart == []
+
+
+# The fields of networking.k8s.io/v1 NetworkPolicy the chart may render (anything else
+# is a typo the API server would reject or, worse, silently drop).
+_NP_SPEC = {"podSelector", "policyTypes", "ingress", "egress"}
+_NP_PEER = {"podSelector", "namespaceSelector", "ipBlock"}
+_NP_PORT = {"port", "endPort", "protocol"}
+_SELECTOR = {"matchLabels", "matchExpressions"}
+
+
+def _validate_network_policy(doc: dict) -> None:
+    """Structural validation against the NetworkPolicy v1 schema (fields, CIDRs, protocols)."""
+    import ipaddress
+
+    assert doc["apiVersion"] == "networking.k8s.io/v1" and doc["kind"] == "NetworkPolicy"
+    spec = doc["spec"]
+    assert set(spec) <= _NP_SPEC, set(spec) - _NP_SPEC
+    assert set(spec["podSelector"]) <= _SELECTOR
+    assert set(spec["policyTypes"]) <= {"Ingress", "Egress"}
+    for direction, peers_key in (("ingress", "from"), ("egress", "to")):
+        for rule in spec.get(direction) or []:
+            assert set(rule) <= {"ports", peers_key}, rule
+            for port in rule.get("ports") or []:
+                assert set(port) <= _NP_PORT, port
+                assert port.get("protocol", "TCP") in {"TCP", "UDP", "SCTP"}
+                assert isinstance(port["port"], (int, str))
+            for peer in rule.get(peers_key) or []:
+                assert set(peer) <= _NP_PEER and peer, peer
+                for key in ("podSelector", "namespaceSelector"):
+                    if key in peer:
+                        assert set(peer[key]) <= _SELECTOR, peer
+                if "ipBlock" in peer:
+                    assert "ipBlock" not in peer or len(peer) == 1, "ipBlock stands alone"
+                    block = ipaddress.ip_network(peer["ipBlock"]["cidr"])
+                    for excluded in peer["ipBlock"].get("except") or []:
+                        assert ipaddress.ip_network(excluded).subnet_of(block), excluded
+
+
+def _check_network_policy_example(name: str, chart: Path) -> None:
+    """The shipped staging/prod example renders a valid policy allowing only what the agent needs."""
+    example = chart / "examples" / "networkpolicy.yaml"
+    assert example.is_file()
+    for env in ("staging", "prod"):
+        args = ("-f", str(chart / f"values-{env}.yaml"), "-f", str(example), *DEPLOY_SET)
+        lint = _helm(chart, "lint", str(chart), *args)
+        assert lint.returncode == 0, f"{name}/{env}: {lint.stdout}{lint.stderr}"
+        result = _template(chart, *args)
+        assert result.returncode == 0, f"{name}/{env}: {result.stderr}"
+        policy = next(d for d in _docs(result.stdout) if d["kind"] == "NetworkPolicy")
+        _validate_network_policy(policy)
+        spec = policy["spec"]
+        assert spec["policyTypes"] == ["Ingress", "Egress"]
+        assert spec["podSelector"]["matchLabels"]["app.kubernetes.io/instance"] == "weather-agent"
+        # In: the http port, from the listed namespaces only.
+        (ingress,) = spec["ingress"]
+        assert ingress["ports"] == [{"port": "http", "protocol": "TCP"}]
+        assert all("namespaceSelector" in peer for peer in ingress["from"])
+        # Out: DNS, the database (and Redis for langgraph-server), public HTTPS.
+        ports = {p["port"] for rule in spec["egress"] for p in rule.get("ports") or []}
+        assert {53, 5432, 443} <= ports
+        assert (6379 in ports) is (name == "server-helm-push")
+        https = next(r for r in spec["egress"] if {"port": 443, "protocol": "TCP"} in r["ports"])
+        (peer,) = https["to"]
+        assert peer["ipBlock"]["cidr"] == "0.0.0.0/0"
+        assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"} <= set(
+            peer["ipBlock"]["except"]
+        )
+        # Nothing but DNS is open to every destination.
+        for rule in spec["egress"]:
+            assert rule.get("ports"), rule
 
 
 def _check_database_secret_options(chart: Path) -> None:
@@ -950,6 +1075,13 @@ def _check_refusals(chart: Path) -> None:
             "holds //, /./, /../ or an encoded slash",
         ),
         (("--set-string", "secretOptional=yes"), "secretOptional must be true or false"),
+        # The kubelet kills the pod at the grace period, counted from the preStop pause.
+        (
+            ("--set", "terminationGracePeriodSeconds=25"),
+            "terminationGracePeriodSeconds (25) must be greater than "
+            "shutdown.preStopSleepSeconds + shutdown.drainSeconds (5 + 20)",
+        ),
+        (("--set", "shutdown.drainSeconds=-1"), "must be 0 or more"),
         (
             (
                 "--set",
@@ -1116,9 +1248,9 @@ def _check_optional_resources(chart: Path) -> None:
         monitor["spec"]["selector"]["matchLabels"].items() <= service["metadata"]["labels"].items()
     )
     # With METRICS_TOKEN set /metrics wants a bearer token: the ServiceMonitor sends it,
-    # from the app Secret by default.
+    # by default from <release>-metrics (the token alone), never the app Secret.
     for extra, credentials in (
-        ((), {"name": "weather-agent-app", "key": "METRICS_TOKEN"}),
+        ((), {"name": "weather-agent-metrics", "key": "METRICS_TOKEN"}),
         (
             (
                 "--set",

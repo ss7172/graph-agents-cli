@@ -4,7 +4,9 @@ Optional Prometheus Operator ServiceMonitor for /metrics
 CRDs). It scrapes the Service's http port inside the cluster: /metrics is never
 published by the HTTPRoute / Ingress. With METRICS_TOKEN set in the app,
 metrics.serviceMonitor.bearerToken.enabled makes Prometheus send it (the
-endpoint's `authorization` field, read from a Secret in this namespace).
+endpoint's `authorization` field), read from <release>-metrics, a Secret that
+holds only that token (written by `graph-agents-cli secrets apply`), never
+from the app Secret with every other credential.
 */ -}}
 {{- if .Values.metrics.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
@@ -34,7 +36,7 @@ spec:
       authorization:
         type: Bearer
         credentials:
-          name: {{ $bearer.secretName | default (include "agent.secretName" .) | quote }}
+          name: {{ $bearer.secretName | default (printf "%s-metrics" (include "agent.fullname" .)) | quote }}
           key: {{ $bearer.key | default "METRICS_TOKEN" | quote }}
       {{- end }}
 {{- end }}

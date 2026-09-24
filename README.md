@@ -532,14 +532,32 @@ Rules `deploy` and `secrets apply` follow:
   live keys merged with the env file) is checked for every required key (exit 1 when one is
   missing, before anything is built or changed), and the release is checked for a helm
   operation in progress. Only then is the image built and loaded or pushed, the namespace
-  created when missing, the Secret applied and helm run.
+  created when missing, the Secret applied and helm run. `--dry-run` makes the same checks
+  (reading the live Secret, read-only), so it refuses what the real run would.
+- **Settings that cannot work.** A `CHANGE-ME` placeholder left in the merged chart `env` (an
+  API base URL written by `api add`, the `openai-compatible` `OPENAI_BASE_URL`) is refused
+  outside dev in every CD mode (exit 3) and a warning in dev. Under `jwt`, outside dev the
+  chart env or the Secret must provide a verification key (`AUTH_JWT_JWKS_URL` or
+  `AUTH_JWT_PUBLIC_KEY`), `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` (exit 3; the pods would
+  refuse to start); in dev a missing key source is a warning (the pods would answer 503). A
+  value the chart env lists, even empty, overrides the Secret.
 - **Rollout.** `helm upgrade --install --wait --timeout <--timeout, default 5m>`. When the
-  rollout fails, deploy prints the pods, container states, warning events and logs, then,
-  with `--atomic` (default), rolls back to the newest good revision or uninstalls a first
-  install that never succeeded. It only undoes the revision this run created: when another
-  helm operation holds the release (a `pending-*` revision), deploy refuses up front (exit 2)
-  and prints the command that clears a lock left by an interrupted helm. Two deploys started
-  at the same moment have narrow gaps (see [Known limitations](#known-limitations)).
+  rollout fails, deploy prints the pods, container states, this release's warning events since
+  the deploy started and the logs, then, with `--atomic` (default), rolls back to the newest
+  good revision or uninstalls a first install that never succeeded. It only undoes the
+  revision this run created: when another helm operation holds the release (a `pending-*`
+  revision), deploy refuses up front (exit 2) and prints the command that clears a lock left by
+  an interrupted helm. Two deploys started at the same moment have narrow gaps (see
+  [Known limitations](#known-limitations)).
+- **The Secret after a failure.** Once the release is back where it was (rolled back, failed
+  before a new revision, or a first install uninstalled), the app Secret this deploy applied
+  is put back to its previous values, and one it created is deleted, so a bad value never
+  waits for the pods' next restart. A Secret someone changed in the meantime is left alone.
+  When the release stays on the failed revision (`--no-atomic`, another deploy), the Secret
+  keeps the new values and the error names the changed keys.
+- **Same image.** Redeploying the image the release already runs is said up front; after the
+  upgrade deploy reports when no pod was replaced and, when the Secret changed, that
+  `deploy --restart` is what makes the pods read it.
 - **Images.** Workstation builds are tagged with the short commit sha, plus
   `-dirty-<timestamp>` when the tree has uncommitted changes (outside `deployment/`,
   `.github/`, `tests/`, `docs/`), with a warning; `--tag` overrides. A placeholder registry
@@ -556,9 +574,12 @@ Rules `deploy` and `secrets apply` follow:
 - **Chart dependencies.** `deploy` runs `helm dependency build` when a subchart is missing
   (also under `--dry-run`), which needs `registry-1.docker.io` unless `charts/` is vendored.
 
-`deploy --status` shows the rollout, `deploy --restart` restarts the Deployment (after a
-Secret rotation), and `--dry-run` prints every command plus the rendered manifests without
-changing anything. For a GitHub Enterprise Server remote set `GH_HOST=<host>` (and
+`deploy --status` reports the rollout within `--timeout` (default 60s): replicas, image, helm
+revision and each pod's readiness and restarts, with the pods' states, warning events and logs
+and exit 1 when it is not complete. `deploy --restart` restarts the Deployment (after a Secret
+rotation) and waits for the new pods (default 5m; exit 2 with diagnostics when they do not become
+ready, while the old pods keep serving). `--dry-run` prints every command plus the rendered
+manifests without changing anything. For a GitHub Enterprise Server remote set `GH_HOST=<host>` (and
 `GH_ENTERPRISE_TOKEN` or `GITHUB_TOKEN`) so argocd-mode `deploy` opens the PR there.
 
 ### Chart
@@ -581,16 +602,52 @@ requests in prod). Values worth knowing:
   (staging and prod), or enable the Ingress; TLS from `tls.existingSecret` or cert-manager.
 - `metrics.scrapeAnnotations`, `metrics.serviceMonitor.enabled`: Prometheus scraping (off).
   With `METRICS_TOKEN` in the app Secret, `metrics.serviceMonitor.bearerToken.enabled` makes
-  the ServiceMonitor send it (from the app Secret, or `bearerToken.secretName` and `.key`).
-  Pod annotations cannot carry a token: give that Prometheus's scrape job the token itself.
-- `networkPolicy.*`: an optional NetworkPolicy (off). It admits only the http port, from the
-  `ingressFrom` sources when listed; with `restrictEgress` it also limits egress to DNS and
-  `egressTo`.
+  the ServiceMonitor send it, read from `<release>-metrics`, a Secret holding only that token
+  (`secrets apply` and a direct `deploy` write it): Prometheus needs no access to the app
+  Secret. `bearerToken.secretName` and `.key` name a Secret of your own. Pod annotations cannot
+  carry a token: give that Prometheus's scrape job the token itself.
+- `networkPolicy.*`: an optional NetworkPolicy (off: it needs a CNI that enforces it and
+  addresses only you know). It admits only the http port, from the `ingressFrom` sources when
+  listed; with `restrictEgress` it also limits egress to DNS and `egressTo`.
+  `deployment/helm/<name>/examples/networkpolicy.yaml` is a worked staging/prod example (in
+  from the Gateway's and Prometheus's namespaces; out to DNS, the database, an on-network model
+  server and HTTPS on public addresses only, every private range and the metadata endpoint
+  excluded): copy its block into `values-<env>.yaml` and set the addresses marked `CHANGE`.
+- `shutdown.preStopSleepSeconds` (5) and `shutdown.drainSeconds` (20): a stopping pod keeps
+  serving while the endpoints drain (no refused connections during a rolling restart), then
+  gets SIGTERM and finishes in-flight requests and streams within the drain;
+  `terminationGracePeriodSeconds` (30) must be longer than both together (the chart refuses
+  it otherwise). Raise them together for long runs.
 - `hpa.*`, `pdb.*`, `topologySpread.*` (on in prod), `probes.*`, `resources`,
-  `terminationGracePeriodSeconds`, `extraVolumes`, `extraVolumeMounts`.
+  `extraVolumes`, `extraVolumeMounts`.
 - `postgresql.*` / `redis.*`: the Bitnami subcharts for dev, pinned to exact chart versions
   and image digests; the dev database password lives in a chart-managed Secret that survives
-  upgrades. Use an external database (or another chart) in staging and prod.
+  upgrades, and a restart of the database pod shuts Postgres down in fast mode (seconds, no
+  crash recovery). Use an external database (or another chart) in staging and prod.
+
+### External database
+
+In staging and prod `POSTGRES_DSN` (or `DATABASE_URI`) in the Secret points at a database you
+run. Give the agent a least-privileged role that owns its own database (it creates its tables at
+start and needs nothing else, never a superuser), and require TLS with the server's certificate
+checked:
+
+```sql
+CREATE ROLE agent LOGIN PASSWORD '...' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+CREATE DATABASE agent OWNER agent;
+REVOKE ALL ON DATABASE agent FROM PUBLIC;
+```
+
+```
+POSTGRES_DSN=postgresql://agent:<password>@db.example.com:5432/agent?sslmode=verify-full&sslrootcert=/etc/db-ca/ca.crt
+```
+
+The DSN reaches psycopg unchanged, so every libpq parameter works; mount the CA with
+`extraVolumes` / `extraVolumeMounts` (a Secret or ConfigMap at `/etc/db-ca`), or use
+`sslrootcert=system` for a publicly trusted certificate, or set `PGSSLMODE` / `PGSSLROOTCERT` in
+the chart env. `deploy`, `secrets apply` and `infra check` warn outside dev when the DSN does not
+require TLS (the value is never printed). On the server, `hostssl` entries in `pg_hba.conf`
+refuse clear-text connections.
 
 ## Secrets
 
@@ -608,15 +665,18 @@ the only set of variables that can reach the cluster: the provider key, `JUDGE_A
    annotation (an old one is removed). Allow-listed keys the env file leaves out are kept from
    the live Secret; remove a key by dropping it from `secrets.keys`. Values must be single-line.
 3. `API_KEY`: the live key wins. It is replaced only when the env file sets a different one
-   and `--rotate-api-key` is passed (clients with the old key then get 401). When neither the
-   env file nor the Secret has one, a key is generated, written to the env file (0600) and
-   never printed.
+   and `--rotate-api-key` is passed (clients with the old key then get 401). Under
+   `shared-bearer`, the only policy that reads it, when neither the env file nor the Secret has
+   one, a key is generated, written to the env file (0600) and never printed; `jwt` and
+   `custom` projects never get one generated. `METRICS_TOKEN`, when set, is also written alone
+   into `<name>-metrics` for the ServiceMonitor.
 4. `graph-agents-cli secrets status --env <env>` lists present, missing required, missing
    optional and unexpected keys, never values. Required keys are the provider key (not for
    `openai-compatible`), `API_KEY` under `shared-bearer`, `AUTH_JWT_SECRET` under `jwt` with
    an HS* algorithm, and the database URIs unless the bundled subchart provides them.
 5. Rotate by changing the value in the env file, running `secrets apply` (with
-   `--rotate-api-key` for `API_KEY`), then `deploy --env <env> --restart`.
+   `--rotate-api-key` for `API_KEY`), then `deploy --env <env> --restart`, which waits for the
+   new pods and prints why when they do not become ready.
 
 In `argocd` and `helm-push` modes CI never holds application secrets: an operator (the
 manifest's `secrets.owner`) runs `secrets apply` from a workstation with cluster access,
@@ -646,9 +706,12 @@ the same keys.
   fake model it warns that the gate is not a quality signal.
 
 `graph-agents-cli infra check --env <env>` reports these settings when `gh` is logged in (or
-`GITHUB_TOKEN` is set), the cluster prerequisites (Gateway API or ingress class,
-cert-manager, Argo CD, metrics-server when the HPA is on, namespace, pull secret, the app
-Secret and its required keys) and every unreplaced `CHANGE-ME` placeholder. It creates
+`GITHUB_TOKEN` is set), the cluster prerequisites (Gateway API when `gateway.enabled`, ingress
+class, cert-manager, Argo CD, metrics-server when the HPA is on, namespace, pull secret, the app
+Secret and its required keys), the `jwt` verification settings, the ServiceMonitor's token
+Secret, whether an external DSN requires TLS, and every unreplaced `CHANGE-ME` placeholder
+(the chart `env` one is required outside dev, a warning in dev, as for `deploy`). What the
+environment does not use is `skip`, without hints; every printed command runs as is. It creates
 nothing.
 
 `.github/agent.env` holds the workflows' project settings (`IMAGE_REPOSITORY`,
@@ -663,9 +726,9 @@ Every command follows one scheme:
 | Code | Meaning |
 |---|---|
 | 0 | Success (`eval`: gate met; `secrets status`: every required key present) |
-| 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `scaffold enhance`: required steps left) |
+| 1 | Refused by policy or mode, a declined confirmation, or a failed gate (`eval`: a case failed or a quality metric is under its `min_pass_rate`; `lint`: a violation, or ruff failed; `install`: uv failed; `run`: the agent answered with an error; `scaffold enhance`: required steps left; `deploy --status`: the rollout is not complete within `--timeout`) |
 | 2 | Tool failure: helm, kubectl, docker, git or gh failed or is missing (`deploy`, `build`, `secrets`); a local server that cannot start or an agent that cannot be reached (`run`, `eval`); `eval`: a case is `error` or `missing`; `scaffold upgrade` and version-locked `scaffold enhance`: `uvx` is missing or could not fetch and run the prior release; an unexpected crash |
-| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy (`lint` and `api check` included: an invalid `api-policy.yaml` is not a refused call), port or context, a placeholder registry, an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
+| 3 | Configuration error: not in a project, an invalid manifest (for `scaffold upgrade`, also a missing or unreleased `cli_version`), env file, policy (`lint` and `api check` included: an invalid `api-policy.yaml` is not a refused call), port or context, a placeholder registry, a `CHANGE-ME` left in the chart `env` or incomplete `jwt` settings outside dev (`deploy`), an unusable `GRAPH_AGENTS_CLI_INSTALL_SPEC` |
 
 Usage errors from Click (an unknown flag) are also 2. A signal ends a command with 128+N
 (130 for Ctrl-C, 143 for SIGTERM) after the local server it started is stopped.
@@ -703,7 +766,8 @@ Usage errors from Click (an unknown flag) are also 2. A signal ends a command wi
 What it does not do for you: inbound rate limiting (do it at the gateway; outbound calls
 have per-API `limits`), web application firewall
 rules, TLS termination (the Gateway, Ingress or cert-manager), network isolation (the
-NetworkPolicy is off by default), and backups of the agent's database.
+NetworkPolicy is off by default; `examples/networkpolicy.yaml` in the chart is a worked
+staging/prod policy to adapt), and backups of the agent's database.
 
 ## Production checklist
 
@@ -721,8 +785,12 @@ NetworkPolicy is off by default), and backups of the agent's database.
 - [ ] `secrets apply --env <env>`, then `secrets status --env <env>` exits 0.
 - [ ] Replace every `CHANGE-ME` (registry, chart image, CODEOWNERS owner, Argo CD `repoURL`);
       `infra check --env prod` reports no required item missing.
-- [ ] External Postgres for staging and prod, with backups; `max_connections` covers
-      replicas x (`DB_POOL_MAX_SIZE` + 1); no transaction-mode PgBouncer in front.
+- [ ] External Postgres for staging and prod, with backups; a least-privileged role that
+      owns its database; `sslmode=verify-full` in the DSN (see [External database](#external-database));
+      `max_connections` covers replicas x (`DB_POOL_MAX_SIZE` + 1); no transaction-mode
+      PgBouncer in front.
+- [ ] A NetworkPolicy adapted from `deployment/helm/<name>/examples/networkpolicy.yaml`, on a
+      CNI that enforces it.
 - [ ] Gateway or Ingress with TLS; review `route.publicPaths`; rate limiting at the gateway.
 - [ ] `APP_URL` (or `appUrl`, or a hostname) so the A2A card advertises the public URL.
 - [ ] `METRICS_TOKEN` (in `secrets.keys` and the Secret) or a NetworkPolicy if anything outside

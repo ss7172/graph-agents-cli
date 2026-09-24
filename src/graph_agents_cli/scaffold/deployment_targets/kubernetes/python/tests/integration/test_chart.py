@@ -159,6 +159,42 @@ def test_pods_are_hardened_probed_and_sized(chart_with_dependencies: Path) -> No
         assert container["resources"]["limits"]["memory"]
 
 
+def test_pods_drain_before_they_are_killed(chart_with_dependencies: Path) -> None:
+    """A stopping pod keeps serving during the preStop pause and drains within the grace period."""
+    for env in ENVIRONMENTS:
+        result = _render(env, *DEPLOY_ARGS)
+        assert result.returncode == 0, f"{env}: {result.stderr}"
+        pod = _agent_deployment(result.stdout)["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        values = yaml.safe_load((CHART / "values.yaml").read_text()) or {}
+        overrides = yaml.safe_load((CHART / f"values-{env}.yaml").read_text()) or {}
+        shutdown = {**(values.get("shutdown") or {}), **(overrides.get("shutdown") or {})}
+        pause = int(shutdown.get("preStopSleepSeconds") or 0)
+        drain = int(shutdown.get("drainSeconds") or 0)
+        assert pod["terminationGracePeriodSeconds"] > pause + drain, env
+        if pause:
+            command = container["lifecycle"]["preStop"]["exec"]["command"]
+            assert command[-1] == f"sleep {pause}", env
+
+
+def test_the_network_policy_example_renders_a_valid_policy(chart_with_dependencies: Path) -> None:
+    """examples/networkpolicy.yaml, as documented: copied over the staging or prod values."""
+    example = CHART / "examples" / "networkpolicy.yaml"
+    if not example.is_file():
+        pytest.skip("no examples/networkpolicy.yaml")
+    for env in ("staging", "prod"):
+        result = _render(env, "-f", str(example), *DEPLOY_ARGS)
+        assert result.returncode == 0, f"{env}: {result.stderr}"
+        policy = next(d for d in _docs(result.stdout) if d["kind"] == "NetworkPolicy")
+        spec = policy["spec"]
+        assert spec["policyTypes"] == ["Ingress", "Egress"], env
+        assert spec["ingress"] and all(rule.get("ports") for rule in spec["ingress"]), env
+        # Every egress rule names its ports: nothing is open to any port anywhere.
+        assert all(rule.get("ports") for rule in spec["egress"]), env
+        dns = {p["port"] for p in spec["egress"][0]["ports"]}
+        assert dns == {53}, env
+
+
 def test_the_chart_refuses_to_render_without_an_image_tag(chart_with_dependencies: Path) -> None:
     # An explicit empty tag: the committed values-<env>.yaml may already name one.
     for env in ENVIRONMENTS:

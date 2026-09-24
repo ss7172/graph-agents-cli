@@ -110,8 +110,8 @@ the workflows have no cluster access by design.
 
 | Need | Command |
 |---|---|
-| Status | `graph-agents-cli deploy --status --env <env>` (`argocd app get <name>-<env>`) |
-| Restart after secret rotation | `graph-agents-cli deploy --restart --env <env>` (`kubectl rollout restart`); the CLI warns that self-heal may revert the annotation and recommends an Argo resource action (`argocd app actions run <name>-<env> restart --kind Deployment`) |
+| Status | `graph-agents-cli deploy --status --env <env>` (`argocd app get <name>-<env>`; without the `argocd` CLI a bounded `kubectl rollout status` plus the pods' readiness, exit 1 when not ready) |
+| Restart after secret rotation | `graph-agents-cli deploy --restart --env <env>` (`kubectl rollout restart`, then waits for the new pods); the CLI warns that self-heal may revert the annotation and recommends an Argo resource action (`argocd app actions run <name>-<env> restart --kind Deployment`) |
 | Secrets | `graph-agents-cli secrets apply/status --env <env>` from the owner's workstation; Argo never manages the app Secret |
 | Rollback | revert the values change on `main` through a PR (same gate); for emergencies `argocd app history` / `argocd app rollback` on the Argo side, then reconcile git |
 | Diff before merge | `argocd app diff <name>-<env> --revision <branch>` |

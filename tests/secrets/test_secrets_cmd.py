@@ -744,3 +744,170 @@ def test_status_dry_run(project: SimpleNamespace, fake):
 def test_env_is_required(sub: str):
     result = CliRunner().invoke(secrets_group, [sub])
     assert result.exit_code == 2 and "--env" in result.output
+
+
+# --------------------------------------------------------------------------- API_KEY by policy
+
+
+@pytest.mark.parametrize(
+    ("policy", "minted"), [("shared-bearer", True), ("jwt", False), ("custom", False)]
+)
+def test_apply_mints_api_key_only_for_shared_bearer(
+    project: SimpleNamespace, fake, policy: str, minted: bool
+):
+    """Only SharedBearerPolicy reads API_KEY: a jwt project never gets a dormant key."""
+    project.cfg.auth_policy = policy
+    project.cfg.auth_policy_implemented = True
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert ("API_KEY" in fake.secrets["my-agent-app"]) is minted
+    assert ("Generated API_KEY" in result.output) is minted
+    assert bool(re.search(r"^API_KEY=", (project.root / ".env").read_text(), re.M)) is minted
+
+
+def test_apply_follows_the_chart_auth_policy_over_the_manifest(project: SimpleNamespace, fake):
+    """The pods read env.AUTH_POLICY from the chart: that is the policy that matters."""
+    (project.chart / "values-dev.yaml").write_text(
+        "env:\n  APP_ENV: dev\n  AUTH_POLICY: jwt\npostgresql:\n  enabled: true\n"
+    )
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert "API_KEY" not in fake.secrets["my-agent-app"]
+
+
+def test_a_jwt_project_still_carries_an_api_key_it_was_given(project: SimpleNamespace, fake):
+    """An explicit API_KEY (in the file or the live Secret) is kept: never deleted silently."""
+    project.cfg.auth_policy = "jwt"
+    fake.secrets["my-agent-app"] = {"API_KEY": "older"}
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-app"]["API_KEY"] == "older"
+
+
+def test_dry_run_of_a_jwt_project_mentions_no_api_key(project: SimpleNamespace, fake):
+    project.cfg.auth_policy = "jwt"
+    result = invoke("apply", "--env", "dev", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "API_KEY is not in the env file" not in result.output
+    assert not re.search(r"^\s+API_KEY: <redacted>", result.output, re.M)
+
+
+# --------------------------------------------------------------------------- the metrics Secret
+
+
+def test_apply_writes_the_metrics_token_into_its_own_secret(project: SimpleNamespace, fake):
+    project.cfg.secret_keys = [*project.cfg.secret_keys, "METRICS_TOKEN"]
+    with open(project.root / ".env", "a") as f:
+        f.write("METRICS_TOKEN=scrape\n")
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert fake.secrets["my-agent-metrics"] == {"METRICS_TOKEN": "scrape"}
+    assert fake.secrets["my-agent-app"]["METRICS_TOKEN"] == "scrape"
+    assert "Secret my-agent-metrics applied (METRICS_TOKEN only" in result.output
+    assert "scrape" not in result.output
+    # Only the token goes there, through the same pipe (never a command line).
+    metrics = [c for c in fake.find("kubectl create secret generic my-agent-metrics")]
+    assert metrics and all("scrape" not in c for c in fake.joined)
+
+
+def test_no_metrics_secret_without_a_metrics_token(project: SimpleNamespace, fake):
+    result = invoke("apply", "--env", "dev")
+    assert result.exit_code == 0, result.output
+    assert "my-agent-metrics" not in fake.secrets
+    assert "my-agent-metrics" not in result.output
+
+
+def test_dry_run_shows_the_metrics_secret(project: SimpleNamespace, fake):
+    project.cfg.secret_keys = [*project.cfg.secret_keys, "METRICS_TOKEN"]
+    with open(project.root / ".env", "a") as f:
+        f.write("METRICS_TOKEN=scrape\n")
+    result = invoke("apply", "--env", "dev", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] kubectl create secret generic my-agent-metrics" in result.output
+    assert "scrape" not in result.output
+
+
+# --------------------------------------------------------------------------- hints and TLS
+
+
+def test_provision_hint_names_only_commands_that_run(project: SimpleNamespace):
+    assert _apply.provision_hint("dev") == "graph-agents-cli secrets apply --env dev"
+    (project.root / ".env").unlink()
+    assert _apply.provision_hint("dev") == (
+        "create .env.dev (or .env) with the allow-listed keys, then run "
+        "graph-agents-cli secrets apply --env dev"
+    )
+    (project.root / ".env.prod").write_text("OPENAI_API_KEY=k\n")
+    assert _apply.provision_hint("prod") == "graph-agents-cli secrets apply --env prod"
+
+
+def test_the_cd_mode_procedure_names_no_file_that_may_not_exist():
+    text = _apply.provisioning_procedure(project="x", env="dev", owner="ops", mode="argocd")
+    assert "graph-agents-cli secrets apply --env dev" in text
+    assert "--env-file .env.dev" not in text and "else .env" in text
+
+
+def test_apply_warns_when_an_external_dsn_does_not_require_tls(project: SimpleNamespace, fake):
+    (project.root / ".env.staging").write_text(
+        "OPENAI_API_KEY=k\nPOSTGRES_DSN=postgresql://agent:pw@db.internal/agent\nAPI_KEY=a\n"
+    )
+    result = invoke("apply", "--env", "staging", "--yes")
+    assert result.exit_code == 0, result.output
+    assert "POSTGRES_DSN does not require TLS" in result.output and "pw@" not in result.output
+    (project.root / ".env.staging").write_text(
+        "OPENAI_API_KEY=k\nPOSTGRES_DSN=postgresql://agent:pw@db.internal/agent"
+        "?sslmode=verify-full&sslrootcert=/etc/db-ca/ca.crt\nAPI_KEY=a\n"
+    )
+    result = invoke("apply", "--env", "staging", "--yes")
+    assert result.exit_code == 0 and "does not require TLS" not in result.output
+    # The query string reaches the Secret untouched (psycopg reads sslmode from it).
+    assert fake.secrets["my-agent-app"]["POSTGRES_DSN"].endswith(
+        "?sslmode=verify-full&sslrootcert=/etc/db-ca/ca.crt"
+    )
+
+
+# --------------------------------------------------------------------------- restore (unit)
+
+
+def _live(values: dict[str, str], *, exists: bool = True) -> _apply.LiveSecret:
+    import base64
+
+    return _apply.LiveSecret(
+        exists=exists,
+        values=dict(values),
+        raw={k: base64.b64encode(v.encode()).decode() for k, v in values.items()},
+    )
+
+
+def test_a_restore_puts_back_managed_keys_and_drops_the_ones_this_run_added():
+    import base64
+
+    target = Target("ctx", "ns")
+    snap = _apply.Snapshot(
+        name="x-app",
+        target=target,
+        before=_live({"A": "1", "UNMANAGED": "u", "REMOVED_BY_RUN": "r"}),
+        applied={"A": "2", "NEW": "n"},
+        managed=frozenset({"A", "NEW"}),
+    )
+    assert snap.changed == ["A", "NEW"]
+    current = _live({"A": "2", "NEW": "n", "UNMANAGED": "u"})
+    current.resource_version = "42"
+    doc = yaml.safe_load(_apply._restore_manifest(snap, current))
+    data = {k: base64.b64decode(v).decode() for k, v in doc["data"].items()}
+    # A back to 1; NEW left out (the server-side apply removes it); a key this run's
+    # apply removed comes back; a key someone else manages is not touched.
+    assert data == {"A": "1", "REMOVED_BY_RUN": "r"}
+    assert doc["metadata"]["resourceVersion"] == "42"
+
+
+def test_nothing_is_restored_when_the_run_changed_nothing():
+    snap = _apply.Snapshot(
+        name="x-app",
+        target=Target(None, "ns"),
+        before=_live({"A": "1"}),
+        applied={"A": "1"},
+        managed=frozenset({"A"}),
+    )
+    assert snap.changed == []
+    assert _apply.restore([snap], console=None) == []  # type: ignore[arg-type]

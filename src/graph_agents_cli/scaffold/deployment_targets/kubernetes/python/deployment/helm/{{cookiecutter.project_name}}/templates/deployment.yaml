@@ -53,6 +53,14 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
+          {{- $shutdown := .Values.shutdown | default dict }}
+          {{- if gt (int ($shutdown.preStopSleepSeconds | default 0)) 0 }}
+          # Keep serving while the Service endpoints drain, then SIGTERM (see `shutdown`).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ int $shutdown.preStopSleepSeconds }}"]
+          {{- end }}
           # Secrets by reference (never templated here), then the ConfigMap.
           # Required outside dev (secretOptional): no Secret, no start.
           envFrom:
@@ -96,6 +104,13 @@ spec:
             {{- if eq .Values.runtime "langgraph-server" }}
             - name: LANGGRAPH_SERVER
               value: "1"
+            {{- end }}
+            {{- $drain := int ($shutdown.drainSeconds | default 0) }}
+            {{- $drainVar := ternary "BG_JOB_SHUTDOWN_GRACE_PERIOD_SECS" "UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN" (eq .Values.runtime "langgraph-server") }}
+            {{- if and (gt $drain 0) (not (hasKey .Values.env $drainVar)) }}
+            # SIGTERM to exit within the grace period (see `shutdown.drainSeconds`).
+            - name: {{ $drainVar }}
+              value: {{ $drain | quote }}
             {{- end }}
             {{- if .Values.postgresql.enabled }}
             - name: POSTGRES_PASSWORD
