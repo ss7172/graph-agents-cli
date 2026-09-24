@@ -590,7 +590,9 @@ apis:
 - **Who decides.** `requester` is the principal who started the run; `role:<name>` is any
   other principal holding that role. A requester decides their own call only when
   `requester` is listed; anyone else gets 403. The decision is recorded with the decider's
-  hashed id and the comment.
+  hashed id and the comment. The resumed run acts as the requester, and its stream (the tool
+  result and the agent's reply) goes to whoever decided: a `role:` approver sees that much of
+  the requester's conversation.
 - **Choosing a gate.**
   - *Requester confirmation* (`approvers: [requester]`): the user whose run it is confirms each
     write. An injected instruction can no longer act silently in a privileged user's session:

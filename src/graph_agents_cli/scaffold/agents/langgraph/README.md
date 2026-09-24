@@ -264,7 +264,7 @@ request waits for someone who sees exactly what it does.
   meanwhile (409 `approval_pending`). An approver lists it (`GET /threads/{id}/approvals`, or
   `GET /approvals?status=pending` across threads) and decides it
   (`POST /threads/{id}/approvals/{approval_id}`); the run resumes, acting as the requester, and streams
-  as `/chat` does. A2A clients see the task move to `input-required` with the approval in a data part and
+  as `/chat` does, to the decider (a `role:` approver sees that tool result and reply). A2A clients see the task move to `input-required` with the approval in a data part and
   answer on the same task with a data part `{"approval_id": "...", "decision": "approve"}` (the same checks,
   `approval.decide` included; a task belongs to its principal, so only the requester decides there). The
   playground (`APP_ENV=dev`) shows Approve and Reject buttons. `graph-agents-cli run` and
