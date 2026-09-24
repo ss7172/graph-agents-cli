@@ -15,8 +15,16 @@
 """Synchronous client for the chat API (``POST /chat``, SSE) of a scaffolded agent.
 
 The server side is ``POST /chat`` streaming server-sent events, ``GET /health``,
-and ``GET /threads/{thread_id}/messages``. This module is the only client-side
-implementation of that surface; ``run`` and ``eval generate`` both build on it.
+``GET /threads``, ``GET /threads/{thread_id}/messages`` and the approval routes
+(``GET /threads/{thread_id}/approvals``, ``POST
+/threads/{thread_id}/approvals/{approval_id}``). This module is the only
+client-side implementation of that surface; ``run``, ``approvals`` and
+``eval generate`` build on it.
+
+A run that reaches a call its API's policy gates pauses: its stream ends with
+``message.end`` whose ``status`` is ``awaiting_approval`` and whose
+``approval`` names the call. Deciding it (``decide_approval``) resumes the run
+and streams the continuation with the same events as ``POST /chat``.
 
 Only ``httpx`` is imported here: no model SDK, no framework.
 """
@@ -27,6 +35,7 @@ import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, NamedTuple
+from urllib.parse import quote
 
 import httpx
 
@@ -48,6 +57,15 @@ KNOWN_EVENTS = frozenset(
         EVENT_ERROR,
     }
 )
+
+# `message.end` status of a run paused on a gated call (its payload has `approval`).
+STATUS_AWAITING_APPROVAL = "awaiting_approval"
+# The decisions `POST /threads/{thread_id}/approvals/{approval_id}` takes.
+DECISION_APPROVE = "approve"
+DECISION_REJECT = "reject"
+DECISIONS = (DECISION_APPROVE, DECISION_REJECT)
+# The 409 code of `POST /chat` on a thread whose run waits for an approval.
+APPROVAL_PENDING = "approval_pending"
 
 # Scalar timeout kept for callers that pass one number (every phase applies it).
 DEFAULT_TIMEOUT = 120.0
@@ -226,22 +244,126 @@ def post_chat(
     (``ConnectError``) from a stalled stream (``ReadTimeout``) and from
     "refused".
     """
-    if timeout is None:
-        timeout = STREAM_TIMEOUT
     base = _normalise_base(base_url)
-    url = f"{base}/chat"
     body: dict[str, Any] = {"message": message, "metadata": dict(metadata or {})}
     if thread_id:
         body["thread_id"] = thread_id
+    yield from _post_stream(f"{base}/chat", body, headers=headers, timeout=timeout)
 
+
+def _post_stream(
+    url: str,
+    body: Mapping[str, Any],
+    *,
+    headers: Mapping[str, str] | None,
+    timeout: float | httpx.Timeout | None,
+) -> Iterator[SseEvent]:
+    """POST ``body`` as JSON and yield the SSE events of the answer (``post_chat``'s rules)."""
+    if timeout is None:
+        timeout = STREAM_TIMEOUT
     with (
         httpx.Client(timeout=timeout) as client,
-        client.stream("POST", url, json=body, headers=_stream_headers(headers)) as resp,
+        client.stream("POST", url, json=dict(body), headers=_stream_headers(headers)) as resp,
     ):
         if resp.status_code >= 400:
             resp.read()
             raise ChatHTTPError(resp.status_code, resp.text, url)
         yield from iter_sse(_iter_stream_lines(resp.iter_text()))
+
+
+def path_segment(value: str, what: str) -> str:
+    """``value`` as one URL path segment: percent-encoded, so no id can reach another route.
+
+    An approval id or a thread id comes from a server payload or the command
+    line; ``../chat`` or ``a/b`` must stay one segment of the approval route.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} must be a non-empty string")
+    return quote(value, safe="")
+
+
+def approval_url(base_url: str, thread_id: str, approval_id: str | None = None) -> str:
+    """``<base>/threads/<thread_id>/approvals[/<approval_id>]`` with each id one segment."""
+    url = f"{_normalise_base(base_url)}/threads/{path_segment(thread_id, 'thread id')}/approvals"
+    if approval_id is not None:
+        url += f"/{path_segment(approval_id, 'approval id')}"
+    return url
+
+
+def decide_approval(
+    base_url: str,
+    thread_id: str,
+    approval_id: str,
+    decision: str,
+    *,
+    comment: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    timeout: float | httpx.Timeout | None = None,
+) -> Iterator[SseEvent]:
+    """Approve or reject a pending approval; yield the events of the resumed run.
+
+    ``POST /threads/{thread_id}/approvals/{approval_id}`` with
+    ``{"decision": "approve"|"reject", "comment": ...}`` and nothing else: the
+    server binds the decision to the call it recorded, so the client never
+    sends (or could change) the call itself. The answer is an SSE stream of the
+    continuation, with the same events as ``POST /chat``. A refusal is a
+    :class:`ChatHTTPError`: 403 (not an allowed approver), 404 (no such
+    approval or thread), 409 (already decided), 410 (expired, which rejected
+    the call).
+    """
+    if decision not in DECISIONS:
+        raise ValueError(f"decision must be one of {', '.join(DECISIONS)}")
+    body: dict[str, Any] = {"decision": decision}
+    if comment:
+        body["comment"] = comment
+    url = approval_url(base_url, thread_id, approval_id)
+    yield from _post_stream(url, body, headers=headers, timeout=timeout)
+
+
+def _json_list(resp: httpx.Response, url: str, key: str) -> list[dict[str, Any]]:
+    if resp.status_code >= 400:
+        raise ChatHTTPError(resp.status_code, resp.text, url)
+    data = resp.json()
+    if isinstance(data, dict):
+        data = data.get(key, [])
+    if not isinstance(data, list):
+        raise ChatClientError(f"unexpected answer from {redact_credentials(url)}: not a list")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def list_approvals(
+    base_url: str,
+    thread_id: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """GET ``/threads/{thread_id}/approvals``: the thread's approvals, pending or decided.
+
+    The server may wrap the list as ``{"approvals": [...]}``; both shapes are accepted.
+    """
+    url = approval_url(base_url, thread_id)
+    resp = httpx.get(url, headers=dict(headers or {}), timeout=timeout)
+    return _json_list(resp, url, "approvals")
+
+
+def list_threads(
+    base_url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """GET ``/threads``: the caller's own threads (``{thread_id, ...}`` rows), one page."""
+    url = f"{_normalise_base(base_url)}/threads"
+    resp = httpx.get(
+        url,
+        params={"limit": limit, "offset": offset},
+        headers=dict(headers or {}),
+        timeout=timeout,
+    )
+    return _json_list(resp, url, "threads")
 
 
 def get_health(

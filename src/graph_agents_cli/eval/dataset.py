@@ -18,8 +18,14 @@ Dataset shape::
 
     {"cases": [{"id": "greeting",
                 "messages": [{"role": "user", "content": "hi"}],
+                "approvals": [{"decision": "approve", "match": {"operation_id": "cancelOrder"}}],
                 "expect": {...}, "judge": {"response_quality": {"threshold": 4}},
                 "reference": "...", "context": "...", "metadata": {}}]}
+
+``approvals`` tells ``eval generate`` how to decide each call the agent's
+policy gates (an API's ``approval`` block): the first instruction whose
+``match`` names the paused call decides it. A gate no instruction matches is
+a case error: a case must say what a human would do.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from graph_agents_cli._approvals import match_problem
 from graph_agents_cli.eval._common import EvalConfigError, canonical_hash, load_json_file
 
 EXPECT_KEYS: tuple[str, ...] = (
@@ -42,7 +49,16 @@ EXPECT_KEYS: tuple[str, ...] = (
     "max_tokens",
     "case_insensitive",
     "scope",
+    "approvals",
+    "no_approvals",
 )
+
+# A case's `approvals` instructions: how generate decides a gated call.
+APPROVAL_DECISIONS: tuple[str, ...] = ("approve", "reject")
+APPROVAL_INSTRUCTION_KEYS: tuple[str, ...] = ("decision", "match")
+# `expect.approvals` items: which gate the run hit, and how it ended.
+APPROVAL_OUTCOMES: tuple[str, ...] = ("gated", "approved", "rejected")
+APPROVAL_EXPECT_KEYS: tuple[str, ...] = ("match", "status")
 
 # Which turns of a multi-turn case the expect checks read: the final turn (the
 # reply being graded) or every turn. A single-turn case is the same either way.
@@ -64,6 +80,8 @@ EXPECT_DEFAULTS: dict[str, Any] = {
     # a refusal check such as not_contains ["deleted"] must also catch "Deleted".
     "case_insensitive": True,
     "scope": SCOPE_FINAL_TURN,
+    "approvals": None,
+    "no_approvals": False,
 }
 
 MESSAGE_ROLES: tuple[str, ...] = ("user", "assistant", "system")
@@ -79,6 +97,8 @@ class EvalCase:
     context: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
+    # How generate decides the gated calls this case reaches ({decision, match}).
+    approvals: list[dict[str, Any]] = field(default_factory=list)
 
     def user_messages(self) -> list[str]:
         return [str(m.get("content", "")) for m in self.messages if m.get("role") == "user"]
@@ -190,7 +210,38 @@ def parse_case(raw: Any, index: int = 0, source: Path | None = None) -> EvalCase
         context=raw.get("context"),
         metadata=metadata,
         raw=raw,
+        approvals=_parse_approval_instructions(raw.get("approvals"), f"{where} ({case_id})"),
     )
+
+
+def _match_error(match: Any, where: str) -> None:
+    problem = match_problem(match)
+    if problem:
+        raise EvalConfigError(f"{where}.match: {problem}")
+
+
+def _parse_approval_instructions(value: Any, where: str) -> list[dict[str, Any]]:
+    """A case's ``approvals``: ``[{"decision": "approve"|"reject", "match": {...}}]``."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise EvalConfigError(f"{where}: 'approvals' must be a list of {{decision, match}}")
+    instructions = []
+    for index, item in enumerate(value):
+        at = f"{where}: approvals[{index}]"
+        if not isinstance(item, dict):
+            raise EvalConfigError(f"{at} must be an object with decision and match")
+        unknown = sorted(set(item) - set(APPROVAL_INSTRUCTION_KEYS), key=str)
+        if unknown:
+            raise EvalConfigError(
+                f"{at}: unknown key(s) {', '.join(map(str, unknown))} "
+                f"(known: {', '.join(APPROVAL_INSTRUCTION_KEYS)})"
+            )
+        if item.get("decision") not in APPROVAL_DECISIONS:
+            raise EvalConfigError(f"{at}.decision must be one of {', '.join(APPROVAL_DECISIONS)}")
+        _match_error(item.get("match"), at)
+        instructions.append({"decision": item["decision"], "match": dict(item["match"])})
+    return instructions
 
 
 def _validate_expect(expect: dict[str, Any], where: str) -> None:
@@ -234,6 +285,27 @@ def _validate_expect(expect: dict[str, Any], where: str) -> None:
             raise EvalConfigError(f"{where}: expect.{key} must be a number")
     if expect["no_tool_calls"] and expect["tool_calls"]:
         raise EvalConfigError(f"{where}: expect.no_tool_calls and expect.tool_calls conflict")
+    if not isinstance(expect["no_approvals"], bool):
+        raise EvalConfigError(f"{where}: expect.no_approvals must be true or false")
+    approvals = expect["approvals"]
+    if approvals is not None:
+        if not isinstance(approvals, list):
+            raise EvalConfigError(f"{where}: expect.approvals must be a list of {{match, status}}")
+        for i, item in enumerate(approvals):
+            at = f"{where}: expect.approvals[{i}]"
+            if not isinstance(item, dict):
+                raise EvalConfigError(f"{at} must be an object with match (and status)")
+            unknown = sorted(set(item) - set(APPROVAL_EXPECT_KEYS), key=str)
+            if unknown:
+                raise EvalConfigError(
+                    f"{at}: unknown key(s) {', '.join(map(str, unknown))} "
+                    f"(known: {', '.join(APPROVAL_EXPECT_KEYS)})"
+                )
+            if item.get("status", "gated") not in APPROVAL_OUTCOMES:
+                raise EvalConfigError(f"{at}.status must be one of {', '.join(APPROVAL_OUTCOMES)}")
+            _match_error(item.get("match"), at)
+    if expect["no_approvals"] and expect["approvals"]:
+        raise EvalConfigError(f"{where}: expect.no_approvals and expect.approvals conflict")
 
 
 def dataset_hash(raw_cases: list[dict[str, Any]]) -> str:

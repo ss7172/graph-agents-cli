@@ -19,6 +19,13 @@ Client side of the chat API, the auth policies and the local server. ``chat`` mo
 events of ``POST /chat``; ``a2a`` mode talks JSON-RPC through ``a2a-sdk``
 (optional extra). Locally the server is started per the manifest runtime and
 tracked in ``.graph-agents-cli/run_server.json``.
+
+A run that reaches a call its API's policy gates (``approval`` in
+``api-policy.yaml``) pauses before sending it. ``run`` prints the call in full;
+on a terminal, when the requester is one of the approvers, it asks
+"Approve? [y/N]" and streams the continuation; otherwise it prints the
+``graph-agents-cli approvals approve|reject`` commands and exits 0 with an
+"Awaiting approval" line.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import sys
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -35,13 +43,24 @@ import click
 import httpx
 
 from graph_agents_cli import _chat_client
+from graph_agents_cli._approvals import (
+    DECISION_REFUSALS,
+    Approval,
+    awaiting_lines,
+    safe_text,
+    terminal_text,
+)
 from graph_agents_cli._chat_client import (
+    APPROVAL_PENDING,
+    DECISION_APPROVE,
+    DECISION_REJECT,
     EVENT_ERROR,
     EVENT_MESSAGE_DELTA,
     EVENT_MESSAGE_END,
     EVENT_MESSAGE_START,
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
+    STATUS_AWAITING_APPROVAL,
     ChatHTTPError,
     SseEvent,
     post_chat,
@@ -132,6 +151,8 @@ class RunOutcome(NamedTuple):
     usage: dict[str, Any] | None = None
     latency_ms: int | None = None
     status: str | None = None
+    # The paused call (``message.end`` ``approval``) when status is awaiting_approval.
+    approval: dict[str, Any] | None = None
 
 
 class _TransportFailure(click.ClickException):
@@ -215,6 +236,7 @@ class _ChatRenderer:
         self.usage: dict[str, Any] | None = None
         self.latency_ms: int | None = None
         self.status: str | None = None
+        self.approval: dict[str, Any] | None = None
         # Events received so far: tells a connection that failed before the run
         # started from one that dropped while it streamed.
         self.events = 0
@@ -255,7 +277,7 @@ class _ChatRenderer:
     def write_text(self, text: Any) -> None:
         """Print answer text inline (after the ``[agent]:`` tag)."""
         if text:
-            text = str(text)
+            text = terminal_text(str(text))
             self._tag()
             click.echo(text, nl=False)
             self.at_line_start = text.endswith("\n")
@@ -265,6 +287,13 @@ class _ChatRenderer:
         """End the output: pending ``-v`` summary, then a final newline."""
         self._flush_deltas()
         self._newline_if_needed()
+
+    def resume(self) -> None:
+        """Ready for the continuation of a paused run: a new ``[agent]:`` tag, no pause."""
+        self.tagged = False
+        self.at_line_start = True
+        self.status = None
+        self.approval = None
 
     def handle(self, ev: SseEvent) -> None:
         self.events += 1
@@ -281,14 +310,14 @@ class _ChatRenderer:
             self._newline_if_needed()
             name = data.get("name", "")
             args = data.get("args")
-            rendered_args = "" if args is None else _json_preview(args, None)
+            rendered_args = "" if args is None else terminal_text(_json_preview(args, None))
             click.secho(f"[tool_call: {name}({rendered_args})]", dim=True)
             self.rendered = True
         elif ev.event == EVENT_TOOL_RESULT:
             self._newline_if_needed()
             name = data.get("name", "")
             limit = None if self.verbose else _RESULT_PREVIEW_CHARS
-            result = _json_preview(data.get("result", ""), limit)
+            result = terminal_text(_json_preview(data.get("result", ""), limit))
             marker = " (error)" if data.get("is_error") else ""
             click.secho(f"[tool_result{marker}: {name} -> {result}]", dim=True)
             self.rendered = True
@@ -298,6 +327,9 @@ class _ChatRenderer:
             self.usage = data.get("usage") if isinstance(data.get("usage"), dict) else self.usage
             self.latency_ms = data.get("latency_ms", self.latency_ms)
             self.status = data.get("status", self.status)
+            approval = data.get("approval")
+            if self.status == STATUS_AWAITING_APPROVAL:
+                self.approval = approval if isinstance(approval, dict) else {}
         elif ev.event == EVENT_ERROR:
             self._newline_if_needed()
             code = str(data.get("code", "error")) if data else "error"
@@ -317,6 +349,7 @@ class _ChatRenderer:
             usage=self.usage,
             latency_ms=self.latency_ms,
             status=self.status,
+            approval=self.approval,
         )
 
 
@@ -498,11 +531,17 @@ def _print_footer(
     keep_server: bool,
     checkpointer: str,
     after_error: bool = False,
+    pending: Approval | None = None,
+    approval_flags: str = "",
+    mode: str = DEFAULT_RUN_MODE,
+    kept_for_approval: bool = False,
 ) -> None:
     """Usage, then the thread and the command that continues it.
 
     Printed after an ``error`` event as well (without the "no response"
     note): the thread keeps every turn that finished and can be continued.
+    A run paused on a gated call (``pending``) cannot take a new message until
+    the call is decided: the footer gives the commands that decide it instead.
     """
     if not outcome.rendered and not after_error:
         click.secho("(no response content)", fg="yellow")
@@ -518,6 +557,23 @@ def _print_footer(
         click.secho("  ".join(bits), dim=True)
     if after_error and outcome.run_id:
         click.secho(f"Run: {outcome.run_id}", dim=True)
+    if pending is not None:
+        click.echo()
+        lines = (
+            _a2a_awaiting_lines(pending)
+            if mode == "a2a"
+            else awaiting_lines(pending, pending.thread_id or outcome.thread_id, approval_flags)
+        )
+        click.secho(lines[0], fg="yellow", bold=True)
+        for line in lines[1:]:
+            click.secho(line, fg="yellow")
+        if kept_for_approval:
+            click.secho(
+                "  The local server was kept running: its in-memory checkpointer holds the paused "
+                "run. Stop it with `graph-agents-cli run --stop-server` once it is decided.",
+                dim=True,
+            )
+        return
     if not outcome.thread_id:
         return
     click.echo()
@@ -552,6 +608,57 @@ def _one_line(chunk: Any) -> str:
         return text_format.MessageToString(chunk, as_one_line=True)
     except Exception:
         return " ".join(str(chunk).split())
+
+
+_INPUT_REQUIRED_STATES = frozenset(
+    {"TASK_STATE_INPUT_REQUIRED", "input-required", "input_required"}
+)
+
+
+def _input_required(data: Any) -> bool:
+    if isinstance(data, dict):
+        if data.get("state") in _INPUT_REQUIRED_STATES:
+            return True
+        return any(_input_required(value) for value in data.values())
+    if isinstance(data, list):
+        return any(_input_required(item) for item in data)
+    return False
+
+
+def _approval_in(data: Any) -> dict[str, Any] | None:
+    if isinstance(data, dict):
+        if isinstance(data.get("approval_id"), str) and ("method" in data or "api" in data):
+            return data
+        for value in data.values():
+            found = _approval_in(value)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _approval_in(item)
+            if found is not None:
+                return found
+    return None
+
+
+def find_approval_payload(data: Any) -> dict[str, Any] | None:
+    """The approval an A2A stream response (as a dict) asks for, or None.
+
+    A gated run moves the task to ``input-required`` with a data part holding
+    the approval (``approval_id``, ``api``, ``method``, ``path``, ...). A data
+    part that only names an approval (a decision sent back) is not one.
+    """
+    return _approval_in(data) if _input_required(data) else None
+
+
+def _a2a_approval(chunk: Any) -> dict[str, Any] | None:
+    try:
+        from google.protobuf.json_format import MessageToDict
+
+        data = MessageToDict(chunk, preserving_proto_field_name=True)
+    except Exception:
+        return None
+    return find_approval_payload(data)
 
 
 def _query_a2a(
@@ -628,6 +735,10 @@ def _query_a2a(
                     elif chunk.HasField("message"):
                         context_id = context_id or chunk.message.context_id or None
                         _render_parts(chunk.message.parts)
+                    approval = _a2a_approval(chunk)
+                    if approval is not None:
+                        renderer.status = STATUS_AWAITING_APPROVAL
+                        renderer.approval = approval
                     # Kept on the renderer so a failure mid-stream can still name the thread.
                     renderer.thread_id = context_id or thread_id
                     if verbose:
@@ -845,9 +956,134 @@ def _http_error_hint(
         )
     if exc.status_code in (404, 405):
         return "\n  Check that --url points at the app base URL (the chat API is at <url>/chat)."
+    if exc.status_code == 409 and APPROVAL_PENDING in (exc.body or ""):
+        where = f" --thread-id {thread_id}" if thread_id else ""
+        return (
+            "\n  A run on this thread is paused on a call waiting for approval: decide it first "
+            f"(graph-agents-cli approvals list{where}), then send the next message."
+        )
+    if exc.status_code == 409:
+        return "\n  The thread already has a run in progress; retry when it has finished."
     if exc.status_code == 503:
         return _unavailable_hint(exc.body or "", remote=remote)
     return ""
+
+
+def _interactive() -> bool:
+    """Whether a human can answer a prompt here (stdin and stdout are terminals)."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def print_approval(approval: Approval) -> None:
+    """The paused call, in full, before anyone decides it."""
+    click.echo()
+    click.secho("Approval required before this call is sent:", fg="yellow", bold=True)
+    for line in approval.lines():
+        click.echo(line)
+
+
+def _ask_decision() -> str | None:
+    """``approve`` or ``reject`` from "Approve? [y/N]"; None when the prompt is abandoned."""
+    try:
+        approve = click.confirm("Approve?", default=False)
+    except click.Abort:  # Ctrl-C or end of input: the approval stays pending
+        click.echo()
+        return None
+    return DECISION_APPROVE if approve else DECISION_REJECT
+
+
+class DecisionRefused(click.ClickException):
+    """The server refused a decision (not an approver, already decided, expired): exit 1."""
+
+    exit_code = 1
+
+
+def decision_refused_message(
+    exc: ChatHTTPError, approval_id: str, *, remote: bool, policy: str | None = None
+) -> str:
+    """Why the server refused to record a decision, in words."""
+    if exc.status_code == 401:
+        return "The decision was refused (HTTP 401): not authenticated." + _auth_hint(
+            policy, remote=remote
+        )
+    text = f"The decision on approval {safe_text(approval_id)} was refused (HTTP {exc.status_code})"
+    reason = DECISION_REFUSALS.get(exc.status_code)
+    return f"{text}: {reason}." if reason else f"{text}:\n  {exc.body}"
+
+
+def _settle_approvals(
+    target: RunTarget,
+    renderer: _ChatRenderer,
+    outcome: RunOutcome,
+    *,
+    interactive: bool,
+) -> tuple[RunOutcome, Approval | None]:
+    """Show each call the run pauses on; on a terminal, ask for the decision and resume.
+
+    Returns the final outcome and the approval still pending (None when the
+    run finished). The prompt appears only when the requester is one of the
+    approvers (a requester never decides a call gated for others) and the run
+    used the chat API; otherwise the approval is left pending for the
+    commands the footer prints.
+    """
+    while outcome.status == STATUS_AWAITING_APPROVAL:
+        approval = Approval.from_payload(outcome.approval, thread_id=outcome.thread_id)
+        if approval is None:
+            raise click.ClickException(
+                "The run paused for an approval, but the server named no approval id, so it "
+                "cannot be decided from here (see the server log)."
+            )
+        print_approval(approval)
+        if not (
+            interactive
+            and target.mode == DEFAULT_RUN_MODE
+            and approval.thread_id
+            and approval.requester_may_decide
+        ):
+            return outcome, approval
+        decision = _ask_decision()
+        if decision is None:
+            return outcome, approval
+        if decision == DECISION_APPROVE:
+            click.secho("Approved: the call is sent as shown; the run resumes.", fg="green")
+        else:
+            click.secho("Rejected: the call is not sent; the run resumes.", fg="yellow")
+        renderer.resume()
+        try:
+            events = _chat_client.decide_approval(
+                target.base_url,
+                approval.thread_id,
+                approval.approval_id,
+                decision,
+                headers=target.headers,
+            )
+            outcome = render_chat_events(events, renderer=renderer)
+        except ChatHTTPError as exc:
+            raise DecisionRefused(
+                decision_refused_message(
+                    exc,
+                    approval.approval_id,
+                    remote=target.remote,
+                    policy=_project_auth_policy(remote=target.remote),
+                )
+            ) from exc
+        outcome = outcome._replace(thread_id=outcome.thread_id or approval.thread_id)
+    return outcome, None
+
+
+def _a2a_awaiting_lines(approval: Approval) -> list[str]:
+    """How to decide an approval an A2A task asks for (a message on the same task)."""
+    decision = {"approval_id": approval.approval_id, "decision": "approve"}
+    who = ", ".join(safe_text(a) for a in approval.approvers) or "an allowed approver"
+    return [
+        f"Awaiting approval by {who}: the task is input-required; the call was not sent.",
+        "  Decide it with a message on the same task carrying the data part "
+        f'{safe_text(json.dumps(decision))} (or "decision": "reject"); '
+        "`graph-agents-cli run --mode chat` asks on a terminal instead.",
+    ]
 
 
 @click.command("run")
@@ -980,9 +1216,19 @@ def cmd_run(
     resume it. --file attaches UTF-8 text files as extra context.
 
     \b
+    A call gated by the API policy (an approval block in api-policy.yaml)
+    pauses the run before it is sent, and the call is printed in full. On a
+    terminal, when the requester is an approver, "Approve? [y/N]" decides
+    it (Enter rejects) and the run continues. Otherwise the run ends with an
+    "Awaiting approval" line and the `graph-agents-cli approvals approve` /
+    `reject` commands that decide it; a one-off local server with an
+    in-memory checkpointer is then kept running so the paused run survives.
+
+    \b
     Exit codes:
-      0  the agent answered
-      1  the agent refused or reported an error (HTTP error, error event)
+      0  the agent answered, or the run is awaiting an approval
+      1  the agent refused or reported an error (HTTP error, error event), or
+         the decision was refused (not an approver, already decided, expired)
       2  the agent could not be reached or went silent
       3  configuration error (no project, port unavailable)
     """
@@ -1024,6 +1270,8 @@ def cmd_run(
         handler = _query_a2a if target.mode == "a2a" else _query_chat
         renderer = _ChatRenderer(verbose=verbose)
         failed: AgentError | None = None
+        pending: Approval | None = None
+        kept_for_approval = False
         try:
             try:
                 outcome = handler(
@@ -1033,6 +1281,14 @@ def cmd_run(
                     renderer=renderer,
                     display_message=message,
                 )
+                outcome, pending = _settle_approvals(
+                    target, renderer, outcome, interactive=_interactive()
+                )
+                if pending is not None and should_stop_server and target.checkpointer != "postgres":
+                    # The paused run lives in this server's memory: stopping it
+                    # would drop the approval the footer tells the user to decide.
+                    should_stop_server = False
+                    kept_for_approval = True
             except AgentError as exc:
                 click.secho(f"[error: {exc.code}]: {exc.message}", fg="red")
                 failed = exc
@@ -1089,6 +1345,11 @@ def cmd_run(
             keep_server=keep_server,
             checkpointer=target.checkpointer,
             after_error=failed is not None,
+            pending=pending,
+            # `approvals` talks to the chat API whatever --mode this run used.
+            approval_flags=_build_resume_flags(url, DEFAULT_RUN_MODE, header, cookie, None),
+            mode=target.mode,
+            kept_for_approval=kept_for_approval,
         )
         if failed is not None:
             raise click.exceptions.Exit(1) from failed

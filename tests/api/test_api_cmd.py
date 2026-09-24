@@ -911,3 +911,187 @@ def test_the_generated_readme_never_goes_stale_with_the_policy(project: Path) ->
     ok(*ORDERS_ADD)
     assert readme.read_text() == before  # nothing in it became wrong
     assert "ORDERS_API_TOKEN" in manifest(project)["secrets"]["keys"]
+
+
+# ---------------------------------------------------------------------------
+# approval
+# ---------------------------------------------------------------------------
+
+
+def test_approval_adds_a_gate_with_a_diff_dry_run_first(project: Path) -> None:
+    _commented_policy(project)
+    (project / "app/tools/orders_write.py").write_text(POST_TOOL)
+    (project / "app/tools/orders_read.py").write_text(GET_TOOL)
+    before = (project / "api-policy.yaml").read_text()
+    dry = ok(
+        "api",
+        "approval",
+        "orders",
+        "--methods",
+        "post,DELETE",
+        "--approvers",
+        "requester",
+        "--dry-run",
+    )
+    assert "+    approval:" in dry.output and "+        methods: [POST, DELETE]" in dry.output
+    assert "Dry run: nothing was written." in dry.output
+    assert (project / "api-policy.yaml").read_text() == before
+    added = ok("api", "approval", "orders", "--methods", "POST,DELETE", "--approvers", "requester")
+    text = " ".join(added.output.split())
+    assert "now gated: orders_write.py: POST createOrder /orders (approvers: requester)" in text
+    assert "orders_read.py" not in text
+    assert "This tightens or keeps the approval gate on orders (always safe)" in text
+    assert "requester confirms their own calls" in text
+    assert policy(project)["orders"]["approval"] == {
+        "required_for": {"methods": ["POST", "DELETE"]},
+        "approvers": ["requester"],
+    }
+    written = (project / "api-policy.yaml").read_text()
+    assert "# reviewed by the orders team" in written and "# end of orders" in written
+    # The file stays valid for the runtime: the shared rules accept it.
+    load_policy_document(project / "api-policy.yaml")
+
+
+def test_approval_changes_parts_keeps_the_rest_and_says_when_it_loosens(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    ok("api", "approval", "orders", "--methods", "POST", "--approvers", "requester")
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text().replace("      approvers:", "      # who decides\n      approvers:")
+    )
+    four_eyes = ok(
+        "api", "approval", "orders", "--approvers", "role:ops,role:ops", "--timeout-s", "600"
+    )
+    text = " ".join(four_eyes.output.split())
+    assert "loosens the approval gate on orders (new approver(s) role:ops" in text
+    assert "Loosening an approval gate is a reviewed change" in text
+    assert "requester is not an approver" in text
+    # shared-bearer (the scaffold default) has one principal: say role approvers cannot decide.
+    assert "only requester approvals can be decided" in text
+    gate = policy(project)["orders"]["approval"]
+    assert gate == {
+        "required_for": {"methods": ["POST"]},
+        "approvers": ["role:ops"],
+        "timeout_s": 600,
+    }
+    assert "# who decides" in path.read_text()
+    shorter = ok("api", "approval", "orders", "--timeout-s", "300")
+    assert "tightens or keeps" in shorter.output
+    longer = ok("api", "approval", "orders", "--timeout-s", "3600")
+    assert "pending approvals wait longer (300 -> 3600 s)" in " ".join(longer.output.split())
+    same = ok("api", "approval", "orders", "--timeout-s", "3600")
+    assert "already says that" in same.output
+
+
+def test_approval_operations_pin_the_endpoint_from_the_openapi_spec(
+    project: Path, tmp_path: Path
+) -> None:
+    spec = tmp_path / "orders-openapi.yaml"
+    spec.write_text(SPEC)
+    ok(*ORDERS_ADD, "--openapi", str(spec))
+    ok(
+        "api",
+        "approval",
+        "orders",
+        "--operations",
+        "deleteOrder,updateOrder",
+        "--approvers",
+        "role:ops",
+    )
+    assert policy(project)["orders"]["approval"]["required_for"]["operations"] == [
+        {"operationId": "deleteOrder", "path": "/orders/{order_id}", "methods": ["DELETE"]},
+        {"operationId": "updateOrder", "path": "/orders/{order_id}", "methods": ["PATCH"]},
+    ]
+    missing = cli("api", "approval", "orders", "--operations", "noSuchOp")
+    assert missing.exit_code == 3 and "noSuchOp is not in" in missing.output
+
+
+def test_approval_operations_without_a_spec_warn_about_labels(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    (project / "app/tools/orders_update.py").write_text(UPDATE_ORDER_TOOL)
+    result = ok(
+        "api", "approval", "orders", "--operations", "updateOrder", "--approvers", "requester"
+    )
+    text = " ".join(result.output.split())
+    assert "the gate on updateOrder knows only the operationId" in text
+    assert "now gated: orders_update.py: PATCH updateOrder /orders/{id}" in text
+    # A hand-pinned entry survives a later --operations that names it again.
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text().replace(
+            "- operationId: updateOrder",
+            "- operationId: updateOrder\n            path: /orders/{id}\n            methods: [PATCH]",
+        )
+    )
+    ok("api", "approval", "orders", "--operations", "updateOrder,cancelOrder")
+    operations = policy(project)["orders"]["approval"]["required_for"]["operations"]
+    assert operations[0] == {
+        "operationId": "updateOrder",
+        "path": "/orders/{id}",
+        "methods": ["PATCH"],
+    }
+    assert operations[1] == {"operationId": "cancelOrder"}
+
+
+def test_approval_switching_methods_for_operations_and_removing(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    (project / "app/tools/orders_write.py").write_text(POST_TOOL)
+    ok("api", "approval", "orders", "--methods", "*", "--approvers", "requester")
+    switched = ok("api", "approval", "orders", "--methods", "none", "--operations", "createOrder")
+    text = " ".join(switched.output.split())
+    assert "no longer wait as such" in text and "Loosening an approval gate" in text
+    assert policy(project)["orders"]["approval"]["required_for"] == {
+        "operations": [{"operationId": "createOrder"}]
+    }
+    nothing = cli("api", "approval", "orders", "--operations", "none")
+    assert nothing.exit_code == 3 and "would gate nothing" in nothing.output
+    removed = ok("api", "approval", "orders", "--remove")
+    text = " ".join(removed.output.split())
+    assert "no longer gated: orders_write.py" in text
+    assert "no call waits for an approval any more" in text
+    assert "approval" not in policy(project)["orders"]
+    again = ok("api", "approval", "orders", "--remove")
+    assert "has no approval block" in again.output
+
+
+@pytest.mark.parametrize(
+    ("args", "code", "message"),
+    [
+        ([], 2, "give --methods and/or --operations"),
+        (["--remove", "--methods", "POST"], 2, "--remove takes no other option"),
+        (["--methods", "POST"], 2, "--approvers is required for a new approval block"),
+        (["--methods", "POST", "--approvers", "admin"], 2, "'admin' is not an approver"),
+        (["--methods", "POST", "--approvers", "role:"], 2, "'role:' is not an approver"),
+        (["--methods", "POST", "--approvers", "role:a b"], 2, "is not an approver"),
+        (["--methods", "FETCH", "--approvers", "requester"], 2, "unknown HTTP method"),
+        (["--methods", "POST", "--approvers", "requester", "--timeout-s", "29"], 2, "30<=x<=86400"),
+        (["--operations", "a b", "--approvers", "requester"], 2, "contains whitespace"),
+    ],
+)
+def test_approval_refuses_bad_input_and_writes_nothing(
+    project: Path, args: list[str], code: int, message: str
+) -> None:
+    ok(*ORDERS_ADD)
+    before = (project / "api-policy.yaml").read_text()
+    result = cli("api", "approval", "orders", *args)
+    assert result.exit_code == code, result.output
+    assert message in " ".join(result.output.split())
+    assert (project / "api-policy.yaml").read_text() == before
+
+
+def test_approval_on_an_unknown_api_or_outside_a_project(
+    project: Path, tmp_path: Path, monkeypatch
+) -> None:
+    ok(*ORDERS_ADD)
+    unknown = cli("api", "approval", "crm", "--methods", "POST", "--approvers", "requester")
+    assert unknown.exit_code == 3 and "'crm' is not declared" in unknown.output
+    monkeypatch.chdir(tmp_path)
+    outside = cli("api", "approval", "orders", "--methods", "POST", "--approvers", "requester")
+    assert outside.exit_code == 3
+
+
+def test_approval_notes_a_gate_on_a_method_the_api_does_not_allow(project: Path) -> None:
+    ok(*[a if a != "read-write" else "read-only" for a in ORDERS_ADD])
+    result = ok("api", "approval", "orders", "--methods", "DELETE", "--approvers", "requester")
+    assert "approval never widens access" in " ".join(result.output.split())
+    assert policy(project)["orders"]["allowed_methods"] == ["GET", "HEAD"]

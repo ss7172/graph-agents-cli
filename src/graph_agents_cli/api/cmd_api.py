@@ -22,7 +22,9 @@ one change, validates the result, prints a unified diff of every file it
 touches and writes them atomically (``--dry-run`` stops after the diff).
 Comments and key order are kept. Widening access is a reviewed change
 (CODEOWNERS covers the file); the runtime still refuses anything outside the
-policy, whatever a tool declares.
+policy, whatever a tool declares. ``api approval`` sets the calls that wait
+for a human approval before they are sent (an API's ``approval`` block);
+loosening that gate is reviewed like widening access.
 """
 
 from __future__ import annotations
@@ -40,11 +42,19 @@ from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._api_policy import (
+    ANY_METHOD,
+    APPROVAL_KEY,
     AUTH_MODES,
+    DEFAULT_APPROVAL_TIMEOUT_S,
     DEFAULT_FORWARD_HEADER,
     DEFAULT_TIMEOUTS_MS,
     HTTP_METHODS,
+    MAX_APPROVAL_TIMEOUT_S,
+    MIN_APPROVAL_TIMEOUT_S,
     POLICY_FILENAME,
+    REQUESTER_APPROVER,
+    ROLE_APPROVER_PREFIX,
+    approval_notes,
     denial_match,
     effective_approval,
     ensure_no_legacy_api_policy,
@@ -75,6 +85,10 @@ REVIEW_NOTE = (
     "Widening access is a reviewed change: open a pull request, where CODEOWNERS "
     "approves api-policy.yaml."
 )
+GATE_REVIEW_NOTE = (
+    "Loosening an approval gate is a reviewed change, like widening access: open a pull "
+    "request, where CODEOWNERS approves api-policy.yaml."
+)
 NEXT_STEPS = (
     "Next: declare each call in the tool's API_CALLS, run `graph-agents-cli api check` (or "
     "`graph-agents-cli lint`), add eval cases for the new behaviour, then open a pull request."
@@ -93,6 +107,10 @@ def api_group() -> None:
     enforces, keeps comments and key order, prints a unified diff and writes
     atomically; --dry-run prints the diff only. The manifest (api_policy,
     secrets.keys), .env.example and the chart's values.yaml follow the change.
+
+    `api approval` makes chosen calls wait for a human approval before they
+    are sent (requester confirmation, or role:<name> approvers for a second
+    person's review); approval never widens access.
 
     \b
     Exit codes:
@@ -262,14 +280,24 @@ def _call_effects(
     for call in calls:
         if call.api != api:
             continue
-        was = policy_check.check_call(call, before, specs_before).status
-        now = policy_check.check_call(call, after, specs_after).status
+        was_result = policy_check.check_call(call, before, specs_before)
+        now_result = policy_check.check_call(call, after, specs_after)
+        was, now = was_result.status, now_result.status
         label = f"{call.tool}: {call.method} {call.operation}"
+        gate = now_result.gate
+        waits = f" (approvers: {', '.join(gate.approvers)})" if gate is not None else ""
         if was == policy_check.STATUS_ALLOWED and now != policy_check.STATUS_ALLOWED:
             lines.append(f"now refused: {label}")
         elif was != policy_check.STATUS_ALLOWED and now == policy_check.STATUS_ALLOWED:
-            lines.append(f"now allowed: {label}")
+            lines.append(f"now allowed: {label}{waits}")
+        elif now == policy_check.STATUS_ALLOWED and gate is not None and was_result.gate is None:
+            lines.append(f"now gated: {label}{waits}")
+        elif now == policy_check.STATUS_ALLOWED and gate is None and was_result.gate is not None:
+            lines.append(f"no longer gated: {label} (sent without an approval)")
     return lines
+
+
+_EFFECT_STYLES = {"now refused": "red", "no longer gated": "yellow"}
 
 
 def _finish(
@@ -283,8 +311,13 @@ def _finish(
     widens: bool | None,
     notes: list[str] | None = None,
     next_steps: bool = True,
+    verdict: tuple[str, str] | None = None,
 ) -> None:
-    """Show the change and write it. ``widens=None``: the change allows nothing yet."""
+    """Show the change and write it. ``widens=None``: the change allows nothing yet.
+
+    ``verdict`` (text, style) replaces the line saying whether access widens:
+    ``api approval`` changes who waits for a human, not what is allowed.
+    """
     console = Console()
     if not plan.effective:
         console.print("Nothing to change.")
@@ -299,9 +332,11 @@ def _finish(
     if effects:
         console.print("Effect on the calls your tools declare:")
         for line in effects:
-            style = "red" if line.startswith("now refused") else "green"
+            style = next((v for k, v in _EFFECT_STYLES.items() if line.startswith(k)), "green")
             console.print(f"  {escape(line)}", style=style, highlight=False)
-    if widens is None:
+    if verdict is not None:
+        console.print(escape(verdict[0]), style=verdict[1], highlight=False)
+    elif widens is None:
         console.print(
             f"No effect on access to {api} yet (see the notes above); what would make it "
             f"take effect widens access. {REVIEW_NOTE}",
@@ -978,6 +1013,338 @@ def cmd_limits(name: str, max_calls: str | None, rate: str | None, dry_run: bool
         widens=ch.limits_widen(current, new),
         notes=notes,
         next_steps=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# approval
+# ---------------------------------------------------------------------------
+
+
+def _parse_approvers(value: str) -> list[str]:
+    """``requester, role:ops`` -> ``["requester", "role:ops"]`` (repeats dropped, order kept)."""
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise click.UsageError("--approvers needs requester and/or role:<name>")
+    for item in items:
+        role = item[len(ROLE_APPROVER_PREFIX) :] if item.startswith(ROLE_APPROVER_PREFIX) else None
+        if item != REQUESTER_APPROVER and not (
+            role and len(role) <= 256 and not any(c.isspace() or c == "," for c in role)
+        ):
+            raise click.UsageError(
+                f"--approvers: {item!r} is not an approver (requester, or role:<name> with a "
+                "role name of 1-256 characters without spaces or commas)"
+            )
+    return list(dict.fromkeys(items))
+
+
+def _parse_operation_ids(value: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise click.UsageError("--operations needs at least one operationId (or none)")
+    for item in items:
+        if any(c.isspace() for c in item):
+            raise click.UsageError(f"--operations: {item!r} contains whitespace")
+    return list(dict.fromkeys(items))
+
+
+def _gate_entries(
+    project: _Project, api: dict[str, Any], operation_ids: list[str], current: list[Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``required_for.operations`` entries for ``operation_ids``, and notes.
+
+    An entry the block already has for an id is kept as it is (with any path
+    or methods pinned by hand). With the API's openapi spec a new entry also
+    pins the operation's method and path, so the gate holds for every call to
+    that endpoint whatever label a tool gives it.
+    """
+    spec = ch.load_spec(project.root, str(api["openapi"])) if api.get("openapi") else None
+    entries: list[dict[str, Any]] = []
+    notes: list[str] = []
+    labels_only: list[str] = []
+    for op_id in operation_ids:
+        existing = next(
+            (e for e in current if isinstance(e, dict) and e.get("operationId") == op_id), None
+        )
+        if existing is not None:
+            entries.append(dict(existing))
+            continue
+        entry, warnings = ch.build_entry(
+            ch.OperationRef(operation_id=op_id), [], spec, str(api.get("openapi") or "")
+        )
+        entries.append(entry)
+        notes.extend(warnings)
+        if entry.get("path") is None:
+            labels_only.append(op_id)
+    if labels_only:
+        notes.append(
+            f"the gate on {', '.join(labels_only)} knows only the operationId: it holds for "
+            "the calls that name it and for calls that name no operation_id (fail closed), but "
+            "not for a call to the same endpoint under another label. Record the API's openapi "
+            "spec (which pins the endpoint), or add path and methods to the entry by hand"
+        )
+    return entries, notes
+
+
+def _gated_methods(block: dict[str, Any] | None) -> set[str]:
+    if not block:
+        return set()
+    methods = [str(m).upper() for m in block["required_for"].get("methods") or []]
+    return set(HTTP_METHODS) if ANY_METHOD in methods else set(methods)
+
+
+def _gate_loosening(before: dict[str, Any] | None, after: dict[str, Any] | None) -> list[str]:
+    """How the change loosens the gate (effective blocks): empty when it tightens or keeps it.
+
+    Loosening: a call that waited may go out without a human (a method or an
+    operation no longer gated, the block removed), someone new may approve, or
+    a pending approval stays open longer.
+    """
+    if before is None:
+        return []
+    if after is None:
+        return ["no call waits for an approval any more"]
+    reasons = []
+    ungated = [m for m in HTTP_METHODS if m in _gated_methods(before) - _gated_methods(after)]
+    if ungated:
+        reasons.append(f"{', '.join(ungated)} calls no longer wait as such")
+    old_ops = before["required_for"].get("operations") or []
+    new_ops = after["required_for"].get("operations") or []
+    dropped = [o for o in old_ops if not any(ch.same_entry(o, n) for n in new_ops)]
+    if dropped:
+        reasons.append(
+            "no longer gated as written: " + "; ".join(ch.describe_entry(e) for e in dropped)
+        )
+    added = [a for a in after["approvers"] if a not in before["approvers"]]
+    if added:
+        reasons.append(f"new approver(s) {', '.join(added)}")
+    if after["timeout_s"] > before["timeout_s"]:
+        reasons.append(
+            f"pending approvals wait longer ({before['timeout_s']} -> {after['timeout_s']} s)"
+        )
+    return reasons
+
+
+def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
+    roles = [a for a in approvers if a.startswith(ROLE_APPROVER_PREFIX)]
+    notes = []
+    if REQUESTER_APPROVER in approvers and not roles:
+        notes.append(
+            "requester confirms their own calls: the person whose run it is sees each gated "
+            "call before it is sent. For a second person's review (four-eyes), list "
+            "role:<name> approvers without requester"
+        )
+    elif REQUESTER_APPROVER not in approvers:
+        notes.append(
+            "requester is not an approver: another principal than the one who started the run, "
+            f"holding {' or '.join(roles)}, must decide each gated call (four-eyes)"
+        )
+    if roles and project.config.auth_policy == "shared-bearer":
+        notes.append(
+            "under the shared-bearer auth policy every caller is the one principal 'shared', so "
+            "only requester approvals can be decided (a role: approver must be another "
+            "principal); use the jwt or custom policy for per-user principals and roles"
+        )
+    return notes
+
+
+@api_group.command("approval")
+@click.argument("name")
+@click.option(
+    "--methods",
+    "methods",
+    default=None,
+    metavar="M,...|none",
+    help='Gate every call with these methods (e.g. POST,PATCH,DELETE, or "*"); none clears it.',
+)
+@click.option(
+    "--operations",
+    "operations",
+    default=None,
+    metavar="OP,...|none",
+    help=(
+        "Gate these operations by operationId (the API's openapi spec pins their method and "
+        "path); none clears it."
+    ),
+)
+@click.option(
+    "--approvers",
+    "approvers",
+    default=None,
+    metavar="A,...",
+    help="Who decides: requester and/or role:<name> (e.g. requester, or role:ops for four-eyes).",
+)
+@click.option(
+    "--timeout-s",
+    "timeout_s",
+    type=click.IntRange(MIN_APPROVAL_TIMEOUT_S, MAX_APPROVAL_TIMEOUT_S),
+    default=None,
+    metavar="N",
+    help=(
+        f"Seconds a pending approval waits before it expires, which rejects the call "
+        f"({MIN_APPROVAL_TIMEOUT_S}-{MAX_APPROVAL_TIMEOUT_S}; default "
+        f"{DEFAULT_APPROVAL_TIMEOUT_S})."
+    ),
+)
+@click.option(
+    "--remove",
+    "remove",
+    is_flag=True,
+    default=False,
+    help="Remove the approval block: the API's calls are sent without waiting for a human.",
+)
+@_dry_run_option
+def cmd_approval(
+    name: str,
+    methods: str | None,
+    operations: str | None,
+    approvers: str | None,
+    timeout_s: int | None,
+    remove: bool,
+    dry_run: bool,
+) -> None:
+    """Require a human approval before some of an API's calls are sent (or --remove it).
+
+    A gated call is still allowed by the rest of the policy first (approval
+    never widens access; denials still win). The run pauses before sending it
+    and an approver decides: requester (the principal who started the run
+    confirms) and/or role:<name> (a principal holding that role; list roles
+    without requester for a second person's review). Approving sends exactly
+    the call shown, once; rejecting or expiry sends nothing.
+
+    \b
+    Each option given replaces that part of the block and keeps the rest:
+      --methods POST,DELETE        every call with those methods
+      --operations cancelOrder     calls to those operations
+      --approvers requester        who decides (required for a new block)
+      --timeout-s 900              how long a pending approval waits
+    """
+    changing = (methods, operations, approvers, timeout_s)
+    if remove and any(option is not None for option in changing):
+        raise click.UsageError("--remove takes no other option")
+    if not remove and all(option is None for option in changing):
+        raise click.UsageError(
+            "give --methods and/or --operations, --approvers, --timeout-s, or --remove"
+        )
+    new_methods = None
+    if methods is not None and methods.strip().lower() != "none":
+        new_methods = ch.parse_methods(methods)
+    operation_ids = None
+    if operations is not None and operations.strip().lower() != "none":
+        operation_ids = _parse_operation_ids(operations)
+    approver_list = _parse_approvers(approvers) if approvers is not None else None
+
+    project = _load_project()
+    api = project.api(name)
+    current = effective_approval(api)
+    raw = api.get(APPROVAL_KEY)
+    notes: list[str] = []
+    if remove:
+        if raw is None:
+            Console().print(f"{name} has no approval block: no call waits for an approval.")
+            return
+        new_block = None
+    else:
+        required_for = dict(raw["required_for"]) if raw is not None else {}
+        if methods is not None:
+            if new_methods is None:
+                required_for.pop("methods", None)
+            else:
+                required_for["methods"] = new_methods
+        if operations is not None:
+            if operation_ids is None:
+                required_for.pop("operations", None)
+            else:
+                entries, entry_notes = _gate_entries(
+                    project, api, operation_ids, list(required_for.get("operations") or [])
+                )
+                required_for["operations"] = entries
+                notes.extend(entry_notes)
+        required_for = {k: required_for[k] for k in ("methods", "operations") if k in required_for}
+        if not required_for:
+            raise ch.ApiCommandError(
+                f"the approval block of {name} would gate nothing (it needs --methods and/or "
+                f"--operations); remove it with `graph-agents-cli api approval {name} --remove`"
+            )
+        if approver_list is None and raw is None:
+            raise click.UsageError(
+                "--approvers is required for a new approval block (requester and/or role:<name>)"
+            )
+        new_block = {
+            "required_for": required_for,
+            "approvers": approver_list if approver_list is not None else list(raw["approvers"]),
+        }
+        if timeout_s is not None:
+            new_block["timeout_s"] = timeout_s
+        elif raw is not None and "timeout_s" in raw:
+            new_block["timeout_s"] = raw["timeout_s"]
+        if raw is not None and new_block == dict(raw):
+            Console().print(f"{name}'s approval block already says that.")
+            return
+
+    document = copy.deepcopy(project.document)
+    assert document is not None
+    if new_block is None:
+        document["apis"][name].pop(APPROVAL_KEY)
+    else:
+        document["apis"][name][APPROVAL_KEY] = new_block
+    _validate(project, document)
+    after_effective = effective_approval(document["apis"][name])
+    editor = project.editor()
+    base = ("apis", name, APPROVAL_KEY)
+
+    def apply() -> None:
+        if new_block is None:
+            editor.delete(base)
+            return
+        if raw is None:
+            editor.set(base, new_block, after=_after(api, APPROVAL_KEY), block=True)
+            return
+        old_rf, new_rf = raw["required_for"], new_block["required_for"]
+        # New keys first: a mapping must keep a key while another is deleted.
+        for key in ("methods", "operations"):
+            if key in new_rf and old_rf.get(key) != new_rf[key]:
+                editor.set((*base, "required_for", key), new_rf[key])
+        for key in ("methods", "operations"):
+            if key not in new_rf and key in old_rf:
+                editor.delete((*base, "required_for", key))
+        for key in ("approvers", "timeout_s"):
+            if key in new_block and raw.get(key) != new_block[key]:
+                editor.set((*base, key), new_block[key])
+
+    _edit(apply, f"set apis.{name}.approval to {new_block}")
+    plan = Plan(project.root)
+    plan.set_text(POLICY_FILENAME, project.text, editor.text)
+    if new_block is not None:
+        notes.extend(approval_notes(name, document["apis"][name]))
+        notes.extend(_approver_notes(project, new_block["approvers"]))
+    else:
+        notes.append(f"calls to {name} are sent without waiting for a human approval")
+    loosening = _gate_loosening(current, after_effective)
+    verdict = (
+        (
+            f"This loosens the approval gate on {name} ({'; '.join(loosening)}). "
+            f"{GATE_REVIEW_NOTE}",
+            "yellow",
+        )
+        if loosening
+        else (
+            f"This tightens or keeps the approval gate on {name} (always safe); access to "
+            f"{name} is unchanged.",
+            "dim",
+        )
+    )
+    _finish(
+        project,
+        plan,
+        dry_run=dry_run,
+        api=name,
+        before=project.document,
+        after=document,
+        widens=None,
+        notes=notes,
+        next_steps=False,
+        verdict=verdict,
     )
 
 

@@ -312,4 +312,6 @@ def test_every_check_has_a_description() -> None:
         "no_tool_calls",
         "max_latency_ms",
         "max_tokens",
+        "approvals",
+        "no_approvals",
     }
