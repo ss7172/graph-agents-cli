@@ -30,6 +30,7 @@ import pathlib
 import tempfile
 
 import click
+from rich.markup import escape
 
 from graph_agents_cli import _api_policy, _tools
 from graph_agents_cli._output import Console
@@ -96,9 +97,9 @@ class BaselineError(click.ClickException):
 def _display_version_header(old_label: str, new_label: str, baseline_label: str | None) -> None:
     """Display the upgrade version header."""
     console.print()
-    console.print(f"[bold blue]📦 Upgrading {old_label} → {new_label}[/bold blue]")
+    console.print(f"[bold blue]📦 Upgrading {escape(old_label)} → {escape(new_label)}[/bold blue]")
     if baseline_label:
-        console.print(f"[dim]Baseline: {baseline_label}[/dim]")
+        console.print(f"[dim]Baseline: {escape(baseline_label)}[/dim]")
     console.print()
 
 
@@ -134,11 +135,16 @@ def _print_unrecorded_build(metadata: ProjectConfig, version: str, current_id: s
     console.print(f"[dim]   <ref>: {_BASELINE_REF_FORMS}.[/dim]")
     if metadata.generated_at:
         console.print(
-            "[dim]   The commit a clone was at when the project was generated "
-            f"(generated_at {metadata.generated_at}):[/dim]"
+            "[dim]   Not sure which commit? A first candidate is the newest one before the "
+            f"project was generated (generated_at {metadata.generated_at}):[/dim]"
         )
         console.print(
             f"[dim]     git -C <clone> log -1 --format=%H --before='{metadata.generated_at}'[/dim]"
+        )
+        console.print(
+            "[dim]   The build may be older than that (a checkout behind its branch, or a "
+            "cached build). Check with --dry-run: with the right build, only files you "
+            "edited are listed under 'Will preserve' or as conflicts.[/dim]"
         )
 
 
@@ -319,7 +325,9 @@ def upgrade(
     try:
         recorded = recorded_build_for(metadata)
     except MalformedRecordError as e:
-        console.print(f"[yellow]⚠️  {e} in {MANIFEST_FILENAME}; it is ignored.[/yellow]")
+        console.print(
+            f"[yellow]⚠️  {escape(str(e))} in {MANIFEST_FILENAME}; it is ignored.[/yellow]"
+        )
         recorded = None
 
     project_name = metadata.project_name or project_dir.name
@@ -451,10 +459,13 @@ def upgrade(
                 raise BaselineError(
                     f"{message} Nothing was changed; name the project's build with --baseline-ref."
                 )
-            console.print(f"[yellow]⚠️  {message} Using it, as --baseline-ref asks.[/yellow]")
+            console.print(
+                f"[yellow]⚠️  {escape(message)} Using it, as --baseline-ref asks.[/yellow]"
+            )
         if baseline_ref is not None and template_digest(old_dir) == digests["new"]:
             console.print(
-                f"[yellow]⚠️  The baseline ({baseline_label}) renders the same files as this "
+                f"[yellow]⚠️  The baseline ({escape(baseline_label or '')}) renders the same "
+                "files as this "
                 f"build ({current.id}) for this project's settings, so nothing can be upgraded "
                 "from it. If it is not the build that created the project, name that build "
                 "instead.[/yellow]"

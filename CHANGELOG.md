@@ -233,13 +233,16 @@ Builds made before the release share its version, so such a project's manifest s
 answers "already at version 0.2.0" (compared by version only) with the steps below. Nothing in
 the manifest has to be edited.
 
-1. Find the commit of the build that created the project: in the checkout it was installed
-   from, `git -C <checkout> log -1 --format=%H --before='<generated_at from the manifest>'`
-   gives the commit the checkout was at when the project was generated (a build installed
-   from a checkout could be older than its HEAD: `uv tool install --from` reused its cached
-   wheel before this release, see Fixed).
-2. Preview, then apply, with that build as the baseline (a local clone reaches commits that
-   were never pushed):
+1. Find the commit of the build that created the project. If you do not know it, the
+   newest commit before the project was generated is a first candidate:
+   `git -C <checkout> log -1 --format=%H --before='<generated_at from the manifest>'`. The
+   build may be older than that: a checkout behind its branch, or a stale build
+   (`uv tool install --from` reused its cached wheel of an earlier commit before this
+   release, see Fixed).
+2. Preview with that build as the baseline, then apply (a local clone reaches commits that
+   were never pushed). With the right build, only files you edited are listed under "Will
+   preserve" or as conflicts; many scaffolding files you never touched there mean the wrong
+   build, so try an earlier commit:
 
    ```bash
    graph-agents-cli scaffold upgrade --baseline-ref <checkout>@<commit> --dry-run

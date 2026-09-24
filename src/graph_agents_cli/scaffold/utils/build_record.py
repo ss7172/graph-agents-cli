@@ -86,9 +86,13 @@ class BuildRecord:
         return self.commit is not None and "+" not in self.id
 
     def same_build_as(self, build: _build.BuildInfo) -> bool:
-        """True when this is exactly ``build`` (a clean build with the same id)."""
+        """True when this is exactly ``build``: the same id and commit, both without local changes."""
         return (
-            self.id == build.id and self.commit is not None and not self.dirty and not build.dirty
+            self.id == build.id
+            and self.commit is not None
+            and self.commit == build.commit
+            and not self.dirty
+            and not build.dirty
         )
 
     def as_manifest(self) -> dict[str, Any]:

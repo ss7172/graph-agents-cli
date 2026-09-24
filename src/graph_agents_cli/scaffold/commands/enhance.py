@@ -26,6 +26,7 @@ from typing import Any
 
 import click
 from packaging import version as pkg_version
+from rich.markup import escape
 from rich.prompt import IntPrompt, Prompt
 
 from graph_agents_cli import _api_policy
@@ -762,7 +763,7 @@ def _run_smart_merge(
     try:
         recorded_build = build_record.recorded_build_for(project_config)
     except build_record.MalformedRecordError as e:
-        console.print(f"[yellow]⚠️  {e}; it is ignored.[/yellow]")
+        console.print(f"[yellow]⚠️  {escape(str(e))}; it is ignored.[/yellow]")
         recorded_build = None
     digests: dict[str, str] = {}
 
@@ -775,7 +776,7 @@ def _run_smart_merge(
         digests["new"] = build_record.template_digest(new_dir)
         if recorded_build is not None and not _at_this_build(recorded_build, digests["old"]):
             console.print(
-                f"[yellow]⚠️  This project was rendered by build {recorded_build.id}, whose "
+                f"[yellow]⚠️  This project was rendered by build {escape(recorded_build.id)}, whose "
                 f"templates differ from this build's ({current_build.id}): enhance compares "
                 "your files with this build's templates, so a file the template changed since "
                 "then counts as your edit (kept, or listed as a conflict). Run "

@@ -240,10 +240,13 @@ wins over the manifest: a commit or tag of the repository (`d99c816`, `v0.1.0`),
 `<clone>@<commit>` for a local clone (the commit is looked up there first), a path to a checkout
 or wheel (rebuilt, never a stale uv cache), or a full install spec
 (`git+https://<mirror>/graph-agents-cli@<commit>`). The baseline must render the manifest's
-`cli_version` (exit 3 otherwise); a different recorded commit is a warning. To find the commit,
-`git -C <clone> log -1 --format=%H --before=<generated_at from the manifest>` gives the commit
-a clone was at when the project was generated. After the upgrade the manifest records the
-running build. Tags on the remote are the owner's to create; until `v<version>` exists there,
+`cli_version` (exit 3 otherwise); a different recorded commit is a warning. Without a known
+commit, `git -C <clone> log -1 --format=%H --before=<generated_at from the manifest>` gives a
+first candidate (the newest commit before the project was generated); the build may be older
+(a checkout behind its branch, or a stale uv build). Check it with `--dry-run`: with the right
+build only files the user edited are listed under "Will preserve" or as conflicts; many
+untouched scaffolding files there mean the wrong build. After the upgrade the manifest records
+the running build. Tags on the remote are the owner's to create; until `v<version>` exists there,
 `--baseline-ref <clone>@<commit>` is the way to name any build.
 
 A project created with 0.1.0 is upgraded against the `v0.1.0` tag (commit `fc3f2f9`). Never

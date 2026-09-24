@@ -527,11 +527,30 @@ def test_baseline_ref_forms(tmp_path: pathlib.Path, real_git: None) -> None:
     local = resolve_baseline_ref(str(checkout))
     assert local.spec == str(checkout.resolve()) and local.refresh  # rebuilt, never a stale cache
 
+    wheel = tmp_path / "graph_agents_cli-0.2.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    assert resolve_baseline_ref(str(wheel)).spec == str(wheel.resolve())
+
     clone, head = _clone(tmp_path)
     at = resolve_baseline_ref(f"{clone}@{head[:7]}")
     # The short ref is resolved to the full commit, in a file URL (the space escaped).
     assert at.spec == f"git+{clone.resolve().as_uri()}@{head}" and "%20" in at.spec
     assert at.commit == head and not at.refresh
+
+
+def test_a_ref_named_like_a_directory_here_is_still_a_ref(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "main").mkdir()  # any directory, not a checkout
+    (tmp_path / "release" / "0.2").mkdir(parents=True)
+    assert resolve_baseline_ref("main").spec == f"git+{REPO}@main"
+    assert resolve_baseline_ref("release/0.2").spec == f"git+{REPO}@release/0.2"
+    # A checkout (it has a pyproject.toml) is a path, written relatively or not.
+    (tmp_path / "gac").mkdir()
+    (tmp_path / "gac" / "pyproject.toml").write_text("[project]\n")
+    assert resolve_baseline_ref("gac").spec == str((tmp_path / "gac").resolve())
+    assert resolve_baseline_ref("./main").spec == str((tmp_path / "main").resolve())
 
 
 @pytest.mark.parametrize(

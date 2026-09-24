@@ -217,8 +217,10 @@ a commit or tag of this repository (`d99c816`, `v0.1.0`), `<clone>@<commit>` for
 clone (the commit is looked up there first; the way to reach a commit that was never
 pushed), a path to a checkout or wheel (rebuilt, never a stale uv cache), or a full install
 spec (`git+https://git.example.com/graph-agents-cli@<commit>`, for a mirror). The baseline
-must render the manifest's `cli_version` (exit 3 otherwise). A clone's history shows the
-commit it was at when the project was generated:
+must render the manifest's `cli_version` (exit 3 otherwise). Without a known commit, the
+newest one before the project was generated is a first candidate; the build may be older (a
+checkout behind its branch, or a stale uv build), so check it with `--dry-run`: with the
+right build only files you edited are listed under "Will preserve" or as conflicts.
 
 ```bash
 git -C <clone> log -1 --format=%H --before='<generated_at from the manifest>'

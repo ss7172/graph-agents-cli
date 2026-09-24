@@ -276,7 +276,13 @@ def resolve_baseline_ref(ref: str, *, flag: str = "--baseline-ref") -> BaselineS
             )
         return BaselineSource(spec=value, label=value)
     path = Path(value).expanduser()
-    if path.exists():
+    # A path is what is written as one, or a checkout or distribution that exists:
+    # a branch named like some directory here (`main`, `release/0.2`) stays a ref.
+    written_as_path = value.startswith(("/", ".", "~"))
+    build_source = (path.is_dir() and (path / "pyproject.toml").is_file()) or (
+        path.is_file() and value.endswith((".whl", ".tar.gz", ".zip"))
+    )
+    if path.exists() and (written_as_path or build_source):
         resolved = path.resolve()
         return BaselineSource(spec=str(resolved), label=f"the build at {resolved}", refresh=True)
     if "@" in value:
