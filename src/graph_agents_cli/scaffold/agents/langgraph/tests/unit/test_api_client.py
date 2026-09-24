@@ -201,6 +201,17 @@ def test_undeclared_api_is_refused(policy_file: Path) -> None:
         ),
         (
             "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    approval: []\n",
+            "approval: must not be empty",
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
+            "    approval:\n      - {required_for: {methods: [POST]}, approvers: [requester]}\n"
+            "      - {required_for: {operations: [{operationId: x}]}}\n",
+            'approval[1].approvers: required (a list of "requester" and/or "role:<name>")',
+        ),
+        (
+            "apis:\n  a:\n    base_url_env: A\n    auth: none\n    allowed_methods: [POST]\n"
             "    approval: {required_for: {methods: [POST]}, approvers: [requester], "
             "timeout_s: 5}\n",
             "approval.timeout_s: must be an integer from 30 to 86400",
@@ -559,6 +570,45 @@ def test_the_policy_names_gated_calls_and_their_approvers(gated_policy: Path) ->
     )
     assert policy.gate("shop", "GET", "getOrder", "/orders/7") is None
     assert policy.gate("shop", "POST", "createOrder", "/orders") is None
+
+
+def test_with_a_list_of_rules_the_first_that_covers_a_call_gates_it(
+    gated_policy: Path,
+) -> None:
+    """Other approvers for other calls of one API: the first covering rule in file order."""
+    gated_policy.write_text(
+        GATED_POLICY.split("    approval:")[0]
+        + "    approval:\n"
+        + "      - required_for:\n"
+        + "          operations:\n"
+        + '            - {operationId: cancelOrder, path: "/orders/{order_id}/cancel"}\n'
+        + "        approvers: [requester]\n"
+        + "      - required_for: {operations: [{operationId: createOrder, path: /orders}]}\n"
+        + '        approvers: ["role:admin"]\n'
+        + "        timeout_s: 3600\n"
+        + '      - {required_for: {methods: [POST, PATCH]}, approvers: ["role:ops"]}\n',
+        encoding="utf-8",
+    )
+    reset_policy_cache()
+    policy = ApiPolicy.load(gated_policy)
+    cancel = policy.gate("shop", "POST", "cancelOrder", "/orders/7/cancel")
+    assert (cancel.approvers, cancel.timeout_s, cancel.index, cancel.also) == (
+        ("requester",),
+        900,
+        0,
+        (2,),
+    )
+    create = policy.gate("shop", "POST", "placeOrder", "/orders")  # the path, whatever label
+    assert (create.approvers, create.timeout_s, create.index) == (("role:admin",), 3600, 1)
+    assert create.rule.startswith("approval[1].required_for.operations")
+    update = policy.gate("shop", "PATCH", "updateOrder", "/orders/7")
+    assert (update.approvers, update.index) == (("role:ops",), 2)
+    # The template it was rendered from counts too: the first rule covering either wins.
+    templated = policy.gate(
+        "shop", "POST", None, "/orders/7/x", template="/orders/{order_id}/cancel"
+    )
+    assert templated.index == 0
+    assert policy.gate("shop", "GET", "getOrder", "/orders/7") is None
 
 
 async def test_a_gated_call_is_refused_before_sending(gated_policy: Path) -> None:

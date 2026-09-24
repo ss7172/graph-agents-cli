@@ -594,7 +594,10 @@ def test_show_check_and_lint_report_gated_calls_and_their_approvers(project: Pat
         "approvers": ["requester", "role:ops"],
         "timeout_s": 900,
         "rule": "approval.required_for.methods ['POST', 'DELETE']",
+        "rule_index": None,  # one approval mapping, not a list of rules
+        "also_covered_by": [],
     }
+    assert [r["rule"] for r in data["apis"]["orders"]["approval_rules"]] == ["approval"]
     assert calls["orders_update.py"]["approval"]["rule"] == (
         "approval.required_for.operations (operationId=updateOrder)"
     )
@@ -1136,33 +1139,374 @@ def test_approval_notes_a_gate_on_a_method_the_api_does_not_allow(project: Path)
     assert policy(project)["orders"]["allowed_methods"] == ["GET", "HEAD"]
 
 
-def _readme_approval_examples() -> list[list[str]]:
-    """The `graph-agents-cli api approval` commands of the README's approval section."""
+# ---------------------------------------------------------------------------
+# approval rules: other approvers for other calls of one API
+# ---------------------------------------------------------------------------
+
+ORDERS_SPEC = (
+    SPEC
+    + """\
+  /orders/{order_id}/cancel:
+    post: {operationId: cancelOrder, responses: {"200": {description: cancelled}}}
+"""
+)
+ORDER_WRITE_CALLS = {
+    "update_order.py": ("PATCH", "updateOrder", "/orders/{order_id}"),
+    "cancel_order.py": ("POST", "cancelOrder", "/orders/{order_id}/cancel"),
+    "create_order.py": ("POST", "createOrder", "/orders"),
+}
+UPDATE_ENTRY = {"operationId": "updateOrder", "path": "/orders/{order_id}", "methods": ["PATCH"]}
+CANCEL_ENTRY = {
+    "operationId": "cancelOrder",
+    "path": "/orders/{order_id}/cancel",
+    "methods": ["POST"],
+}
+CREATE_ENTRY = {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]}
+REQUESTER_RULE = ("--operations", "updateOrder,cancelOrder", "--approvers", "requester")
+ADMIN_RULE = ("--operations", "createOrder", "--approvers", "role:admin", "--timeout-s", "3600")
+
+
+def _orders_with_write_tools(project: Path, tmp_path: Path) -> None:
+    """The orders API with its OpenAPI spec, and one tool per write call it makes."""
+    spec = tmp_path / "orders-openapi.yaml"
+    spec.write_text(ORDERS_SPEC)
+    ok(*ORDERS_ADD, "--openapi", str(spec))
+    for tool, (method, operation_id, path) in ORDER_WRITE_CALLS.items():
+        call = {"api": "orders", "method": method, "operation_id": operation_id, "path": path}
+        (project / "app/tools" / tool).write_text(
+            f"API_CALLS = [\n    {json.dumps(call)},\n]\nTOOLS: list = []\n"
+        )
+
+
+def test_approval_rules_let_other_calls_wait_for_other_approvers(
+    project: Path, tmp_path: Path
+) -> None:
+    """The requester confirms update and cancel, role:admin approves create: one API."""
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    path = project / "api-policy.yaml"
+    # Comments inside the block survive its conversion to a list of rules.
+    path.write_text(
+        path.read_text().replace(
+            "      approvers: [requester]",
+            "      # the customer confirms their own changes\n      approvers: [requester]",
+        )
+    )
+    before = path.read_text()
+    dry = ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE, "--dry-run")
+    text = " ".join(dry.output.split())
+    assert "+      - required_for:" in dry.output and "+    approval:" not in dry.output
+    assert (
+        "now gated: create_order.py: POST createOrder /orders (approvers: role:admin; rule "
+        "approval[1])" in text
+    )
+    assert "update_order.py" not in text and "cancel_order.py" not in text  # unchanged
+    assert "This tightens or keeps the approval gate on orders (always safe)" in text
+    assert "Dry run: nothing was written." in text
+    assert path.read_text() == before
+
+    ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    written = path.read_text()
+    assert written.endswith(
+        "    approval:\n"
+        "      - required_for:\n"
+        "          operations:\n"
+        "            - operationId: updateOrder\n"
+        "              path: /orders/{order_id}\n"
+        "              methods: [PATCH]\n"
+        "            - operationId: cancelOrder\n"
+        "              path: /orders/{order_id}/cancel\n"
+        "              methods: [POST]\n"
+        "        # the customer confirms their own changes\n"
+        "        approvers: [requester]\n"
+        "      - required_for:\n"
+        "          operations:\n"
+        "            - operationId: createOrder\n"
+        "              path: /orders\n"
+        "              methods: [POST]\n"
+        "        approvers: ['role:admin']\n"
+        "        timeout_s: 3600\n"
+    ), written
+    assert policy(project)["orders"]["approval"] == [
+        {"required_for": {"operations": [UPDATE_ENTRY, CANCEL_ENTRY]}, "approvers": ["requester"]},
+        {
+            "required_for": {"operations": [CREATE_ENTRY]},
+            "approvers": ["role:admin"],
+            "timeout_s": 3600,
+        },
+    ]
+    load_policy_document(path)  # the shared rules (the runtime's too) accept it
+
+    # show, check and lint name the rule, and the approvers, each declared call waits for.
+    data = json.loads(ok("api", "show", "--json").output)
+    gates = {c["tool"]: c["approval"] for c in data["calls"]}
+    for tool in ("update_order.py", "cancel_order.py"):
+        assert (gates[tool]["approvers"], gates[tool]["rule_index"]) == (["requester"], 0)
+        assert gates[tool]["rule"].startswith("approval[0].required_for.operations")
+    assert gates["create_order.py"] == {
+        "approvers": ["role:admin"],
+        "timeout_s": 3600,
+        "rule": (
+            "approval[1].required_for.operations (operationId=createOrder path=/orders "
+            "methods=['POST'])"
+        ),
+        "rule_index": 1,
+        "also_covered_by": [],
+    }
+    assert data["gated"] == 3
+    rules = data["apis"]["orders"]["approval_rules"]
+    assert [(r["rule"], r["approvers"], r["timeout_s"]) for r in rules] == [
+        ("approval[0]", ["requester"], 900),
+        ("approval[1]", ["role:admin"], 3600),
+    ]
+    assert data["apis"]["orders"]["approval"][1]["approvers"] == ["role:admin"]
+    shown = " ".join(ok("api", "show", "orders").output.split())
+    assert "approval[1]: operations createOrder POST /orders; approved by role:admin" in shown
+    assert "a call waits for the first rule in file order that covers it" in shown
+    for args in (["api", "check"], ["lint", "--policy-only"]):
+        checked = " ".join(ok(*args).output.split())
+        assert "role:admin (approval[1].required_for.operations (operationId=createOrder" in checked
+        assert "requester (approval[0].required_for.operations (operationId=cancelOrder" in checked
+        assert "more than one approval rule" not in checked
+
+    # Adding the same rule again changes nothing.
+    again = ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    assert "already has that approval rule (approval[1])" in again.output
+    assert path.read_text() == written
+
+
+def test_approval_rule_changes_name_their_rule(project: Path, tmp_path: Path) -> None:
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    path = project / "api-policy.yaml"
+    before = path.read_text()
+    # With several rules, a change must say which one.
+    unnamed = cli("api", "approval", "orders", "--approvers", "role:ops")
+    assert unnamed.exit_code == 2
+    text = " ".join(unnamed.output.split())
+    assert "orders's approval is a list of 2 rules: name the one to change with --rule N" in text
+    assert "approval[1]: operations createOrder POST /orders; approved by role:admin" in text
+    missing = cli("api", "approval", "orders", "--rule", "2", "--approvers", "role:ops")
+    assert missing.exit_code == 3 and "--rule takes 0 to 1" in missing.output
+    assert path.read_text() == before
+
+    # Four eyes for create: role:ops may approve it too. It loosens that rule only.
+    wider = ok("api", "approval", "orders", "--rule", "1", "--approvers", "role:admin,role:ops")
+    text = " ".join(wider.output.split())
+    assert "This loosens the approval gate on orders (approval[1]: new approver(s) role:ops" in text
+    assert "approvers change (new approver(s) role:ops): create_order.py" in text
+    assert policy(project)["orders"]["approval"][1]["approvers"] == ["role:admin", "role:ops"]
+    assert policy(project)["orders"]["approval"][0]["approvers"] == ["requester"]
+    # Narrowing it back, and a shorter expiry, tighten.
+    narrower = ok("api", "approval", "orders", "--rule", "1", "--approvers", "role:admin")
+    assert "tightens or keeps" in narrower.output
+    shorter = ok("api", "approval", "orders", "--rule", "1", "--timeout-s", "600")
+    assert "tightens or keeps" in shorter.output
+    assert policy(project)["orders"]["approval"][1]["timeout_s"] == 600
+    same = ok("api", "approval", "orders", "--rule", "1", "--timeout-s", "600")
+    assert "orders's approval rule approval[1] already says that" in " ".join(same.output.split())
+    # Dropping cancel from the requester's rule sends it without a human: a loosening.
+    dropped = ok("api", "approval", "orders", "--rule", "0", "--operations", "updateOrder")
+    text = " ".join(dropped.output.split())
+    assert "approval[0]: no longer gated as written: cancelOrder POST" in text
+    assert "no longer gated: cancel_order.py" in text
+
+
+def test_a_rule_that_covers_more_takes_calls_from_the_rules_after_it(
+    project: Path, tmp_path: Path
+) -> None:
+    """The first rule in file order gates a call: widening an earlier rule moves calls to it."""
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    moved = ok(
+        "api",
+        "approval",
+        "orders",
+        "--rule",
+        "0",
+        "--operations",
+        "updateOrder,cancelOrder,createOrder",
+    )
+    text = " ".join(moved.output.split())
+    assert (
+        "approvers change (new approver(s) requester): create_order.py: POST createOrder "
+        "/orders: now requester; rule approval[0], was role:admin; rule approval[1]" in text
+    )
+    assert "approval[0] now comes first for calls approval[1] may have gated" in text
+    assert "This loosens the approval gate on orders" in text
+    # approval[1] now never applies: say so, in the command and in lint.
+    assert "apis.orders.approval[1] never gates a call" in text
+    checked = " ".join(ok("lint", "--policy-only").output.split())
+    assert "apis.orders.approval[1] never gates a call" in checked
+    assert "also covered by approval[1], which does not apply" in checked
+    assert "1 gated call(s) are covered by more than one approval rule" in checked
+
+
+def test_a_rule_is_removed_alone_and_the_last_one_with_the_block(
+    project: Path, tmp_path: Path
+) -> None:
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    ok("api", "approval", "orders", "--add-rule", "--methods", "DELETE", "--approvers", "role:ops")
+    assert len(policy(project)["orders"]["approval"]) == 3
+    removed = ok("api", "approval", "orders", "--rule", "1", "--remove")
+    text = " ".join(removed.output.split())
+    assert "no longer gated: create_order.py" in text
+    assert "approval[1] is removed: the calls it gated first now wait for a later rule" in text
+    assert "the rules after it move up one place" in text
+    rules = policy(project)["orders"]["approval"]
+    assert [r["approvers"] for r in rules] == [["requester"], ["role:ops"]]
+    ok("api", "approval", "orders", "--rule", "1", "--remove")
+    assert [r["approvers"] for r in policy(project)["orders"]["approval"]] == [["requester"]]
+    # One rule left, still a list: it is also addressed without --rule.
+    ok("api", "approval", "orders", "--timeout-s", "120")
+    assert policy(project)["orders"]["approval"] == [
+        {
+            "required_for": {"operations": [UPDATE_ENTRY, CANCEL_ENTRY]},
+            "approvers": ["requester"],
+            "timeout_s": 120,
+        }
+    ]
+    last = ok("api", "approval", "orders", "--rule", "0", "--remove")
+    assert "no call waits for an approval any more" in " ".join(last.output.split())
+    assert "approval" not in policy(project)["orders"]
+
+
+def test_remove_without_a_rule_removes_every_rule(project: Path, tmp_path: Path) -> None:
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    ok("api", "approval", "orders", "--add-rule", *ADMIN_RULE)
+    removed = ok("api", "approval", "orders", "--remove")
+    text = " ".join(removed.output.split())
+    assert "no call waits for an approval any more" in text
+    for tool in ORDER_WRITE_CALLS:
+        assert f"no longer gated: {tool}" in text
+    assert "approval" not in policy(project)["orders"]
+
+
+def test_replacing_a_single_gate_suggests_adding_a_rule_instead(
+    project: Path, tmp_path: Path
+) -> None:
+    """Naming other operations and approvers still replaces the one block, with a pointer."""
+    _orders_with_write_tools(project, tmp_path)
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    replaced = ok(
+        "api", "approval", "orders", "--operations", "createOrder", "--approvers", "role:admin"
+    )
+    text = " ".join(replaced.output.split())
+    assert "no longer gated as written: updateOrder PATCH" in text
+    assert (
+        "add a rule instead: graph-agents-cli api approval orders --add-rule --operations "
+        "createOrder --approvers role:admin" in text
+    )
+    assert policy(project)["orders"]["approval"]["approvers"] == ["role:admin"]
+
+
+def test_add_rule_to_a_one_line_block_and_to_none(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    path = project / "api-policy.yaml"
+    path.write_text(
+        path.read_text()
+        + "    approval: {required_for: {methods: [DELETE]}, approvers: [requester]}  # deletes\n"
+    )
+    ok("api", "approval", "orders", "--add-rule", "--methods", "POST", "--approvers", "role:ops")
+    text = path.read_text()
+    assert re.search(r"\n    approval: +# deletes\n", text), text
+    assert "      - {required_for: {methods: [DELETE]}, approvers: [requester]}\n" in text
+    assert policy(project)["orders"]["approval"] == [
+        {"required_for": {"methods": ["DELETE"]}, "approvers": ["requester"]},
+        {"required_for": {"methods": ["POST"]}, "approvers": ["role:ops"]},
+    ]
+    # Without an approval block, the first rule added is the block itself.
+    ok("api", "approval", "orders", "--remove")
+    ok("api", "approval", "orders", "--add-rule", "--methods", "POST", "--approvers", "requester")
+    assert policy(project)["orders"]["approval"] == {
+        "required_for": {"methods": ["POST"]},
+        "approvers": ["requester"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "code", "message"),
+    [
+        (["--add-rule", "--rule", "0", "--methods", "POST"], 2, "give one of them"),
+        (["--add-rule", "--remove"], 2, "--remove and --add-rule"),
+        (["--rule", "0", "--remove", "--methods", "POST"], 2, "--remove takes no other option"),
+        (["--add-rule", "--methods", "POST"], 2, "--add-rule needs --approvers"),
+        (["--add-rule", "--approvers", "requester"], 2, "--add-rule needs --methods and/or"),
+        (["--add-rule", "--timeout-s", "60", "--approvers", "x"], 2, "'x' is not an approver"),
+        (["--rule", "-1", "--approvers", "requester"], 2, "-1 is not in the range x>=0"),
+        (["--rule", "1", "--approvers", "requester"], 3, "--rule takes 0 to 0"),
+        (["--rule", "0", "--approvers", "requester"], 3, "orders has no approval rules"),
+    ],
+)
+def test_approval_rule_options_refuse_bad_input_and_write_nothing(
+    project: Path, args: list[str], code: int, message: str
+) -> None:
+    ok(*ORDERS_ADD)
+    if "no approval rules" not in message:
+        ok("api", "approval", "orders", "--methods", "DELETE", "--approvers", "requester")
+    before = (project / "api-policy.yaml").read_text()
+    result = cli("api", "approval", "orders", *args)
+    assert result.exit_code == code, result.output
+    assert message in " ".join(result.output.split())
+    assert (project / "api-policy.yaml").read_text() == before
+
+
+def _readme_approval_examples() -> list[list[list[str]]]:
+    """The `graph-agents-cli api approval` commands of the README's approval section, per block."""
     text = README.read_text(encoding="utf-8")
     section = text.split("### Human approval of calls (`approval`)", 1)[1].split("\n### ", 1)[0]
-    commands = []
+    blocks = []
     for block in section.split("```bash\n")[1:]:
         joined = block.split("```", 1)[0].replace("\\\n", " ")
-        for line in joined.splitlines():
-            line = line.strip()
-            if line.startswith("graph-agents-cli api approval "):
-                commands.append(shlex.split(line.split(" #", 1)[0])[1:])
-    return commands
+        commands = [
+            shlex.split(line.strip().split(" #", 1)[0])[1:]
+            for line in joined.splitlines()
+            if line.strip().startswith("graph-agents-cli api approval ")
+        ]
+        if commands:
+            blocks.append(commands)
+    return blocks
 
 
 def test_the_readme_approval_examples_work(project: Path) -> None:
-    commands = _readme_approval_examples()
-    assert len(commands) == 2, commands
+    """Each example block works on its own, from a policy without approval blocks."""
+    blocks = _readme_approval_examples()
+    assert [len(commands) for commands in blocks] == [2, 1, 1], blocks
     ok(*ORDERS_ADD)
     ok(
         *("api", "add", "payments", "--base-url-env", "PAYMENTS_API_BASE_URL"),
         *("--auth", "none", "--access", "read-write"),
     )
-    for command in commands:
-        ok(*command)
-    apis = policy(project)
-    assert apis["orders"]["approval"]["approvers"] == ["requester"]
-    assert apis["payments"]["approval"] == {
+    path = project / "api-policy.yaml"
+    fresh = path.read_text()
+    results = []
+    for commands in blocks:
+        path.write_text(fresh)
+        for command in commands:
+            ok(*command)
+        results.append(policy(project))
+    rules, confirmation, four_eyes = results
+    # Other approvers for other calls: two rules on one API.
+    assert rules["orders"]["approval"] == [
+        {
+            "required_for": {
+                "operations": [{"operationId": "updateOrder"}, {"operationId": "cancelOrder"}]
+            },
+            "approvers": ["requester"],
+        },
+        {
+            "required_for": {"operations": [{"operationId": "createOrder"}]},
+            "approvers": ["role:admin"],
+            "timeout_s": 3600,
+        },
+    ]
+    assert confirmation["orders"]["approval"]["approvers"] == ["requester"]
+    assert four_eyes["payments"]["approval"] == {
         "required_for": {"operations": [{"operationId": "refundPayment"}]},
         "approvers": ["role:finance-approver"],
         "timeout_s": 3600,

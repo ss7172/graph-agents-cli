@@ -74,7 +74,9 @@ Common mistakes:
 - A `role:` gate without an approver credential: the eval identity is the requester, which may
   not decide a gate that lists only `role:` approvers (403, a case error). Set
   `GRAPH_AGENTS_CLI_APPROVER_API_KEY` to the credential of a principal holding the role; gates
-  that list `requester` are still decided as the eval identity.
+  that list `requester` are still decided as the eval identity. With a list of approval rules,
+  each gate lists the approvers of the rule that gated its call, so one case may decide one
+  gate as the eval identity and another with the approver credential.
 - An empty `expect.approvals` list is refused (it would check nothing); use
   `expect.no_approvals: true`.
 

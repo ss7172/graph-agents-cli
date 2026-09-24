@@ -574,6 +574,57 @@ class YamlText:
         text = doc.replace_lines(first, last, [])
         self._commit(text, lambda d: _data_set(d, path, new_list))
 
+    def wrap_in_list(self, path: Path) -> None:
+        """Make the mapping at ``path`` the only item of a list, keeping its lines and comments.
+
+        A block mapping is indented under a dash where it stands (``approval:``
+        then ``  required_for: ...`` becomes ``approval:`` then
+        ``  - required_for: ...``, every line of it two columns deeper, comment
+        lines inside it included); a one-line flow mapping moves to its own
+        item line below the key, and a comment after it stays on the key's line.
+        """
+        current = self.get(path, _ABSENT)
+        if not isinstance(current, dict) or not current or not path:
+            raise EditError(f"{'.'.join(map(str, path))} is not a non-empty mapping")
+        doc = _Doc(self.text)
+        parent = doc.node(path[:-1])
+        if not isinstance(parent, yaml.MappingNode) or parent.flow_style:
+            raise EditError("the mapping's parent is not a block mapping")
+        pair = doc.pair(parent, path[-1])
+        assert pair is not None
+        key_node, value_node = pair
+        line_no = key_node.start_mark.line
+        if _is_flow(value_node):
+            if not _flow_single_line(value_node) or value_node.start_mark.line != line_no:
+                raise EditError("a flow mapping written over several lines, or below its key")
+            line = doc.lines[line_no].rstrip("\r\n")
+            flow = doc.text[value_node.start_mark.index : value_node.end_mark.index]
+            end = value_node.end_mark.column
+            head, tail = line[: value_node.start_mark.column].rstrip(), line[end:]
+            # A comment after the value keeps its column on the key's line.
+            key_line = head + " " * (end - len(head)) + tail if tail.strip() else head
+            column = key_node.start_mark.column + doc.step()
+            text = doc.replace_lines(line_no, line_no, [key_line, f"{' ' * column}- {flow}"])
+        else:
+            if not isinstance(value_node, yaml.MappingNode) or not value_node.value:
+                raise EditError("not a block mapping")
+            first = value_node.start_mark.line
+            last = _last_line(value_node)
+            if first <= line_no:
+                raise EditError("a block mapping on its key's line")
+            column = value_node.value[0][0].start_mark.column
+            lines: list[str] = []
+            for number in range(first, last + 1):
+                line = doc.lines[number].rstrip("\r\n")
+                if number == first:
+                    if line[:column].strip():
+                        raise EditError("the mapping shares its first line")
+                    lines.append(f"{line[:column]}- {line[column:]}")
+                else:
+                    lines.append(f"  {line}" if line.strip() else line)
+            text = doc.replace_lines(first, last, lines)
+        self._commit(text, lambda d: _data_set(d, path, [copy.deepcopy(current)]))
+
 
 _ABSENT: Any = type("Absent", (), {"__repr__": lambda self: "<absent>"})()
 

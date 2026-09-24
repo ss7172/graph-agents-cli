@@ -988,6 +988,102 @@ def test_a_dot_suffixed_path_is_gated_and_denied_as_at_runtime(tmp_path):
     assert "denied by denied_operations" in by_id["putCancel"].reason
 
 
+# A gate entry for POST /orders only (an entry without methods covers every method).
+RULE_A = {"operationId": "createOrder", "path": "/orders", "methods": ["POST"]}
+
+
+def test_with_approval_rules_each_call_names_the_rule_that_gates_it(tmp_path):
+    rules = {
+        **GATED_POLICY,
+        "approval": [
+            {
+                "required_for": {"operations": [RULE_A]},
+                "approvers": ["role:admin"],
+                "timeout_s": 3600,
+            },
+            GATED_POLICY["approval"],  # PUT, DELETE, and POST .../cancel
+            {"required_for": {"methods": ["POST"]}, "approvers": ["requester"]},
+        ],
+    }
+    write_policy(tmp_path, orders=rules)
+    tools = tmp_path / "app" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "orders.py").write_text(GATED_TOOL)
+    report = pc.build_report(tmp_path, "app")
+    by_id = {r.call.operation_id: r for r in report.results}
+    create = by_id["createOrder"].gate
+    assert (create.approvers, create.index, create.also) == (("role:admin",), 0, (2,))
+    cancel = by_id["cancelOrder"].gate
+    assert (cancel.approvers, cancel.index, cancel.also) == (("requester", "role:ops"), 1, (2,))
+    assert by_id["replaceOrder"].gate.rule.startswith("approval[1].required_for.methods")
+    assert by_id["listOrders"].gate is None
+    # The DELETE the API does not allow is noted by rule, as for one mapping.
+    assert report.notes == [
+        "apis.orders.approval[1] gates DELETE, which allowed_methods does not allow: approval "
+        "never widens access, so those calls stay refused"
+    ]
+    buf = io.StringIO()
+    pc.run_policy_check(tmp_path, "app", console=Console(file=buf, width=400))
+    out = buf.getvalue()
+    assert "role:admin (approval[0].required_for.operations (operationId=createOrder" in out
+    assert "also covered by approval[2], which does not apply" in out
+    assert "3 gated call(s) are covered by more than one approval rule" in out
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later", "never"),
+    [
+        # Provably covered by an earlier rule: it never gates a call.
+        ({"methods": ["*"]}, {"operations": [{"operationId": "x"}]}, True),
+        ({"methods": ["POST", "PUT"]}, {"methods": ["put"]}, True),
+        ({"methods": ["POST"]}, {"operations": [RULE_A]}, True),
+        ({"operations": [RULE_A]}, {"operations": [dict(RULE_A)]}, True),
+        (
+            {"operations": [{"operationId": "createOrder", "path": "/orders/"}]},
+            {"operations": [RULE_A]},
+            True,
+        ),
+        # Not provably covered: it may apply, so no note (sound, never a false alarm).
+        ({"methods": ["POST"]}, {"methods": ["POST", "DELETE"]}, False),
+        ({"methods": ["POST"]}, {"operations": [{"operationId": "createOrder"}]}, False),
+        ({"operations": [RULE_A]}, {"operations": [{"operationId": "createOrder"}]}, False),
+        ({"operations": [RULE_A]}, {"operations": [{**RULE_A, "methods": ["PUT"]}]}, False),
+        (
+            {"operations": [{"path": "/orders/{id}"}]},
+            {"operations": [{"path": "/orders/{x}"}]},
+            False,
+        ),
+        ({"operations": [{"path": "/orders"}]}, {"operations": [{"operationId": "x"}]}, False),
+    ],
+)
+def test_a_rule_earlier_rules_cover_entirely_is_noted_as_never_applying(
+    earlier: dict, later: dict, never: bool
+) -> None:
+    from graph_agents_cli._api_policy import approval_notes, rule_never_applies
+
+    api = {
+        "base_url_env": "A",
+        "auth": "none",
+        "allowed_methods": ["*"],
+        "approval": [
+            {"required_for": earlier, "approvers": ["requester"]},
+            {"required_for": later, "approvers": ["role:admin"]},
+        ],
+    }
+    assert rule_never_applies(api, 1) is never
+    assert rule_never_applies(api, 0) is False  # the first rule always may apply
+    notes = approval_notes("a", api)
+    assert (
+        notes
+        == [
+            "apis.a.approval[1] never gates a call: an earlier rule covers every call it covers, "
+            "and the first rule in file order gates a call. Move it above that rule, narrow the "
+            "earlier rule, or remove it"
+        ]
+    ) is never
+    assert never or notes == []
+
+
 def test_no_approval_column_without_a_gated_call(tmp_path):
     write_policy(tmp_path, orders=api(allowed_methods=["GET"]))
     tools = tmp_path / "app" / "tools"

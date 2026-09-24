@@ -538,8 +538,15 @@ def _metrics_token_checks(
 
 
 def _gated_apis(policy_path: Path) -> list[str]:
-    """``name (approvers)`` of each API whose valid policy has an approval block."""
-    from graph_agents_cli._api_policy import APPROVAL_KEY, ApiPolicyFileError, load_policy_document
+    """``name (approvers)`` of each API whose valid policy has an approval block.
+
+    With a list of approval rules, the approvers of every rule, each once.
+    """
+    from graph_agents_cli._api_policy import (
+        ApiPolicyFileError,
+        approval_rules,
+        load_policy_document,
+    )
 
     if not policy_path.is_file():
         return []
@@ -547,11 +554,13 @@ def _gated_apis(policy_path: Path) -> list[str]:
         document = load_policy_document(policy_path)
     except ApiPolicyFileError:
         return []  # `lint` reports an invalid policy
-    return [
-        f"{name} ({', '.join(str(a) for a in api[APPROVAL_KEY].get('approvers') or [])})"
-        for name, api in document["apis"].items()
-        if isinstance(api, dict) and api.get(APPROVAL_KEY) is not None
-    ]
+    gated = []
+    for name, api in document["apis"].items():
+        rules = approval_rules(api) if isinstance(api, dict) else []
+        if rules:
+            approvers = dict.fromkeys(str(a) for rule in rules for a in rule["approvers"])
+            gated.append(f"{name} ({', '.join(approvers)})")
+    return gated
 
 
 def check_approvals(

@@ -257,6 +257,13 @@ request waits for someone who sees exactly what it does.
   names). Approval never widens access: a gated call must still pass `allowed_methods`, the allowed and
   denied operations and the limits, and a denial still wins. Gate the writes that matter (every write
   method, or the operations that act on other people's records); reads usually need no gate.
+- **Other approvers for other calls.** `approval` may be a list of rules of that shape, each with its own
+  `required_for`, `approvers` and `timeout_s` (the requester confirms changes to their orders; a
+  `role:admin` approves new orders). The **first** rule in file order whose `required_for` covers a call
+  gates it, with that rule's approvers, which are recorded with the approval and decide it; a later rule
+  that also covers the call does not apply to it. Put narrow rules first. `graph-agents-cli api approval
+  NAME --add-rule ...` adds a rule and `--rule N` changes one (`approval[N]`, from 0); `lint` and
+  `graph-agents-cli api show` name the rule each declared call waits for.
 - **Who approves.** `requester` lets the principal who started the run (the thread's owner) confirm it;
   `role:<name>` lets any principal holding that role decide, never the requester itself (four eyes), unless
   `requester` is listed too. For example `approvers: [requester]` asks the user to confirm each order
@@ -281,7 +288,8 @@ request waits for someone who sees exactly what it does.
   sent once and never replayed. A decision is bound to the call it was taken for (its API, method and
   path), not to the policy of the moment: a rejected or expired call is never sent, even if a new policy no
   longer gates it; an approved one is sent only while the policy still allows it (a later denial or a
-  narrower `allowed_methods`/`allowed_operations` refuses it) and still gates it with the same approvers;
+  narrower `allowed_methods`/`allowed_operations` refuses it) and still gates it with the same approvers
+  (with rules: the rule that gates it now);
   and a call still waiting when another call's decision resumes the run waits on for its own approval (if
   the policy now refuses it, it is refused and its approval expires). The approvals table binds the decision
   to its tool call too: a tool call that runs again without a decision (a run continued without input or

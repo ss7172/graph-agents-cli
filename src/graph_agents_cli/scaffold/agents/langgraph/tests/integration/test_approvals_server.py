@@ -103,11 +103,14 @@ class Upstream(ThreadingHTTPServer):
         upstream = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_PATCH(self) -> None:
+                self.do_POST()
+
             def do_POST(self) -> None:
                 length = int(self.headers.get("content-length") or 0)
                 body = json.loads(self.rfile.read(length) or b"null")
                 with upstream.lock:
-                    upstream.received.append(("POST", self.path, body))
+                    upstream.received.append((self.command, self.path, body))
                 payload = json.dumps({"cancelled": self.path}).encode()
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
@@ -162,7 +165,12 @@ def post(
 
 def pause(server: Server, order: str, user: str = "alice") -> dict[str, Any]:
     """A run on a new thread that pauses before the gated call; its `message.end`."""
-    r = post(server, "/chat", {"message": f"Cancel the order for {order}"}, token(user))
+    return pause_on(server, f"Cancel the order for {order}", user)
+
+
+def pause_on(server: Server, message: str, user: str = "alice") -> dict[str, Any]:
+    """A run on a new thread for `message` that pauses before a gated call; its `message.end`."""
+    r = post(server, "/chat", {"message": message}, token(user))
     assert r.status_code == 200, r.text
     events = parse_sse(r.text)
     assert events[-1][0] == "message.end", events
@@ -426,6 +434,80 @@ def test_a_role_approver_decides_and_the_run_acts_as_the_requester(server: Serve
     result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
     assert json.loads(result["result"])["acting_as"] == "alice"
     assert server.upstream.sent_to("/orders/13/cancel") == [BODY]
+
+
+# One API, other approvers for other calls: the requester confirms updates and
+# cancellations, and a second person holding role:admin approves new orders.
+RULES_POLICY = """
+apis:
+  shop:
+    base_url_env: SHOP_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, POST, PATCH]
+    approval:
+      - required_for:
+          operations:
+            - {operationId: updateOrder, path: "/orders/{order_id}", methods: [PATCH]}
+            - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+        approvers: [requester]
+      - required_for:
+          operations:
+            - {operationId: createOrder, path: /orders, methods: [POST]}
+        approvers: ["role:admin"]
+        timeout_s: 3600
+"""
+
+
+@contextmanager
+def approval_rules(server: Server) -> Iterator[None]:
+    """The test policy with a list of approval rules, for the time of one test."""
+    server.policy.write_text(RULES_POLICY, encoding="utf-8")
+    try:
+        yield
+    finally:
+        server.policy.write_text(POLICY, encoding="utf-8")
+
+
+def test_each_call_waits_for_the_approvers_of_the_rule_that_gates_it(server: Server) -> None:
+    admin = token("root", "admin")
+    with approval_rules(server):
+        # An update: the requester's rule. Neither another user nor an admin decides it.
+        end = pause_on(server, "Amend the gift note for 61")
+        approval = end["approval"]
+        assert (approval["operation_id"], approval["approvers"]) == ("updateOrder", ["requester"])
+        for headers in (token("bob"), admin):
+            r = decide(server, end, "approve", headers)
+            assert r.status_code == 403 and r.json()["code"] == "not_an_approver", r.text
+        r = decide(server, end, "approve", token("alice"))
+        assert r.status_code == 200, r.text
+        assert server.upstream.sent_to("/orders/61") == [{"note": "gift"}]
+
+        # A cancellation: the requester's rule too; an admin may not decide it either.
+        end = pause_on(server, "Cancel the order for 62")
+        assert end["approval"]["approvers"] == ["requester"]
+        assert decide(server, end, "approve", admin).status_code == 403
+        assert decide(server, end, "approve", token("alice")).status_code == 200
+        assert server.upstream.sent_to("/orders/62/cancel") == [BODY]
+
+        # A new order: role:admin's rule, with its own expiry. The requester may not
+        # approve it, even holding the role (four eyes); another admin may.
+        end = pause_on(server, "Place a new one for GADGET-63")
+        approval = end["approval"]
+        assert (approval["operation_id"], approval["approvers"]) == ("createOrder", ["role:admin"])
+        assert approval["body"] == {"item": "GADGET-63"}
+        lifetime = datetime.fromisoformat(approval["expires_at"]) - datetime.fromisoformat(
+            approval["created_at"]
+        )
+        assert lifetime.total_seconds() == 3600
+        for headers in (token("alice"), token("alice", "admin"), token("bob", "ops")):
+            r = decide(server, end, "approve", headers)
+            assert r.status_code == 403, r.text
+        assert server.upstream.sent_to("/orders") == []
+        r = decide(server, end, "approve", admin)
+        assert r.status_code == 200, r.text
+        result = next(d for e, d in parse_sse(r.text) if e == "tool.result")
+        assert json.loads(result["result"])["acting_as"] == "alice"
+        assert server.upstream.sent_to("/orders") == [{"item": "GADGET-63"}]
 
 
 def test_the_server_refuses_a_request_changed_after_approval(server: Server) -> None:

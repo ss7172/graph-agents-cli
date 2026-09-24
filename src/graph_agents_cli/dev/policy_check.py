@@ -972,6 +972,13 @@ def print_report(report: PolicyReport, console: Console | None = None) -> None:
             f"[yellow]{report.gated} declared call(s) wait for a human approval before they are "
             "sent (the Approval column: who approves, and why).[/]"
         )
+    overlapping = sum(1 for r in report.results if r.gate is not None and r.gate.also)
+    if overlapping:
+        console.print(
+            f"[yellow]{overlapping} gated call(s) are covered by more than one approval rule: "
+            "the first rule in file order gates each one, with its approvers (the Approval "
+            "column names it, and the later rules that do not apply).[/]"
+        )
     if report.violations:
         console.print(f"[red]{report.violations} violation(s).[/]")
     else:

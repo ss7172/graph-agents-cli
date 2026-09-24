@@ -156,7 +156,7 @@ line naming the file that implements it.
 | `api allow\|deny NAME (OPERATION_ID [--method M --path P] \| --method M --path P) [--methods M,...] [--dry-run]` | Add an `allowed_operations` / `denied_operations` entry pinning every field given (`--methods` for `allow` only) |
 | `api revoke NAME (OPERATION_ID \| --method M --path P) [--from allowed\|denied] [--dry-run]` | Remove the matching entries (with `--method`, only that method of each) |
 | `api limits NAME [--max-calls-per-run N\|none] [--rate-per-minute N\|none] [--dry-run]` / `api remove NAME [--dry-run]` | Set or clear call limits / remove an API |
-| `api approval NAME [--methods M,...\|none] [--operations OP,...\|none] [--approvers requester,role:NAME,...] [--timeout-s N] [--remove] [--dry-run]` | Require a human approval before some of an API's calls are sent (each option given replaces that part of the block); says when a change loosens the gate, which is a reviewed change |
+| `api approval NAME [--methods M,...\|none] [--operations OP,...\|none] [--approvers requester,role:NAME,...] [--timeout-s N] [--add-rule \| --rule N] [--remove] [--dry-run]` | Require a human approval before some of an API's calls are sent (each option given replaces that part of the rule); `--add-rule` adds a rule for calls other approvers decide, `--rule N` changes or removes rule N; says when a change loosens the gate, which is a reviewed change |
 | `api show [NAME] [--json]` / `api check` | The effective policy, each tool's declared calls and which of them wait for whose approval / the policy check (`lint --policy-only`) |
 | `build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]` | `docker build` with the runtime's Dockerfile (default tag `latest`); a placeholder or invalid registry is exit 3 |
 | `eval run [--dataset] [--url] [--concurrency] [-H]... [--cookie]... [--app-name] [--timeout] [--config] [-o] [--judge-provider] [--judge-model] [--judge-timeout]` | `eval generate` then `eval grade`; the exit code is the gate |
@@ -466,7 +466,7 @@ apis:
     limits: {max_calls_per_run: 20, rate_per_minute: 120}         # optional
     approval:                              # optional: calls a human approves before they are sent
       required_for: {methods: [POST, PATCH, DELETE]}
-      approvers: [requester]
+      approvers: [requester]               # (or a list of such rules: other approvers for other calls)
 ```
 
 There is no default access level. Every API lists its methods; the CLI's two shorthands are
@@ -586,6 +586,40 @@ apis:
   path, its `operationId` the calls that name it, and a call that leaves out what the entry
   knows the operation by is gated too. Pin the path: `api approval --operations` does it from
   the API's `openapi:` spec.
+- **Other approvers for other calls.** `approval` may also be a non-empty list of rules, each
+  of the shape above (its own `required_for`, `approvers` and `timeout_s`), for an API whose
+  calls need different people: the requester confirms changes to their own orders, and a
+  second person approves new ones. A call is gated by the **first** rule in file order whose
+  `required_for` covers it, with that rule's approvers and expiry; a later rule that also
+  covers it does not apply to it. Rules may overlap: `lint`, `api check` and `api show` name
+  the rule (`approval[N]`, numbered from 0) each declared call waits for, count the calls
+  several rules cover, and note a rule that never applies because earlier rules cover
+  everything it does. A single mapping keeps its meaning (one rule).
+
+  ```yaml
+      approval:
+        - required_for:                      # the requester confirms changes to their orders
+            operations:
+              - {operationId: updateOrder, path: "/orders/{order_id}", methods: [PATCH]}
+              - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+          approvers: [requester]
+        - required_for:                      # a second person approves new orders
+            operations:
+              - {operationId: createOrder, path: /orders, methods: [POST]}
+          approvers: ["role:admin"]
+          timeout_s: 3600
+  ```
+
+  ```bash
+  graph-agents-cli api approval orders --operations updateOrder,cancelOrder --approvers requester
+  graph-agents-cli api approval orders --add-rule --operations createOrder \
+    --approvers role:admin --timeout-s 3600
+  ```
+
+  `--add-rule` appends a rule (it never loosens the gate: the calls earlier rules cover keep
+  their approvers); `--rule N` changes or, with `--remove`, removes rule N, and a command on a
+  list of several rules without either is refused. Put narrow rules before broad ones (an
+  `operations` rule before a `methods` rule that would also cover it): the first match wins.
 - **What happens.** Before sending a gated call the agent pauses the run (it stays in the
   checkpointer) and the stream ends with `message.end` status `awaiting_approval` and an
   `approval`: its id, the API, method, full path (ids filled in), query, body (fields the
@@ -603,7 +637,11 @@ apis:
   - An approved call is sent only if the current policy still allows it (a later denial, or
     narrower `allowed_methods` or `allowed_operations`, refuses it first) and still gates it
     with the same approvers; if the gate was removed, no longer covers the call, or names
-    other approvers, nothing is sent and the agent asks again.
+    other approvers, nothing is sent and the agent asks again. With a list of rules, the
+    approvers are those of the rule that gated the call when it paused (they are recorded
+    with the approval and decide it), and on resume those of the rule that gates it now: a
+    rule added after it changes nothing, and a reordered or edited list that hands the call
+    to other approvers voids the approval.
   - A call whose approval is still pending when another call's decision resumes the run
     waits on for its own approval, even if the policy no longer gates it. If the policy now
     refuses it (a denial, narrower `allowed_methods`), it is refused and its approval
@@ -678,7 +716,8 @@ apis:
   rules and the auth policy's `approval.decide` action. A task belongs to its principal, so
   only the requester decides over A2A; `role:` approvers use the HTTP routes.
 - **Checks.** `lint`, `api check` and `api show` list which declared calls wait for whose
-  approval; eval cases say how to decide each gate (see [Evaluation](#evaluation)).
+  approval, and by which rule; eval cases say how to decide each gate (see
+  [Evaluation](#evaluation)).
 
 ### The policy's lifecycle
 
