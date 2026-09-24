@@ -24,6 +24,7 @@ from click.testing import CliRunner
 from conftest import DATASET, FakeJudge, good_traces, make_trace, read_results, write_traces
 
 from graph_agents_cli.eval import _paths
+from graph_agents_cli.eval._common import write_json_file
 from graph_agents_cli.eval.cmd_grade import cmd_grade, load_traces
 from graph_agents_cli.eval.dataset import dataset_hash
 from graph_agents_cli.main import main
@@ -64,12 +65,20 @@ def test_all_pass_exit_0_and_results_schema(
         "missing": 0,
         "exit_code": 0,
     }
+    # Only greeting declares response_quality: the rate is over 1 scored case, not 3.
     assert results["quality"]["response_quality"] == {
         "pass_rate": 1.0,
         "min_pass_rate": 0.5,
         "met": True,
         "below_threshold": 0,
+        "scored": 1,
+        "passed": 1,
+        "status": "met",
     }
+    # The judge is the fake model: said next to the result and recorded.
+    assert results["fake_model"] == ["judge"]
+    assert any("not a quality signal" in w for w in results["warnings"])
+    assert "plumbing check only, not a quality signal" in result.output
     greeting = next(c for c in results["cases"] if c["id"] == "greeting")
     assert greeting["checks"]["contains"]["passed"] is True
     assert greeting["judge_scores"]["response_quality"]["score"] == 5.0
@@ -136,11 +145,20 @@ def test_deterministic_failure_exit_1_and_skips_judge_for_that_case(
     assert "gate failed" in result.output
 
 
+def _declare_everywhere(root: Path, metric: str = "response_quality") -> None:
+    """Declare ``metric`` on every case of DATASET and write matching good traces."""
+    cases = [dict(c, judge={**c.get("judge", {}), metric: {}}) for c in DATASET["cases"]]
+    write_json_file(root / _paths.DEFAULT_INPUT_DATASET, {"cases": cases})
+    by_id = {c["id"]: c for c in cases}
+    traces = [dict(t, case=by_id[t["case_id"]]) for t in good_traces()]
+    write_traces(root, traces, digest=dataset_hash(cases))
+
+
 def test_quality_metric_under_case_threshold_but_rate_met_exit_0(
     project: Path, runner: CliRunner, fake_judge: FakeJudge
 ) -> None:
+    _declare_everywhere(project)
     fake_judge.scores["greeting/response_quality"] = 2
-    write_traces(project, good_traces())
     result = _grade(runner)
     assert result.exit_code == 0, result.output
     results = read_results(project)
@@ -148,10 +166,49 @@ def test_quality_metric_under_case_threshold_but_rate_met_exit_0(
     assert results["cases"][0]["reasons"] == [
         "response_quality: score 2 below threshold 4 (quality)"
     ]
-    # 1 of 3 planned cases below threshold -> 66% >= min_pass_rate 0.5
-    assert results["quality"]["response_quality"]["pass_rate"] == pytest.approx(0.6667, abs=1e-3)
-    assert results["quality"]["response_quality"]["met"] is True
+    # 1 of the 3 cases scored on the metric is below threshold -> 66% >= min_pass_rate 0.5
+    quality = results["quality"]["response_quality"]
+    assert quality["pass_rate"] == pytest.approx(0.6667, abs=1e-3)
+    assert (quality["met"], quality["scored"], quality["passed"]) == (True, 3, 2)
     assert results["summary"]["quality_below_threshold"] == 1
+    assert "2/3" in result.output
+
+
+def test_quality_rate_counts_only_cases_that_ran_the_metric(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge
+) -> None:
+    """A case that never declared a quality metric is not a pass for it.
+
+    Only greeting declares response_quality; it scores 2 (below 4). Counting
+    the other two cases as passes would read 66% and meet min_pass_rate 0.5.
+    """
+    fake_judge.scores["greeting/response_quality"] = 2
+    write_traces(project, good_traces())
+    result = _grade(runner)
+    assert result.exit_code == 1, result.output
+    quality = read_results(project)["quality"]["response_quality"]
+    assert quality["pass_rate"] == 0.0 and quality["met"] is False
+    assert (quality["scored"], quality["passed"], quality["status"]) == (1, 0, "not_met")
+    assert "0/1" in result.output
+
+
+def test_quality_metric_no_case_ran_is_not_applicable(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge
+) -> None:
+    (project / _paths.DEFAULT_EVAL_CONFIG).write_text(
+        "judge: {provider: fake}\nquality_metrics:\n"
+        "  response_quality: {threshold: 4, min_pass_rate: 0.9}\n"
+        "  groundedness: {threshold: 4, min_pass_rate: 0.9}\n",
+        encoding="utf-8",
+    )
+    write_traces(project, good_traces())
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    grounded = read_results(project)["quality"]["groundedness"]
+    assert grounded["pass_rate"] is None and grounded["met"] is None
+    assert (grounded["scored"], grounded["status"]) == (0, "not_run")
+    assert "n/a (no case ran it)" in result.output
+    assert "100%" in result.output  # response_quality, scored on greeting
 
 
 def test_quality_metric_under_min_pass_rate_exit_1(
@@ -402,3 +459,52 @@ def test_grade_via_main_reports_exit_code(
     write_traces(project, traces)
     result = runner.invoke(main, ["eval", "grade"])
     assert result.exit_code == 1, result.output
+
+
+def test_fake_agent_on_the_local_server_is_warned_next_to_the_result(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge
+) -> None:
+    write_traces(project, good_traces(), extra={"target": "local", "model_provider": "fake"})
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    results = read_results(project)
+    assert results["fake_model"] == ["agent", "judge"]
+    assert results["warnings"][0].startswith("the agent ran on the deterministic fake model")
+    out = result.output
+    assert "Warning: the agent ran on the deterministic fake model (MODEL_PROVIDER=fake)" in out
+    assert "Warning: the judge is the deterministic fake model" in out
+    # Next to the verdict, on the same line, so a skimmed log cannot miss it.
+    verdict = next(line for line in out.splitlines() if line.startswith("Result:"))
+    assert verdict == (
+        "Result: gate met (exit code 0) (fake model: plumbing check only, not a quality signal)"
+    )
+    assert out.index("Warning: the agent ran") < out.index("Result:")
+
+
+def test_no_fake_warning_for_a_real_judge_or_a_url_agent(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A --url agent may run any model; a judge counts only when it scored something."""
+    real = FakeJudge()
+
+    def as_openai(root, payload, **kwargs):
+        return {**real(root, payload, **kwargs), "provider": "openai", "model": "gpt-x"}
+
+    monkeypatch.setattr("graph_agents_cli.eval.cmd_grade.run_judge_runner", as_openai)
+    write_traces(project, good_traces(), extra={"target": "url", "model_provider": "fake"})
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    results = read_results(project)
+    assert results["fake_model"] == [] and results["warnings"] == []
+    assert "not a quality signal" not in result.output
+
+    # No judge metric at all: the (fake) judge never ran, so it is not reported.
+    (project / _paths.DEFAULT_EVAL_CONFIG).write_text("judge: {provider: fake}\n", encoding="utf-8")
+    cases = [{k: v for k, v in c.items() if k != "judge"} for c in DATASET["cases"]]
+    write_json_file(project / _paths.DEFAULT_INPUT_DATASET, {"cases": cases})
+    by_id = {c["id"]: c for c in cases}
+    traces = [dict(t, case=by_id[t["case_id"]]) for t in good_traces()]
+    write_traces(project, traces, digest=dataset_hash(cases), extra={"target": "url"})
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    assert read_results(project)["fake_model"] == []

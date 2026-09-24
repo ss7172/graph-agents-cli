@@ -68,9 +68,15 @@ def test_metric_list_shows_checks_and_judges(project: Path, runner: CliRunner) -
     ):
         assert name in result.output
     assert "(quality)" in result.output
+    assert "Check modifiers" in result.output
     result = runner.invoke(metric_group, ["list", "--json"], catch_exceptions=False)
     data = json.loads(result.output)
     assert {c["name"] for c in data["checks"]} >= {"contains", "regex"}
+    # The documented behaviour, and the modifiers that change it.
+    checks = {c["name"]: c["description"] for c in data["checks"]}
+    assert "(case-insensitive; `case_insensitive: false` for exact case)" in checks["contains"]
+    assert "case-insensitive" in checks["not_contains"]
+    assert {m["name"] for m in data["modifiers"]} == {"ordered", "case_insensitive", "scope"}
     assert {j["name"] for j in data["judges"]} == {
         "response_quality",
         "task_success",
@@ -183,7 +189,9 @@ def test_submit_uploads_dataset_examples_experiment_runs_and_feedback(
 ) -> None:
     fake_judge.scores["greeting/response_quality"] = 3
     write_traces(project, good_traces())
-    assert runner.invoke(cmd_grade, [], catch_exceptions=False).exit_code == 0
+    # greeting is the only case scored on the quality metric: 0 of 1 met its
+    # threshold, under min_pass_rate 0.5, so the gate fails (exit 1).
+    assert runner.invoke(cmd_grade, [], catch_exceptions=False).exit_code == 1
     results = read_results(project)
     monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
     monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://smith.example")

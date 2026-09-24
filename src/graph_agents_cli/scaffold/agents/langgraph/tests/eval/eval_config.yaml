@@ -7,16 +7,24 @@
 judge:
   provider: null   # null = JUDGE_MODEL_PROVIDER, else the agent's MODEL_PROVIDER
   model: null      # null = JUDGE_MODEL_NAME, else MODEL_NAME
+  # Characters of one tool result a judge sees (default 50000; null = never
+  # cut). A longer result is cut with a TRUNCATED marker the judge is told
+  # about, and `eval grade` warns which cases were affected.
+  # max_tool_result_chars: 50000
 
 quality_metrics:
   # Only judge metrics listed here may score below their threshold on a bounded
-  # fraction of cases; every other judge metric and every deterministic check is mandatory.
+  # fraction of cases; every other judge metric and every deterministic check is
+  # mandatory. The rate counts only the cases that declare the metric.
   response_quality: { threshold: 4, min_pass_rate: 0.9 }
 
 # Override the built-in rubrics (response_quality, task_success, groundedness)
 # or add your own: {scale, rubric, prompt_template}. The prompt template may use
-# {metric}, {rubric}, {scale}, {conversation}, {response}, {reference},
-# {context}, {reference_section}, {context_section} and {tool_calls_section}.
+# {metric}, {rubric}, {scale}, {conversation}, {transcript}, {response},
+# {reference}, {context}, {reference_section}, {context_section} and
+# {tool_calls_section}. On a multi-turn case {conversation} holds every earlier
+# turn in full (user message, tool calls with results, agent reply) and the
+# latest user message; {transcript} adds the final turn's tool calls and reply.
 judges: {}
 
 # module:function callables run in this project's environment:

@@ -89,7 +89,15 @@ def load_traces(files: list[Path]) -> tuple[dict[str, Any], dict[str, dict[str, 
                 f"traces file {path} was generated from a different dataset "
                 f"({digest} != {meta['dataset_hash']}); grade one dataset at a time"
             )
-        for key in ("generated_at", "agent_version", "model", "dataset_paths", "base_url"):
+        for key in (
+            "generated_at",
+            "agent_version",
+            "model",
+            "model_provider",
+            "dataset_paths",
+            "base_url",
+            "target",
+        ):
             if data.get(key) is not None and meta.get(key) is None:
                 meta[key] = data[key]
         meta["files"].append(str(path))
@@ -158,6 +166,73 @@ def _planned_dataset(
     )
     cases = [EvalCase(id=cid, messages=[{"role": "user", "content": ""}]) for cid in traces]
     return Dataset(cases=cases, hash=str(meta.get("dataset_hash") or ""))
+
+
+FAKE_PROVIDER = "fake"
+
+FAKE_JUDGE_WARNING = (
+    "the judge is the deterministic fake model (provider 'fake'): it gives every judge metric "
+    "the maximum score without reading the reply, so the judge scores and quality rates are "
+    "not a quality signal. Set JUDGE_MODEL_PROVIDER (or judge.provider in eval_config.yaml) to "
+    "a real provider to measure quality."
+)
+FAKE_AGENT_WARNING = (
+    "the agent ran on the deterministic fake model (MODEL_PROVIDER=fake): its replies are "
+    "canned, so this run proves the eval plumbing only, not the agent's behaviour. Run it on "
+    "the project's real provider before trusting the gate."
+)
+
+
+def _is_fake(provider: Any) -> bool:
+    return str(provider or "").strip().lower() == FAKE_PROVIDER
+
+
+def _fake_models(
+    meta: dict[str, Any], judge: dict[str, Any], items: list[dict[str, Any]]
+) -> list[str]:
+    """``agent`` and/or ``judge`` when that side ran on the fake model.
+
+    The agent's provider is known only for traces from the project's own local
+    server (``target: local``); a ``--url`` agent may run any model. The judge
+    counts only when a model judge actually scored something.
+    """
+    fake: list[str] = []
+    if meta.get("target") == "local" and _is_fake(meta.get("model_provider")):
+        fake.append("agent")
+    if any(item.get("kind") == "judge" for item in items) and _is_fake(judge.get("provider")):
+        fake.append("judge")
+    return fake
+
+
+def _grade_warnings(
+    config: EvalConfig, grades: list[gate.CaseGrade], fake_model: list[str]
+) -> list[str]:
+    warnings: list[str] = []
+    if "agent" in fake_model:
+        warnings.append(FAKE_AGENT_WARNING)
+    if "judge" in fake_model:
+        warnings.append(FAKE_JUDGE_WARNING)
+    cut = [g for g in grades if g.truncated_tool_results]
+    if cut:
+        total = sum(g.truncated_tool_results for g in cut)
+        where = config.source.name if config.source else "eval_config.yaml"
+        warnings.append(
+            f"{total} tool result(s) in {len(cut)} case(s) were longer than "
+            f"judge.max_tool_result_chars ({config.max_tool_result_chars}) and were cut in the "
+            "judge prompt, marked TRUNCATED (the judge is told not to count the omitted part as "
+            f"unsupported): {', '.join(g.id for g in cut[:5])}{'...' if len(cut) > 5 else ''}. "
+            f"Raise judge.max_tool_result_chars in {where}, or set it to null, to show them in full."
+        )
+    unrecorded = [g.id for g in grades if g.unrecorded_turns]
+    if unrecorded:
+        warnings.append(
+            f"{len(unrecorded)} multi-turn case(s) have traces without per-turn records (an older "
+            "traces file or an eval generate override), so their judges saw the earlier user "
+            "messages but not the agent's earlier replies: "
+            f"{', '.join(unrecorded[:5])}{'...' if len(unrecorded) > 5 else ''}. Re-run "
+            "`eval generate` to record every turn."
+        )
+    return warnings
 
 
 def grade_traces(
@@ -243,6 +318,8 @@ def grade_traces(
     exit_code = gate.exit_code_for(summary, quality)
     summary["exit_code"] = exit_code
     identity = project_meta(project_root)
+    fake_model = _fake_models(meta, judge, items)
+    warnings = _grade_warnings(config, grades, fake_model)
 
     results_doc = {
         "dataset_hash": planned.hash or meta.get("dataset_hash"),
@@ -261,6 +338,10 @@ def grade_traces(
         "planned": len(grades),
         "summary": summary,
         "quality": quality,
+        # Which of the agent and the judge ran on the deterministic fake model:
+        # a gate met that way proves the plumbing only.
+        "fake_model": fake_model,
+        "warnings": warnings,
         "cases": [g.to_dict() for g in grades],
     }
 

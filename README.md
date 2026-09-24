@@ -22,7 +22,7 @@ lists every breaking change with its migration steps.
 
 **Contents:** [Install](#install) · [Quick start](#quick-start) · [Commands](#commands) ·
 [The generated service](#the-generated-service) · [Authentication](#authentication) ·
-[Outbound API policy](#outbound-api-policy-api-policyyaml) ·
+[Outbound API policy](#outbound-api-policy-api-policyyaml) · [Evaluation](#evaluation) ·
 [Environments and CD modes](#environments-and-cd-modes) · [Secrets](#secrets) ·
 [Exit codes](#exit-codes) · [Security model](#security-model) ·
 [Production checklist](#production-checklist) ·
@@ -496,6 +496,33 @@ An API without `allowed_operations` allows every operation within its methods. T
 not on it is refused from then on (the command names the declared calls that become refused).
 So list the operations the agent already calls first, as above: `api check` then passes
 throughout. When the API already has `allowed_operations`, skip that line.
+
+## Evaluation
+
+`eval run` sends every case in `tests/eval/datasets/*.json` to the agent's `POST /chat` (a
+multi-message case sends its user messages in order on one thread), then grades the traces. The
+exit code is the gate: every case accounted for, every deterministic `expect` check and every
+mandatory judge metric passed, and each metric listed under `quality_metrics` in
+`tests/eval/eval_config.yaml` at or above its `min_pass_rate`, a rate over the cases scored on
+that metric (a case that does not declare it is not counted as a pass). The
+`graph-agents-cli-eval` skill documents the dataset schema, checks, judges and exit codes.
+
+- `expect.contains` and `not_contains` compare case-insensitively (`not_contains: ["deleted"]`
+  also fails on "Deleted"); `expect.case_insensitive: false` makes them exact. On a multi-turn
+  case the checks read the final turn, or every turn with `expect.scope: all_turns`.
+- Judges see every turn: each earlier user message, tool call with its result, and agent reply,
+  then the reply being scored. A tool result longer than `judge.max_tool_result_chars` (default
+  50000 characters; `null` never cuts) is cut with a marker telling the judge how much it did not
+  see, and `eval grade` warns which cases were cut. Custom prompt templates can use `{transcript}`
+  for the whole case.
+- On the deterministic fake model (`MODEL_PROVIDER=fake` for the local agent, or a fake judge)
+  `eval grade` warns that the result is not a quality signal and marks "gate met" as a plumbing
+  check only. Run the gate on a real provider before trusting it.
+- `eval run --url` (and `eval generate --url`) drive a deployed agent, and **its tools run for
+  real there**: a case that creates, updates or cancels data does so in that environment, as the
+  identity the requests authenticate as. The command prints a warning naming the target and the
+  write methods the project's `api-policy.yaml` allows before the first case. Use an
+  environment whose data you can reset and a dedicated test identity, never production data.
 
 ## Environments and CD modes
 

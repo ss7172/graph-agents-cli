@@ -58,12 +58,15 @@ metadata:
 > that covers fewer cases than the dataset cannot pass.
 
 > **Exit codes.** `0` when no case is `failed`, `error`, or `missing`, and for every designated
-> quality metric the fraction of planned cases not `quality_below_threshold` on that metric is at
-> least its `min_pass_rate`. `1` when any case is `failed` or any quality metric misses its
-> `min_pass_rate`. `2` when any case is `error` or `missing` (incomplete qualification; a quality
-> rate is never computed over an incomplete run). `3` for configuration errors (unknown metric,
-> unreachable judge, a quality metric with no threshold). `eval run` returns the worst code of its
-> two stages. CI treats non-zero as a failed check.
+> quality metric the fraction of the cases **scored on that metric** (the cases that declare it and
+> reached the judge) that met its threshold is at least its `min_pass_rate`. A case that never
+> declared the metric is not counted as a pass; a quality metric no case ran is reported `n/a (no
+> case ran it)` and cannot fail the gate. `1` when any case is `failed` or any quality metric misses
+> its `min_pass_rate`. `2` when any case is `error` or `missing` (incomplete qualification; a
+> quality rate is never computed over an incomplete run). `3` for configuration errors (unknown
+> metric, unreachable judge, a quality metric with no threshold, an unknown `prompt_template`
+> placeholder). `eval run` returns the worst code of its two stages. CI treats non-zero as a
+> failed check.
 
 There is no run-wide `min_pass_rate`. Mandatory controls and case accounting cannot be relaxed by
 configuration. **The exit code is the gate; do not "read the scores" and declare success on a
@@ -94,6 +97,13 @@ graph-agents-cli eval metric list [--json]
   that is taken), 2 when a case is `error` or `missing` or the local server cannot start. The
   local server's port is the first free one of 18080-18089, or `GRAPH_AGENTS_CLI_RUN_PORT`; a
   SIGTERM or Ctrl-C stops it before the command exits.
+- **`--url` runs the agent's tools for real in that environment.** Every case is a real chat as
+  the identity the request authenticates as, so a tool that creates, updates, cancels or deletes
+  data does it there (a dataset that places orders places real orders on every run). Before the
+  first case, `eval generate`/`eval run` print a warning naming the target and the write methods
+  the project's `api-policy.yaml` allows. Point `--url` only at an environment whose data you can
+  reset, with a dedicated test identity; never at production data. All cases share one identity
+  (`-H` or `GRAPH_AGENTS_CLI_API_KEY`).
 - `eval grade` runs the deterministic checks in the CLI process first; judge and custom metrics
   then run **inside the project's environment**: the CLI stages `.graph-agents-cli/judge_runner.py`
   into the project and runs it with `uv run python`, and the runner calls the template's
@@ -101,6 +111,16 @@ graph-agents-cli eval metric list [--json]
   them for the run). Judges run only for the metrics a case declares and only for cases that
   passed the deterministic checks. No evaluation service; no LangChain in the CLI. `--traces`
   defaults to the newest traces file; a directory merges every `*.json` from one dataset.
+- **What a judge sees.** On a multi-turn case, every earlier turn in full (the user message, each
+  tool call with its result, the agent's reply), then the latest user message, the reply being
+  scored and that reply's tool calls. A tool result longer than `judge.max_tool_result_chars`
+  (default 50000 characters; `null` never cuts) is cut with a `[TRUNCATED ...]` marker saying how
+  much the judge did not see, the groundedness rubric tells the judge not to count the omitted
+  part as unsupported, and `eval grade` warns which cases were cut (`judge_notes` in the results).
+- **The fake model is announced.** When the agent ran on `MODEL_PROVIDER=fake` on the local
+  server, or the judge is the fake model, `eval grade` prints a warning above the result and
+  appends "(fake model: plumbing check only, not a quality signal)" to "gate met"; the results
+  record `fake_model` and `warnings`.
 - `eval run` validates the eval config and every case's metrics **before** generating (exit 3,
   no model calls spent; skipped when an `eval.grade` override is installed), then chains both on a
   fresh traces file and honours extension overrides of both `eval.generate` and `eval.grade`.
@@ -144,7 +164,8 @@ Use `eval compare before.json after.json` to prove a fix did not regress other c
 
 | Need | Use |
 |---|---|
-| Response must mention / must not mention | `expect.contains`, `expect.not_contains` |
+| Response must mention / must not mention | `expect.contains`, `expect.not_contains` (case-insensitive; `case_insensitive: false` for exact case) |
+| A multi-turn case: check every turn, not only the final reply | `expect.scope: all_turns` (replies, tool calls in order, each turn's latency, summed tokens) |
 | Exact shape (id, number, format) | `expect.regex` |
 | Structured output | `expect.json_schema` |
 | The right tool with the right arguments | `expect.tool_calls: [{name, args_subset}]`, `ordered: true` when order matters |
@@ -162,6 +183,7 @@ quality metric.
 
 ```yaml
 judge: { provider: null, model: null }          # null = agent's provider/model (JUDGE_* env)
+                                                 # max_tool_result_chars: 50000 (null = never cut)
 quality_metrics:                                 # only these may be below 100 percent
   response_quality: { threshold: 4, min_pass_rate: 0.9 }
 judges: {}                                       # {} = the three built-in rubrics (the scaffold default);
@@ -169,13 +191,18 @@ judges: {}                                       # {} = the three built-in rubri
 custom_metrics: []                               # python callables: module:function, run in the project env
 ```
 
+`judge:` accepts only `provider`, `model` and `max_tool_result_chars`; any other key is exit 3.
 A custom `prompt_template` may use exactly these placeholders: `{metric}`, `{rubric}`, `{scale}`,
-`{conversation}`, `{response}`, `{reference}`, `{context}`, `{reference_section}`,
-`{context_section}`, `{tool_calls_section}`; any other placeholder is a configuration error
-(exit 3). The scaffolded config is `judge: {provider: null, model: null}`,
+`{conversation}`, `{transcript}`, `{response}`, `{reference}`, `{context}`,
+`{reference_section}`, `{context_section}`, `{tool_calls_section}`; any other placeholder is a
+configuration error (exit 3, when the config loads). `{conversation}` is every earlier turn in
+full plus the latest user message, `{tool_calls_section}` the scored reply's tool calls, and
+`{transcript}` the whole case including the scored reply. The scaffolded config is
+`judge: {provider: null, model: null}`,
 `quality_metrics: {response_quality: {threshold: 4, min_pass_rate: 0.9}}`, `judges: {}`,
-`custom_metrics: []`, and the scaffolded `basic-dataset.json` (greeting, weather, capabilities)
-passes on the `fake` provider with the fake judge.
+`custom_metrics: []`, and the scaffolded `basic-dataset.json` (greeting, weather, capabilities,
+and the two-turn weather-follow-up with `scope: all_turns`) passes on the `fake` provider with the
+fake judge.
 
 ---
 
@@ -188,22 +215,36 @@ passes on the `fake` provider with the fake judge.
   threshold is a configuration error (exit 3).
 - **Tool-call assertions are on names and argument subsets**, not on wording; use
   `args_subset` for the fields you care about.
+- **`contains` / `not_contains` ignore case** (`"hello"` matches "Hello!"; `not_contains:
+  ["deleted"]` also catches "Deleted"). Set `expect.case_insensitive: false` for exact case, or
+  use `regex`. A `not_contains` on a word the agent may legitimately say (a status name listed in
+  a correct refusal) makes a flaky check; forbid the specific leak instead.
+- **Multi-turn cases check the final turn by default.** `expect` reads the final reply and the
+  final turn's tool calls; `scope: all_turns` reads every turn (a create-then-cancel case can then
+  assert `create_order` then `cancel_order` with `ordered: true`). Judges always see every turn.
+- **A quality rate counts only the cases scored on that metric.** Declaring `response_quality` on
+  3 of 12 cases gives a rate over 3 cases, not 12.
 - **Score fluctuates between runs:** the judge is a model. Lower `temperature` is already the
   default; write rubrics with concrete criteria; make the metric a quality metric with a
   `min_pass_rate` when variance is acceptable, never by loosening a mandatory check.
 - **Tracing during eval:** traces are files under `artifacts/`; `TRACING_ENABLED` is separate and
   off by default. Eval never depends on run records.
 - **A config or dataset in the previous template's format** (`metrics_to_run`, `eval_cases`) or a `prompt_template`
-  with `{prompt}`/`{tool_calls}`: exit 3 at the first judged case; use the placeholders above.
+  with `{prompt}`/`{tool_calls}`: exit 3 when the config loads, before any case runs; use the
+  placeholders above.
 - **`MODEL_PROVIDER=fake` in `.env`** makes both the agent and the judge deterministic (score =
-  scale maximum); useful to prove the harness, useless for behaviour.
+  scale maximum); useful to prove the harness, useless for behaviour. `eval grade` says so next to
+  the result; never report such a "gate met" as a quality result.
+- **A judge that mentions a "truncated" tool result**: the result was longer than
+  `judge.max_tool_result_chars`; raise it (or set `null`) rather than loosening the metric.
 - **Do not put behaviour checks in pytest.** They belong here.
 
 ---
 
 ## Proving your work
 
-- After running eval, paste the per-status counts, the quality table, and the exit code.
+- After running eval, paste the per-status counts, the quality table, and the exit code, and say
+  which provider the agent and the judge ran on (a run on the fake model proves the plumbing only).
 - After a fix, show `eval compare` output for the case you fixed and confirm no regressions.
 - Before deploy, re-run `eval run` and show every case; the exit code must be 0.
 
@@ -219,8 +260,8 @@ provider and model (from the manifest) when that provider's key is a repository 
 provider differs from the project's); `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL`
 variables and a `JUDGE_API_KEY` secret configure a separate judge. Without a key the gate runs on
 the deterministic `fake` provider (the scaffolded dataset passes that way) and prints the warning
-"Eval gate is not a quality signal": it then only proves the plumbing. A real provider sends
-eval prompts to it on every PR.
+"Eval gate is not a quality signal": it then only proves the plumbing (`eval grade` itself warns
+the same way, locally too). A real provider sends eval prompts to it on every PR.
 
 ## Not covered by this skill
 

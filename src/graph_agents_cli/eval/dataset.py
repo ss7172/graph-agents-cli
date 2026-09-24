@@ -40,7 +40,15 @@ EXPECT_KEYS: tuple[str, ...] = (
     "no_tool_calls",
     "max_latency_ms",
     "max_tokens",
+    "case_insensitive",
+    "scope",
 )
+
+# Which turns of a multi-turn case the expect checks read: the final turn (the
+# reply being graded) or every turn. A single-turn case is the same either way.
+SCOPE_FINAL_TURN = "final_turn"
+SCOPE_ALL_TURNS = "all_turns"
+EXPECT_SCOPES: tuple[str, ...] = (SCOPE_FINAL_TURN, SCOPE_ALL_TURNS)
 
 EXPECT_DEFAULTS: dict[str, Any] = {
     "contains": [],
@@ -52,6 +60,10 @@ EXPECT_DEFAULTS: dict[str, Any] = {
     "no_tool_calls": False,
     "max_latency_ms": None,
     "max_tokens": None,
+    # contains / not_contains compare case-insensitively unless this is false:
+    # a refusal check such as not_contains ["deleted"] must also catch "Deleted".
+    "case_insensitive": True,
+    "scope": SCOPE_FINAL_TURN,
 }
 
 MESSAGE_ROLES: tuple[str, ...] = ("user", "assistant", "system")
@@ -208,9 +220,14 @@ def _validate_expect(expect: dict[str, Any], where: str) -> None:
                 raise EvalConfigError(
                     f"{where}: expect.tool_calls[{i}].args_subset must be an object"
                 )
-    for key in ("ordered", "no_tool_calls"):
+    for key in ("ordered", "no_tool_calls", "case_insensitive"):
         if not isinstance(expect[key], bool):
             raise EvalConfigError(f"{where}: expect.{key} must be true or false")
+    if expect["scope"] not in EXPECT_SCOPES:
+        raise EvalConfigError(
+            f"{where}: expect.scope must be one of {', '.join(EXPECT_SCOPES)} "
+            f"(got {expect['scope']!r})"
+        )
     for key in ("max_latency_ms", "max_tokens"):
         value = expect[key]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int | float)):

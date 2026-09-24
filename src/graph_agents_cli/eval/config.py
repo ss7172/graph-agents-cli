@@ -17,6 +17,7 @@
 Shape::
 
     judge: { provider: null, model: null }          # null = agent's provider/model
+                                                     # max_tool_result_chars: 50000 (null = never cut)
     quality_metrics:                                 # only these may be below 100 percent
       response_quality: { threshold: 4, min_pass_rate: 0.9 }
     judges:                                          # rubric text is versioned here
@@ -37,6 +38,7 @@ from typing import Any
 import yaml
 
 from graph_agents_cli.eval._common import EvalConfigError
+from graph_agents_cli.eval.transcript import DEFAULT_MAX_TOOL_RESULT_CHARS, render_tool_calls
 
 DEFAULT_SCALE = 5
 
@@ -45,14 +47,33 @@ DEFAULT_PROMPT_TEMPLATE = """You are a strict, impartial evaluator of an AI agen
 Rubric ({metric}):
 {rubric}
 
-Conversation so far:
+Conversation so far (earlier turns in full: the user's message, each tool call the agent made \
+with its result, and the agent's reply; then the user's latest message):
 {conversation}
 
-Agent response:
+Agent response (the reply to the latest message; this is what you score):
 {response}
 {reference_section}{context_section}{tool_calls_section}
-Score the agent response from 1 to {scale} against the rubric ({scale} is best).
+Score the agent response from 1 to {scale} against the rubric ({scale} is best), taking the \
+earlier turns into account.
 Reply with JSON only, on one line: {{"score": <number>, "reasoning": "<one or two sentences>"}}"""
+
+# Placeholders a judge prompt_template may use; any other one is exit 3.
+PROMPT_PLACEHOLDERS: tuple[str, ...] = (
+    "metric",
+    "rubric",
+    "scale",
+    "conversation",
+    "transcript",
+    "response",
+    "reference",
+    "context",
+    "reference_section",
+    "context_section",
+    "tool_calls_section",
+)
+
+JUDGE_KEYS: tuple[str, ...] = ("provider", "model", "max_tool_result_chars")
 
 BUILTIN_JUDGES: dict[str, dict[str, Any]] = {
     "response_quality": {
@@ -70,9 +91,11 @@ BUILTIN_JUDGES: dict[str, dict[str, Any]] = {
         "scale": DEFAULT_SCALE,
         "rubric": (
             "Judge whether the agent completed the user's task end to end, including using "
-            "tools when the task required it. 5: task fully accomplished with a correct "
-            "outcome. 3: partially accomplished or needs a follow-up from the user. 1: task "
-            "not attempted, abandoned, or completed incorrectly."
+            "tools when the task required it. In a multi-turn conversation the task is the "
+            "latest request in light of the earlier turns; what the agent already did or said "
+            "in an earlier turn counts and need not be repeated. 5: task fully accomplished "
+            "with a correct outcome. 3: partially accomplished or needs a follow-up from the "
+            "user. 1: task not attempted, abandoned, or completed incorrectly."
         ),
     },
     "groundedness": {
@@ -80,8 +103,11 @@ BUILTIN_JUDGES: dict[str, dict[str, Any]] = {
         "scale": DEFAULT_SCALE,
         "rubric": (
             "Check every factual claim in the response against the supplied context and the "
-            "tool results. 5: every claim is supported. 3: mostly supported with minor "
-            "unsupported detail. 1: contradicts the context or invents facts."
+            "tool results of every turn, including earlier turns of the conversation. A tool "
+            "result marked TRUNCATED was cut for length: a claim that could come from its "
+            "omitted part is not unsupported. 5: every claim is supported. 3: mostly "
+            "supported with minor unsupported detail. 1: contradicts the context or invents "
+            "facts."
         ),
     },
 }
@@ -117,6 +143,8 @@ class CustomMetric:
 class EvalConfig:
     judge_provider: str | None = None
     judge_model: str | None = None
+    # Characters of one tool result shown to a judge; None = never cut.
+    max_tool_result_chars: int | None = DEFAULT_MAX_TOOL_RESULT_CHARS
     quality_metrics: dict[str, QualityMetric] = field(default_factory=dict)
     judges: dict[str, JudgeSpec] = field(default_factory=dict)
     custom_metrics: dict[str, CustomMetric] = field(default_factory=dict)
@@ -172,8 +200,24 @@ def _parse_judges(raw: Any, where: str) -> dict[str, JudgeSpec]:
             base.threshold = _number(spec["threshold"], f"{where}: judges.{name}.threshold")
         if not base.rubric:
             raise EvalConfigError(f"{where}: judges.{name} needs a 'rubric'")
+        _check_placeholders(base, where)
         judges[str(name)] = base
     return judges
+
+
+def _check_placeholders(spec: JudgeSpec, where: str) -> None:
+    """A template with an unknown placeholder fails when the config loads (exit 3).
+
+    ``eval run`` loads the config before generating, so the mistake costs no
+    agent calls instead of surfacing at the first judged case.
+    """
+    try:
+        spec.prompt_template.format(**dict.fromkeys(PROMPT_PLACEHOLDERS, ""))
+    except (KeyError, IndexError, ValueError) as exc:
+        raise EvalConfigError(
+            f"{where}: judges.{spec.name}.prompt_template has an unknown placeholder: {exc} "
+            f"(allowed: {', '.join('{' + p + '}' for p in PROMPT_PLACEHOLDERS)})"
+        ) from exc
 
 
 def _parse_custom_metrics(raw: Any, where: str) -> dict[str, CustomMetric]:
@@ -239,6 +283,21 @@ def _parse_quality_metrics(raw: Any, where: str, known: set[str]) -> dict[str, Q
     return metrics
 
 
+def _max_tool_result_chars(judge: dict[str, Any], where: str) -> int | None:
+    """``judge.max_tool_result_chars``: absent = the default, null = never cut, else >= 1."""
+    if "max_tool_result_chars" not in judge:
+        return DEFAULT_MAX_TOOL_RESULT_CHARS
+    value = judge["max_tool_result_chars"]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise EvalConfigError(
+            f"{where}: judge.max_tool_result_chars must be a whole number of characters "
+            f">= 1, or null to never cut tool results (got {value!r})"
+        )
+    return value
+
+
 def parse_eval_config(data: Any, source: Path | None = None) -> EvalConfig:
     """Validate a parsed YAML mapping into an :class:`EvalConfig`."""
     where = str(source) if source else "eval config"
@@ -253,6 +312,13 @@ def parse_eval_config(data: Any, source: Path | None = None) -> EvalConfig:
     judge = data.get("judge") or {}
     if not isinstance(judge, dict):
         raise EvalConfigError(f"{where}: 'judge' must be a mapping with provider/model")
+    unknown_judge = sorted(str(k) for k in set(judge) - set(JUDGE_KEYS))
+    if unknown_judge:
+        raise EvalConfigError(
+            f"{where}: unknown judge key(s) {', '.join(unknown_judge)}; "
+            f"known: {', '.join(JUDGE_KEYS)}"
+        )
+    max_chars = _max_tool_result_chars(judge, where)
     judges = _parse_judges(data.get("judges"), where)
     custom = _parse_custom_metrics(data.get("custom_metrics"), where)
     overlap = set(judges) & set(custom)
@@ -266,6 +332,7 @@ def parse_eval_config(data: Any, source: Path | None = None) -> EvalConfig:
     return EvalConfig(
         judge_provider=str(provider) if provider else None,
         judge_model=str(model) if model else None,
+        max_tool_result_chars=max_chars,
         quality_metrics=quality,
         judges=judges,
         custom_metrics=custom,
@@ -321,25 +388,36 @@ def render_judge_prompt(
     reference: str | None,
     context: str | None,
     tool_calls: list[dict[str, Any]] | None,
+    transcript: str | None = None,
+    max_tool_result_chars: int | None = DEFAULT_MAX_TOOL_RESULT_CHARS,
 ) -> str:
-    """Fill the judge prompt template. Unknown placeholders are left untouched."""
+    """Fill the judge prompt template; an unknown placeholder is a configuration error.
+
+    ``conversation`` is everything before the reply being scored (earlier turns
+    in full, see :mod:`graph_agents_cli.eval.transcript`), ``tool_calls`` the
+    final turn's calls and ``transcript`` the whole case; without one it is
+    assembled from the other three. A tool result longer than
+    ``max_tool_result_chars`` is cut with an explicit marker, never silently.
+    """
     reference_section = f"\nReference answer (ground truth):\n{reference}\n" if reference else ""
     context_section = f"\nGrounding context:\n{context}\n" if context else ""
+    lines, _, _ = render_tool_calls(tool_calls, max_tool_result_chars)
     tool_calls_section = ""
-    if tool_calls:
-        lines = []
-        for call in tool_calls:
-            result = call.get("result")
-            result_text = "" if result is None else str(result)
-            if len(result_text) > 2000:
-                result_text = result_text[:2000] + "..."
-            flag = " (error)" if call.get("is_error") else ""
-            lines.append(f"- {call.get('name')}({call.get('args')}) -> {result_text}{flag}")
-        tool_calls_section = "\nTool calls made by the agent:\n" + "\n".join(lines) + "\n"
+    if lines:
+        tool_calls_section = (
+            "\nTool calls the agent made for this response:\n"
+            + "\n".join(f"- {line}" for line in lines)
+            + "\n"
+        )
+    if transcript is None:
+        transcript = "\n".join(
+            [conversation, *(f"agent tool call: {line}" for line in lines), f"agent: {response}"]
+        )
     values = {
         "metric": spec.name,
         "rubric": spec.rubric,
         "conversation": conversation,
+        "transcript": transcript,
         "response": response,
         "reference": reference or "",
         "context": context or "",
@@ -352,5 +430,6 @@ def render_judge_prompt(
         return spec.prompt_template.format(**values)
     except (KeyError, IndexError, ValueError) as exc:
         raise EvalConfigError(
-            f"judges.{spec.name}.prompt_template has an unknown placeholder: {exc}"
+            f"judges.{spec.name}.prompt_template has an unknown placeholder: {exc} "
+            f"(allowed: {', '.join('{' + p + '}' for p in PROMPT_PLACEHOLDERS)})"
         ) from exc

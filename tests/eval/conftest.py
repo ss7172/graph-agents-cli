@@ -181,6 +181,7 @@ def write_traces(
     digest: str | None = None,
     path: Path | None = None,
     generated_at: str = "2026-09-22T00:00:00+00:00",
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     doc = {
         "dataset_hash": digest or dataset_hash(DATASET["cases"]),
@@ -188,6 +189,7 @@ def write_traces(
         "generated_at": generated_at,
         "agent_version": "0.3.1",
         "model": "fake/fake-model",
+        **(extra or {}),
         "traces": traces,
     }
     path = path or (_paths.default_traces_dir(root) / "traces_20260922_000000.json")

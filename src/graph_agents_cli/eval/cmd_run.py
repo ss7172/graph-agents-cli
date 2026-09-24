@@ -93,6 +93,20 @@ def _preflight_grade_config(
         gate.validate_case_metrics(config, case)
 
 
+def _warn_live_target_for_override(
+    console: Console, project_root: Path, *, dataset: str | None, url: str
+) -> None:
+    from graph_agents_cli.eval.cmd_generate import warn_live_target
+    from graph_agents_cli.eval.dataset import load_dataset
+
+    files = _paths.resolve_input_datasets(project_root, dataset)
+    try:
+        count: int | None = len(load_dataset(files).cases) if files else None
+    except EvalConfigError:
+        count = None  # the override reports its own dataset problems
+    warn_live_target(console, url.rstrip("/"), project_root, count)
+
+
 def _generate_override_argv(
     project_root: Path,
     *,
@@ -165,7 +179,12 @@ def _grade_override_argv(
     "--dataset", default=None, help="Dataset file or directory. Forwarded to `eval generate`."
 )
 @click.option(
-    "--url", default=None, help="Base URL of a running agent. Forwarded to `eval generate`."
+    "--url",
+    default=None,
+    help=(
+        "Base URL of a running agent; its tools run for real there, write tools included. "
+        "Forwarded to `eval generate`."
+    ),
 )
 @click.option(
     "--concurrency",
@@ -264,6 +283,10 @@ def cmd_run(
     console.rule("[bold]Step 1/2: eval generate[/bold]")
     generate_override = installed_override("eval.generate")
     if generate_override is not None:
+        if url:
+            # The built-in generate warns itself; an override may not, and the
+            # side effects on the target are the same.
+            _warn_live_target_for_override(console, project_root, dataset=dataset, url=url)
         argv = _generate_override_argv(
             project_root,
             dataset=dataset,

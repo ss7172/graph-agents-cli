@@ -152,7 +152,80 @@ def test_generate_starts_and_stops_local_server_with_env_api_key(
     assert chat.calls[0]["base_url"] == "http://127.0.0.1:18080"
     # The project's .env API_KEY is used as the shared-bearer credential locally.
     assert chat.calls[0]["headers"]["Authorization"] == "Bearer local-secret"
-    assert read_traces(project)["base_url"] == "http://127.0.0.1:18080"
+    doc = read_traces(project)
+    assert doc["base_url"] == "http://127.0.0.1:18080"
+    # The local server runs the project's own model: recorded for `eval grade`.
+    assert doc["target"] == "local" and doc["model_provider"] == "fake"
+    # A local run touches nothing outside this machine: no live-target warning.
+    assert "will run against the agent at" not in result.output
+
+
+POLICY = """\
+apis:
+  orders:
+    base_url_env: ORDERS_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+    allowed_operations:
+      - {operationId: listOrders, path: /orders, methods: [GET]}
+      - {operationId: createOrder, path: /orders, methods: [POST]}
+      - {operationId: updateOrder, path: "/orders/{order_id}", methods: [PATCH]}
+    denied_operations:
+      - {operationId: deleteOrder, path: "/orders/{order_id}", methods: [DELETE]}
+  catalog:
+    base_url_env: CATALOG_API_BASE_URL
+    auth: none
+    allowed_methods: [GET, HEAD]
+  admin:
+    base_url_env: ADMIN_API_BASE_URL
+    auth: none
+    allowed_methods: ["*"]
+"""
+
+
+def test_generate_with_url_warns_that_tools_run_for_real_there(
+    project: Path, runner: CliRunner, fake_chat
+) -> None:
+    fake_chat(GOOD_STREAMS)
+    (project / "api-policy.yaml").write_text(POLICY, encoding="utf-8")
+    result = runner.invoke(
+        cmd_generate, ["--url", "https://agent.staging.example/"], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Warning: 3 case(s) will run against the agent at https://agent.staging.example" in out
+    assert "tools that create, change or delete data do so there" in out
+    # The effective writes: the allow-list narrows orders to POST and PATCH;
+    # catalog is read-only; "*" allows every write method.
+    assert "allows write methods: orders (POST, PATCH); admin (POST, PUT, PATCH, DELETE)." in out
+    assert "catalog" not in out
+    assert "never at production data" in out
+    # The warning comes before the first case runs.
+    assert out.index("will run against") < out.index("greeting:")
+    doc = read_traces(project)
+    assert doc["target"] == "url" and doc["base_url"] == "https://agent.staging.example"
+
+
+def test_url_credentials_are_not_echoed(project: Path, runner: CliRunner, fake_chat) -> None:
+    fake_chat(GOOD_STREAMS)
+    result = runner.invoke(cmd_generate, ["--url", "https://bob:s3cret@agent.example/x"])
+    assert result.exit_code == 0, result.output
+    assert "s3cret" not in result.output and "bob" not in result.output
+    assert "against the agent at https://***@agent.example/x (--url)" in result.output
+
+
+def test_generate_with_url_warns_without_a_policy_or_with_a_broken_one(
+    project: Path, runner: CliRunner, fake_chat
+) -> None:
+    fake_chat(GOOD_STREAMS)
+    result = runner.invoke(cmd_generate, ["--url", "http://agent.example"])
+    assert result.exit_code == 0, result.output
+    assert "3 case(s) will run against the agent at http://agent.example" in result.output
+    assert "allows write methods" not in result.output
+    (project / "api-policy.yaml").write_text("apis: [not, a, mapping]\n", encoding="utf-8")
+    result = runner.invoke(cmd_generate, ["--url", "http://agent.example"])
+    assert result.exit_code == 0, result.output
+    assert "will run against" in result.output and "allows write methods" not in result.output
 
 
 def test_generate_stops_server_even_when_dispatch_fails(
