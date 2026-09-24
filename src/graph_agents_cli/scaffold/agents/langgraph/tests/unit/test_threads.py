@@ -118,7 +118,9 @@ async def test_continuing_a_thread_moves_its_idle_clock(store: ThreadStore) -> N
     assert await store.idle_before("2001-01-01T00:00:00+00:00") == ["t1"]
     await store.ensure("t1", OWNER)
     assert await store.idle_before("2001-01-01T00:00:00+00:00") == []
-    assert record.public().keys() == {"thread_id", "created_at", "updated_at"}
+    # The owner is listed hashed, never as the raw principal id.
+    assert record.public().keys() == {"thread_id", "owner", "created_at", "updated_at"}
+    assert record.public()["owner"] == OWNER.hashed_id() != OWNER.id
 
 
 async def test_list_is_most_recent_first_and_paged(store: ThreadStore) -> None:

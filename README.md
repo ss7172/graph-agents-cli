@@ -211,14 +211,14 @@ Two runtimes share the same routes, auth and clients:
 
 | Route | Auth | Behaviour |
 |---|---|---|
-| `POST /chat` | `chat.send` | Body `{"thread_id": "optional", "message": "...", "metadata": {}}`, `Accept: text/event-stream`. Events: `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Send the same `thread_id` to continue a thread (owner only) |
-| `GET /threads` | `thread.list` | The caller's threads, most recent first: `?limit=1..100` (default 20) `&offset=`; `[{thread_id, created_at, updated_at}]` |
+| `POST /chat` | `chat.send` | Body `{"thread_id": "optional", "message": "...", "metadata": {}}`, `Accept: text/event-stream`. Events: `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id, returned in `message.start`); send it to continue one (owner only) |
+| `GET /threads` | `thread.list` | The caller's threads, most recent first: `?limit=1..100` (default 20) `&offset=`; `[{thread_id, owner, created_at, updated_at}]`, `owner` being the hashed principal id. `?scope=all` lists every principal's threads, for a role in `AUTH_READ_ACROSS_ROLES` only (403 otherwise); the default `scope=own` lists only the caller's, read-across roles included |
 | `GET /threads/{thread_id}/messages` | `thread.read` | The thread's messages; owner, or a role in `AUTH_READ_ACROSS_ROLES` |
-| `DELETE /threads/{thread_id}` | `thread.delete` | Deletes the thread, its checkpoints and run records (owner only): 204, or 403, 404, 409 (a run in progress), 422. Under `langgraph-server` this is the server's own route, with the same owner rule |
+| `DELETE /threads/{thread_id}` | `thread.delete` | Deletes the thread, its checkpoints, run records and A2A tasks (owner only): 204, or 403, 404, 409 (a run in progress), 422. Under `langgraph-server` this is the server's own route, with the same owner rule |
 | `GET /health` | none | Liveness, process only: `{"status": "ok", "runtime", "checkpointer"}` |
 | `GET /ready` | none | Readiness: 200 `{"status": "ready"}` when the database (and run store) is set up and answers within 2 s, else 503 `{"status": "not_ready"}` |
 | `GET /metrics` | none, or `METRICS_TOKEN` | Prometheus text (`METRICS_ENABLED`, default true): `http_requests_total`, `http_request_duration_seconds`, `agent_runs_total` (by status), `agent_active_runs`, `agent_run_duration_seconds`, `agent_tokens_total`, `agent_database_up`. With `METRICS_TOKEN` set, only `Authorization: Bearer <METRICS_TOKEN>` is answered |
-| `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them |
+| `/a2a/<agent>/.well-known/agent-card.json`, `POST /a2a/<agent>` | `card.read`, `a2a.invoke` | A2A agent card and JSON-RPC (A2A 1.0; 0.3 clients served on the same URL). Tasks are private to the principal that created them. `SendMessage` returns the reply as one text part (streamed replies arrive in chunks, the last marked `lastChunk`); a message with no text, an empty text part or over `MAX_MESSAGE_CHARS` is an invalid-params error (-32602). The card's description is `A2A_DESCRIPTION`, its version `AGENT_VERSION` |
 | `GET /playground`, `/docs`, `/openapi.json` | none | Only under `APP_ENV=dev` |
 
 Behaviour:
@@ -230,10 +230,17 @@ Behaviour:
   and a dropped database session (a Postgres restart or failover) keeps the lease. A run
   whose lease cannot be renewed is stopped (status `interrupted`) before it writes, so two
   replicas never run one thread at once.
-- **Limits.** Bodies over `MAX_REQUEST_BYTES` (1 MiB) get 413; `/chat` metadata beyond
-  `MAX_METADATA_KEYS` (16) keys or `MAX_METADATA_VALUE_CHARS` (256), or with non-scalar
-  values, gets 422. Thread ids are 1-128 characters of `[A-Za-z0-9_.:-]` (UUIDs under
-  `langgraph-server`).
+- **Limits.** Bodies over `MAX_REQUEST_BYTES` (1 MiB) get 413; a message over
+  `MAX_MESSAGE_CHARS` (32 000 characters) gets 422 on `/chat` and an invalid-params error
+  over A2A (one cap for every surface that reaches the model); `/chat` metadata beyond
+  `MAX_METADATA_KEYS` (16) keys or `MAX_METADATA_VALUE_CHARS` (256), with non-scalar values,
+  or text that is not valid Unicode (an unpaired surrogate) gets 422. A 422 names the field
+  and the rule, never the submitted value. Thread ids are 1-128 characters of
+  `[A-Za-z0-9_.:-]` (UUIDs under `langgraph-server`).
+- **Thread ids** are one namespace shared by every caller: an id another principal sent first
+  is theirs (403 for everyone else), so a predictable id can be claimed ahead of its intended
+  user, and a 403 reveals that an id is taken. Let the server generate ids (omit `thread_id`
+  on the first turn), or generate unguessable ones (UUID4) in the client.
 - **Timeouts.** A run is cancelled after `RUN_TIMEOUT_S` (300; status `timeout`); each model
   request has `MODEL_TIMEOUT_S` (60; 0 = provider default) and `MODEL_MAX_RETRIES` (2). Idle
   SSE streams get a `: keep-alive` comment every `SSE_HEARTBEAT_S` (15). A client disconnect
@@ -254,7 +261,11 @@ Behaviour:
   `{"detail": "Internal server error. Reference: <id>.", "error_id": ...}`; the detail is only
   in the server log under that id (and in the event's `detail` under `APP_ENV=dev`). An
   unreachable database answers 503 with a reference within a few seconds (2 s once the app
-  knows it is down) and logs one WARNING line, no traceback.
+  knows it is down) and logs one WARNING line, no traceback. A failed tool call reaches
+  clients the same way: outside `APP_ENV=dev` its `tool.result` (and its message in the
+  thread history) reads `"The tool call did not succeed. Reference: <error_id>."` with an
+  `error_id`; the error text (policy rule, limit, upstream status and reason) goes only to
+  the model, which may still paraphrase it in its answer.
 - **Run records.** Every run is recorded when it starts (`running`) and updated when it ends:
   `ok`, `step_limit`, `error`, `timeout`, `cancelled` or `interrupted` (stopped because its
   lease was lost, or its process died: records left `running` by a dead process are marked
@@ -266,8 +277,17 @@ Behaviour:
 - **Logging.** JSON lines by default outside `APP_ENV=dev` (`LOG_FORMAT=json|text`,
   `LOG_LEVEL`), each with the request id, run id, thread id and a hashed principal id (HMAC
   with `PRINCIPAL_HASH_SALT` when set). Every response carries `X-Request-ID` (a valid one
-  from the caller is echoed). The app does not log credentials, messages or tool arguments;
-  an unexpected error's exception and traceback are logged under its `error_id`.
+  from the caller is echoed). The app does not log credentials, messages or tool arguments:
+  access lines keep the path and drop the query string, the HTTP client libraries (`httpx`,
+  `httpcore`) log at WARNING only because their INFO lines carry full outbound URLs, and the
+  API client logs each outbound call by API, method, operation id and path template (never
+  the query, the concrete path or the body). Python warnings are JSON records too, with the
+  values pydantic warnings echo redacted. An unexpected error's exception and traceback are
+  logged under its `error_id`. `LOG_LEVEL=DEBUG` also enables third-party debug output, which
+  can include message content: keep it for local debugging.
+- **Settings from `.env`** apply to what the app fixes when it is imported (the A2A card and
+  its auth scheme, `/docs`, CORS, the startup auth check) as well as to everything else: the
+  app reads `.env` first, below the process environment.
 - **CORS.** Off unless `CORS_ALLOW_ORIGINS` lists origins (comma-separated).
 - **Tracing.** Off unless `TRACING_ENABLED=true`: LangSmith with `LANGSMITH_API_KEY`, else
   OTLP/HTTP to `OTEL_EXPORTER_OTLP_ENDPOINT`. `TRACE_CAPTURE=metadata` (default) exports
@@ -439,7 +459,21 @@ written into the file as the methods themselves, never as a name:
 Auth modes: `none` sends no credential; `bearer` sends `Authorization: Bearer
 $<token_env>`; `forward` sends the caller's own `attributes["credentials"][<api name>]` as
 `forward_header` (nothing when the caller has none) and is refused under `langgraph-server`,
-which would persist it. The policy's credential always overrides a header the tool passes.
+which would persist it. The policy's credential always overrides a header the tool passes,
+and a tool cannot reroute a request or change its method: `Host`, method-override
+(`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`), `X-Forwarded-*`, `Forwarded`,
+`X-Original-URL`, `X-Rewrite-URL` and hop-by-hop headers are dropped, and a `_method` query
+parameter or top-level JSON body key is refused. A non-2xx response raises `ApiCallError` with
+`status_code` and `body` (the start of the error body, the credential redacted), and the model
+reads the upstream's reason.
+
+For an API the agent can write to, prefer per-user authorization: `auth: forward` with a
+per-user auth policy sends each caller's own credential, so the upstream refuses what that
+user may not do. With a shared `auth: bearer` token the agent can act on every record, and the
+checks move into tool code: `require_user_mentioned(record_id, runtime)` refuses an id the
+user's latest message does not name, and `require_owner(owner_id, context=runtime.context)`
+refuses a record that is not the caller's (both from `app_utils.api_client`, both tool errors
+the model reads). See [Security model](#security-model) for why.
 
 Limits (optional, per API): `max_calls_per_run` caps the calls to that API within one agent
 run (the LangGraph run id, else the request's); `rate_per_minute` is a token bucket per
@@ -820,6 +854,18 @@ Usage errors from Click (an unknown flag) are also 2. A signal ends a command wi
   same rules are checked statically by `lint` in CI. There is no default access: each API
   lists its methods, widening access is a reviewed change (CODEOWNERS), and optional
   per-API limits cap the calls per run and per minute.
+- **Tool results are untrusted input.** The policy decides which endpoints a tool may call,
+  not on whose behalf. Text a tool returns (a customer's order note, a ticket comment, an
+  upstream error) reaches the model beside the user's request, and planted instructions can
+  make a privileged user's agent act on another customer's record or copy one customer's data
+  where another can read it (prompt injection, a confused deputy). The template fences every
+  tool result the model reads as untrusted data (`UntrustedToolResults` in `agent.py`) and its
+  default prompt forbids following instructions found there; write tools must still check who
+  asked for what (`require_user_mentioned`, `require_owner`), and write-capable APIs should
+  authorize each user themselves (`auth: forward`). These lower the risk; they do not remove
+  it. Human approval of writes (the reserved `approval` key) is the planned control; until it
+  ships, keep write tools to what the checks above cover and add eval cases with planted
+  instructions.
 - **Secrets** stay in the allow-listed Kubernetes Secret: never in values files, workflow
   logs, command lines or printed output. Only `Principal.public_attributes()` is persisted,
   logged or traced; principal ids are hashed in logs and traces.
@@ -855,8 +901,13 @@ staging/prod policy to adapt), and backups of the agent's database.
 - [ ] Declare every outbound API with the access it needs and no more (`graph-agents-cli api
       add`, then `allow`/`deny` for its operations), with `limits` where a runaway loop would
       hurt; `graph-agents-cli api check` passes and CODEOWNERS covers `api-policy.yaml`.
-- [ ] `eval run` passes on the real model, with cases for your tools, refusals and failure
-      modes; the `pr_checks` gate runs on the real provider (its key secret is set).
+- [ ] Every write tool calls `require_user_mentioned` on the ids it acts on (and
+      `require_owner` under a per-user policy), write-capable APIs use `auth: forward` where
+      the upstream can authorize the user, and `agent.py` keeps `UntrustedToolResults` and the
+      prompt's tool-results rule.
+- [ ] `eval run` passes on the real model, with cases for your tools, refusals, failure
+      modes and instructions planted in tool data; the `pr_checks` gate runs on the real
+      provider (its key secret is set).
 - [ ] Record `environments.<env>.context` for staging and prod in the manifest; keep
       `.env.staging` / `.env.prod` out of git.
 - [ ] `secrets apply --env <env>`, then `secrets status --env <env>` exits 0.
@@ -958,6 +1009,9 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
 - **A2A task store** is in process memory, per replica: `GetTask` or a resubscribe routed to
   another pod reads as not found, and tasks are dropped `A2A_TASK_TTL_S` after their last
   update. Use one replica, or sticky routing, for long A2A tasks.
+- **Prompt injection** through tool results is reduced, not prevented: the fence, the prompt
+  rule and the tool checks depend on the model and on your tools; there is no human-approval
+  gate for writes yet (planned). See [Security model](#security-model).
 - **No built-in inbound rate limiting**: configure it at the gateway or ingress (outbound calls
   have per-API `limits` in `api-policy.yaml`).
 - **Outbound `limits` are per process.** `rate_per_minute` is a token bucket in each replica

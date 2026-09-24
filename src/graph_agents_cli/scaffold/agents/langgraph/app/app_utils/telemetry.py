@@ -20,7 +20,18 @@ own): one handler on the root logger, level `LOG_LEVEL` (default INFO),
 format `LOG_FORMAT=json|text` (default `json`, `text` under `APP_ENV=dev`).
 Every record carries the request id, and inside a run the run id, the thread
 id and the hashed principal, from context variables set by the HTTP
-middleware and the chat runtime. Nothing logs headers, bodies or credentials.
+middleware and the chat runtime. Nothing logs headers, bodies or credentials:
+
+* uvicorn's access lines keep the path and drop the query string (a client
+  that puts a token in the URL, `?access_token=...`, never gets it logged);
+* the HTTP client libraries (`httpx`, `httpcore`) log at WARNING only, since
+  their INFO lines carry every outbound URL with its query and path values
+  (tool arguments, customer ids); `app_utils.api_client` logs each outbound
+  call itself with the API, method, operation id and path template instead;
+* Python warnings are captured into the same handler (one JSON record each,
+  logger `py.warnings`), and the value a pydantic serializer warning echoes
+  (`input_value=...`, which can be a run context holding a forwarded
+  credential) is redacted.
 
 Tracing: explicit opt-in, LangSmith or OpenTelemetry.
 
@@ -168,6 +179,45 @@ class _StderrHandler(logging.StreamHandler):
         return sys.stderr
 
 
+class AccessLogFilter(logging.Filter):
+    """Drop the query string from uvicorn's access lines.
+
+    uvicorn logs `'%s - "%s %s HTTP/%s" %d'` with the full path and query as
+    the third argument. Query strings carry whatever a client put there,
+    credentials included (`?access_token=...`), so only the path is kept.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if "?" in path:
+                record.args = (*args[:2], path.split("?", 1)[0], *args[3:])
+        return True
+
+
+# A pydantic serializer warning names the value it could not serialize:
+# `[field_name='context', input_value=AgentContext(...), input_type=...]`. The
+# value's repr can hold a forwarded credential (a run context's attributes),
+# so everything between `input_value=` and the last `, input_type=` of the line goes.
+_WARNING_VALUE = re.compile(r"input_value=.*, input_type=")
+
+
+class WarningRedactionFilter(logging.Filter):
+    """Redact the values pydantic warnings echo (see `_WARNING_VALUE`)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "input_value=" in message:
+            record.msg = _WARNING_VALUE.sub("input_value=<redacted>, input_type=", message)
+            record.args = None
+        return True
+
+
+# Loggers whose INFO lines carry full outbound URLs (query and path values).
+QUIET_LOGGERS = ("httpx", "httpcore")
+
+
 def setup_logging() -> None:
     """Route every logger (uvicorn's included) through one handler; idempotent."""
     root = logging.getLogger()
@@ -186,6 +236,18 @@ def setup_logging() -> None:
         uv_logger = logging.getLogger(name)
         uv_logger.handlers = []
         uv_logger.propagate = True
+    _add_filter_once(logging.getLogger("uvicorn.access"), AccessLogFilter)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+    # Warnings become records of this handler (JSON under LOG_FORMAT=json)
+    # instead of raw multi-line text on stderr.
+    logging.captureWarnings(True)
+    _add_filter_once(logging.getLogger("py.warnings"), WarningRedactionFilter)
+
+
+def _add_filter_once(target: logging.Logger, kind: type[logging.Filter]) -> None:
+    if not any(isinstance(f, kind) for f in target.filters):
+        target.addFilter(kind())
 
 
 # ---------------------------------------------------------------------------

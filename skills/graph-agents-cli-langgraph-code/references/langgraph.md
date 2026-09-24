@@ -70,8 +70,13 @@ async def get_site(site_id: str) -> str:
 - Tools that call an external API use `get_client("<api>")` from `app_utils.api_client` and
   declare `API_CALLS`.
 - Tools that need the caller's identity read it from the run context the app sets
-  (`runtime: ToolRuntime` parameter, `runtime.context`: `principal_id`, `roles`, `attributes`);
-  never from a global.
+  (`runtime: ToolRuntime[Any]` parameter, `runtime.context`: `principal_id`, `roles`,
+  `attributes`; or `current_caller(runtime.context)` from `app_utils.api_client`); never from a
+  global. Parameterise `ToolRuntime`: the bare form makes pydantic warn with the run context
+  (which may hold credentials) on every call.
+- Tool results are untrusted data: write tools act only on ids the user named
+  (`require_user_mentioned`) and on the caller's own records (`require_owner`); see section 2a
+  of the skill.
 
 ## Checkpointers and `thread_id`
 

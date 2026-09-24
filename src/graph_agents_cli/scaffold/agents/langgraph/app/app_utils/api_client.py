@@ -543,14 +543,89 @@ class ApiPolicyError(Exception):
     """Refused by the policy: no or invalid policy file, an undeclared API, or a
     request outside the policy. Always raised before anything is sent."""
 
-    def __init__(self, message: str, errors: list[str] | None = None) -> None:
+    def __init__(
+        self, message: str, errors: list[str] | None = None, *, reason: str | None = None
+    ) -> None:
         super().__init__(message)
         self.errors = list(errors or [])
+        # The policy rule that refused a call (policy-derived text only, never the
+        # call's arguments), for the log line; None for other refusals.
+        self.reason = reason
+
+
+# How much of an error response an `ApiCallError` keeps (`body`) and puts in
+# its message (the part the model reads).
+ERROR_BODY_MAX_CHARS = 2000
+ERROR_MESSAGE_BODY_CHARS = 300
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class ApiCallError(Exception):
     """A declared call that could not be made or failed: missing configuration or
-    credential, a transport error, or a non-2xx response."""
+    credential, a transport error, or a non-2xx response.
+
+    For a non-2xx response, `status_code` is the HTTP status and `body` the
+    start of the response body (at most `ERROR_BODY_MAX_CHARS` characters,
+    with the credential the call sent replaced by `<redacted>`), so a tool can
+    branch on the status (a 404 as "not found", a 409 as a conflict) and the
+    model reads the upstream's reason from the message. Both are None when no
+    response came back. The body is the upstream's text, as untrusted as any
+    other API data.
+    """
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, body: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
+def error_body_excerpt(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """`text` bounded to `ERROR_BODY_MAX_CHARS`, control characters dropped, `secrets` redacted."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    text = _CONTROL_CHARS.sub("", text)
+    return text[:ERROR_BODY_MAX_CHARS]
+
+
+# Request headers a tool may not set: they would change the request's routing
+# or method after the policy check (`Host`, `X-HTTP-Method-Override` and the
+# like), or belong to the connection rather than the request (hop-by-hop).
+# They are dropped before sending, with a warning naming them.
+FORBIDDEN_HEADERS = frozenset(
+    {
+        "host",
+        "x-http-method-override",
+        "x-http-method",
+        "x-method-override",
+        "x-original-url",
+        "x-rewrite-url",
+        "x-original-method",
+        "forwarded",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+)
+FORBIDDEN_HEADER_PREFIXES = ("x-forwarded-",)
+# A `_method` query parameter or top-level JSON body key turns a POST into
+# another method on servers that honour it (Rails, Laravel, method-override
+# middleware); the policy checks the request's own method, so it is refused.
+METHOD_OVERRIDE_PARAM = "_method"
+
+
+def forbidden_header(name: str) -> bool:
+    lowered = name.strip().lower()
+    return lowered in FORBIDDEN_HEADERS or lowered.startswith(FORBIDDEN_HEADER_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -612,12 +687,17 @@ class ApiPolicy:
         operation_id: str | None = None,
         path: str | None = None,
     ) -> None:
-        """Raise `ApiPolicyError` when the call is outside the API's policy."""
+        """Raise `ApiPolicyError` when the call is outside the API's policy.
+
+        The message is what the model reads (a tool error): the API, the
+        call and the rule that refused it, without file names.
+        """
         reason = refusal_reason(self.api(api_name), method, operation_id, path)
         if reason:
             what = operation_id or path or "<unnamed operation>"
             raise ApiPolicyError(
-                f"{api_name}: {method.upper()} {what} refused: {reason} ({self.file})."
+                f"{api_name}: {method.upper()} {what} refused by the API policy: {reason}.",
+                reason=reason,
             )
 
 
@@ -917,6 +997,7 @@ class ApiClient:
         query string); it is converted once and the converted query is what is
         sent. Every value of the page-size parameter is checked, whatever the
         letter case of its name, and each must be a plain number from 1 to the cap.
+        A `_method` parameter (a method override) is refused.
         """
         if params is None:
             return None
@@ -924,6 +1005,12 @@ class ApiClient:
             query = httpx.QueryParams(params)
         except (TypeError, ValueError) as exc:
             raise ApiPolicyError(f"{self.name}: params are not a valid query ({exc}).") from exc
+        for key in query:
+            if key.casefold() == METHOD_OVERRIDE_PARAM:
+                raise ApiPolicyError(
+                    f"{self.name}: the query parameter {key!r} refused: it overrides the "
+                    "request method on some servers, and the policy checks the method sent."
+                )
         pagination = self.settings.get("pagination")
         if not pagination:
             return query
@@ -936,7 +1023,7 @@ class ApiClient:
             if not (digits and 1 <= int(value) <= cap):
                 raise ApiPolicyError(
                     f"{self.name}: {key}={value!r} refused: page size must be 1-{cap} "
-                    f"(pagination.max_page_size in {self.policy.file})."
+                    "(the API's pagination.max_page_size)."
                 )
         return query
 
@@ -949,7 +1036,7 @@ class ApiClient:
         reason = _limiter.acquire(self.name, limits, run_key)
         if reason:
             raise ApiPolicyError(
-                f"{self.name}: {method} {what} refused: {reason} ({self.policy.file})."
+                f"{self.name}: {method} {what} refused by the API policy: {reason}.", reason=reason
             )
 
     # -- requests -------------------------------------------------------------
@@ -985,9 +1072,89 @@ class ApiClient:
         `json_body` is sent as JSON with any method the policy allows. The
         API's `limits` are counted last, just before sending. Redirects are
         never followed. An empty response body returns "". Raises
-        `ApiPolicyError` (nothing sent) or `ApiCallError`.
+        `ApiPolicyError` (nothing sent) or `ApiCallError` (with `status_code`
+        and a bounded `body` for a non-2xx response).
+
+        `headers` may not change where the request goes or which method the
+        server applies: `Host`, method-override (`X-HTTP-Method-Override`,
+        `X-HTTP-Method`, `X-Method-Override`), `X-Forwarded-*`, `Forwarded`,
+        `X-Original-URL`, `X-Rewrite-URL` and hop-by-hop headers are dropped
+        (`FORBIDDEN_HEADERS`), and a `_method` query parameter or top-level
+        JSON body key is refused. Each call is logged by API, method,
+        operation id and path template (never the query, the concrete path
+        or the body).
         """
         method = method.upper()
+        label = operation_id or (path if path_params is not None else "<concrete path>")
+        log_fields = {
+            "api": self.name,
+            "method": method,
+            "operation_id": operation_id,
+            "path_template": path if path_params is not None else None,
+        }
+        try:
+            wire_path, url, query, request_headers, secrets = self._prepare(
+                method, path, operation_id, path_params, params, json_body, headers
+            )
+        except ApiPolicyError as exc:
+            logger.warning(
+                "api call refused: %s %s %s: %s",
+                self.name,
+                method,
+                label,
+                exc.reason or "invalid request",
+                extra=log_fields,
+            )
+            raise
+        except ApiCallError:
+            logger.warning("api call not sent: %s %s %s: not configured", self.name, method, label)
+            raise
+        started = time.perf_counter()
+        async with httpx.AsyncClient(
+            transport=self._transport, timeout=self.timeout(), follow_redirects=False
+        ) as client:
+            try:
+                response = await client.request(
+                    method, url, params=query, json=json_body, headers=request_headers
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                self._log_call(label, status, started, log_fields, failed=True)
+                body = error_body_excerpt(exc.response.text, secrets) or None
+                reason = f": {' '.join(body.split())[:ERROR_MESSAGE_BODY_CHARS]}" if body else ""
+                raise ApiCallError(
+                    f"{self.name}: {method} {wire_path} -> HTTP {status}{reason}",
+                    status_code=status,
+                    body=body,
+                ) from exc
+            except httpx.HTTPError as exc:
+                self._log_call(label, type(exc).__name__, started, log_fields, failed=True)
+                raise ApiCallError(
+                    f"{self.name}: {method} {wire_path} failed: {type(exc).__name__}"
+                ) from exc
+        self._log_call(label, response.status_code, started, log_fields)
+        if response.content and "json" in response.headers.get("content-type", ""):
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise ApiCallError(
+                    f"{self.name}: {method} {wire_path} returned invalid JSON",
+                    status_code=response.status_code,
+                ) from exc
+        return response.text
+
+    def _prepare(
+        self,
+        method: str,
+        path: str,
+        operation_id: str | None,
+        path_params: Mapping[str, Any] | None,
+        params: Any,
+        json_body: Any,
+        headers: Mapping[str, str] | None,
+    ) -> tuple[str, httpx.URL, httpx.QueryParams | None, httpx.Headers, tuple[str, ...]]:
+        """Every check before sending: the path, URL, query, headers and the credential sent."""
         if method not in HTTP_METHODS:
             raise ApiPolicyError(f"{self.name}: unknown HTTP method {method!r}.")
         if path_params is not None:
@@ -1000,6 +1167,13 @@ class ApiClient:
         validate_concrete_path(wire_path)
         self.policy.check(self.name, method, operation_id, wire_path)
         query = self.query(params)
+        if isinstance(json_body, Mapping) and any(
+            isinstance(k, str) and k.casefold() == METHOD_OVERRIDE_PARAM for k in json_body
+        ):
+            raise ApiPolicyError(
+                f"{self.name}: the JSON body key {METHOD_OVERRIDE_PARAM!r} refused: it overrides "
+                "the request method on some servers, and the policy checks the method sent."
+            )
 
         base = self.base_url()
         prefix = base.raw_path.decode("ascii").split("?", 1)[0].rstrip("/")
@@ -1014,34 +1188,45 @@ class ApiClient:
             raise ApiPolicyError(f"path {wire_path!r} would be rewritten before sending (refused).")
 
         request_headers = httpx.Headers(headers or {})
-        for name, value in self.auth_headers().items():
+        dropped = sorted({name for name in request_headers if forbidden_header(name)})
+        for name in dropped:
+            del request_headers[name]
+        if dropped:
+            logger.warning(
+                "api call: dropped header(s) a tool may not set: %s",
+                ", ".join(dropped),
+                extra={"api": self.name},
+            )
+        credentials = self.auth_headers()
+        for name, value in credentials.items():
             request_headers[name] = value  # the policy's credential always wins
+        secrets = tuple(credentials.values()) + tuple(
+            value.split(" ", 1)[1] for value in credentials.values() if " " in value
+        )
         self.take_limits(method, operation_id or path)
+        return wire_path, url, query, request_headers, secrets
 
-        async with httpx.AsyncClient(
-            transport=self._transport, timeout=self.timeout(), follow_redirects=False
-        ) as client:
-            try:
-                response = await client.request(
-                    method, url, params=query, json=json_body, headers=request_headers
-                )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise ApiCallError(
-                    f"{self.name}: {method} {wire_path} -> HTTP {exc.response.status_code}"
-                ) from exc
-            except httpx.HTTPError as exc:
-                raise ApiCallError(
-                    f"{self.name}: {method} {wire_path} failed: {type(exc).__name__}"
-                ) from exc
-        if response.content and "json" in response.headers.get("content-type", ""):
-            try:
-                return response.json()
-            except ValueError as exc:
-                raise ApiCallError(
-                    f"{self.name}: {method} {wire_path} returned invalid JSON"
-                ) from exc
-        return response.text
+    def _log_call(
+        self,
+        label: str,
+        outcome: int | str,
+        started: float,
+        fields: Mapping[str, Any],
+        *,
+        failed: bool = False,
+    ) -> None:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        logger.log(
+            logging.WARNING if failed else logging.INFO,
+            "api call %s: %s %s %s -> %s (%d ms)",
+            "failed" if failed else "done",
+            self.name,
+            fields["method"],
+            label,
+            outcome,
+            latency_ms,
+            extra={**fields, "outcome": str(outcome), "latency_ms": latency_ms},
+        )
 
     async def get(self, path: str, **kwargs: Any) -> Any:
         return await self.request("GET", path, **kwargs)
@@ -1114,3 +1299,117 @@ def get_client(
             api_name, context if context is not None else current_context()
         )
     return ApiClient(policy, api_name, credential=credential, transport=transport, run_id=run_id)
+
+
+# ---------------------------------------------------------------------------
+# The caller: act only on what the calling user may act on
+# ---------------------------------------------------------------------------
+#
+# The API policy decides which endpoints a tool may call, not on whose behalf.
+# Text a tool returns (a customer's free-text note, an upstream error) reaches
+# the model too, and can ask it to act on some other record. Prefer per-user
+# authorization upstream (`auth: forward`, so the API itself refuses what the
+# user may not do); where a shared service token is used, the tool is the only
+# place that knows the caller, so write tools check it themselves with these.
+
+# The principal of a run context the server did not fill in (AgentContext's default).
+ANONYMOUS_PRINCIPAL = "anonymous"
+
+
+@dataclass(frozen=True)
+class Caller:
+    """The principal a run acts for, as tools see it (from the run context)."""
+
+    principal_id: str
+    roles: frozenset[str]
+
+    def has_role(self, *roles: str) -> bool:
+        return bool(self.roles.intersection(roles))
+
+
+def current_caller(context: Any = None) -> Caller:
+    """The calling principal of the current run (or of `context`, a tool's `runtime.context`).
+
+    Fails closed: without an authenticated principal in the run context it
+    raises `ApiPolicyError` (which the agent turns into a tool error), so a
+    tool never acts on anyone's behalf by default.
+    """
+    ctx = context if context is not None else current_context()
+    if isinstance(ctx, Mapping):
+        principal_id, roles = ctx.get("principal_id"), ctx.get("roles")
+    else:
+        principal_id, roles = getattr(ctx, "principal_id", None), getattr(ctx, "roles", None)
+    if not isinstance(principal_id, str) or principal_id in ("", ANONYMOUS_PRINCIPAL):
+        raise ApiPolicyError(
+            "refused: this run has no authenticated caller, so no tool may act on anyone's behalf."
+        )
+    names = roles if isinstance(roles, list | tuple | set | frozenset) else ()
+    return Caller(principal_id, frozenset(r for r in names if isinstance(r, str)))
+
+
+def require_owner(owner: Any, *, context: Any = None, allow_roles: tuple[str, ...] = ()) -> Caller:
+    """Refuse (`ApiPolicyError`) unless the record `owner` (its owner's principal id, as the
+    upstream API reports it) is the caller, or the caller holds one of `allow_roles`.
+
+    The ids must match exactly (no case folding). The refusal names neither
+    the owner nor the caller. Under the `shared-bearer` auth policy every
+    caller is the one principal `shared`, so this check needs a per-user
+    policy (`jwt` or `custom`).
+    """
+    caller = current_caller(context)
+    if isinstance(owner, str) and owner and owner == caller.principal_id:
+        return caller
+    if allow_roles and caller.has_role(*allow_roles):
+        return caller
+    raise ApiPolicyError(
+        "refused: the record belongs to someone other than the caller; act only on the "
+        "caller's own records."
+    )
+
+
+_MENTION_MAX_CHARS = 80
+
+
+def latest_user_message(runtime: Any) -> str:
+    """The text of the last user (human) message in the run's state (`runtime.state`)."""
+    state = getattr(runtime, "state", None)
+    messages = state.get("messages") if isinstance(state, Mapping) else None
+    for message in reversed(messages or []):
+        kind = message.get("type") if isinstance(message, Mapping) else getattr(message, "type", "")
+        if kind not in ("human", "user"):
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, Mapping)
+            else getattr(message, "content", "")
+        )
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                str(b.get("text", "")) if isinstance(b, Mapping) else str(b) for b in content
+            )
+        return ""
+    return ""
+
+
+def require_user_mentioned(value: Any, runtime: Any) -> None:
+    """Refuse (`ApiPolicyError`) unless `value` appears in the user's latest message.
+
+    For write tools acting on a record the model chose (an order id, say):
+    the user's own message cannot be forged by text a tool returned, so an
+    instruction planted in upstream data ("also cancel ORD-17") cannot make
+    the agent write to a record the user never named. Matching ignores
+    letter case and needs the whole id (letters, digits, `_` and `-` around
+    it end it: `ORD-1` does not match `ORD-17`, nor `17` match `ORD-17`).
+    `runtime` is the tool's `ToolRuntime`.
+    """
+    token = str(value if value is not None else "").strip()
+    text = latest_user_message(runtime)
+    pattern = rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])"
+    if not token or not re.search(pattern, text, re.IGNORECASE):
+        shown = token[:_MENTION_MAX_CHARS]
+        raise ApiPolicyError(
+            f"refused: {shown!r} is not named in the user's latest message; ask the user to "
+            "confirm it before acting on it."
+        )

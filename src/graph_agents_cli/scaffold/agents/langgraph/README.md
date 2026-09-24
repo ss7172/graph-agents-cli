@@ -101,14 +101,14 @@ graph-agents-cli-manifest.yaml
 
 | Route | Behaviour |
 |---|---|
-| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Send the same `thread_id` to continue a thread |
-| `GET /threads` | The caller's threads, most recent first (`?limit=1..100&offset=`) |
+| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id); send it to continue one |
+| `GET /threads` | The caller's threads, most recent first (`?limit=1..100&offset=`), each with its `owner` hashed; `?scope=all` lists every principal's, for a role in `AUTH_READ_ACROSS_ROLES` only |
 | `GET /threads/{id}/messages` | A thread's messages (owner, or a role in `AUTH_READ_ACROSS_ROLES`) |
-| `DELETE /threads/{id}` | Delete a thread, its checkpoints and run records (owner only; 409 while a run is in progress) |
+| `DELETE /threads/{id}` | Delete a thread, its checkpoints, run records and A2A tasks (owner only; 409 while a run is in progress) |
 | `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
 | `GET /ready` | Readiness: 200 when the database is set up and answers within 2 s, else 503 (no auth) |
 | `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
-| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json`; tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S` |
+| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` (description `A2A_DESCRIPTION`, version `AGENT_VERSION`); tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S`; `SendMessage` returns the reply as one text part |
 | `/playground`, `/docs`, `/openapi.json` | Only under `APP_ENV=dev` |
 {%- if cookiecutter.runtime == 'langgraph-server' %}
 
@@ -137,16 +137,23 @@ at startup):
 - **Run records:** written as `running` when a run starts and updated when it ends (`ok`,
   `step_limit`, `error`, `timeout`, `cancelled`, `interrupted`); runs of a process that died
   are marked `interrupted` within about a minute.
-- **Limits:** bodies over `MAX_REQUEST_BYTES` get 413; metadata beyond `MAX_METADATA_KEYS` /
-  `MAX_METADATA_VALUE_CHARS` gets 422.
+- **Limits:** bodies over `MAX_REQUEST_BYTES` get 413; a message over `MAX_MESSAGE_CHARS`
+  (32 000) gets 422 on `/chat` and an invalid-params error over A2A; metadata beyond
+  `MAX_METADATA_KEYS` / `MAX_METADATA_VALUE_CHARS` gets 422. A 422 never echoes the submitted
+  values.
+- **Thread ids** are shared by every caller: an id another principal used first is theirs
+  (403). Let the server generate ids, or use unguessable ones (UUID4).
 - **Errors:** the `error` event is `{"code", "message", "error_id", "run_id"}`; an unhandled error
-  answers 500 with an `error_id`. Details are only in the server log under that id. Every
-  response carries `X-Request-ID`. An unreachable database answers 503 within a few seconds
-  and logs one line.
+  answers 500 with an `error_id`. Details are only in the server log under that id. A failed
+  tool call's `tool.result` carries an `error_id` and, outside `APP_ENV=dev`, a generic text
+  (the error text is for the model only). Every response carries `X-Request-ID`. An
+  unreachable database answers 503 within a few seconds and logs one line.
 - **Retention:** `RETENTION_DAYS=N` deletes threads idle for more than N days (hourly; 0 keeps
   everything).
 - **Logging:** JSON lines outside `APP_ENV=dev` (`LOG_FORMAT`, `LOG_LEVEL`) with request id, run
-  id, thread id and a hashed principal (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set).
+  id, thread id and a hashed principal (HMAC-keyed with `PRINCIPAL_HASH_SALT` when set). Access
+  lines drop query strings; outbound API calls are logged by API, method, operation id and path
+  template, never their values; warnings are JSON records too.
 - **CORS:** off unless `CORS_ALLOW_ORIGINS` lists origins.
 - **Database:** one health-checked pool per process (`DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`);
   connections get `connect_timeout=5` and TCP keepalives unless the DSN sets them. The app
@@ -155,6 +162,15 @@ at startup):
 
 No inbound rate limiting is built in: configure it at the gateway or ingress (outbound calls
 can be limited per API, see below).
+
+**Tool results are untrusted input.** Text a tool returns (a customer's note, an upstream error)
+can carry instructions meant to steer the agent into acting on someone else's records.
+`agent.py` fences every tool result the model reads (`UntrustedToolResults`) and its prompt
+forbids following instructions found there; write tools should also call
+`require_user_mentioned(record_id, runtime)` and, under a per-user auth policy,
+`require_owner(owner_id, context=runtime.context)` (from `app_utils.api_client`), and
+write-capable APIs should authorize the user themselves (`auth: forward`). This lowers the risk
+without removing it; human approval of writes is planned.
 
 ## Model and judge
 

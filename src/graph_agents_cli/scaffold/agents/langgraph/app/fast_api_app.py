@@ -17,14 +17,20 @@
 
 Routes:
   * `POST /chat` (SSE): `message.start`, `message.delta`, `tool.call`,
-    `tool.result`, `message.end`, `error`; `thread_id` continues a thread.
+    `tool.result`, `message.end`, `error`; `thread_id` continues a thread
+    (omit it to start one: the server generates a random id).
     409 `{"code": "thread_busy"}` while the thread has a run in progress.
-  * `GET /threads`: the caller's threads, most recent first (`limit`, `offset`).
+    A failed tool call's `tool.result` carries an `error_id` and, outside
+    `APP_ENV=dev`, a generic `result` (the error text is for the model only).
+  * `GET /threads`: the caller's threads, most recent first (`limit`, `offset`);
+    `scope=all` lists every principal's (read-across roles only). Each row
+    names its owner hashed (`owner`).
   * `GET /threads/{thread_id}/messages`: ordered messages, ownership enforced.
   * `DELETE /threads/{thread_id}`: the thread, its checkpoints and run records (owner
-    only). Under langgraph-server this is the server's native route (owner-only
-    through the auth handler); once it succeeds, the app drops the thread's run
-    records (`ThreadDeleteHookMiddleware`).
+    only), and the A2A tasks of that conversation. Under langgraph-server this
+    is the server's native route (owner-only through the auth handler); once it
+    succeeds, the app drops the thread's run records and A2A tasks
+    (`ThreadDeleteHookMiddleware`).
   * `GET /health`: liveness, process only: `{"status", "runtime", "checkpointer"}`.
   * `GET /ready`: readiness: 200 when the database answers within 2 s, else
     503 `{"status": "not_ready"}`.
@@ -46,16 +52,22 @@ middleware below. Under langgraph-server the server's own meta routes
 routes unless they are disabled (the server image sets `disable_meta`), and
 the server's native API gets its auth errors from `AuthErrorMiddleware`.
 
-Request limits: bodies over `MAX_REQUEST_BYTES` get 413 and `/chat` metadata
-outside `MAX_METADATA_KEYS` / `MAX_METADATA_VALUE_CHARS` gets 422 (see
+Request limits: bodies over `MAX_REQUEST_BYTES` get 413, a message over
+`MAX_MESSAGE_CHARS` (the same cap A2A applies) and `/chat` metadata outside
+`MAX_METADATA_KEYS` / `MAX_METADATA_VALUE_CHARS` get 422 (see
 `app_utils/limits.py`). `CORS_ALLOW_ORIGINS` (comma list; empty = no CORS)
 enables CORS for those origins under fastapi; LangGraph Server reads the same
 variable itself. Unhandled errors answer 500 with an `error_id` that names the
-logged detail (and the request's `X-Request-ID`); a 422 never fails on the
-NaN or Infinity Python's JSON parser lets through.
+logged detail (and the request's `X-Request-ID`). A 422 never echoes the
+request's values (`input`), so it cannot fail on text that is not valid
+UTF-8 (an unpaired surrogate) or on the NaN or Infinity Python's JSON parser
+lets through, and never returns a long message back to its sender.
 
-Under the fastapi runtime logging is configured when this module is imported,
-so import-time warnings and uvicorn's startup lines follow `LOG_FORMAT` too.
+`.env` is read (below the process environment) as this module is imported,
+before any setting is: the A2A card, the docs switch, CORS and the auth
+policy's startup check are fixed at import. Under the fastapi runtime
+logging is configured on import too, so import-time warnings and uvicorn's
+startup lines follow `LOG_FORMAT`.
 
 No ``from __future__ import annotations`` here: LangGraph Server loads this
 file as ``user_router_module`` without registering it in ``sys.modules``, and
@@ -65,6 +77,7 @@ generation fails at startup). Real annotations need no lookup.
 """
 
 import contextlib
+import json
 import logging
 import math
 import os
@@ -72,6 +85,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
+from dotenv import dotenv_values
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -80,23 +94,46 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from {{cookiecutter.agent_directory}}.app_utils.a2a import A2A_RPC_PATH, add_a2a_routes, task_ttl_s
+# `.env` first, below the process environment (as `load_dotenv()` does): the
+# modules imported next, and this one, read settings as they load (A2A_NAME,
+# the A2A card's auth scheme, APP_ENV for the docs, CORS_ALLOW_ORIGINS).
+os.environ.update(
+    {
+        key: value
+        for key, value in dotenv_values().items()
+        if value is not None and key not in os.environ
+    }
+)
+
+from {{cookiecutter.agent_directory}}.app_utils.a2a import (
+    A2A_RPC_PATH,
+    add_a2a_routes,
+    forget_context,
+    legacy_message_problem,
+    task_ttl_s,
+)
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
     authenticate_and_authorize,
     require,
 )
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
+    EVENT_TOOL_RESULT,
     FASTAPI,
+    LANGGRAPH_SERVER,
     RUNTIME,
     ChatRequest,
     detect_runtime,
+    dev_mode,
     forward_header_names,
     new_error_id,
     select_forward_headers,
     sse_encode,
+    unavailable,
+    validate_thread_id,
 )
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import pool_sizes
+from {{cookiecutter.agent_directory}}.app_utils.content import client_message, client_tool_result
 from {{cookiecutter.agent_directory}}.app_utils.limits import (
     THREAD_ID_PATTERN,
     SettingsError,
@@ -115,6 +152,9 @@ from {{cookiecutter.agent_directory}}.app_utils.middleware import (
     RequestContextMiddleware,
     RunStreamingResponse,
     ThreadDeleteHookMiddleware,
+    max_message_chars,
+    read_body,
+    replay_body,
 )
 from {{cookiecutter.agent_directory}}.app_utils.model import model_limits
 from {{cookiecutter.agent_directory}}.app_utils.playground import PLAYGROUND_HTML
@@ -126,7 +166,15 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     setup_telemetry,
     trace_capture,
 )
-from {{cookiecutter.agent_directory}}.app_utils.threads import THREAD_BUSY, ThreadBusy
+from {{cookiecutter.agent_directory}}.app_utils.threads import (
+    SCOPE_ALL,
+    SCOPE_OWN,
+    THREAD_BUSY,
+    ThreadBusy,
+    check_scope,
+    own_view,
+    search_server_threads,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +201,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             model_limits,
             trace_capture,
             task_ttl_s,
+            max_message_chars,
         )
     )
     if RUNTIME.runtime == FASTAPI:
@@ -169,7 +218,11 @@ class A2APolicyMiddleware:
     """Authenticate and authorize the A2A endpoints with the selected policy.
 
     `card.read` for the agent card, `a2a.invoke` for JSON-RPC. The principal
-    is stored in the request state for the executor.
+    is stored in the request state for the executor. An A2A 0.3
+    `message/send` or `message/stream` whose message cannot run (no text, an
+    empty text part, over `MAX_MESSAGE_CHARS`) is answered here with the
+    JSON-RPC invalid-params error: past this point the SDK's 0.3 layer would
+    turn it into an internal error (1.0 requests are checked by the handler).
     """
 
     def __init__(self, app: ASGIApp, prefix: str) -> None:
@@ -191,7 +244,38 @@ class A2APolicyMiddleware:
             await response(scope, receive, send)
             return
         scope.setdefault("state", {})["principal"] = principal
+        if action == "a2a.invoke" and scope.get("method") == "POST":
+            try:
+                body = await read_body(receive)
+            except HTTPException as exc:  # the body cap, while reading a chunked body
+                await JSONResponse({"detail": exc.detail}, status_code=exc.status_code)(
+                    scope, receive, send
+                )
+                return
+            refusal = _legacy_refusal(body)
+            if refusal is not None:
+                await JSONResponse(refusal)(scope, receive, send)
+                return
+            receive = replay_body(body, receive)
         await self.app(scope, receive, send)
+
+
+def _legacy_refusal(body: bytes) -> dict[str, Any] | None:
+    """The JSON-RPC invalid-params answer to an A2A 0.3 message that cannot run, or None."""
+    if b"message/" not in body:  # no 0.3 send method named: nothing to parse
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None  # the SDK answers a parse error itself
+    problem = legacy_message_problem(payload)
+    if problem is None:
+        return None
+    return {
+        "jsonrpc": "2.0",
+        "id": payload.get("id"),
+        "error": {"code": -32602, "message": problem},
+    }
 
 
 def _dev_mode() -> bool:
@@ -231,8 +315,18 @@ if detect_runtime() == FASTAPI and cors_origins():
         allow_headers=["authorization", "content-type", "x-request-id", *forward_header_names()],
         expose_headers=["x-request-id"],
     )
+
+
+async def _server_thread_deleted(thread_id: str) -> None:
+    """langgraph-server: after the server deleted a thread, its run records and A2A tasks."""
+    try:
+        await RUNTIME.forget_thread_runs(thread_id)
+    finally:
+        await forget_context(thread_id)
+
+
 if detect_runtime() != FASTAPI:
-    app.add_middleware(ThreadDeleteHookMiddleware, on_deleted=RUNTIME.forget_thread_runs)
+    app.add_middleware(ThreadDeleteHookMiddleware, on_deleted=_server_thread_deleted)
     app.add_middleware(AuthErrorMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
@@ -270,11 +364,14 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 
 def _json_safe(value: Any) -> Any:
-    """`value` with every NaN or infinite float spelled as a string (JSON has neither)."""
+    """`value` encodable as UTF-8 JSON: NaN and infinite floats spelled as strings (JSON
+    has neither), unpaired surrogates as `\\udXXX` escapes (UTF-8 has none)."""
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
     if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
+        return {_json_safe(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_json_safe(v) for v in value]
     return value
@@ -282,24 +379,56 @@ def _json_safe(value: Any) -> Any:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """FastAPI's 422, made safe to encode.
+    """FastAPI's 422 without the offending values.
 
-    Python's JSON parser accepts NaN and Infinity; the default handler echoes
-    them back in `input` and then fails to encode them (a 500).
+    The default handler echoes each value back in `input`: a 32,000-character
+    message, text with an unpaired surrogate (which then fails to encode: a
+    500, logged with the message in its traceback), or a NaN. Only where
+    (`loc`), what (`type`, `msg`) and the rule's parameters (`ctx`) are kept.
     """
-    return JSONResponse(
-        status_code=422, content={"detail": _json_safe(jsonable_encoder(exc.errors()))}
-    )
+    errors = [
+        {key: value for key, value in error.items() if key not in ("input", "url")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": _json_safe(jsonable_encoder(errors))})
+
+
+def _has_surrogate(value: Any) -> bool:
+    """Whether a string (or a key or value of a mapping) holds an unpaired surrogate."""
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+        return False
+    if isinstance(value, dict):
+        return any(_has_surrogate(k) or _has_surrogate(v) for k, v in value.items())
+    return False
 
 
 class ChatBody(BaseModel):
+    # Omit thread_id to start a thread: the server generates a random id. Ids
+    # are one namespace shared by every caller, so an id a client picks must
+    # be unguessable (an id another principal used first is theirs: 403).
     thread_id: str | None = Field(default=None, pattern=THREAD_ID_PATTERN)
-    message: str = Field(min_length=1, max_length=32_000)
+    message: str = Field(min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("message")
+    @classmethod
+    def _cap_message(cls, value: str) -> str:
+        cap = max_message_chars()
+        if len(value) > cap:
+            raise ValueError(f"message is longer than {cap} characters (MAX_MESSAGE_CHARS).")
+        if _has_surrogate(value):
+            raise ValueError("message is not valid Unicode text (an unpaired surrogate).")
+        return value
 
     @field_validator("metadata")
     @classmethod
     def _cap_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if _has_surrogate(value):
+            raise ValueError("metadata is not valid Unicode text (an unpaired surrogate).")
         return check_metadata(value)
 
 
@@ -336,9 +465,15 @@ async def chat(
     # ThreadBusy -> 409 before streaming; the owner is checked again under the lock.
     lease = await RUNTIME.acquire_thread(thread_id, principal)
 
+    dev = dev_mode()
+
     async def events() -> AsyncIterator[str]:
         async with aclosing(RUNTIME.stream(principal, req, thread_id, lease=lease)) as stream:
             async for event, data in stream:
+                if event == EVENT_TOOL_RESULT:
+                    # A failed call's text (policy rules, limits, upstream
+                    # errors) is for the model; the client gets an error id.
+                    data = client_tool_result(data, thread_id=thread_id, dev=dev)
                 yield sse_encode(event, data)
 
     return RunStreamingResponse(
@@ -380,11 +515,33 @@ async def list_threads(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=100_000),
+    scope: str = Query(default=SCOPE_OWN, pattern="^(own|all)$"),
     principal: Principal = Depends(principal_for("thread.list")),
 ) -> list[dict[str, Any]]:
-    return await RUNTIME.list_threads(
-        principal, limit=limit, offset=offset, forward_headers=_forward_headers(request)
+    """The caller's threads, or with `scope=all` every principal's (read-across roles only).
+
+    Each row is `{thread_id, owner, created_at, updated_at}`, `owner` being the
+    owner's hashed principal id.
+    """
+    check_scope(principal, scope)
+    headers = _forward_headers(request)
+    if scope == SCOPE_ALL and RUNTIME.runtime == LANGGRAPH_SERVER:
+        try:
+            return await search_server_threads(
+                RUNTIME._sdk_client(headers), principal, scope=scope, limit=limit, offset=offset
+            )
+        except Exception as exc:
+            raise unavailable("LangGraph Server", exc) from exc
+    rows = await RUNTIME.list_threads(
+        principal if scope == SCOPE_ALL else own_view(principal),
+        limit=limit,
+        offset=offset,
+        forward_headers=headers,
     )
+    if scope == SCOPE_OWN:
+        owner = principal.hashed_id()
+        rows = [{**row, "owner": owner} for row in rows]
+    return rows
 
 
 @app.get("/threads/{thread_id}/messages")
@@ -393,7 +550,12 @@ async def thread_messages(
     request: Request,
     principal: Principal = Depends(principal_for("thread.read")),
 ) -> list[dict[str, Any]]:
-    return await RUNTIME.messages(principal, thread_id, _forward_headers(request))
+    messages = await RUNTIME.messages(principal, thread_id, _forward_headers(request))
+    # A failed tool call reads as in the stream: an error id (derived from the
+    # thread id in its canonical form, as the stream has it), not the error text.
+    canonical = validate_thread_id(thread_id, RUNTIME.runtime)
+    dev = dev_mode()
+    return [client_message(m, thread_id=canonical, dev=dev) for m in messages]
 
 
 async def delete_thread(
