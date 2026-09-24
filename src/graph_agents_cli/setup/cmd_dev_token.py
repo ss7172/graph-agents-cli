@@ -108,9 +108,20 @@ try:
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
         )
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(pem)
+        # Written whole under a temporary name, then linked into place: the key
+        # appears complete or not at all, and never replaces one that exists.
+        tmp = f"{path}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(pem)
+            os.link(tmp, path)
+        except FileExistsError:
+            # Another run created the key first: sign with that one.
+            with open(path, "rb") as handle:
+                key = serialization.load_pem_private_key(handle.read(), password=None)
+        finally:
+            os.unlink(tmp)
     public = key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode()
@@ -198,9 +209,16 @@ def _check_setup(env: Any, *, manifest_policy: str) -> None:
     """Refuse anything but a local jwt dev setup (``env`` is the login EnvView)."""
     policy = normalize_auth_policy(env.get("AUTH_POLICY").strip() or manifest_policy, warn=False)
     if policy != "jwt":
+        local = {
+            "shared-bearer": "Local runs of a shared-bearer project send the API_KEY in .env.",
+            "custom": (
+                "A custom policy reads what its CustomPolicy checks: pass it with "
+                "--header 'Name: value' or --cookie name=value."
+            ),
+        }.get(policy, "")
         _refuse(
             f"This project's auth policy is {policy} (AUTH_POLICY): dev tokens are for jwt "
-            "projects. Local runs of a shared-bearer project send the API_KEY in .env."
+            f"projects. {local}".rstrip()
         )
     app_env = env.get("APP_ENV")
     if app_env != "dev":
@@ -267,8 +285,9 @@ def _sign(root: Path, key_path: Path, claims: dict[str, Any]) -> dict[str, str]:
         )
     if answer.get("error"):
         raise SigningError(
-            f"Could not sign with {key_path}: {answer.get('detail')}. Delete the file to "
-            "create a new dev key, then clear AUTH_JWT_PUBLIC_KEY in .env and rerun."
+            f"Could not sign with {key_path}: {answer.get('detail')}. If that file is damaged "
+            "(not an RSA private key), delete it to create a new dev key, then clear "
+            "AUTH_JWT_PUBLIC_KEY in .env and rerun; tokens signed with the old key stop working."
         )
     return {"token": str(answer["token"]), "public_key": str(answer["public_key"])}
 

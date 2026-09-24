@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -141,7 +142,13 @@ def connection_kwargs(dsn: str) -> dict[str, str]:
     try:
         given = conninfo_to_dict(dsn)
     except ProgrammingError as exc:
-        raise SettingsError(f"The database URL does not parse: {exc}") from None
+        # libpq quotes the part it could not read, which can be the password:
+        # keep what went wrong, never the text itself.
+        reason = re.sub(r'"[^"]*"', '"..."', str(exc).splitlines()[0] if str(exc) else "")
+        raise SettingsError(
+            f"The database URL does not parse ({reason or 'invalid'}); "
+            "its text is not shown because it can hold the password."
+        ) from None
     defaults = dict(CONNECTION_DEFAULTS)
     if os.environ.get("PGCONNECT_TIMEOUT"):
         defaults.pop("connect_timeout")

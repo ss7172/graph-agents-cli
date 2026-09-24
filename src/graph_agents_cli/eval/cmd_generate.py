@@ -29,6 +29,7 @@ from urllib.parse import urlsplit, urlunsplit
 import click
 from rich.markup import escape
 
+from graph_agents_cli._chat_client import redact_credentials
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
 from graph_agents_cli._remote import deprecated_session_token, fold_session_token
@@ -139,7 +140,7 @@ def _dispatch(
         except Exception as exc:  # a worker crash still yields a trace
             trace = empty_trace(case.id)
             trace["status"] = "error"
-            trace["error"] = f"worker crashed: {type(exc).__name__}: {exc}"
+            trace["error"] = redact_credentials(f"worker crashed: {type(exc).__name__}: {exc}")
             return index, trace
 
     pool = ThreadPoolExecutor(max_workers=max(1, concurrency))
@@ -166,7 +167,7 @@ _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 
 def display_url(url: str) -> str:
-    """``url`` for the terminal, with any ``user:password@`` replaced by ``***@``."""
+    """``url`` as printed and stored, with any ``user:password@`` replaced by ``***@``."""
     parts = urlsplit(url)
     if "@" not in parts.netloc:
         return url
@@ -239,7 +240,7 @@ def warn_live_target(
     )
 
 
-def _print_incomplete_summary(traces: list[dict[str, Any]]) -> None:
+def _print_incomplete_summary(traces: list[dict[str, Any]], *, remote: bool = False) -> None:
     bad = [t for t in traces if t["status"] != STATUS_OK]
     click.echo("", err=True)
     click.echo(
@@ -249,6 +250,12 @@ def _print_incomplete_summary(traces: list[dict[str, Any]]) -> None:
     )
     for trace in bad:
         click.echo(f"  - {trace['case_id']}: {trace['status']}: {trace.get('error')}", err=True)
+    if any("HTTP 401 " in str(t.get("error") or "") for t in bad):
+        # The same policy-aware hint `run` prints (which credential, and how to send it).
+        from graph_agents_cli.run.cmd_run import _auth_hint, _project_auth_policy
+
+        hint = _auth_hint(_project_auth_policy(remote=remote), remote=remote).strip()
+        click.echo(f"  {hint}", err=True)
 
 
 def generate_traces(
@@ -343,7 +350,7 @@ def generate_traces(
         # `eval grade` warns when that agent ran on the fake model.
         "model_provider": meta["model_provider"],
         "target": "url" if url else "local",
-        "base_url": base_url,
+        "base_url": display_url(base_url),
         "app_name": app_name,
         "traces": traces,
     }
@@ -351,7 +358,7 @@ def generate_traces(
     console.print(f"Traces saved to [green]{output_path}[/green]")
 
     if any(t["status"] != STATUS_OK for t in traces):
-        _print_incomplete_summary(traces)
+        _print_incomplete_summary(traces, remote=bool(url))
         return EXIT_INCOMPLETE
     return EXIT_OK
 
@@ -395,7 +402,11 @@ def generate_traces(
     "-H",
     "header",
     multiple=True,
-    help="Extra HTTP header 'Key: Value' (repeatable), e.g. 'Authorization: Bearer ...'.",
+    help=(
+        "Extra HTTP header 'Key: Value' (repeatable). For a bearer credential use "
+        "GRAPH_AGENTS_CLI_API_KEY instead (argv is visible to other local users); an "
+        "Authorization header overrides it."
+    ),
 )
 @click.option(
     "--cookie",
@@ -441,9 +452,15 @@ def cmd_generate(
     records the dataset hash so `eval grade` can account for every planned case.
 
     Without --url the local server is started through `run`'s server manager
-    and stopped after the run. With --url, credentials follow the auth policy:
-    --header 'Authorization: Bearer ...' or GRAPH_AGENTS_CLI_API_KEY for
-    shared-bearer and jwt; --header or --cookie for a custom policy.
+    and stopped after the run. Credentials follow the project's auth policy,
+    locally and with --url. Put a bearer credential in GRAPH_AGENTS_CLI_API_KEY
+    (sent as 'Authorization: Bearer <value>'): unlike --header, it stays out
+    of the process list and your shell history.
+
+    \b
+      shared-bearer     GRAPH_AGENTS_CLI_API_KEY=<API_KEY> (locally: the API_KEY in .env)
+      jwt               GRAPH_AGENTS_CLI_API_KEY=<token> (locally: auth dev-token)
+      custom            --header 'Name: value' or --cookie name=value
 
     With --url every tool the agent calls runs for real in that environment
     (a warning names the target first): cases that create, change or delete

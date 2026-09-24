@@ -250,7 +250,7 @@ class ProjectConfig:
         keys = [str(k) for k in raw_keys] if raw_keys else []
         if not keys:
             # No recorded allow-list: the default follows the provider and runtime.
-            keys = default_secret_keys(cfg.model_provider, cfg.runtime)
+            keys = default_secret_keys(cfg.model_provider, cfg.runtime, auth_policy=cfg.auth_policy)
         cfg.secrets = SecretsConfig(keys=keys, owner=str(secrets.get("owner") or ""))
 
         api_policy = data.get("api_policy") or {}

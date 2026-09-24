@@ -240,7 +240,13 @@ file); config `tests/eval/eval_config.yaml`; traces `artifacts/traces/traces_<ts
 grade and returns the worse exit code; it honours extension overrides of both `eval.generate` and
 `eval.grade`. `eval grade` defaults to the newest traces file. `eval submit` uploads the dataset
 and a results file to LangSmith as an experiment (needs `LANGSMITH_API_KEY` and the `langsmith`
-extra; optional, never required). Details: `/graph-agents-cli-eval`.
+extra; optional, never required). Credentials as for `run`: a bearer credential goes in
+`GRAPH_AGENTS_CLI_API_KEY` (locally a `shared-bearer` project's `API_KEY` from `.env`; a `jwt`
+project needs a token, e.g. from `auth dev-token`); a 401 prints the policy's hint. With `--url`,
+a warning names the target (credentials in the URL shown as `***@`, never stored in traces or
+results) and the write methods `api-policy.yaml` allows: every tool call runs for real there.
+`eval grade` warns when the agent or the judge ran on the fake model (a met gate is then a
+plumbing check only). Details: `/graph-agents-cli-eval`.
 
 ## Deploy
 
@@ -268,9 +274,11 @@ graph-agents-cli deploy --env TEXT [--image TEXT] [--env-file TEXT] [--context T
 - `secrets apply` creates the namespace when missing and applies the Opaque Secret
   `<release>-app` from the allow-listed keys (`secrets.keys` in the manifest) of the env file with
   server-side apply (a 0600 temporary `--from-env-file` piped into `kubectl apply --server-side`);
-  allow-listed keys the file leaves out are kept from the live Secret. The live `API_KEY` wins
-  unless the file sets another and `--rotate-api-key` is passed; a missing key is generated and
-  written to the env file (0600), never printed. It is not refused under CI; keeping application
+  allow-listed keys the file leaves out are kept from the live Secret. Under `shared-bearer` (the
+  only policy that reads `API_KEY`) the live `API_KEY` wins unless the file sets another and
+  `--rotate-api-key` is passed, and a missing one is generated and written to the env file (0600),
+  never printed; other policies get none. With `METRICS_TOKEN` allow-listed it is also applied
+  alone to `<release>-metrics` (the ServiceMonitor's token). It is not refused under CI; keeping application
   secrets out of CI is the documented procedure. `--dry-run` prints the pipeline and a redacted
   manifest. `secrets status` lists present, missing required, missing optional and unexpected
   keys without values: exit `0` all required keys present, `1` the Secret or a required key missing
@@ -281,9 +289,16 @@ graph-agents-cli deploy --env TEXT [--image TEXT] [--env-file TEXT] [--context T
   `--image` it is the tag written into the values file. Before building anything, direct mode
   checks that the Secret it would produce holds every required key (exit 1) and that no other helm
   operation holds the release (exit 2). helm runs with `--wait --timeout <--timeout, default 5m>`;
-  a failed rollout prints pod diagnostics and, with `--atomic` (default), rolls back this run's
-  revision (or uninstalls a first install that never succeeded). `--status` wraps `kubectl rollout
-  status` or `argocd app get`; `--restart` runs `kubectl rollout restart` (after secret rotation);
+  a failed rollout prints this release's pod diagnostics and, with `--atomic` (default), rolls back
+  this run's revision (or uninstalls a first install that never succeeded) and puts the app Secret
+  (and `<release>-metrics`) back to its values from before the run, keys this run removed
+  included, or deletes it when this run created it; a Secret someone else changed meanwhile is
+  left alone and the error says so. `--status` (argocd mode with the `argocd` CLI: `argocd app
+  get`) waits at most `--timeout` (default 60s) for the rollout, prints replicas, image, helm
+  revision and each pod's state, and exits 1 with diagnostics when it is not ready (or the
+  Deployment does not exist), 2 when kubectl fails. `--restart` runs `kubectl rollout restart`
+  (after secret rotation) and waits up to `--timeout` (default 5m) for the new pods: exit 2 with
+  diagnostics when they never become ready (the old pods keep serving);
   `--force-direct` allows a workstation deploy to staging/prod in `helm-push` mode, which is
   otherwise refused outside CI even with `--image`; `--dry-run` prints the docker, helm, kubectl
   and gh commands and the rendered manifests without running them and never prompts (except

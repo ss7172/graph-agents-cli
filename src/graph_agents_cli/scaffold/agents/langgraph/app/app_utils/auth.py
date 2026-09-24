@@ -132,7 +132,8 @@ class Principal:
     id: str
     roles: list[str] = field(default_factory=list)
     permissions: set[str] = field(default_factory=set)
-    attributes: dict[str, Any] = field(default_factory=dict)
+    # Out of repr: `credentials` holds secrets, and a repr ends up in logs and tracebacks.
+    attributes: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def hashed_id(self) -> str:
         """The id hashed, first 16 hex characters: what logs, traces and run records carry.

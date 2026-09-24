@@ -148,10 +148,16 @@ def reconcile_secret_keys(
         raw_keys = [raw_keys]
     recorded = [str(k) for k in raw_keys] if raw_keys else []
     old_defaults = default_secret_keys(
-        previous.model_provider, previous.runtime, previous.api_token_envs
+        previous.model_provider,
+        previous.runtime,
+        previous.api_token_envs,
+        auth_policy=previous.auth_policy,
     )
     new_defaults = default_secret_keys(
-        current.model_provider, current.runtime, current.api_token_envs
+        current.model_provider,
+        current.runtime,
+        current.api_token_envs,
+        auth_policy=current.auth_policy,
     )
     keys = recompute_secret_keys(recorded or old_defaults, old_defaults, new_defaults)
     if keys == recorded:
@@ -247,7 +253,12 @@ def finalize_manifest(
         raw_keys = [raw_keys]
     keys = [str(k) for k in raw_keys] if raw_keys else []
     if not keys:
-        keys = default_secret_keys(params.model_provider, params.runtime, params.api_token_envs)
+        keys = default_secret_keys(
+            params.model_provider,
+            params.runtime,
+            params.api_token_envs,
+            auth_policy=params.auth_policy,
+        )
     else:
         # Every bearer API needs its token in the Secret; user-added keys stay.
         keys = [*keys, *(k for k in params.api_token_envs if k not in keys)]

@@ -631,7 +631,13 @@ METHOD_OVERRIDE_PARAM = "_method"
 
 
 def forbidden_header(name: str) -> bool:
-    lowered = name.strip().lower()
+    """Whether a tool may not set header `name`.
+
+    Underscores count as hyphens: CGI and WSGI servers (and proxies that do
+    not drop such headers) map `X_HTTP_METHOD_OVERRIDE` and
+    `X-HTTP-Method-Override` to the same variable.
+    """
+    lowered = name.strip().lower().replace("_", "-")
     return lowered in FORBIDDEN_HEADERS or lowered.startswith(FORBIDDEN_HEADER_PREFIXES)
 
 

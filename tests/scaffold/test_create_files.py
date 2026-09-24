@@ -205,9 +205,10 @@ def test_manifest_content_kubernetes(run_create: CreateRunner) -> None:
         "prod": {"context": "", "namespace": "my-agent-prod"},
     }
     assert manifest["secrets"] == {
-        "keys": default_secret_keys("gemini", "langgraph-server"),
+        "keys": default_secret_keys("gemini", "langgraph-server", auth_policy="custom"),
         "owner": "",
     }
+    assert "API_KEY" not in manifest["secrets"]["keys"]  # only shared-bearer reads it
     assert manifest["secrets"]["keys"][0] == "GOOGLE_API_KEY"
     assert "DATABASE_URI" in manifest["secrets"]["keys"]
     assert "api_policy" not in manifest

@@ -22,19 +22,25 @@ way round. This file is loaded before any test module imports the app, so it
 switches `.env` loading off (in this process and in the subprocesses tests
 start) and removes every app setting from the environment: each setting
 `.env.example` documents, plus the provider, auth, tracing and LangChain
-variables. Each test module then sets exactly what it needs. Opt-ins the tests
-read themselves (`TEST_*`, such as `TEST_POSTGRES_DSN`) are kept.
+variables and the other settings the app reads (`A2A_NAME`, `RUNTIME`, ...).
+Each test module then sets exactly what it needs. Opt-ins the tests read
+themselves (`TEST_*`, such as `TEST_POSTGRES_DSN`) are kept.
 
 The server tests exercise the plumbing (tool events, redaction, a run stopped
 mid-call) with a test-only tool through the `use_test_tools` fixture, never
-with the project's own tools, which are yours to replace or delete.
+with the project's own tools, which are yours to replace or delete: while a
+test module has imported the agent, each test serves a graph built like
+`agent.py`'s but with no tools (the fake model would otherwise call a project
+tool whose name a test prompt happens to mention). A test that needs the
+project's own graph is marked `@pytest.mark.project_graph`.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Sequence
+import sys
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +61,21 @@ _SETTING_PREFIXES = (
     "TRACING_",
 )
 _PROVIDER_VARIABLES = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"}
+# Settings the app reads that `.env.example` leaves out (the runtime and the
+# server set some of them; a developer's shell may carry any).
+_APP_VARIABLES = {
+    "A2A_NAME",
+    "A2A_DESCRIPTION",
+    "AGENT_VERSION",
+    "DATABASE_URI",
+    "REDIS_URI",
+    "HOST",
+    "LANGGRAPH_SERVER",
+    "LANGGRAPH_SERVER_URL",
+    "LANGSERVE_GRAPHS",
+    "PGCONNECT_TIMEOUT",
+    "RUNTIME",
+}
 _ASSIGNMENT = re.compile(r"^\s*#?\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=")
 
 
@@ -70,7 +91,11 @@ def _documented_settings() -> set[str]:
 def _is_app_setting(name: str) -> bool:
     if name.startswith("TEST_"):
         return False
-    return name in _PROVIDER_VARIABLES or name.startswith(_SETTING_PREFIXES)
+    return (
+        name in _PROVIDER_VARIABLES
+        or name in _APP_VARIABLES
+        or name.startswith(_SETTING_PREFIXES)
+    )
 
 
 def _no_dotenv(*args: Any, **kwargs: Any) -> bool:
@@ -103,6 +128,38 @@ def build_test_graph(tools: Sequence[Any]) -> Any:
         context_schema=agent.AgentContext,
         name="test-agent",
     ).with_config({"recursion_limit": recursion_limit()})
+
+
+AGENT_MODULE = "{{cookiecutter.agent_directory}}.agent"
+APP_MODULE = "{{cookiecutter.agent_directory}}.fast_api_app"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "project_graph: serve the project's own graph (its tools included)"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_project_tools(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Serve a graph without the project's tools (see the module docstring).
+
+    Only where the test module already imported the agent or the app (with its
+    settings); the app binds its checkpointer to whichever graph `agent.graph`
+    is at startup, and reads `agent.graph` again for every run.
+    """
+    agent = sys.modules.get(AGENT_MODULE)
+    if agent is None and APP_MODULE in sys.modules:
+        import importlib
+
+        agent = importlib.import_module(AGENT_MODULE)
+    if agent is not None and request.node.get_closest_marker("project_graph") is None:
+        graph = build_test_graph([])
+        graph.checkpointer = agent.graph.checkpointer
+        monkeypatch.setattr(agent, "graph", graph)
+    yield
 
 
 @pytest.fixture

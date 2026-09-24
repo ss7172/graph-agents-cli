@@ -54,6 +54,9 @@ env:
 {%- endfor %}
 {%- endif %}
   A2A_NAME: {{cookiecutter.agent_directory}}
+  # What the A2A agent card (and its chat skill) says the agent does; empty: a
+  # generic description. The card's version is AGENT_VERSION (default 0.1.0).
+  A2A_DESCRIPTION: ""
   PORT: "8000"
 
 # Kubernetes Secret with the allow-listed keys (created by `graph-agents-cli

@@ -51,6 +51,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -720,42 +721,73 @@ def write_env(env_file: Path, entries: dict[str, str]) -> None:
     ``cp .env.example .env`` leaves ``API_KEY=`` (and a blank provider key)
     in the file; appending a second line would leave two assignments. Every
     blank assignment of a key gets the value (a later blank one would
-    otherwise win), and a key the file does not assign is appended. The file
-    holds credentials: it is written atomically with mode 0600 (a symlinked
-    ``.env`` is written through to its target).
+    otherwise win), and a key the file does not assign is appended. A key the
+    file already sets (another run got there first) is left as it is, never
+    assigned twice. The file holds credentials: it is written atomically with
+    mode 0600 (a symlinked ``.env`` is written through to its target), and
+    concurrent writers take turns (the file is read again under the lock).
     """
     if not entries:
         return
     target = env_file.resolve() if env_file.is_symlink() else env_file
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    if target.is_file():
-        # newline="": keep CRLF files CRLF (no universal-newline translation).
-        with target.open(encoding="utf-8", newline="") as handle:
-            existing = handle.read()
-    lines = existing.splitlines(keepends=True)
-    pending = dict(entries)
-    filled: set[str] = set()
-    for index, line in enumerate(lines):
-        match = _ENV_ASSIGNMENT.match(line)
-        if not match or match.group("key") not in pending:
-            continue
-        value = line[match.end() :].strip()
-        # Blank as python-dotenv (every reader) sees it: `KEY=`, `KEY=""  # note`.
-        # An unquoted `KEY=  # note` is the value "# note" to dotenv, so it is set.
-        if value.split(" #", 1)[0].strip() not in _BLANK_VALUES:
-            continue
-        key = match.group("key")
-        ending = line[len(line.rstrip("\r\n")) :]  # keep the file's own line ending
-        lines[index] = f"{match.group('lead')}{key}={pending[key]}{ending}"
-        filled.add(key)
-    text = "".join(lines)
-    appended = [f"{k}={v}" for k, v in pending.items() if k not in filled]
-    if appended:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n".join(appended) + "\n"
-    _write_private(target, text)
+    with _env_file_lock(target):
+        existing = ""
+        if target.is_file():
+            # newline="": keep CRLF files CRLF (no universal-newline translation).
+            with target.open(encoding="utf-8", newline="") as handle:
+                existing = handle.read()
+        lines = existing.splitlines(keepends=True)
+        pending = dict(entries)
+        filled: set[str] = set()
+        already_set: set[str] = set()
+        for index, line in enumerate(lines):
+            match = _ENV_ASSIGNMENT.match(line)
+            if not match or match.group("key") not in pending:
+                continue
+            key = match.group("key")
+            value = line[match.end() :].strip()
+            # Blank as python-dotenv (every reader) sees it: `KEY=`, `KEY=""  # note`.
+            # An unquoted `KEY=  # note` is the value "# note" to dotenv, so it is set.
+            if value.split(" #", 1)[0].strip() not in _BLANK_VALUES:
+                already_set.add(key)
+                continue
+            ending = line[len(line.rstrip("\r\n")) :]  # keep the file's own line ending
+            lines[index] = f"{match.group('lead')}{key}={pending[key]}{ending}"
+            filled.add(key)
+        text = "".join(lines)
+        appended = [
+            f"{k}={v}" for k, v in pending.items() if k not in filled and k not in already_set
+        ]
+        if appended:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += "\n".join(appended) + "\n"
+        _write_private(target, text)
+
+
+@contextlib.contextmanager
+def _env_file_lock(target: Path) -> Iterator[None]:
+    """Serialise read-modify-write of ``target`` between processes (POSIX; else no lock).
+
+    The lock is a file in the project's state directory beside it
+    (``.graph-agents-cli/<name>.lock``, git and docker ignored, left in place),
+    never the env file itself, which a write replaces.
+    """
+    try:
+        import fcntl
+    except ImportError:  # Windows: writes are still atomic, only not serialised
+        yield
+        return
+    lock_dir = target.parent / ".graph-agents-cli"
+    lock_dir.mkdir(exist_ok=True)
+    lock_path = lock_dir / f"{target.name.lstrip('.') or 'env'}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, ENV_FILE_MODE)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing releases the lock
 
 
 def _keep_private(path: Path, console: Console) -> None:

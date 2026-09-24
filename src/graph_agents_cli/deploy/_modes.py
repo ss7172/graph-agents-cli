@@ -227,7 +227,7 @@ def derive_mode(cd: str, context: str | None, *, local: bool | None = None) -> s
 
 def describe(mode: str) -> str:
     return {
-        LOCAL_LOAD: "direct, local-load (build and load the image into the dev cluster)",
+        LOCAL_LOAD: "direct, local-load (build and load the image into the local cluster)",
         REGISTRY: "direct, registry (build, push, and helm upgrade)",
         HELM_PUSH: "helm-push (CI builds and pushes; deploy runs helm)",
         ARGOCD: "argocd (deploy writes desired state; Argo CD reconciles from main)",

@@ -259,8 +259,9 @@ deployment/helm/<name> -n <name>-dev --create-namespace -f values.yaml -f values
 image.repository=...,image.tag=<tag>,existingSecret=<name>-app --wait --timeout 5m
 --kube-context <context>` (`<tag>` is the short sha, `<sha>-dirty-<time>` for a tree with
 uncommitted changes, a UTC timestamp outside git, or `--tag`). Access: `kubectl -n <name>-dev
-port-forward svc/<name> 8000:80`, then `graph-agents-cli run --url http://localhost:8000 "hello"
---header 'Authorization: Bearer <API_KEY>'`.
+port-forward svc/<name> 8000:80`, then `GRAPH_AGENTS_CLI_API_KEY=<API_KEY> graph-agents-cli run
+--url http://localhost:8000 "hello"` (under `jwt`, a user's token; the variable keeps the
+credential out of argv).
 
 ## Multi-node self-hosted clusters
 

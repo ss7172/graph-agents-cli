@@ -612,6 +612,12 @@ that metric (a case that does not declare it is not counted as a pass). The
   identity the requests authenticate as. The command prints a warning naming the target and the
   write methods the project's `api-policy.yaml` allows before the first case. Use an
   environment whose data you can reset and a dedicated test identity, never production data.
+  Its credential goes in `GRAPH_AGENTS_CLI_API_KEY`, not on the command line; credentials in
+  the URL itself are shown as `***@` and never stored in traces or results. When the project's
+  own settings name the fake model, `eval grade` warns that the target may be running them.
+- A multi-turn case with `expect.scope: all_turns` whose trace has no per-turn records (an older
+  traces file, an `eval generate` override) is graded on its final turn, and `eval grade` says
+  which cases.
 
 ## Environments and CD modes
 
@@ -1025,7 +1031,18 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
   global cap.
 - **Run lock across replicas** is a lease with a 30 s expiry: a thread whose run was on a
   replica that died (not one that shut down cleanly) answers 409 `thread_busy` for up to
-  30 s. Each replica keeps one extra connection for its leases.
+  30 s. Each replica keeps one extra connection for its leases. The lease is checked in the
+  process before each write, not by the database in the same transaction: a write already
+  sent when a network partition starts can land after another replica took the thread
+  (normal reads still follow the newer run's checkpoints).
+- **Rolling upgrades from an older build**: old pods (0.1.0 has no run lock across replicas;
+  pre-release 0.2.0 builds used a Postgres session advisory lock) and new pods (lease) do not
+  exclude each other while both run, so during the rollout one thread can run on an old and
+  a new pod at once. Upgrade with a `Recreate` rollout, or at one replica.
+- **A database that stops answering without closing its connections** (a paused host, a
+  proxy that holds traffic) is found by `/ready` and by TCP timeouts, not within the few
+  seconds a refused connection takes: requests on connections already open can wait up to
+  about a minute.
 - **Concurrent deploys to one release.** `deploy` refuses while another helm operation holds
   the release, but two narrow races remain. If this run's helm fails before recording a
   revision (a render error) just as another deploy records a revision that has already
@@ -1040,10 +1057,13 @@ Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
   native thread routes, including native run creation, which skips `/chat`'s guardrails (run
   timeout, one run per thread, run records); the auth handler still limits them to the
   caller's threads. Runs started through the native API carry the caller's raw id in
-  checkpoint metadata (the server injects it). Store reads are open to every authenticated
-  principal: namespace per-user data by principal.
-- **Human-in-the-loop** interrupts are not exposed over `/chat` (`message.end` always has
-  status `ok`).
+  checkpoint metadata (the server injects it). The native state routes (`GET
+  /threads/{id}/state`, `POST /threads/{id}/history`, `GET /threads/{id}`, search and run
+  joins) return the stored state as it is, a failed tool call's error text included; only
+  `/chat`, `/threads/{id}/messages` and A2A replace it with an error id. Store reads are
+  open to every authenticated principal: namespace per-user data by principal.
+- **Human-in-the-loop** interrupts are not exposed over `/chat` (`message.end` has status
+  `ok` or `step_limit`, never an interrupt).
 - `scaffold enhance` and `scaffold upgrade` rewrite the manifest without its comments; after
   `enhance --runtime`, run `graph-agents-cli install` to bring `uv.lock` up to date; required
   steps are reported only by the enhance that changes the settings.

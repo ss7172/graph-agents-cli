@@ -23,7 +23,7 @@ Scaffold default:
 | `JUDGE_API_KEY` | always (defaults to the provider key at runtime) |
 | `POSTGRES_DSN` | runtime `fastapi` |
 | `DATABASE_URI`, `REDIS_URI` | runtime `langgraph-server` |
-| `API_KEY` | always listed; only `shared-bearer` reads it, and only then is one generated |
+| `API_KEY` | `shared-bearer` only (the one policy that reads it; generated when missing). Projects created before this change keep it listed; it is harmless there |
 | `LANGSMITH_API_KEY` | always (used only when tracing is enabled) |
 | each `auth: bearer` API's `token_env` | when `api-policy.yaml` declares that API |
 | `AUTH_JWT_SECRET` | added automatically (not listed) under `jwt` when the chart values or the env file opt into HS* (`AUTH_JWT_ALLOW_HS=true` or an HS* algorithm) |

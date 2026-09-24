@@ -182,6 +182,13 @@ FAKE_AGENT_WARNING = (
     "the project's real provider before trusting the gate."
 )
 
+FAKE_URL_AGENT_WARNING = (
+    "this project's settings name the deterministic fake model (MODEL_PROVIDER=fake). The "
+    "agent at the --url target may run another model, but if it runs these settings (a local "
+    "server started from this project, say), its replies are canned and the gate proves the "
+    "eval plumbing only."
+)
+
 
 def _is_fake(provider: Any) -> bool:
     return str(provider or "").strip().lower() == FAKE_PROVIDER
@@ -205,11 +212,16 @@ def _fake_models(
 
 
 def _grade_warnings(
-    config: EvalConfig, grades: list[gate.CaseGrade], fake_model: list[str]
+    config: EvalConfig,
+    grades: list[gate.CaseGrade],
+    fake_model: list[str],
+    meta: dict[str, Any] | None = None,
 ) -> list[str]:
     warnings: list[str] = []
     if "agent" in fake_model:
         warnings.append(FAKE_AGENT_WARNING)
+    elif (meta or {}).get("target") == "url" and _is_fake((meta or {}).get("model_provider")):
+        warnings.append(FAKE_URL_AGENT_WARNING)
     if "judge" in fake_model:
         warnings.append(FAKE_JUDGE_WARNING)
     cut = [g for g in grades if g.truncated_tool_results]
@@ -222,6 +234,15 @@ def _grade_warnings(
             "judge prompt, marked TRUNCATED (the judge is told not to count the omitted part as "
             f"unsupported): {', '.join(g.id for g in cut[:5])}{'...' if len(cut) > 5 else ''}. "
             f"Raise judge.max_tool_result_chars in {where}, or set it to null, to show them in full."
+        )
+    final_only = [g.id for g in grades if g.checks_final_turn_only]
+    if final_only:
+        warnings.append(
+            f"{len(final_only)} case(s) declare expect.scope: all_turns but their traces have no "
+            "per-turn records (an older traces file or an eval generate override), so their "
+            "checks read the final turn only: "
+            f"{', '.join(final_only[:5])}{'...' if len(final_only) > 5 else ''}. Re-run "
+            "`eval generate` to record every turn."
         )
     unrecorded = [g.id for g in grades if g.unrecorded_turns]
     if unrecorded:
@@ -319,7 +340,7 @@ def grade_traces(
     summary["exit_code"] = exit_code
     identity = project_meta(project_root)
     fake_model = _fake_models(meta, judge, items)
-    warnings = _grade_warnings(config, grades, fake_model)
+    warnings = _grade_warnings(config, grades, fake_model, meta)
 
     results_doc = {
         "dataset_hash": planned.hash or meta.get("dataset_hash"),

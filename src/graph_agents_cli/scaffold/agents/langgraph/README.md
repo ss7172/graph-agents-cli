@@ -340,9 +340,11 @@ graph-agents-cli secrets status --env staging    # which keys are present (no va
 graph-agents-cli deploy --env staging --restart  # roll the pods after a rotation
 ```
 
-Secrets are applied with server-side apply; allow-listed keys the env file leaves out are kept. The live
+Secrets are applied with server-side apply; allow-listed keys the env file leaves out are kept.
+{%- if cookiecutter.auth_policy == 'shared-bearer' %} The live
 `API_KEY` wins: it changes only when the env file sets another one and `--rotate-api-key` is passed. A missing
-`API_KEY` is generated and written to the env file (mode 0600), never printed. In `argocd` and `helm-push`
+`API_KEY` is generated and written to the env file (mode 0600), never printed.
+{%- endif %} In `argocd` and `helm-push`
 modes CI never holds application secrets: the owner named in the manifest (`secrets.owner`) runs
 `secrets apply` from a workstation with cluster access, once per environment.
 
@@ -419,6 +421,14 @@ Datasets are JSON files in `tests/eval/datasets/` (`{"cases": [{"id", "messages"
 Deterministic `expect` checks and mandatory judge metrics must always pass; only the metrics listed under
 `quality_metrics` in `tests/eval/eval_config.yaml` may pass at a rate below 100 percent. `eval run` exits 0 when
 the gate is met, 1 on a failure, 2 on an error or missing case, 3 on a configuration error.
+
+- `expect.contains` and `not_contains` ignore case (`case_insensitive: false` for exact case); on a multi-turn case
+  the checks read the final turn unless `scope: all_turns`, and the judges see every earlier turn (replies and
+  tool results included).
+- A gate met on `MODEL_PROVIDER=fake` (or a fake judge) proves the plumbing only, and `eval grade` says so: run it
+  on the real provider before trusting it.
+- `eval run --url <agent>` sends every case to that agent, whose tools run for real there, writes included: point
+  it at an environment whose data you can reset, with a test identity (`GRAPH_AGENTS_CLI_API_KEY`).
 
 ## Coding agents
 

@@ -276,6 +276,11 @@ call, not on whose behalf. What the template does, and what your tools must do:
   `require_user_mentioned(record_id, runtime)` (from `app_utils.api_client`): it refuses, as a
   tool error, an id that is not in the user's latest message, so an instruction planted in tool
   output cannot pick the record. For multi-record operations, check every id.
+- **Reads of other people's records, too, in privileged sessions.** The write checks do not stop
+  planted text from making a staff session *read* one customer's record and write its data into
+  a record the user did name (both checks pass: the target was named, and the staff role may
+  write it). Where a role reads across customers, call `require_user_mentioned` (or an owner
+  check) on reads as well, so the agent reads only records the user asked about.
 - **Writes act only on the caller's own records.** With a per-user policy, check the record's
   owner before writing: `require_owner(order["customer"], context=runtime.context)` refuses a
   record that belongs to someone else (`allow_roles=("support",)` lets a staff role through,
@@ -286,15 +291,20 @@ call, not on whose behalf. What the template does, and what your tools must do:
   the task needs, not whole records with free-text notes; label free text as such
   (`"customer_note (written by the customer)": ...`).
 - **Confirm writes in two steps** when the stakes are high: the write tool returns a summary and
-  asks the user to confirm ("Cancel ORD-1001 (2 x WIDGET-M)? Reply yes to confirm.") instead of
-  acting, and a second tool (or the same one with `confirmed=True`) acts only when the user's
-  latest message confirms, which `require_user_mentioned` can check. This works over `/chat` and
-  A2A today; LangGraph `interrupt()` does not (section 5).
+  asks the user to confirm, naming the record in the answer it expects ("Cancel ORD-1001
+  (2 x WIDGET-M)? Reply 'cancel ORD-1001' to confirm.") instead of acting, and a second tool
+  (or the same one with `confirmed=True`) acts only when the user's latest message holds that
+  confirmation: `require_user_mentioned("ORD-1001", runtime)` checks it. A bare "yes" names no
+  record, so `require_user_mentioned` would refuse it; ask for the id (or check a confirmation
+  code the first step returned) rather than weakening the check. This works over `/chat` and A2A
+  today; LangGraph `interrupt()` does not (section 5).
 
-Residual risk: none of this makes a model immune to instructions in data. Human approval of
-writes (an `approval` gate on API calls) is the planned control; until it exists, give staff
-roles read access by default and write tools only where the checks above apply, and add eval
-cases with planted instructions (`/graph-agents-cli-eval`).
+Residual risk: none of this makes a model immune to instructions in data, and the helpers check
+ids, not intent: data copied from a record the user did not name into one they did is caught
+only by checking the reads too. Human approval of writes (an `approval` gate on API calls) is
+the planned control; until it exists, give staff roles read access by default and write tools
+only where the checks above apply, and add eval cases with planted instructions
+(`/graph-agents-cli-eval`).
 
 ## 3. Checkpointers, threads, and run records
 

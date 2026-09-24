@@ -193,7 +193,15 @@ def _grade_override_argv(
     show_default=True,
     help="Cases run in parallel. Forwarded to `eval generate`.",
 )
-@click.option("--header", "-H", multiple=True, help="Extra HTTP header 'Key: Value' (repeatable).")
+@click.option(
+    "--header",
+    "-H",
+    multiple=True,
+    help=(
+        "Extra HTTP header 'Key: Value' (repeatable). For a bearer credential use "
+        "GRAPH_AGENTS_CLI_API_KEY instead (argv is visible to other local users)."
+    ),
+)
 @click.option("--cookie", multiple=True, help="Cookie 'name=value' (repeatable).")
 @click.option(
     "--session-token",
@@ -254,6 +262,11 @@ def cmd_run(
     judge_timeout: int,
 ) -> None:
     """Chain `eval generate` and `eval grade` in one command.
+
+    Credentials are those of `eval generate`: a bearer credential goes in
+    GRAPH_AGENTS_CLI_API_KEY (locally, a shared-bearer project's API_KEY in
+    .env is used; a jwt project needs a token, e.g. from `graph-agents-cli auth
+    dev-token --sub <user>`), never on the command line.
 
     Traces go to a fresh artifacts/traces/traces_<ts>.json and are graded
     immediately. An extension that overrides `eval generate` or `eval grade`

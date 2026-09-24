@@ -125,6 +125,7 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
     assert_owner,
     is_owner,
     reads_across,
+    thread_deleted,
 )
 
 logger = logging.getLogger(__name__)
@@ -246,7 +247,17 @@ def _first_line(exc: BaseException) -> str:
 
 
 def unavailable(what: str, exc: BaseException) -> HTTPException:
-    """A 503 whose detail names an error id, never the exception text (logged instead).
+    """A 503 whose detail names an error id, never the exception text (logged instead)."""
+    error_id = log_unavailable(what, exc)
+    return HTTPException(status_code=503, detail=unavailable_detail(what, error_id))
+
+
+def unavailable_detail(what: str, error_id: str) -> str:
+    return f"{what} unavailable. Reference: {error_id}."
+
+
+def log_unavailable(what: str, exc: BaseException) -> str:
+    """Log `exc` under a new error id, which it returns.
 
     An unreachable database is expected during an outage: one WARNING line,
     no traceback. Anything else is logged as an ERROR with its traceback.
@@ -264,7 +275,7 @@ def unavailable(what: str, exc: BaseException) -> HTTPException:
         logger.error(
             "%s unavailable (error_id=%s): %s", what, error_id, type(exc).__name__, exc_info=exc
         )
-    return HTTPException(status_code=503, detail=f"{what} unavailable. Reference: {error_id}.")
+    return error_id
 
 
 @contextlib.contextmanager
@@ -1089,6 +1100,10 @@ class ChatRuntime:
             except Exception as exc:
                 if http_status(exc) != 404:
                     raise unavailable("LangGraph Server", exc) from exc
+            # The app keeps no thread rows here; tell the listeners itself (the
+            # retention purge lands here; the A2A task store drops the thread's
+            # tasks). Under fastapi `ThreadStore.delete` below does it.
+            await thread_deleted(thread_id)
         else:
             from {{cookiecutter.agent_directory}}.agent import graph
 

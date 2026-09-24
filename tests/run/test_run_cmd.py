@@ -277,7 +277,9 @@ def test_a_stream_that_drops_mid_run_is_not_reported_as_unreachable(
     out = result.output
     assert "Could not reach" not in out
     assert f"The connection to the remote agent at {chat_server.url} dropped after the run" in out
-    assert "The answer above is incomplete" in out
+    # No reply text had arrived: nothing above to call incomplete.
+    assert "The run was interrupted" in out and "The answer above" not in out
+    assert "the thread keeps every turn that finished" in out
     assert "Thread: srv-thread-9" in out
     assert f"--url {chat_server.url} --thread-id srv-thread-9" in out
 
@@ -304,8 +306,11 @@ def test_a_local_server_that_dies_mid_run_is_stopped_and_the_thread_named(
     assert "The connection to the local server dropped after the run started" in out
     assert "The local server has been stopped" in out
     assert "Thread: t-mem" in out
-    # The fake ensure_server reports a memory checkpointer: nothing survives the stop.
-    assert "One-off server with an in-memory checkpointer" in out
+    # The fake ensure_server reports a memory checkpointer: nothing survives the stop,
+    # so no resume line, no "keeps every turn" and no advice to add --start-server.
+    assert "its in-memory checkpointer lost this thread" in out
+    assert "Resume with" not in out and "keeps every turn" not in out
+    assert "add --start-server" not in out
     assert local_project.stop_calls == [{"root": Path.cwd(), "pid": 4242}]
 
 
@@ -563,10 +568,13 @@ def test_stalled_stream_still_stops_a_one_off_server(local_project, chat_server,
         _chat_client, "STREAM_TIMEOUT", httpx.Timeout(connect=10.0, read=0.5, write=10.0, pool=10.0)
     )
     chat_server.stall_seconds = 2.0
-    result = invoke("hi")
+    result = invoke("hi", "--thread-id", "t-10")
     assert result.exit_code == 2
     assert "No event from the agent" in result.output
     assert local_project.stop_calls == [{"root": Path.cwd(), "pid": 4242}]
+    # Its memory checkpointer went with it: no "check the thread later".
+    assert "Check the thread later" not in result.output
+    assert "Its in-memory thread went with it" in result.output
 
 
 def test_remote_run_warns_about_start_server(chat_server, monkeypatch, tmp_path):

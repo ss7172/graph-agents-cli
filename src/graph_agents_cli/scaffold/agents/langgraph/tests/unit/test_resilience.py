@@ -274,6 +274,20 @@ def test_connection_defaults_bound_outages_unless_the_dsn_says_otherwise(
         checkpointer.connection_kwargs("postgresql://u:p@db:5432/app?nonsense_option=1")
 
 
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "postgresql://agent:S3CRETpw%zz@127.0.0.1:5432/app",
+        "host=db user=agent password=S3CRETpw dbname",
+        "host=db password='S3CRETpw",
+    ],
+)
+def test_a_dsn_that_does_not_parse_never_shows_its_text(dsn: str) -> None:
+    with pytest.raises(limits.SettingsError) as exc:
+        checkpointer.connection_kwargs(dsn)
+    assert "S3CRET" not in str(exc.value) and "does not parse" in str(exc.value)
+
+
 def test_connection_errors_are_told_apart_from_failed_statements() -> None:
     from psycopg import OperationalError, ProgrammingError, errors
     from psycopg_pool import PoolTimeout

@@ -406,3 +406,21 @@ def test_settings_missing_registry_is_config_error(cfg_factory):
     settings = DeploySettings.from_project(cfg_factory(registry="", create_params={"registry": ""}))
     with pytest.raises(ConfigError):
         _ = settings.image_repository
+
+
+@pytest.mark.parametrize(
+    ("dsn", "mode"),
+    [
+        ("postgresql://u:p@db:5432/app?sslmode=verify-full", "verify-full"),
+        ("postgresql://u:p@db:5432/app?connect_timeout=5&sslmode=require", "require"),
+        ("host=db dbname=app user=u password=p sslmode=verify-ca", "verify-ca"),
+        ("host=db dbname=app user=u password=p sslmode = verify-full", "verify-full"),
+        ("host=db dbname=app sslmode= 'require' user=u", "require"),
+        ("host=db dbname=app user=u", None),
+        ("postgresql://u:p@db/app?options=-csslmode%3Ddisable", None),
+    ],
+)
+def test_sslmode_reads_both_connection_string_forms(dsn: str, mode: str | None) -> None:
+    from graph_agents_cli.deploy import _preflight
+
+    assert _preflight.sslmode(dsn) == mode

@@ -833,9 +833,17 @@ def _print_recomputed_settings(
         if old != new:
             lines.append(f"{label}: {old} -> {new}")
     old_defaults = default_secret_keys(
-        previous.model_provider, previous.runtime, previous.api_token_envs
+        previous.model_provider,
+        previous.runtime,
+        previous.api_token_envs,
+        auth_policy=previous.auth_policy,
     )
-    new_defaults = default_secret_keys(params.model_provider, params.runtime, params.api_token_envs)
+    new_defaults = default_secret_keys(
+        params.model_provider,
+        params.runtime,
+        params.api_token_envs,
+        auth_policy=params.auth_policy,
+    )
     recorded = project_config.secret_keys
     keys = recompute_secret_keys(recorded, old_defaults, new_defaults)
     added = [k for k in keys if k not in recorded]

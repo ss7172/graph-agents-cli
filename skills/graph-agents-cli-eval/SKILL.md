@@ -88,9 +88,11 @@ graph-agents-cli eval metric list [--json]
 ```
 
 - `eval generate` drives the local server (started like `run`, per runtime, stopped afterwards)
-  or `--url` over the same `/chat` SSE API clients use, with the same credential flags as
-  `run` (`--header`, `GRAPH_AGENTS_CLI_API_KEY`, `--cookie`; locally the
-  `API_KEY` from `.env`). `--dataset` defaults to `tests/eval/datasets/basic-dataset.json`, else
+  or `--url` over the same `/chat` SSE API clients use, with the same credentials as `run`: a
+  bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, never on the command line (locally a
+  `shared-bearer` project uses the `API_KEY` from `.env`; a `jwt` project needs a token, e.g.
+  `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice)"`);
+  `--header` / `--cookie` are for a `custom` policy. `--dataset` defaults to `tests/eval/datasets/basic-dataset.json`, else
   every `*.json` there. Each case runs on a fresh `thread_id`; multi-message cases send messages
   in order on that thread and the trace records the final turn (plus every turn under `turns`).
   Exit 3 on a configuration error (no project, no dataset, malformed case, a local server port
@@ -103,7 +105,8 @@ graph-agents-cli eval metric list [--json]
   first case, `eval generate`/`eval run` print a warning naming the target and the write methods
   the project's `api-policy.yaml` allows. Point `--url` only at an environment whose data you can
   reset, with a dedicated test identity; never at production data. All cases share one identity
-  (`-H` or `GRAPH_AGENTS_CLI_API_KEY`).
+  (`GRAPH_AGENTS_CLI_API_KEY`; `-H` only for a `custom` policy). Credentials in the URL are
+  shown as `***@` and never written to traces or results; a 401 prints the policy's hint.
 - `eval grade` runs the deterministic checks in the CLI process first; judge and custom metrics
   then run **inside the project's environment**: the CLI stages `.graph-agents-cli/judge_runner.py`
   into the project and runs it with `uv run python`, and the runner calls the template's
@@ -120,7 +123,9 @@ graph-agents-cli eval metric list [--json]
 - **The fake model is announced.** When the agent ran on `MODEL_PROVIDER=fake` on the local
   server, or the judge is the fake model, `eval grade` prints a warning above the result and
   appends "(fake model: plumbing check only, not a quality signal)" to "gate met"; the results
-  record `fake_model` and `warnings`.
+  record `fake_model` and `warnings`. For `--url` traces it warns when the project's own settings
+  name the fake model (the target may run them). A case with `scope: all_turns` whose trace has
+  no per-turn records is graded on its final turn, with a warning naming it.
 - `eval run` validates the eval config and every case's metrics **before** generating (exit 3,
   no model calls spent; skipped when an `eval.grade` override is installed), then chains both on a
   fresh traces file and honours extension overrides of both `eval.generate` and `eval.grade`.

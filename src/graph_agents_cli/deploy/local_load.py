@@ -65,7 +65,7 @@ class LocalCluster:
             K3D: f"k3d cluster {self.name!r}",
             K3S: "k3s",
             MINIKUBE: f"minikube profile {self.name!r}",
-            SHARED_DAEMON: f"{self.name or 'dev cluster'} (shares the docker daemon)",
+            SHARED_DAEMON: f"{self.name or 'local cluster'} (shares the docker daemon)",
         }.get(self.kind, self.kind)
         return f"{label}{f', {self.evidence}' if self.evidence else ''}"
 

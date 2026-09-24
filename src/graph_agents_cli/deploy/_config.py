@@ -147,7 +147,7 @@ class DeploySettings:
                 secret_keys = raw_secrets.get("keys")
             owner = str(raw_secrets.get("owner") or "")
         if secret_keys is None:
-            secret_keys = default_secret_keys(model_provider, runtime)
+            secret_keys = default_secret_keys(model_provider, runtime, auth_policy=auth_policy)
         owner = getattr(cfg, "secrets_owner", None) or owner
 
         return cls(

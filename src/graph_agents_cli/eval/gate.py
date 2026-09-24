@@ -39,7 +39,7 @@ from graph_agents_cli.eval._common import (
 )
 from graph_agents_cli.eval.checks import run_checks
 from graph_agents_cli.eval.config import EvalConfig, render_judge_prompt, resolve_threshold
-from graph_agents_cli.eval.dataset import EvalCase
+from graph_agents_cli.eval.dataset import SCOPE_ALL_TURNS, EvalCase
 from graph_agents_cli.eval.transcript import RenderedCase, render_case
 
 STATUS_PASSED = "passed"
@@ -86,6 +86,9 @@ class CaseGrade:
     judge_notes: list[str] = field(default_factory=list)
     truncated_tool_results: int = 0
     unrecorded_turns: int = 0
+    # `expect.scope: all_turns` on a multi-turn case whose trace has no per-turn
+    # records: its checks could read the final turn only.
+    checks_final_turn_only: bool = False
 
     @property
     def status(self) -> str:
@@ -140,6 +143,12 @@ def grade_deterministic(case: EvalCase, trace: dict[str, Any] | None) -> CaseGra
         grade.missing.append("missing: trace has no response")
         return grade
     grade.checks = run_checks(case.expect, trace)
+    turns = trace.get("turns")
+    grade.checks_final_turn_only = (
+        case.expect.get("scope") == SCOPE_ALL_TURNS
+        and len(case.user_messages()) > 1
+        and not (isinstance(turns, list) and turns)
+    )
     for name, result in grade.checks.items():
         if not result["passed"]:
             grade.failures.append(f"{name}: {result['reason']}")

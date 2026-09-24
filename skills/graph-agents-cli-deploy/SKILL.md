@@ -164,10 +164,10 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
 6. **Verify:** `graph-agents-cli deploy --status --env <env>` (a bounded rollout status, 60 s by
    default, with the image, helm revision and each pod's readiness and restarts; diagnostics and
    exit 1 when not ready; `argocd app get` in argocd mode), then
-   `graph-agents-cli run --url https://<host> "hello"` with the environment's
-   credential (`--header 'Authorization: Bearer ...'` or `GRAPH_AGENTS_CLI_API_KEY`; a user's
-   token under `jwt`; `--header` / `--cookie` under `custom`). Readiness is `/ready` (probed
-   inside the cluster; not published on the route).
+   `graph-agents-cli run --url https://<host> "hello"` with the environment's credential in
+   `GRAPH_AGENTS_CLI_API_KEY` (the environment's `API_KEY` under `shared-bearer`, a user's token
+   under `jwt`; kept out of argv and shell history), or `--header` / `--cookie` under `custom`.
+   Readiness is `/ready` (probed inside the cluster; not published on the route).
 
 ## Secrets and rotation (summary)
 

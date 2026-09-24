@@ -917,6 +917,7 @@ ORDERS_READ_TOOL = """\
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
@@ -930,7 +931,7 @@ API_CALLS: list[dict[str, str]] = [
 
 
 @tool
-async def list_orders(runtime: ToolRuntime) -> str:
+async def list_orders(runtime: ToolRuntime[Any]) -> str:
     \"\"\"List the orders.\"\"\"
     client = get_client("orders", context=getattr(runtime, "context", None))
     data = await client.get("/orders", operation_id="listOrders")
@@ -938,7 +939,7 @@ async def list_orders(runtime: ToolRuntime) -> str:
 
 
 @tool
-async def get_order(order_id: str, runtime: ToolRuntime) -> str:
+async def get_order(order_id: str, runtime: ToolRuntime[Any]) -> str:
     \"\"\"Return the order ORDER_ID.\"\"\"
     client = get_client("orders", context=getattr(runtime, "context", None))
     data = await client.get(
@@ -954,6 +955,7 @@ ORDERS_WRITE_TOOL = """\
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
@@ -966,7 +968,7 @@ API_CALLS: list[dict[str, str]] = [
 
 
 @tool
-async def create_order(sku: str, quantity: int, runtime: ToolRuntime) -> str:
+async def create_order(sku: str, quantity: int, runtime: ToolRuntime[Any]) -> str:
     \"\"\"Order QUANTITY of SKU.\"\"\"
     client = get_client("orders", context=getattr(runtime, "context", None))
     data = await client.post(

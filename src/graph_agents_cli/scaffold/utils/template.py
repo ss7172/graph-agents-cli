@@ -816,7 +816,12 @@ def build_cookiecutter_context(
             example_call.as_context() if has_api_policy and example_call is not None else {}
         ),
         "secret_keys": [
-            default_secret_keys(model_provider, runtime, bearer_token_envs(api_summaries))
+            default_secret_keys(
+                model_provider,
+                runtime,
+                bearer_token_envs(api_summaries),
+                auth_policy=auth_policy,
+            )
         ],
         "default_judge_model": model,
         "cli_install_spec": cli_install_spec(),

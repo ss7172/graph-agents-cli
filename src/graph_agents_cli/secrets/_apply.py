@@ -54,6 +54,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -175,6 +176,9 @@ class LiveSecret:
     # The base64 ``data`` exactly as the cluster holds it, to restore it byte for byte.
     raw: dict[str, str] = field(default_factory=dict)
     resource_version: str = ""
+    # ``data`` keys the graph-agents-cli field manager applied: a server-side apply
+    # that leaves one out removes it.
+    owned: set[str] = field(default_factory=set)
 
     @property
     def keys(self) -> set[str]:
@@ -215,7 +219,20 @@ def read_live_secret(name: str, target: Target) -> LiveSecret:
     for key, raw in (body.get("stringData") or {}).items():
         live.values[key] = str(raw)
         live.raw[key] = base64.b64encode(str(raw).encode("utf-8")).decode("ascii")
+    live.owned = _owned_data_keys(body)
     return live
+
+
+def _owned_data_keys(body: dict[str, Any]) -> set[str]:
+    """The ``data`` keys the graph-agents-cli field manager owns (from ``managedFields``)."""
+    owned: set[str] = set()
+    for entry in (body.get("metadata") or {}).get("managedFields") or []:
+        if not isinstance(entry, dict) or entry.get("manager") != FIELD_MANAGER:
+            continue
+        data = (entry.get("fieldsV1") or {}).get("f:data")
+        if isinstance(data, dict):
+            owned |= {k[2:] for k in data if isinstance(k, str) and k.startswith("f:")}
+    return owned
 
 
 @dataclass
@@ -754,6 +771,19 @@ class Snapshot:
             if k in self.before.undecodable or self.before.values.get(k) != v
         )
 
+    @property
+    def removed(self) -> list[str]:
+        """Keys this run's server-side apply removes: ones graph-agents-cli applied before
+        and this run leaves out (a key dropped from the allow-list)."""
+        return sorted(
+            k for k in self.before.raw if k in self.before.owned and k not in self.applied
+        )
+
+    @property
+    def touched(self) -> list[str]:
+        """Keys this run added, changed or removed (names only)."""
+        return sorted({*self.changed, *self.removed})
+
 
 def snapshot(plan: SecretPlan, live: LiveSecret | None, *, managed: list[str]) -> list[Snapshot]:
     """The app Secret (``live``, read by :func:`prepare`) and the metrics Secret before the apply.
@@ -802,22 +832,46 @@ def _restore_manifest(snap: Snapshot, current: LiveSecret) -> str:
     return yaml.safe_dump(body, sort_keys=False)
 
 
+def _is_metrics(snap: Snapshot) -> bool:
+    return snap.managed == frozenset({METRICS_TOKEN_KEY})
+
+
+def _readers(snap: Snapshot) -> str:
+    """Who reads the Secret's new values, for the lines about a Secret left in place."""
+    if _is_metrics(snap):
+        return "Prometheus sends it at its next scrape"
+    return "running pods read them at their next restart"
+
+
 def restore(snaps: list[Snapshot], *, console: Console) -> list[str]:
     """Put each Secret back as it was before this run; returns one line per Secret for the error.
 
     A Secret is restored only while it still holds exactly what this run applied:
     if anything changed it since (another deploy, a ``secrets apply``), it is left
-    alone and the line says so. One this run created is deleted. Never raises.
+    alone and the line says so. One this run created is deleted. Keys this run
+    removed (dropped from the allow-list) are put back too. The metrics Secret
+    follows the app Secret: when the app Secret is left with this run's values,
+    so is the metrics Secret, so both keep the same ``METRICS_TOKEN``. Never raises.
     """
     notes: list[str] = []
-    for snap in snaps:
-        if not snap.changed:
+    app_left: Snapshot | None = None  # the app Secret, when it keeps this run's values
+    for snap in sorted(snaps, key=_is_metrics):  # the app Secret first
+        if not snap.touched:
             continue
-        keys = ", ".join(snap.changed)
+        keys = ", ".join(snap.touched)
+        if _is_metrics(snap) and app_left is not None:
+            notes.append(
+                f"Secret {snap.name} was left as it is too, so its METRICS_TOKEN matches "
+                f"{app_left.name}'s (this deploy had changed {keys})."
+            )
+            continue
+        restored = False
         try:
             current = read_live_secret(snap.name, snap.target)
-            if current.exists == snap.before.exists and all(
-                current.raw.get(k) == snap.before.raw.get(k) for k in snap.applied
+            if (
+                current.exists == snap.before.exists
+                and all(current.raw.get(k) == snap.before.raw.get(k) for k in snap.applied)
+                and all(k in current.raw for k in snap.removed)
             ):
                 continue  # the apply never landed: nothing to put back
             if not current.exists or any(
@@ -827,55 +881,64 @@ def restore(snaps: list[Snapshot], *, console: Console) -> list[str]:
                     f"Secret {snap.name} was changed by someone else after this deploy applied "
                     f"it, so it was left as it is (this deploy had changed {keys})."
                 )
-                continue
-            if not snap.before.exists:
+            elif not snap.before.exists:
                 _kube.kubectl(
                     ["delete", "secret", snap.name, "--ignore-not-found"],
                     snap.target,
                     console=console,
                 )
                 notes.append(f"Secret {snap.name}, which this deploy created, was deleted.")
-                continue
-            result = _kube.run_cmd(
-                _apply_cmd(SecretPlan(snap.name, snap.target, {})),
-                input_text=_restore_manifest(snap, current),
-                check=False,
-                console=console,
-            )
-            if result.returncode != 0 and "has been modified" in (result.stderr or ""):
-                # The resourceVersion precondition: changed between the check and the apply.
-                notes.append(
-                    f"Secret {snap.name} was changed by someone else while this deploy restored "
-                    f"it, so it was left as it is (this deploy had changed {keys})."
+                restored = True
+            else:
+                result = _kube.run_cmd(
+                    _apply_cmd(SecretPlan(snap.name, snap.target, {})),
+                    input_text=_restore_manifest(snap, current),
+                    check=False,
+                    console=console,
                 )
-                continue
-            if result.returncode != 0:
-                raise _kube.ToolFailed(
-                    (result.stderr or result.stdout or "").strip()
-                    or f"kubectl apply exited {result.returncode}"
-                )
-            notes.append(
-                f"Secret {snap.name} was restored to its values from before this deploy ({keys})."
-            )
+                if result.returncode != 0 and "has been modified" in (result.stderr or ""):
+                    # The resourceVersion precondition: changed between the check and the apply.
+                    notes.append(
+                        f"Secret {snap.name} was changed by someone else while this deploy "
+                        f"restored it, so it was left as it is (this deploy had changed {keys})."
+                    )
+                elif result.returncode != 0:
+                    raise _kube.ToolFailed(
+                        (result.stderr or result.stdout or "").strip()
+                        or f"kubectl apply exited {result.returncode}"
+                    )
+                else:
+                    notes.append(
+                        f"Secret {snap.name} was restored to its values from before this deploy "
+                        f"({keys})."
+                    )
+                    restored = True
         except _kube.DeployError as e:
             first = next((line for line in str(e).splitlines() if line.strip()), "kubectl failed")
+            readers = (
+                "Prometheus sends at its next scrape"
+                if _is_metrics(snap)
+                else "running pods read at their next restart"
+            )
             notes.append(
                 f"Secret {snap.name} could NOT be restored ({first.strip()}): it still holds "
-                f"this deploy's values for {keys}, which running pods read at their next "
-                f"restart. Re-apply the previous values with `graph-agents-cli secrets apply "
-                f"--env {snap.env or '<env>'} --env-file <previous env file>`."
+                f"this deploy's values for {keys}, which {readers}. Re-apply the previous "
+                f"values with `graph-agents-cli secrets apply --env {snap.env or '<env>'} "
+                "--env-file <previous env file>`."
             )
+        if not restored and not _is_metrics(snap):
+            app_left = snap
     return notes
 
 
 def describe_unrestored(snaps: list[Snapshot], env: str, why: str) -> list[str]:
     """Lines for Secrets this run changed and left in place (the release was not restored)."""
     return [
-        f"Secret {snap.name} keeps this deploy's values for {', '.join(snap.changed)} ({why}); "
-        "running pods read them at their next restart. To go back, re-apply the previous "
-        f"values: `graph-agents-cli secrets apply --env {env} --env-file <previous env file>`."
+        f"Secret {snap.name} keeps this deploy's values for {', '.join(snap.touched)} ({why}); "
+        f"{_readers(snap)}. To go back, re-apply the previous values: "
+        f"`graph-agents-cli secrets apply --env {env} --env-file <previous env file>`."
         for snap in snaps
-        if snap.changed
+        if snap.touched
     ]
 
 

@@ -25,7 +25,7 @@ from conftest import DATASET, FakeJudge, good_traces, make_trace, read_results, 
 
 from graph_agents_cli.eval import _paths
 from graph_agents_cli.eval._common import write_json_file
-from graph_agents_cli.eval.cmd_grade import cmd_grade, load_traces
+from graph_agents_cli.eval.cmd_grade import FAKE_URL_AGENT_WARNING, cmd_grade, load_traces
 from graph_agents_cli.eval.dataset import dataset_hash
 from graph_agents_cli.main import main
 
@@ -491,12 +491,21 @@ def test_no_fake_warning_for_a_real_judge_or_a_url_agent(
         return {**real(root, payload, **kwargs), "provider": "openai", "model": "gpt-x"}
 
     monkeypatch.setattr("graph_agents_cli.eval.cmd_grade.run_judge_runner", as_openai)
-    write_traces(project, good_traces(), extra={"target": "url", "model_provider": "fake"})
+    write_traces(project, good_traces(), extra={"target": "url", "model_provider": "openai"})
     result = _grade(runner)
     assert result.exit_code == 0, result.output
     results = read_results(project)
     assert results["fake_model"] == [] and results["warnings"] == []
     assert "not a quality signal" not in result.output
+
+    # The project's own settings name the fake model: the agent at --url may run them.
+    write_traces(project, good_traces(), extra={"target": "url", "model_provider": "fake"})
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    results = read_results(project)
+    assert results["fake_model"] == []
+    assert results["warnings"] == [FAKE_URL_AGENT_WARNING]
+    assert "Warning: this project's settings name the deterministic fake model" in result.output
 
     # No judge metric at all: the (fake) judge never ran, so it is not reported.
     (project / _paths.DEFAULT_EVAL_CONFIG).write_text("judge: {provider: fake}\n", encoding="utf-8")
@@ -508,3 +517,28 @@ def test_no_fake_warning_for_a_real_judge_or_a_url_agent(
     result = _grade(runner)
     assert result.exit_code == 0, result.output
     assert read_results(project)["fake_model"] == []
+
+
+def test_all_turns_checks_on_a_trace_without_turns_are_reported(
+    project: Path, runner: CliRunner, fake_judge: FakeJudge
+) -> None:
+    """With no per-turn records the checks can read the final turn only: said, never silent."""
+    cases = [
+        {
+            "id": "two-turn",
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "user", "content": "second"},
+            ],
+            "expect": {"not_contains": ["forbidden"], "scope": "all_turns"},
+        }
+    ]
+    write_json_file(project / _paths.DEFAULT_INPUT_DATASET, {"cases": cases})
+    trace = dict(make_trace("two-turn", response="fine"), case=cases[0])
+    trace.pop("turns", None)
+    write_traces(project, [trace], digest=dataset_hash(cases))
+    result = _grade(runner)
+    assert result.exit_code == 0, result.output
+    (warning,) = read_results(project)["warnings"]
+    assert "declare expect.scope: all_turns" in warning and "two-turn" in warning
+    assert "checks read the final turn only" in result.output

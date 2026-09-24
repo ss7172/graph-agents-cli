@@ -45,7 +45,10 @@ class FakeRunner:
     Without a matching registered answer, the app Secret round-trips through
     ``secrets``: ``kubectl create secret ... --from-env-file`` renders the temp
     file, ``kubectl apply -f -`` stores it and ``kubectl get secret -o json``
-    returns it (or kubectl's NotFound).
+    returns it (or kubectl's NotFound). The apply is a server-side apply by
+    one field manager: keys it applied before and leaves out now go, keys it
+    never applied stay (``owned``; a Secret set directly counts as all owned),
+    and ``get`` reports the owned keys in ``managedFields``.
     """
 
     calls: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
@@ -53,6 +56,7 @@ class FakeRunner:
     missing_tools: set[str] = field(default_factory=set)
     env_file_contents: list[str] = field(default_factory=list)
     secrets: dict[str, dict[str, str]] = field(default_factory=dict)
+    owned: dict[str, set[str]] = field(default_factory=dict)
     sequences: list[tuple[Callable[[str], bool], list[tuple[int, str, str]]]] = field(
         default_factory=list
     )
@@ -73,16 +77,30 @@ class FakeRunner:
             doc = yaml.safe_load(kwargs["input"]) or {}
             name = (doc.get("metadata") or {}).get("name")
             if doc.get("kind") == "Secret" and name:
-                self.secrets[name] = {
+                applied = {
                     k: base64.b64decode(v).decode() for k, v in (doc.get("data") or {}).items()
                 }
+                before = self.secrets.get(name, {})
+                owned = self.owned.get(name, set(before))
+                self.secrets[name] = {
+                    **{k: v for k, v in before.items() if k not in owned},
+                    **applied,
+                }
+                self.owned[name] = set(applied)
                 return subprocess.CompletedProcess(args, 0, f"secret/{name} serverside-applied", "")
         if args[:3] == ["kubectl", "get", "secret"] and "json" in args:
             name = args[3]
             if name in self.secrets:
                 data = {k: _b64(v) for k, v in self.secrets[name].items()}
+                owned = self.owned.get(name, set(data))
+                fields = {
+                    "manager": "graph-agents-cli",
+                    "operation": "Apply",
+                    "fieldsV1": {"f:data": {f"f:{k}": {} for k in sorted(owned)}},
+                }
+                meta = {"name": name, "managedFields": [fields]}
                 return subprocess.CompletedProcess(
-                    args, 0, json.dumps({"kind": "Secret", "data": data}), ""
+                    args, 0, json.dumps({"kind": "Secret", "metadata": meta, "data": data}), ""
                 )
             return subprocess.CompletedProcess(
                 args, 1, "", f'Error from server (NotFound): secrets "{name}" not found'

@@ -24,6 +24,7 @@ Only ``httpx`` is imported here: no model SDK, no framework.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, NamedTuple
 
@@ -71,18 +72,30 @@ class SseEvent(NamedTuple):
     id: str | None = None
 
 
+# `scheme://user:password@`: the userinfo of any URL in a text.
+_URL_USERINFO = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@")
+
+
+def redact_credentials(text: str) -> str:
+    """``text`` with the ``user:password@`` of every URL in it replaced by ``***@``."""
+    return _URL_USERINFO.sub(r"\1***@", text or "")
+
+
 class ChatClientError(Exception):
     """Base class for chat client failures."""
 
 
 class ChatHTTPError(ChatClientError):
-    """The server answered with an HTTP error status before streaming."""
+    """The server answered with an HTTP error status before streaming.
+
+    ``url`` and the message never carry the URL's credentials (``***@``).
+    """
 
     def __init__(self, status_code: int, body: str, url: str = "") -> None:
         self.status_code = status_code
         self.body = body
-        self.url = url
-        super().__init__(f"HTTP {status_code} from {url or 'server'}: {body}")
+        self.url = redact_credentials(url)
+        super().__init__(f"HTTP {status_code} from {self.url or 'server'}: {body}")
 
 
 def _normalise_base(base_url: str) -> str:

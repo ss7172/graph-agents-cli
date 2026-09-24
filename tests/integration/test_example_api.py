@@ -214,7 +214,7 @@ def test_example_with_path_parameters_passes_them_through(tmp_path: Path) -> Non
     )
     _, project = _create(tmp_path, "p-params", by_line)
     source = (project / "app" / "tools" / "example_api.py").read_text(encoding="utf-8")
-    assert "    order_id: str,\n    line_no: str,\n    runtime: ToolRuntime,\n" in source
+    assert "    order_id: str,\n    line_no: str,\n    runtime: ToolRuntime[Any],\n" in source
     assert '"order_id": order_id,' in source and '"line_no": line_no,' in source
     assert "json_body" not in source and "body:" not in source
 
@@ -227,7 +227,7 @@ def test_a_body_method_example_takes_a_json_body(tmp_path: Path) -> None:
         {"api": "audit", "method": "POST", "operation_id": "createItem", "path": "/items"}
     ]
     source = tool.read_text(encoding="utf-8")
-    assert "    body: dict[str, Any],\n    runtime: ToolRuntime,\n" in source
+    assert "    body: dict[str, Any],\n    runtime: ToolRuntime[Any],\n" in source
     assert '        "POST",\n        "/items",\n' in source
     assert "        json_body=body,\n" in source
     _assert_lint_clean(project)

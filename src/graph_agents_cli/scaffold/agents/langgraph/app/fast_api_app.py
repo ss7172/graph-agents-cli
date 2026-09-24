@@ -91,6 +91,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from psycopg import OperationalError
+from psycopg_pool import PoolTimeout
 from pydantic import BaseModel, Field, field_validator
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -114,7 +116,7 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     A2A_RPC_PATH,
     add_a2a_routes,
     forget_context,
-    legacy_message_problem,
+    legacy_request_error,
     task_ttl_s,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
@@ -133,11 +135,14 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     forward_header_names,
     new_error_id,
     select_forward_headers,
+    log_unavailable,
     sse_encode,
     unavailable,
+    unavailable_detail,
     validate_thread_id,
 )
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import pool_sizes
+from {{cookiecutter.agent_directory}}.app_utils.db import StorageNotReady, is_database_unavailable
 from {{cookiecutter.agent_directory}}.app_utils.content import client_message, client_tool_result
 from {{cookiecutter.agent_directory}}.app_utils.limits import (
     THREAD_ID_PATTERN,
@@ -229,11 +234,13 @@ class A2APolicyMiddleware:
     """Authenticate and authorize the A2A endpoints with the selected policy.
 
     `card.read` for the agent card, `a2a.invoke` for JSON-RPC. The principal
-    is stored in the request state for the executor. An A2A 0.3
-    `message/send` or `message/stream` whose message cannot run (no text, an
-    empty text part, over `MAX_MESSAGE_CHARS`) is answered here with the
-    JSON-RPC invalid-params error: past this point the SDK's 0.3 layer would
-    turn it into an internal error (1.0 requests are checked by the handler).
+    is stored in the request state for the executor. An A2A 0.3 request that
+    fails the SDK's validation, holds text that is not valid Unicode, or sends
+    a message that cannot run (no text, an empty text part, over
+    `MAX_MESSAGE_CHARS`) is answered here with a JSON-RPC error naming fields,
+    never values: past this point the SDK's 0.3 layer would log the values at
+    ERROR or turn it into an internal error (1.0 requests are checked by the
+    handler).
     """
 
     def __init__(self, app: ASGIApp, prefix: str) -> None:
@@ -272,21 +279,22 @@ class A2APolicyMiddleware:
 
 
 def _legacy_refusal(body: bytes) -> dict[str, Any] | None:
-    """The JSON-RPC invalid-params answer to an A2A 0.3 message that cannot run, or None."""
-    if b"message/" not in body:  # no 0.3 send method named: nothing to parse
-        return None
+    """The JSON-RPC error answer to an A2A 0.3 request that cannot run, or None.
+
+    The body is parsed, not searched: a method name may be JSON-escaped
+    (`"message\\/send"`, as PHP's json_encode writes it).
+    """
     try:
         payload = json.loads(body)
     except ValueError:
         return None  # the SDK answers a parse error itself
-    problem = legacy_message_problem(payload)
-    if problem is None:
+    error = legacy_request_error(payload)
+    if error is None:
         return None
-    return {
-        "jsonrpc": "2.0",
-        "id": payload.get("id"),
-        "error": {"code": -32602, "message": problem},
-    }
+    request_id = payload.get("id")
+    if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+        request_id = None
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
 def _dev_mode() -> bool:
@@ -349,28 +357,44 @@ async def thread_busy_handler(request: Request, exc: ThreadBusy) -> JSONResponse
     return JSONResponse(status_code=409, content={"code": THREAD_BUSY, "detail": str(exc)})
 
 
-def _database_unavailable(exc: Exception) -> bool:
-    from psycopg import OperationalError
-    from psycopg_pool import PoolTimeout
+def _request_id_header(request: Request) -> dict[str, str] | None:
+    request_id = getattr(request.state, "request_id", None)
+    return {REQUEST_ID_HEADER: request_id} if isinstance(request_id, str) else None
 
-    return isinstance(exc, OperationalError | PoolTimeout)
+
+async def database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """503 with an error id for an unreachable database that reached no route's own handling.
+
+    Every chat route already turns these into a 503; this covers any other
+    route. Registered for the exception classes (not `Exception`), so it
+    answers inside the app: one WARNING line, no traceback, nothing re-raised
+    for uvicorn to log again.
+    """
+    error_id = log_unavailable("Database", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": unavailable_detail("Database", error_id), "error_id": error_id},
+        headers=_request_id_header(request),
+    )
+
+
+for _unreachable in (OperationalError, PoolTimeout, StorageNotReady):
+    app.add_exception_handler(_unreachable, database_unavailable_handler)
 
 
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """500 (503 when the database is unreachable) with an id naming the logged detail."""
+    if is_database_unavailable(exc):
+        return await database_unavailable_handler(request, exc)
     error_id = new_error_id()
     logger.error("unhandled error (error_id=%s)", error_id, exc_info=exc)
-    if _database_unavailable(exc):
-        status, detail = 503, f"Database unavailable. Reference: {error_id}."
-    else:
-        status, detail = 500, f"Internal server error. Reference: {error_id}."
     # This handler answers from outside RequestContextMiddleware, which adds
     # the header to every other response; it left the request id in the state.
-    request_id = getattr(request.state, "request_id", None)
-    headers = {REQUEST_ID_HEADER: request_id} if isinstance(request_id, str) else None
     return JSONResponse(
-        status_code=status, content={"detail": detail, "error_id": error_id}, headers=headers
+        status_code=500,
+        content={"detail": f"Internal server error. Reference: {error_id}.", "error_id": error_id},
+        headers=_request_id_header(request),
     )
 
 

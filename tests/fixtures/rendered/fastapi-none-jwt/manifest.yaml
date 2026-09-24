@@ -20,7 +20,7 @@ create_params:
   agent_guidance_filename: 'AGENTS.md'
 secrets:
   # Only these keys are exported from an env file into the environment's Secret.
-  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY]
+  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, LANGSMITH_API_KEY]
   # Team or role responsible for provisioning and rotating the Secret (free text).
   owner: ""
 process: null

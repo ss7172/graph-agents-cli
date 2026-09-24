@@ -58,7 +58,7 @@ async def call_{{ cookiecutter.example_api.api }}_api(
 {%- if cookiecutter.example_api.has_body %}
     body: dict[str, Any],
 {%- endif %}
-    runtime: ToolRuntime,
+    runtime: ToolRuntime[Any],
 ) -> str:
     """{{ cookiecutter.example_api.method }} {{ cookiecutter.example_api.path }} on the {{ cookiecutter.example_api.api }} API{% if cookiecutter.example_api.has_body %} with `body` as the JSON request body{% endif %}; return the response as JSON."""
     context: Any = getattr(runtime, "context", None)

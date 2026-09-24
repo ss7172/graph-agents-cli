@@ -421,28 +421,30 @@ async def test_an_outage_fails_fast_logs_one_line_and_recovers_in_seconds(
 
 
 async def test_a_run_that_loses_its_lease_stops_before_writing(
-    postgres_app: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
+    postgres_app: tuple[Any, str], use_test_tools
 ) -> None:
     """Another replica took the thread over (the lease expired): the run must not write."""
-    from {{cookiecutter.agent_directory}}.tools import weather
+    from langchain_core.tools import tool
 
     app, dsn = postgres_app
     in_tool = asyncio.Event()
     loop = asyncio.get_running_loop()
 
-    def slow_weather(query: str) -> str:
+    @tool
+    def slow_probe(query: str) -> str:
+        """Test-only tool: answers after 3 s."""
         loop.call_soon_threadsafe(in_tool.set)
         time.sleep(3)
         return "late result"
 
-    monkeypatch.setattr(weather.get_weather, "func", slow_weather)
     async with app.router.lifespan_context(app), _client(app) as client:
         await _ready_within(client, 10)
+        use_test_tools(slow_probe)
         thread = str(uuid.uuid4())
         run = asyncio.create_task(
             client.post(
                 "/chat",
-                json={"message": "What's the weather in Paris?", "thread_id": thread},
+                json={"message": "Run the slow probe for Paris", "thread_id": thread},
                 headers=AUTH,
             )
         )
@@ -480,28 +482,30 @@ async def test_a_run_that_loses_its_lease_stops_before_writing(
 
 
 async def test_a_database_outage_mid_tool_call_ends_the_run_fast_and_the_thread_recovers(
-    postgres_app: tuple[Any, str], proxy: Proxy, monkeypatch: pytest.MonkeyPatch
+    postgres_app: tuple[Any, str], proxy: Proxy, use_test_tools
 ) -> None:
-    from {{cookiecutter.agent_directory}}.tools import weather
+    from langchain_core.tools import tool
 
     app, dsn = postgres_app
     in_tool = asyncio.Event()
     loop = asyncio.get_running_loop()
 
-    def slow_weather(query: str) -> str:
+    @tool
+    def slow_probe(query: str) -> str:
+        """Test-only tool: slow for Paris."""
         if "Paris" in query:
             loop.call_soon_threadsafe(in_tool.set)
             time.sleep(2)
         return "sunny"
 
-    monkeypatch.setattr(weather.get_weather, "func", slow_weather)
     async with app.router.lifespan_context(app), _client(app) as client:
         await _ready_within(client, 10)
+        use_test_tools(slow_probe)
         thread = str(uuid.uuid4())
         run = asyncio.create_task(
             client.post(
                 "/chat",
-                json={"message": "What's the weather in Paris?", "thread_id": thread},
+                json={"message": "Run the slow probe for Paris", "thread_id": thread},
                 headers=AUTH,
             )
         )
@@ -542,18 +546,26 @@ async def test_a_database_outage_mid_tool_call_ends_the_run_fast_and_the_thread_
 
 # --- a crash mid tool call ---------------------------------------------------------------------
 
+# The server serves a graph with one test-only tool (never the project's own),
+# slow when asked about "slow".
 SERVER_SCRIPT = """
 import os, sys, time
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from {agent} import agent
 from {agent}.app_utils import chat, run_locks
 run_locks.LEASE_TTL_S, run_locks.RENEW_EVERY_S, run_locks.LOCAL_VALIDITY_S = 2.0, 0.2, 1.0
 chat.RECONCILE_INTERVAL_S, chat.RECONCILE_GRACE_S = 0.5, 0.0
-from {agent}.tools import weather
-original = weather.get_weather.func
-def slow(query):
+@tool
+def probe(query: str) -> str:
+    \"\"\"Test-only tool: reports what it was asked about.\"\"\"
     if "slow" in query:
         time.sleep(60)
-    return original(query)
-weather.get_weather.func = slow
+    return "probe reading for " + query
+agent.graph = create_agent(
+    model=agent.get_model(), tools=[probe], system_prompt=agent.SYSTEM_PROMPT,
+    middleware=agent.middleware(), context_schema=agent.AgentContext, name="test-agent",
+).with_config(dict(recursion_limit=agent.recursion_limit()))
 import uvicorn
 from {agent}.fast_api_app import app
 uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]), log_config=None)
@@ -594,7 +606,7 @@ def test_a_crash_mid_tool_call_leaves_a_usable_thread_and_an_interrupted_run(
     thread = f"crash-{uuid.uuid4().hex[:8]}"
     server = _start_server(dsn, port, log)
     try:
-        body = {"thread_id": thread, "message": "What's the weather in slow city?"}
+        body = {"thread_id": thread, "message": "Run the probe for slow city"}
         with contextlib.suppress(httpx.HTTPError):
             with httpx.stream("POST", f"{base}/chat", json=body, headers=AUTH, timeout=30) as r:
                 for line in r.iter_lines():

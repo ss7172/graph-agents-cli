@@ -386,6 +386,8 @@ def message_problem(from_user: bool, texts: list[str]) -> str | None:
         return "The message needs a text part."
     if any(not text for text in texts):
         return "The message has an empty text part."
+    if any(_has_lone_surrogate(text) for text in texts):
+        return "The message is not valid Unicode text (an unpaired surrogate)."
     cap = max_message_chars()
     if len("\n".join(texts)) > cap:
         return f"The message is longer than {cap} characters (MAX_MESSAGE_CHARS)."
@@ -400,18 +402,86 @@ def check_user_message(message: Message) -> None:
         raise InvalidParamsError(problem)
 
 
-# A2A 0.3 methods, served by the SDK's compatibility layer. That layer answers
-# any error raised while handling a request as an internal error (-32603,
-# logged with a traceback), so a 0.3 message is checked before it gets there
-# (`fast_api_app.A2APolicyMiddleware` answers the invalid-params error itself).
+def _has_lone_surrogate(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+def _strings(value: Any) -> Any:
+    """Every string in a parsed JSON value (keys included)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings(key)
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+# A2A 0.3 methods, served by the SDK's compatibility layer. That layer logs a
+# request that fails its validation at ERROR with the offending values (the
+# message text included), and answers any error raised while handling a
+# request as an internal error (-32603, logged with a traceback). So a 0.3
+# request is checked before it gets there (`fast_api_app.A2APolicyMiddleware`
+# answers the error itself, naming fields, never values).
 LEGACY_SEND_METHODS = ("message/send", "message/stream")
+try:
+    from a2a.compat.v0_3.jsonrpc_adapter import JSONRPC03Adapter
+
+    LEGACY_METHOD_MODELS: dict[str, Any] = dict(JSONRPC03Adapter.METHOD_TO_MODEL)
+except ImportError:  # an SDK without the 0.3 layer, or with it elsewhere
+    LEGACY_METHOD_MODELS = {}
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_INVALID_PARAMS = -32602
+
+
+def legacy_request_error(payload: Any) -> dict[str, Any] | None:
+    """The JSON-RPC error (`code`, `message`) for an A2A 0.3 request that cannot run, or None.
+
+    None for anything that is not a 0.3 request (1.0 requests are checked by
+    the handler, a body that is not JSON by the SDK). A 0.3 request is
+    validated with the SDK's own model for its method; the answer names the
+    fields that failed and the rule, never the values sent. A string that is
+    not valid Unicode (an unpaired surrogate) anywhere in it, and a 0.3
+    message that cannot run (`legacy_message_problem`), are invalid params too.
+    """
+    if not isinstance(payload, dict):
+        return None
+    method = payload.get("method")
+    if not isinstance(method, str) or method not in LEGACY_METHOD_MODELS:
+        return None
+    if any(_has_lone_surrogate(text) for text in _strings(payload)):
+        return {
+            "code": JSONRPC_INVALID_PARAMS,
+            "message": "The request is not valid Unicode text (an unpaired surrogate).",
+        }
+    try:
+        LEGACY_METHOD_MODELS[method].model_validate(payload)
+    except Exception as exc:
+        errors = exc.errors() if hasattr(exc, "errors") else []
+        places = [".".join(str(p) for p in error.get("loc", ())) for error in errors]
+        rules = [f"{place}: {error.get('msg')}" for place, error in zip(places, errors)]
+        in_params = bool(places) and all(p == "params" or p.startswith("params.") for p in places)
+        return {
+            "code": JSONRPC_INVALID_PARAMS if in_params else JSONRPC_INVALID_REQUEST,
+            "message": "Invalid A2A 0.3 request: " + ("; ".join(rules[:3]) or "malformed"),
+        }
+    problem = legacy_message_problem(payload)
+    if problem is not None:
+        return {"code": JSONRPC_INVALID_PARAMS, "message": problem}
+    return None
 
 
 def legacy_message_problem(payload: Any) -> str | None:
     """Why an A2A 0.3 `message/send` or `message/stream` request cannot run, or None.
 
-    None as well for anything else (other methods, a malformed request: the
-    SDK's own validation answers those).
+    None as well for anything else (other methods, a malformed request:
+    `legacy_request_error` answers those).
     """
     if not isinstance(payload, dict) or payload.get("method") not in LEGACY_SEND_METHODS:
         return None

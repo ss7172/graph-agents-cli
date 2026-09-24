@@ -302,3 +302,26 @@ def test_the_auth_group_is_registered_and_documented() -> None:
         main, ["--help"], env={"GRAPH_AGENTS_CLI_NO_UPDATE_CHECK": "1"}, terminal_width=200
     )
     assert "Local credentials for the project's auth policy (dev-only JWTs)." in root.output
+
+
+def test_concurrent_env_writes_assign_each_key_once(tmp_path: Path) -> None:
+    """Parallel first runs (dev-token in several shells) must not duplicate .env lines."""
+    import threading
+
+    from graph_agents_cli.setup.cmd_auth import write_env
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("APP_ENV=dev\n# AUTH_JWT_ISSUER=\nAUTH_JWT_AUDIENCE=\n", encoding="utf-8")
+    entries = {"AUTH_JWT_ISSUER": "graph-agents-cli-dev", "AUTH_JWT_AUDIENCE": "vj"}
+    threads = [threading.Thread(target=write_env, args=(env_file, entries)) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    text = env_file.read_text(encoding="utf-8")
+    assert text.count("AUTH_JWT_ISSUER=graph-agents-cli-dev") == 1
+    assert text.count("AUTH_JWT_AUDIENCE=") == 1 and "AUTH_JWT_AUDIENCE=vj" in text
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    # A key the file already sets is left alone, not assigned a second time.
+    write_env(env_file, {"AUTH_JWT_ISSUER": "someone-else"})
+    assert dotenv_values(env_file)["AUTH_JWT_ISSUER"] == "graph-agents-cli-dev"

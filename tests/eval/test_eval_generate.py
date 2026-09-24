@@ -214,6 +214,27 @@ def test_url_credentials_are_not_echoed(project: Path, runner: CliRunner, fake_c
     assert "against the agent at https://***@agent.example/x (--url)" in result.output
 
 
+def test_url_credentials_stay_out_of_errors_traces_and_the_401_hint(
+    project: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing call names the URL without its credentials, on screen and on disk."""
+    from graph_agents_cli._chat_client import ChatHTTPError
+
+    def refuse(base_url: str, message: str, **kwargs):
+        raise ChatHTTPError(401, '{"detail": "Missing bearer token."}', f"{base_url}/chat")
+
+    monkeypatch.setattr("graph_agents_cli._chat_client.post_chat", refuse)
+    result = runner.invoke(cmd_generate, ["--url", "https://bob:s3cret@agent.example/x"])
+    assert result.exit_code == 2, result.output
+    assert "s3cret" not in result.output and "bob:" not in result.output
+    assert "HTTP 401 from https://***@agent.example/x/chat" in result.output
+    # The hint names the credential the policy expects, sent from the environment.
+    assert "Authentication failed" in result.output and "GRAPH_AGENTS_CLI_API_KEY" in result.output
+    doc = read_traces(project)
+    assert "s3cret" not in json.dumps(doc)
+    assert doc["base_url"] == "https://***@agent.example/x"
+
+
 def test_generate_with_url_warns_without_a_policy_or_with_a_broken_one(
     project: Path, runner: CliRunner, fake_chat
 ) -> None:

@@ -220,7 +220,9 @@ def sync_manifest(
         return
     new_tokens = bearer_token_envs(summarize(document)) if document else []
     old_tokens = bearer_token_envs(summarize(previous)) if previous else []
-    defaults = default_secret_keys(config.model_provider, config.runtime)
+    defaults = default_secret_keys(
+        config.model_provider, config.runtime, auth_policy=config.auth_policy
+    )
     steps: list[tuple[str, Any]] = []
     if document is not None:
         if manifest.get(("api_policy", "policy_file")) != POLICY_FILENAME:

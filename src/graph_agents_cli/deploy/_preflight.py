@@ -46,7 +46,9 @@ _DEFAULT_JWT_ALGORITHMS = "RS256,ES256"
 _HMAC = frozenset({"HS256", "HS384", "HS512"})
 # libpq modes that refuse a connection without TLS.
 TLS_SSLMODES = frozenset({"require", "verify-ca", "verify-full"})
-_SSLMODE = re.compile(r"(?:^|[?&\s])sslmode=([A-Za-z-]+)")
+# URL (`?sslmode=x`) or keyword/value form, where libpq allows spaces around `=`
+# and a quoted value (`sslmode = 'verify-full'`).
+_SSLMODE = re.compile(r"(?:^|[?&\s])sslmode\s*=\s*'?([A-Za-z-]+)")
 
 
 def chart_env(values: Mapping[str, Any]) -> dict[str, Any]:

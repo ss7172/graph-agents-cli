@@ -36,6 +36,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     ApiCallError,
     ApiPolicyError,
     current_caller,
+    forbidden_header,
     get_client,
     require_owner,
     require_user_mentioned,
@@ -142,6 +143,14 @@ async def test_routing_and_method_override_headers_are_dropped(policy: Path, cap
     assert sent.headers["x-request-tag"] == "kept"
     dropped = [r.getMessage() for r in caplog.records if "dropped header" in r.getMessage()]
     assert dropped and "x-http-method-override" in dropped[0] and "DELETE" not in dropped[0]
+
+
+def test_underscore_spellings_of_forbidden_headers_are_forbidden_too() -> None:
+    """CGI/WSGI servers read `X_HTTP_METHOD_OVERRIDE` as `X-HTTP-Method-Override`."""
+    names = ("X_HTTP_METHOD_OVERRIDE", "x_forwarded_host", "X_Original_URL", "Transfer_Encoding")
+    for name in names:
+        assert forbidden_header(name), name
+    assert not forbidden_header("X_Request_Tag")
 
 
 @pytest.mark.parametrize(

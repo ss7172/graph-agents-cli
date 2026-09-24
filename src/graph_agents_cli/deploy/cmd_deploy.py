@@ -871,7 +871,7 @@ def _secret_outcome(
     snaps: list[secrets_apply.Snapshot], env: str, error: Exception, *, console: Console
 ) -> list[str]:
     """After a failed helm step: restore the Secret(s) when the release is as it was before."""
-    if not any(snap.changed for snap in snaps):
+    if not any(snap.touched for snap in snaps):
         return []
     if getattr(error, "release_unchanged", True):
         return secrets_apply.restore(snaps, console=console)
@@ -900,7 +900,7 @@ def _report_rollout(
         "  No pods were replaced: the pod template (image and chart values) is unchanged.",
         style="yellow",
     )
-    changed = sorted({k for snap in snaps for k in snap.changed})
+    changed = sorted({k for snap in snaps for k in snap.touched})
     if changed:
         console.print(
             f"  The Secret changed ({', '.join(changed)}), but running pods read it only when "

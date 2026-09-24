@@ -110,21 +110,29 @@ DEFAULT_AGENT_GUIDANCE_FILENAME = "AGENTS.md"
 
 
 def default_secret_keys(
-    model_provider: str, runtime: str, api_token_envs: Sequence[str] = ()
+    model_provider: str,
+    runtime: str,
+    api_token_envs: Sequence[str] = (),
+    *,
+    auth_policy: str = "shared-bearer",
 ) -> list[str]:
     """Allow-listed Secret keys for a new project.
 
-    The list follows the model provider (its key variable) and the runtime (the
-    connection strings it reads). ``api_token_envs`` are the ``token_env``
-    variables of the ``auth: bearer`` APIs in ``api-policy.yaml``; they are
-    appended so each token reaches the environment's Secret.
+    The list follows the model provider (its key variable), the runtime (the
+    connection strings it reads) and the auth policy (``API_KEY`` only under
+    ``shared-bearer``, the one policy that reads it). ``api_token_envs`` are
+    the ``token_env`` variables of the ``auth: bearer`` APIs in
+    ``api-policy.yaml``; they are appended so each token reaches the
+    environment's Secret.
     """
     keys = [PROVIDER_KEY_VARS.get(model_provider, "MODEL_API_KEY"), "JUDGE_API_KEY"]
     if runtime == "langgraph-server":
         keys += ["DATABASE_URI", "REDIS_URI"]
     else:
         keys.append("POSTGRES_DSN")
-    keys += ["API_KEY", "LANGSMITH_API_KEY"]
+    if normalize_auth_policy(auth_policy, warn=False) == "shared-bearer":
+        keys.append("API_KEY")
+    keys.append("LANGSMITH_API_KEY")
     for token_env in api_token_envs:
         if token_env and token_env not in keys:
             keys.append(token_env)

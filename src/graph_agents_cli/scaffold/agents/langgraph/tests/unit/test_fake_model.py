@@ -39,7 +39,7 @@ async def update_order(
     status: Literal["open", "shipped"],
     body: dict[str, Any],
     tags: list[str],
-    runtime: ToolRuntime,
+    runtime: ToolRuntime[Any],
     note: str = "",
 ) -> str:
     """Change an order."""

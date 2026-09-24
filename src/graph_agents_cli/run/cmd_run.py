@@ -462,14 +462,26 @@ def _build_resume_flags(
     return (" " + " ".join(flags)) if flags else ""
 
 
-def _thread_lines(thread_id: str, *, resume_flags: str, resumable: bool) -> list[str]:
-    """The thread id and how to continue it (or why it cannot be continued)."""
+def _thread_lines(
+    thread_id: str, *, resume_flags: str, resumable: bool, server_stopped: bool = False
+) -> list[str]:
+    """The thread id and how to continue it (or why it cannot be continued).
+
+    ``server_stopped``: the local server went away (crashed, or was stopped
+    after a failure) whatever ``--start-server`` said; with an in-memory
+    checkpointer its threads went with it.
+    """
     lines = [f"Thread: {thread_id}"]
     if resumable:
         hint = "  (re-supply the redacted credential values)" if REDACTED in resume_flags else ""
         lines.append(
             f'  Resume with: graph-agents-cli run "<message>"{resume_flags}'
             f" --thread-id {thread_id}{hint}"
+        )
+    elif server_stopped:
+        lines.append(
+            "  The local server stopped, and its in-memory checkpointer lost this thread: the "
+            "next run starts a new one (CHECKPOINTER=postgres keeps threads across restarts)."
         )
     else:
         lines.append(
@@ -645,9 +657,15 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
 
 
 def _read_timeout_message(
-    thread_id: str | None, resume_flags: str, *, local_server_kept: bool | None = True
+    thread_id: str | None,
+    resume_flags: str,
+    *,
+    local_server_kept: bool | None = True,
+    thread_kept: bool = True,
 ) -> str:
-    """``local_server_kept``: None for a remote agent, else whether the local server keeps running."""
+    """``local_server_kept``: None for a remote agent, else whether the local server keeps
+    running; ``thread_kept``: whether the thread outlives this command (False for a stopped
+    one-off server with an in-memory checkpointer)."""
     seconds = _chat_client.STREAM_TIMEOUT.read
     text = (
         f"No event from the agent for {seconds:.0f} s; the run may still be in progress "
@@ -657,8 +675,13 @@ def _read_timeout_message(
         text += "\n  The server was left running."
     elif local_server_kept is False:
         text += "\n  The one-off local server was stopped."
-    if thread_id:
+    if thread_id and thread_kept:
         text += f'\n  Check the thread later with: graph-agents-cli run "<message>"{resume_flags} --thread-id {thread_id}'
+    elif thread_id:
+        text += (
+            "\n  Its in-memory thread went with it; pass --start-server to keep the server "
+            "(and its threads) between runs."
+        )
     return text
 
 
@@ -688,17 +711,24 @@ def _transport_failure_message(
             f"The connection to {where} failed before the run started: {exc}\n"
             "  Nothing was answered; retry, and check the service (and any proxy in between)."
         )
+    incomplete = "The answer above is incomplete. " if renderer.rendered else ""
+    kept = "; the thread keeps every turn that finished." if resumable else "."
     lines = [
         f"The connection to {where} dropped after the run started: {exc}",
-        "  The answer above is incomplete. The run was interrupted (the server stopped, or the "
-        "connection was cut); the thread keeps every turn that finished.",
+        f"  {incomplete}The run was interrupted (the server stopped, or the connection was "
+        f"cut){kept}",
     ]
     if url is None:
         lines.append(
             "  The local server has been stopped (its log: .graph-agents-cli/run_server.log)."
         )
     if renderer.thread_id:
-        thread = _thread_lines(renderer.thread_id, resume_flags=resume_flags, resumable=resumable)
+        thread = _thread_lines(
+            renderer.thread_id,
+            resume_flags=resume_flags,
+            resumable=resumable,
+            server_stopped=url is None,
+        )
         lines.extend(f"  {line}" for line in thread)
     return "\n".join(lines)
 
@@ -1027,6 +1057,9 @@ def cmd_run(
                         renderer.thread_id or thread_id,
                         resume_flags,
                         local_server_kept=None if url else not should_stop_server,
+                        thread_kept=bool(url)
+                        or not should_stop_server
+                        or target.checkpointer == "postgres",
                     )
                 ) from exc
             except httpx.TransportError as exc:

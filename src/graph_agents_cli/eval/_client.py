@@ -29,6 +29,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from graph_agents_cli._chat_client import redact_credentials
 from graph_agents_cli.eval.dataset import EvalCase
 
 STATUS_OK = "ok"
@@ -161,7 +162,8 @@ def _consume_turn(
                 break
     except Exception as exc:  # transport, HTTP or protocol failure: record, do not abort
         turn["status"] = STATUS_ERROR
-        turn["error"] = f"{type(exc).__name__}: {exc}"
+        # Printed and stored in the traces and results: never a URL's credentials.
+        turn["error"] = redact_credentials(f"{type(exc).__name__}: {exc}")
 
     elapsed_ms = round((time.monotonic() - started) * 1000)
     if turn["latency_ms"] is None:

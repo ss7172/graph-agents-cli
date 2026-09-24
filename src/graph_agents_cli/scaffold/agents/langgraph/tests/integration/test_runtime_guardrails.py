@@ -813,3 +813,42 @@ async def test_cors_is_off_by_default_and_follows_cors_allow_origins(
     finally:
         monkeypatch.delenv("CORS_ALLOW_ORIGINS")
         importlib.reload(module)
+
+
+@pytest.mark.parametrize("kind", ["pool_timeout", "operational", "not_ready"])
+async def test_an_unreachable_database_on_any_route_is_a_503_with_one_warning(
+    client: httpx.AsyncClient, caplog: pytest.LogCaptureFixture, kind: str
+) -> None:
+    """Routes outside the chat runtime too: 503 with an error id, one WARNING, no traceback."""
+    import logging
+
+    from psycopg import OperationalError
+    from psycopg_pool import PoolTimeout
+
+    from {{cookiecutter.agent_directory}}.app_utils.db import StorageNotReady
+
+    error = {
+        "pool_timeout": PoolTimeout("couldn't get a connection after 5.00 sec"),
+        "operational": OperationalError("connection failed: Connection refused"),
+        "not_ready": StorageNotReady("the database is not set up yet"),
+    }[kind]
+
+    async def database_down() -> None:
+        raise error
+
+    path = "/_test_database_down"
+    app.router.add_api_route(path, database_down, methods=["GET"])
+    try:
+        with caplog.at_level(logging.INFO):
+            r = await client.get(path, headers=AUTH)
+    finally:
+        app.router.routes[:] = [
+            route for route in app.router.routes if getattr(route, "path", None) != path
+        ]
+    assert r.status_code == 503
+    body = r.json()
+    assert body["detail"] == f"Database unavailable. Reference: {body['error_id']}."
+    assert r.headers.get("x-request-id")
+    lines = [rec for rec in caplog.records if body["error_id"] in rec.getMessage()]
+    assert len(lines) == 1 and lines[0].levelno == logging.WARNING and lines[0].exc_info is None
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.ERROR]

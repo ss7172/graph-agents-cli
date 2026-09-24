@@ -318,3 +318,16 @@ def test_a_policy_file_the_agent_would_not_load_is_a_config_error(policy_file: s
 def test_a_policy_file_spelled_with_a_leading_dot_slash_is_accepted() -> None:
     cfg = ProjectConfig.from_dict({"name": "x", "api_policy": {"policy_file": "./api-policy.yaml"}})
     assert cfg.api_policy_file == "api-policy.yaml"
+
+
+@pytest.mark.parametrize(
+    ("policy", "listed"),
+    [("shared-bearer", True), ("jwt", False), ("custom", False), ("product-session", False)],
+)
+def test_api_key_is_a_default_secret_key_only_under_shared_bearer(
+    policy: str, listed: bool
+) -> None:
+    """Only shared-bearer reads API_KEY: other policies never list (or generate) it."""
+    keys = default_secret_keys("openai", "fastapi", auth_policy=policy)
+    assert ("API_KEY" in keys) is listed
+    assert keys[0] == "OPENAI_API_KEY" and "LANGSMITH_API_KEY" in keys

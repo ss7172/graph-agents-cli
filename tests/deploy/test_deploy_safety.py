@@ -217,6 +217,69 @@ def test_a_restore_that_fails_says_what_the_secret_still_holds(project: SimpleNa
     assert "running pods read at their next restart" in result.output
 
 
+def test_a_key_the_failed_deploy_removed_is_put_back(project: SimpleNamespace, fake):
+    """A key dropped from the allow-list goes with the apply; a rollback brings it back."""
+    project.cfg.secret_keys = [k for k in project.cfg.secret_keys if k != "LANGSMITH_API_KEY"]
+    fake.secrets["my-agent-app"] = {**LIVE, "OPENAI_API_KEY": "sk-test", "LANGSMITH_API_KEY": "ls"}
+    _failed_upgrade(fake, _history((1, "deployed")), _history((1, "deployed"), (2, "failed")))
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "Secret my-agent-app was restored to its values from before this deploy " in (
+        result.output
+    )
+    assert "(LANGSMITH_API_KEY)" in result.output
+    assert fake.secrets["my-agent-app"]["LANGSMITH_API_KEY"] == "ls"
+
+
+def test_a_key_someone_else_manages_is_never_counted_as_removed(project: SimpleNamespace, fake):
+    fake.secrets["my-agent-app"] = {**LIVE, "OPENAI_API_KEY": "sk-test", "EXTRA": "theirs"}
+    fake.owned["my-agent-app"] = set(LIVE)  # EXTRA was added by another tool
+    _failed_upgrade(fake, _history((1, "deployed")), _history((1, "deployed"), (2, "failed")))
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    assert "restored" not in result.output and "keeps this deploy" not in result.output
+    assert fake.secrets["my-agent-app"]["EXTRA"] == "theirs"
+
+
+def test_the_metrics_secret_stays_in_step_with_an_app_secret_left_alone(
+    project: SimpleNamespace, fake
+):
+    """Someone changed the app Secret meanwhile: both keep this deploy's METRICS_TOKEN."""
+    project.cfg.secret_keys = [*project.cfg.secret_keys, "METRICS_TOKEN"]
+    with open(project.root / ".env", "a") as f:
+        f.write("METRICS_TOKEN=new-token\n")
+    fake.secrets["my-agent-metrics"] = {"METRICS_TOKEN": "old-token"}
+    fake.respond_seq(
+        "kubectl get secret my-agent-app -o json",
+        [
+            _secret_json({**LIVE, "METRICS_TOKEN": "old-token"}),
+            _secret_json(
+                {**LIVE, "OPENAI_API_KEY": "rotated-meanwhile", "METRICS_TOKEN": "new-token"}
+            ),
+        ],
+    )
+    _failed_upgrade(fake, _history((1, "deployed")), _history((1, "deployed"), (2, "failed")))
+    result = invoke("--env", "dev", "--image", "x/y:1")
+    assert result.exit_code == 2, result.output
+    out = result.output
+    assert "Secret my-agent-app was changed by someone else" in out
+    assert "Secret my-agent-metrics was left as it is too" in out
+    assert fake.secrets["my-agent-metrics"] == {"METRICS_TOKEN": "new-token"}
+
+
+def test_the_metrics_secret_left_in_place_names_its_reader(project: SimpleNamespace, fake):
+    project.cfg.secret_keys = [*project.cfg.secret_keys, "METRICS_TOKEN"]
+    with open(project.root / ".env", "a") as f:
+        f.write("METRICS_TOKEN=new-token\n")
+    fake.secrets["my-agent-app"] = {**LIVE, "METRICS_TOKEN": "old-token"}
+    fake.secrets["my-agent-metrics"] = {"METRICS_TOKEN": "old-token"}
+    _failed_upgrade(fake, _history((1, "deployed")), _history((1, "deployed"), (2, "failed")))
+    result = invoke("--env", "dev", "--image", "x/y:1", "--no-atomic")
+    assert result.exit_code == 2, result.output
+    assert "Secret my-agent-metrics keeps this deploy's values for METRICS_TOKEN" in result.output
+    assert "Prometheus sends it at its next scrape" in result.output
+
+
 def test_an_unchanged_secret_needs_no_restore(project: SimpleNamespace, fake):
     fake.secrets["my-agent-app"] = {**LIVE, "OPENAI_API_KEY": "sk-test"}
     _failed_upgrade(fake, _history((1, "deployed")), _history((1, "deployed"), (2, "failed")))

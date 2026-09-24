@@ -201,5 +201,7 @@ tools/a2a-inspector/
 *-key.json
 credentials*.json
 
-# Helm dependency downloads (rebuilt by `helm dependency build`)
+# Helm dependency downloads and their lock (rebuilt by `helm dependency build`, which
+# `deploy` and the chart tests run; Chart.yaml pins the versions)
 deployment/helm/*/charts/
+deployment/helm/*/Chart.lock
