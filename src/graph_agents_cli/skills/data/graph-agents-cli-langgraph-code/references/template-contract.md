@@ -295,12 +295,22 @@ in file order whose `required_for` covers a call gates it, with that rule's appr
 
 ```yaml
     approval:
-      - required_for: {operations: [{operationId: acknowledgeIncident}]}
+      - required_for:                    # pin path and methods: see below
+          operations:
+            - {operationId: acknowledgeIncident, path: "/incidents/{incident_id}/ack", methods: [POST]}
         approvers: [requester]
       - required_for: {methods: [POST]}  # every other POST: a second person
         approvers: ["role:oncall-lead"]
         timeout_s: 3600
 ```
+
+An entry by `operationId` alone cannot rule out a call that names no operation id, so when a
+later rule with other approvers also covers such a call it could be either rule's: `gated()`
+raises `ApprovalRuleConflict` and the client refuses it (`ApiPolicyError`, nothing sent),
+rather than letting the first rule's approvers decide a call meant for the later one. `lint`
+reports such declared calls and `api approval` notes the rule. Pin `path` and `methods` in
+entries of a rule that comes before a broader one (`api approval --operations` pins them from
+the API's `openapi:` spec), and name `operation_id` on every call.
 
 - `get_client(name)` returns a policy-enforcing async client for one declared API. It fails
   closed: no file, an invalid file or an undeclared API raise `ApiPolicyError`; there is no
@@ -332,7 +342,10 @@ in file order whose `required_for` covers a call gates it, with that rule's appr
   is hashed). With a list, the first rule in file order that covers the call (the path sent,
   or the template it was rendered from) gates it: its approvers are the ones the approval is
   asked of, recorded with it and deciding it; later rules that also cover the call do not
-  apply to it (`gated()` returns the rule's `index`, and `also` for the later ones). Approved: the client re-hashes the request it is about to send, refuses
+  apply to it (`gated()` returns the rule's `index`, and `also` for the later ones). A call the
+  first rule covers only because it names no operation id, and that a later rule with other
+  approvers also covers, is refused (`ApprovalRuleConflict`). Approved: the client re-hashes
+  the request it is about to send, refuses
   it (nothing sent) when it differs, and sends it once. Rejected or expired: nothing is sent and
   the tool gets a "not approved" error. A decision is bound to its call (API, method, path) on
   resume, whatever the policy says about gating it by then: a rejected or expired call is never

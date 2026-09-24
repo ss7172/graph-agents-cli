@@ -30,15 +30,19 @@ from this file and its fix is recorded in [CHANGELOG.md](CHANGELOG.md) with its 
 ids are never reused.
 
 Every entry was checked against commit `6a17b78`: by the regression review that ran that
-commit, by reading the code, or by a local reproduction. Entries that depend on third-party
-or model behaviour that was not re-run say "not re-run".
+commit, by reading the code, or by a local reproduction. Entries found in wave 8, and the
+entries it changed, were checked against the wave 8 integration, which merged the fixes for
+the high-priority issues of that round. Entries that depend on third-party or model
+behaviour that was not re-run say "not re-run".
 
 "Found in" names the pre-release review round of 0.2.0 that first reported the issue:
 wave 0, an independent assessment of 0.1.0; wave 1, the generic contract; waves 2 and 2b,
 the production-readiness fixes; waves 3 and 3b, docs, release engineering and the API-policy
 lifecycle; wave 4, a review of a real agent deployed to a local Kubernetes cluster with a
 real model; waves 5 and 5b, the fixes from that review; waves 6 and 6b, the human approval
-gate; wave 7, a regression review of the upgraded deployment.
+gate; wave 7, a regression review of the upgraded deployment; wave 8, the fixes for wave 7's
+high-priority issues (build identity and upgrades between builds of one version, and approval
+rules for other approvers on other calls of one API) and their reviews.
 
 ## Summary
 
@@ -48,18 +52,18 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
-| api-policy | 3 | 3 | 6 |
-| approvals | 6 | 5 | 11 |
-| runtime | 8 | 7 | 15 |
+| api-policy | 4 | 4 | 8 |
+| approvals | 7 | 5 | 12 |
+| runtime | 9 | 6 | 15 |
 | a2a | 3 | 5 | 8 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 7 | 11 |
-| chart/CD | 6 | 4 | 10 |
+| chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 1 | 9 | 10 |
-| upgrade | 1 | 6 | 7 |
+| cli | 1 | 10 | 11 |
+| upgrade | 2 | 12 | 14 |
 | docs | 0 | 6 | 6 |
-| **Total** | **37** | **63** | **100** |
+| **Total** | **41** | **71** | **112** |
 
 ## Owner actions before release
 
@@ -142,16 +146,31 @@ Medium · api-policy · found in wave 6b
 
 - **Issue:** Denials and approval gates match paths after percent-decoding, case folding and
   dot-suffix handling, and control characters, encoded separators and whitespace next to a
-  dot are refused. Some rarer spellings of a concrete path segment still pass unchanged:
-  double percent-encoding, zero-width or full-width look-alike characters, and a few
-  reserved or invalid percent-escapes.
+  dot are refused. Some rarer spellings of a concrete path segment (certain Unicode
+  look-alikes and multiply-escaped forms) are not normalised and pass unchanged.
 - **Impact:** Matters only for an upstream server that normalises such spellings back to a
   gated or denied endpoint, and only for tools that build concrete paths from model input.
 - **Workaround:** Call gated and denied endpoints through path templates with `path_params`
   (values are encoded and a `/` is refused), not through concrete paths built from model
   text.
 
-### KI-007: A role approver receives the whole resumed run
+### KI-007: A list of approval rules makes a runtime that predates them refuse every call
+
+Medium · api-policy · found in wave 8
+
+- **Issue:** A project whose `app_utils/api_client.py` predates approval rules (built by a
+  pre-release 0.2.0 build) rejects an `approval` list ("must be a mapping with required_for
+  and approvers"), so its whole policy fails to load and every outbound call is refused. The
+  CLI's `lint` and `api check` accept the list, and `api approval --add-rule` does not check
+  the project's runtime.
+- **Impact:** Fails closed, but as an outage of every outbound call once the list is
+  deployed.
+- **Workaround:** Upgrade the project's runtime before adding a second rule (`scaffold
+  upgrade`; for a project made by a pre-release 0.2.0 build, name that build with
+  `--baseline-ref`, as the CHANGELOG describes). A runtime that supports lists defines
+  `approval_rules` in `app_utils/api_client.py`.
+
+### KI-008: A role approver receives the whole resumed run
 
 Medium · approvals · found in waves 6 and 7
 
@@ -164,7 +183,7 @@ Medium · approvals · found in waves 6 and 7
 - **Workaround:** Name as approvers only roles that may see the requester's data, and keep
   gated calls at the end of a turn where you can.
 
-### KI-008: Approvers cannot see who asked
+### KI-009: Approvers cannot see who asked
 
 Medium · approvals · found in wave 7
 
@@ -174,7 +193,7 @@ Medium · approvals · found in wave 7
   which weakens accountability.
 - **Workaround:** None built in; confirm sensitive requests out of band.
 
-### KI-009: The model-written approval reason is shown as fact
+### KI-010: The model-written approval reason is shown as fact
 
 Medium · approvals · found in wave 7
 
@@ -186,7 +205,7 @@ Medium · approvals · found in wave 7
 - **Workaround:** Decide on the call itself (method, path, query, body), which the card shows
   first, and read the reason as the agent's unverified statement.
 
-### KI-010: A requester cannot withdraw a call waiting for another role's approval
+### KI-011: A requester cannot withdraw a call waiting for another role's approval
 
 Medium · approvals · found in wave 7
 
@@ -199,7 +218,7 @@ Medium · approvals · found in wave 7
 - **Workaround:** Ask an approver to reject it, or delete the thread (`DELETE /threads/{id}`
   removes its approvals and its history); keep `timeout_s` short on role gates.
 
-### KI-011: A role-approved run acts with the requester's roles as they were at the pause
+### KI-012: A role-approved run acts with the requester's roles as they were at the pause
 
 Medium · approvals · found in wave 7 (from the code; not exercised live)
 
@@ -211,33 +230,52 @@ Medium · approvals · found in wave 7 (from the code; not exercised live)
 - **Workaround:** Keep `timeout_s` short on role-gated calls, and reject pending approvals of
   a principal whose access you revoke.
 
-### KI-012: Approval records do not say whether an approved call was sent
+### KI-013: Approval records do not say whether an approved call was sent
 
-Medium · approvals · found in wave 7
+Medium · approvals · found in wave 7 (the crash before delivery: wave 8)
 
 - **Issue:** The approval routes and `approvals list` show `approved` both for a call that was
   sent and for an approved call whose run stopped (a crash, a database outage) before the
-  call went out; the ledger's sent marker is not exposed.
+  call went out; the ledger's sent marker is not exposed. The marker itself is set just
+  before the request is sent, so a crash between the two leaves an approval marked used for
+  a call that never arrived, and the repaired tool result on the requester's next turn then
+  says the call was approved and sent.
 - **Impact:** An approver or operator cannot tell from the approval whether the action
   happened; only the requester's next turn shows it, in the repaired tool result.
-- **Workaround:** Check the upstream system; the requester's next message on the thread gets a
-  repaired tool result that says whether the call was sent.
+- **Workaround:** Check the upstream system. The repaired tool result on the requester's next
+  message says whether the call was marked sent, which is not proof that it arrived.
 
-### KI-013: Some look-alike closing tags get past the untrusted-output fence
+### KI-014: `api approval --add-rule` appends, so a narrow rule added after a broad one never applies
+
+Medium · approvals · found in wave 8
+
+- **Issue:** `--add-rule` always appends the new rule, and the first rule in file order that
+  covers a call gates it. A rule for calls an earlier rule already covers (for example
+  `--operations createOrder --approvers role:admin` after a `{methods: [POST]}` rule for the
+  requester) is written as a rule that never gates a call. The command exits 0 with a note
+  that the rule never gates a call and the verdict "tightens or keeps the approval gate
+  (always safe)", and there is no option to insert a rule at a position.
+- **Impact:** An owner can believe a second person now approves those calls while the earlier
+  rule's approvers still do.
+- **Workaround:** Read the "never gates a call" note (`lint` and `api show` repeat it), move
+  the new rule above the broader one by hand, and check with `graph-agents-cli api show`
+  which rule each declared call waits for.
+
+### KI-015: Some look-alike closing tags get past the untrusted-output fence
 
 Medium · runtime · found in wave 5b
 
 - **Issue:** `UntrustedToolResults` wraps each tool result the model reads in a
   `<tool_output ...>` fence and renames copies of the tag inside the text, including
-  full-width, zero-width, HTML-entity and split-block spellings. A few look-alikes are not
-  renamed: invisible combining characters in the tag name, homoglyph letters, a JSON-escaped
-  slash and control characters inside the tag. The fence itself stays intact.
+  full-width, zero-width, HTML-entity and split-block spellings. Some other Unicode
+  look-alike and escaped spellings of the tag are not renamed. The fence itself stays
+  intact.
 - **Impact:** Weakens the fence as a prompt-injection defence: a model may read such text as
   the end of the untrusted data.
 - **Workaround:** Rely on approval gates for writes and on tool-side checks (`require_owner`,
   `require_user_mentioned`). A per-request random tag name is the planned fix.
 
-### KI-014: A run cut by the shutdown drain is recorded as interrupted, with no error event
+### KI-016: A run cut by the shutdown drain is recorded as interrupted, with no error event
 
 Medium · runtime · found in wave 7
 
@@ -252,7 +290,7 @@ Medium · runtime · found in wave 7
 - **Workaround:** Raise `shutdown.drainSeconds` (and `terminationGracePeriodSeconds`) above
   your longest runs; clients should treat a stream without `message.end` as failed.
 
-### KI-015: A database that stops answering without closing connections stalls requests
+### KI-017: A database that stops answering without closing connections stalls requests
 
 Medium · runtime · found in wave 5
 
@@ -264,7 +302,7 @@ Medium · runtime · found in wave 5
 - **Workaround:** Set `keepalives_*` and `tcp_user_timeout` in the DSN to your tolerance and
   alert on `/ready`. Also in README Known limitations.
 
-### KI-016: The per-thread run lease is checked in the process, not in the database write
+### KI-018: The per-thread run lease is checked in the process, not in the database write
 
 Medium · runtime · found in wave 5
 
@@ -276,7 +314,7 @@ Medium · runtime · found in wave 5
 - **Workaround:** Keep `tcp_user_timeout` in the DSN below the 30 s lease (it is in
   milliseconds). Also in README Known limitations.
 
-### KI-017: `langgraph-server`: the orphaned run-record sweep never gets past its first pages
+### KI-019: `langgraph-server`: the orphaned run-record sweep never gets past its first pages
 
 Medium · runtime · found in wave 2b
 
@@ -288,7 +326,7 @@ Medium · runtime · found in wave 2b
 - **Workaround:** The server's own `DELETE /threads/{id}` removes a thread's run records
   directly (the main path); at that scale, clean up the rest by hand.
 
-### KI-018: `langgraph-server`: native-API runs store the caller's raw id and lack its context
+### KI-020: `langgraph-server`: native-API runs store the caller's raw id and lack its context
 
 Medium · runtime · found in waves 2b and 6b
 
@@ -298,9 +336,9 @@ Medium · runtime · found in waves 2b and 6b
   tools that need the caller refuse.
 - **Impact:** Raw principal ids, possibly email addresses, are persisted in checkpoints.
 - **Workaround:** Serve users through `/chat` and A2A, and do not publish native run routes
-  (see KI-031). Also in README Known limitations.
+  (see KI-034). Also in README Known limitations.
 
-### KI-019: The licensed LangGraph Server image with Postgres has not been run end to end
+### KI-021: The licensed LangGraph Server image with Postgres has not been run end to end
 
 Medium · runtime · found in waves 2 and 6
 
@@ -314,7 +352,7 @@ Medium · runtime · found in waves 2 and 6
 - **Workaround:** Prefer the default fastapi runtime, or verify replicas, restarts and
   approvals in staging before production.
 
-### KI-020: No inbound rate limiting or per-caller quota
+### KI-022: No inbound rate limiting or per-caller quota
 
 Medium · runtime · found in wave 0
 
@@ -323,7 +361,19 @@ Medium · runtime · found in wave 0
 - **Impact:** One authenticated caller can drive unbounded load and model spend.
 - **Workaround:** Rate-limit at the gateway or ingress. Also in README Known limitations.
 
-### KI-021: A2A tasks live in process memory; a restart drops tasks waiting for approval
+### KI-023: `langgraph-server`: the native state routes return raw tool errors
+
+Medium · runtime · found in wave 5
+
+- **Issue:** The server's native state routes (thread state, history, get thread, search, run
+  joins) return the stored state as it is, a failed tool call's error text included; outside
+  dev, `/chat`, `/threads/{id}/messages` and A2A replace that text with an error id.
+- **Impact:** Internal error text reaches thread owners through those routes (information
+  disclosure, hence Medium).
+- **Workaround:** Do not publish the native routes (see KI-034). Also in README Known
+  limitations.
+
+### KI-024: A2A tasks live in process memory; a restart drops tasks waiting for approval
 
 Medium · a2a · found in waves 0 and 7
 
@@ -335,7 +385,7 @@ Medium · a2a · found in waves 0 and 7
 - **Workaround:** Send the decision data part as a new message on the same `contextId` (no
   `taskId`), or decide over HTTP; use one replica or sticky routing for long tasks.
 
-### KI-022: A2A tasks waiting for approval do not follow the approval's outcome
+### KI-025: A2A tasks waiting for approval do not follow the approval's outcome
 
 Medium · a2a · found in wave 7
 
@@ -346,7 +396,7 @@ Medium · a2a · found in wave 7
 - **Workaround:** Decide over HTTP or with `graph-agents-cli approvals`, and have A2A clients
   check the approval routes or send a new message.
 
-### KI-023: The A2A approval prompt shows numbers as doubles and its text omits the body
+### KI-026: The A2A approval prompt shows numbers as doubles and its text omits the body
 
 Medium · a2a · found in waves 6 and 7
 
@@ -358,7 +408,7 @@ Medium · a2a · found in waves 6 and 7
 - **Workaround:** Review exact numeric values over HTTP or with `approvals list`, which show
   the request as it will be sent. The `1.0` display is in README Known limitations.
 
-### KI-024: `eval generate` can leave an approval pending after more than 20 gated calls
+### KI-027: `eval generate` can leave an approval pending after more than 20 gated calls
 
 Medium · eval · found in wave 6b
 
@@ -370,7 +420,7 @@ Medium · eval · found in wave 6b
 - **Workaround:** Keep cases to a few gated calls per turn, run `--url` evals against a
   sandbox, and check `graph-agents-cli approvals list` after a run.
 
-### KI-025: Each workstation deploy rebuilds the image under the same tag
+### KI-028: Each workstation deploy rebuilds the image under the same tag
 
 Medium · deploy · found in waves 0, 4 and 7
 
@@ -383,7 +433,7 @@ Medium · deploy · found in waves 0, 4 and 7
 - **Workaround:** Build once and deploy later environments with `--image <ref>`, or use a CD
   mode, where CI builds once per commit.
 
-### KI-026: Recovery commands printed by `deploy` leave out the kube context
+### KI-029: Recovery commands printed by `deploy` leave out the kube context
 
 Medium · deploy · found in wave 7
 
@@ -397,7 +447,7 @@ Medium · deploy · found in wave 7
 - **Workaround:** Add `--kube-context <ctx>` (helm) or `--context <ctx>` (kubectl) before
   running a printed command.
 
-### KI-027: Two narrow races between concurrent deploys to one release
+### KI-030: Two narrow races between concurrent deploys to one release
 
 Medium · deploy · found in wave 2b
 
@@ -409,7 +459,7 @@ Medium · deploy · found in wave 2b
 - **Workaround:** Serialize deploys to one environment (one CI concurrency group, one operator
   at a time). Also in README Known limitations.
 
-### KI-028: A failed reinstall after `uninstall --keep-history` rolls back to the old release
+### KI-031: A failed reinstall after `uninstall --keep-history` rolls back to the old release
 
 Medium · deploy · found in wave 2b
 
@@ -421,7 +471,7 @@ Medium · deploy · found in wave 2b
 - **Workaround:** Avoid `--keep-history`; after such a failure run `helm uninstall` and deploy
   again (`--no-atomic` keeps the failed revision for inspection).
 
-### KI-029: The chart has no rollout strategy value, so the upgrade advice cannot be followed
+### KI-032: The chart has no rollout strategy value, so the upgrade advice cannot be followed
 
 Medium · chart/CD · found in waves 5 and 7
 
@@ -433,7 +483,7 @@ Medium · chart/CD · found in waves 5 and 7
 - **Workaround:** Scale the Deployment to 0 before the upgrade deploy (or patch its strategy to
   `Recreate` by hand).
 
-### KI-030: NetworkPolicy is off by default in every environment
+### KI-033: NetworkPolicy is off by default in every environment
 
 Medium · chart/CD · found in waves 0 and 4
 
@@ -444,7 +494,7 @@ Medium · chart/CD · found in waves 0 and 4
 - **Workaround:** Enable it for staging and prod from the example (it needs a CNI that
   enforces NetworkPolicy).
 
-### KI-031: `langgraph-server`: the public `/threads` route also publishes native run creation
+### KI-034: `langgraph-server`: the public `/threads` route also publishes native run creation
 
 Medium · chart/CD · found in wave 2b
 
@@ -457,7 +507,7 @@ Medium · chart/CD · found in wave 2b
 - **Workaround:** Narrow the route at the gateway to the app's own `GET` and `DELETE` thread
   routes. Also in README Known limitations.
 
-### KI-032: argocd staging promotion trusts the branch names of open pull requests
+### KI-035: argocd staging promotion trusts the branch names of open pull requests
 
 Medium · chart/CD · found in wave 2b
 
@@ -470,7 +520,7 @@ Medium · chart/CD · found in wave 2b
   pull requests. The fix is to consider only same-repository branches whose suffix is a
   commit id.
 
-### KI-033: argocd staging promotion closes superseded pull requests before its own push
+### KI-036: argocd staging promotion closes superseded pull requests before its own push
 
 Medium · chart/CD · found in wave 2b
 
@@ -481,19 +531,21 @@ Medium · chart/CD · found in wave 2b
 - **Workaround:** Fix the cause and re-run the workflow; give `GH_PR_TOKEN` contents read and
   write.
 
-### KI-034: Generated workflows reference actions by version tag, not commit SHA
+### KI-037: Generated workflows and Dockerfiles pin by tag, not by commit SHA or digest
 
-Medium · chart/CD · found in wave 3
+Medium · chart/CD · found in wave 3 (base images: wave 8)
 
 - **Issue:** The generated `pr_checks`, `staging` and `promote-to-prod` workflows use
   `actions/checkout`, `astral-sh/setup-uv` and the docker actions by version tag. The CLI's own
-  workflows pin commit SHAs.
+  workflows pin commit SHAs. The generated `Dockerfile` and `Dockerfile.langgraph-server` pin
+  their base images by exact tag, not by digest (digests are only mentioned in comments).
 - **Impact:** A moved or compromised tag changes what runs next to the repository's deploy
-  credentials.
-- **Workaround:** Pin each action to a commit SHA in the generated workflows. Also in README
+  credentials, or what the agent image is built from.
+- **Workaround:** Pin each action to a commit SHA in the generated workflows, and each base
+  image to a digest (`image:tag@sha256:...`) in the Dockerfiles. Also in README
   Known limitations.
 
-### KI-035: A hand edit of a bearer API's token variable is not reflected in `secrets.keys`
+### KI-038: A hand edit of a bearer API's token variable is not reflected in `secrets.keys`
 
 Medium · secrets · found in wave 3b
 
@@ -507,7 +559,7 @@ Medium · secrets · found in wave 3b
   API and add it again with `graph-agents-cli api`), and compare `api show` with the
   manifest.
 
-### KI-036: `run` reports success when the stream ends without a final event
+### KI-039: `run` reports success when the stream ends without a final event
 
 Medium · cli · found in wave 7
 
@@ -519,7 +571,7 @@ Medium · cli · found in wave 7
 - **Workaround:** Check for the answer and the thread footer, or use `eval` for scripted
   checks.
 
-### KI-037: `scaffold upgrade` keeps an edited chart `values.yaml` whole, dropping new settings
+### KI-040: `scaffold upgrade` keeps an edited chart `values.yaml` whole, dropping new settings
 
 Medium · upgrade · found in wave 7
 
@@ -532,9 +584,26 @@ Medium · upgrade · found in wave 7
 - **Workaround:** After an upgrade, compare `values.yaml` with a fresh `create` using the same
   settings, merge by hand, and check the result with `helm template`.
 
+### KI-041: A wrong `--baseline-ref` applied with `-y` records a stale project as up to date
+
+Medium · upgrade · found in wave 8
+
+- **Issue:** When `--baseline-ref` names a later build than the one that created the project,
+  `scaffold upgrade` warns that the baseline looks wrong but, with `-y`, still applies: it
+  adds the new files, updates none, and records the running build in `cli_build`. The next
+  plain upgrade then says "already at version 0.2.0 (build ...)" while the scaffolding files
+  keep their old content. The documented first candidate (the newest commit before
+  `generated_at`) can be such a later build. The warning itself is a heuristic (at least 5
+  files, more than half kept), so a project whose owner edited many scaffolding files can
+  see it with the right build.
+- **Impact:** Template fixes are silently missing, and later upgrades do not bring them.
+- **Workaround:** Always run with `--dry-run` first: with the right build only your own edits
+  are listed under "Will preserve". To recover, run again with the right `--baseline-ref`
+  and `-y`; the result matches a correct upgrade.
+
 ## Low
 
-### KI-038: `jwt`: one issuer and no claim-to-permission mapping
+### KI-042: `jwt`: one issuer and no claim-to-permission mapping
 
 Low · auth · found in wave 2
 
@@ -546,7 +615,7 @@ Low · auth · found in wave 2
 - **Workaround:** Use a `custom` policy or a gateway for those needs. Also in README Known
   limitations.
 
-### KI-039: The docs do not tell tool authors to compare principal ids exactly
+### KI-043: The docs do not tell tool authors to compare principal ids exactly
 
 Low · auth · found in waves 4 and 7
 
@@ -556,7 +625,7 @@ Low · auth · found in waves 4 and 7
 - **Workaround:** Use `require_owner`, or compare ids exactly; normalise them once in a
   `custom` policy if your identity provider needs it.
 
-### KI-040: Schema checks of names accept a trailing newline
+### KI-044: Schema checks of names accept a trailing newline
 
 Low · api-policy · found in wave 6
 
@@ -567,7 +636,7 @@ Low · api-policy · found in wave 6
   it fails closed), but an invalid file passes validation.
 - **Workaround:** None needed.
 
-### KI-041: `api` edits refuse a policy that uses YAML merge keys, with a misleading error
+### KI-045: `api` edits refuse a policy that uses YAML merge keys, with a misleading error
 
 Low · api-policy · found in wave 3b
 
@@ -576,41 +645,61 @@ Low · api-policy · found in wave 3b
 - **Impact:** A confusing error; the change has to be made by hand.
 - **Workaround:** Edit the file by hand, or expand the merge key first.
 
-### KI-042: `api` edits keep comments but sometimes misplace them
+### KI-046: `api` edits keep comments but sometimes misplace them
 
-Low · api-policy · found in wave 3b
+Low · api-policy · found in wave 3b (approval rules: wave 8)
 
 - **Issue:** `api revoke` leaves the comment above a removed list entry behind; `api access`
   replaces a method in place, under the previous method's group comment; `limits` removed and
-  added again lands after the API's trailing comment.
+  added again lands after the API's trailing comment. `api approval --rule N --remove`
+  leaves the comment lines above the removed rule (and any indented under its keys) in place;
+  `--add-rule` on a list of rules written on one line appends inline, making one long line;
+  and changing one rule's value can shrink the spacing before its inline comment.
 - **Impact:** Cosmetic: comments can end up describing the wrong lines.
 - **Workaround:** Review the printed diff and fix comments by hand.
 
-### KI-043: `approvals` output misleads viewers who cannot see the body or decide
+### KI-047: `lint` and `api show` describe approval rules approximately
 
-Low · approvals · found in wave 7
+Low · api-policy · found in wave 8
+
+- **Issue:** The note that a rule never gates a call appears only when an earlier rule
+  provably covers it; placeholder names are not unified (`/orders/{id}` against
+  `/orders/{x}`), so some such rules are not noted. `lint` judges a declared call by its path
+  template, so a rule that pins a concrete path value (`/orders/7`) can gate that value at
+  runtime under another rule than the one `lint` names (a single `approval` block had the
+  same limit).
+- **Impact:** The rule named per declared call, and the dead-rule note, can be wrong in these
+  cases; the runtime applies the rules as written.
+- **Workaround:** Use the same placeholder names as the API's spec, and do not pin concrete
+  path values in approval rules.
+
+### KI-048: `approvals` output misleads viewers who cannot see the body or decide
+
+Low · approvals · found in waves 7 and 8
 
 - **Issue:** When the server withholds a call's body (a read-across viewer without
   `TRACE_CAPTURE=full`, or an already-decided approval), `approvals list` prints
   "body: (none)" as if the call had none, and it prints Approve and Reject commands whoever
   is viewing. `approvals approve|reject` prints "Approving; the resumed run follows." before
-  the server refuses a non-approver with 403. The README lists read-across roles among those
-  who see the call's query and body.
+  the server refuses a non-approver with 403. A non-approver who runs `approvals approve`
+  without `--thread-id` gets "No approval ... on the threads you may see" instead of the
+  server's 403 (with `--thread-id` the server answers 403). The README lists read-across
+  roles among those who see the call's query and body.
 - **Impact:** Misleading output.
 - **Workaround:** Read "(none)" as "not shown to you"; the server's 403 is authoritative.
 
-### KI-044: An approval's stated reason is kept after the decision
+### KI-049: An approval's stated reason is kept after the decision
 
 Low · approvals · found in wave 7
 
 - **Issue:** Once an approval is decided its query and body are dropped (unless
   `TRACE_CAPTURE=full`), and read-across viewers do not see them, but the model-written reason,
   which often restates them, is kept and shown.
-- **Impact:** Less data minimisation than documented; the same text is already readable by
-  those roles in the thread's messages.
+- **Impact:** Less data minimisation than documented. Low rather than Medium: the same text is
+  already readable by those roles in the thread's messages.
 - **Workaround:** Rely on `RETENTION_DAYS` for removal.
 
-### KI-045: Tool-set request headers are bound to an approval but not shown
+### KI-050: Tool-set request headers are bound to an approval but not shown
 
 Low · approvals · found in wave 6
 
@@ -619,7 +708,7 @@ Low · approvals · found in wave 6
 - **Impact:** An approver cannot review them.
 - **Workaround:** Keep decision-relevant data in the path, query or body.
 
-### KI-046: No policy-level redaction list for approval bodies
+### KI-051: No policy-level redaction list for approval bodies
 
 Low · approvals · found in wave 6
 
@@ -628,7 +717,7 @@ Low · approvals · found in wave 6
 - **Impact:** Each tool has to remember to redact sensitive fields.
 - **Workaround:** Pass `redact=` in tools that send sensitive fields.
 
-### KI-047: `langgraph dev`: limits of the local approvals ledger
+### KI-052: `langgraph dev`: limits of the local approvals ledger
 
 Low · approvals · found in wave 6b
 
@@ -640,7 +729,7 @@ Low · approvals · found in wave 6b
   cap.
 - **Workaround:** None needed outside local development.
 
-### KI-048: `langgraph-server` logs a warning on every `/chat` run
+### KI-053: `langgraph-server` logs a warning on every `/chat` run
 
 Low · runtime · found in wave 5b (not re-run)
 
@@ -649,18 +738,7 @@ Low · runtime · found in wave 5b (not re-run)
 - **Impact:** Log noise.
 - **Workaround:** Filter that message in your log pipeline.
 
-### KI-049: `langgraph-server`: the native state routes return raw tool errors
-
-Low · runtime · found in wave 5
-
-- **Issue:** The server's native state routes (thread state, history, get thread, search, run
-  joins) return the stored state as it is, a failed tool call's error text included; outside
-  dev, `/chat`, `/threads/{id}/messages` and A2A replace that text with an error id.
-- **Impact:** Internal error text reaches thread owners through those routes.
-- **Workaround:** Do not publish the native routes (see KI-031). Also in README Known
-  limitations.
-
-### KI-050: `langgraph-server`: the server logs 500 for auth failures that clients see as 503
+### KI-054: `langgraph-server`: the server logs 500 for auth failures that clients see as 503
 
 Low · runtime · found in wave 2b (not re-run)
 
@@ -670,7 +748,7 @@ Low · runtime · found in wave 2b (not re-run)
 - **Impact:** Server logs and the app's metrics disagree during an identity-provider outage.
 - **Workaround:** Alert on the app's metrics and `/ready`, not on the server's 500 count.
 
-### KI-051: `langgraph dev`: a run cancelled by a hot reload reads as an empty success
+### KI-055: `langgraph dev`: a run cancelled by a hot reload reads as an empty success
 
 Low · runtime · found in wave 6b (not re-run)
 
@@ -679,7 +757,7 @@ Low · runtime · found in wave 6b (not re-run)
 - **Impact:** Local development only; a confusing result.
 - **Workaround:** Send the message again after a reload.
 
-### KI-052: A concurrently built index that fails midway stays invalid
+### KI-056: A concurrently built index that fails midway stays invalid
 
 Low · runtime · found in wave 2
 
@@ -688,7 +766,7 @@ Low · runtime · found in wave 2
 - **Impact:** Slower thread listing and run reconciliation; results stay correct.
 - **Workaround:** Drop the invalid index and restart a pod.
 
-### KI-053: `TRACING_ENABLED` accepts any value
+### KI-057: `TRACING_ENABLED` accepts any value
 
 Low · runtime · found in wave 3
 
@@ -697,7 +775,7 @@ Low · runtime · found in wave 3
 - **Impact:** A typo silently leaves tracing off (the safe direction).
 - **Workaround:** Check for the startup log line "Tracing disabled".
 
-### KI-054: The default prompt's approval paragraph can make a model ask instead of acting
+### KI-058: The default prompt's approval paragraph can make a model ask instead of acting
 
 Low · runtime · found in wave 7 (depends on the model; not re-run)
 
@@ -708,7 +786,7 @@ Low · runtime · found in wave 7 (depends on the model; not re-run)
 - **Workaround:** Add "then call the tool in the same reply" to your prompt and test with your
   model.
 
-### KI-055: A resumed A2A task ends with two response artifacts
+### KI-059: A resumed A2A task ends with two response artifacts
 
 Low · a2a · found in wave 7
 
@@ -718,7 +796,7 @@ Low · a2a · found in wave 7
 - **Impact:** A client that reads the first artifact gets an empty or stale answer.
 - **Workaround:** Read the last `response` artifact.
 
-### KI-056: A non-JSON A2A request prints a raw traceback to the logs
+### KI-060: A non-JSON A2A request prints a raw traceback to the logs
 
 Low · a2a · found in wave 7
 
@@ -728,7 +806,7 @@ Low · a2a · found in wave 7
 - **Impact:** Breaks JSON-lines log parsing.
 - **Workaround:** Let the log pipeline tolerate non-JSON lines.
 
-### KI-057: The a2a SDK logs push-notification config requests at ERROR
+### KI-061: The a2a SDK logs push-notification config requests at ERROR
 
 Low · a2a · found in wave 5b (not re-run)
 
@@ -737,9 +815,9 @@ Low · a2a · found in wave 5b (not re-run)
 - **Impact:** Any authenticated caller can add ERROR lines; log noise.
 - **Workaround:** Filter that message in your log pipeline.
 
-### KI-058: The template relies on private internals of the a2a SDK and LangGraph
+### KI-062: The template relies on private internals of the a2a SDK and LangGraph
 
-Low · a2a · found in waves 5b and 6b
+Low · a2a · found in waves 5b and 6b (the pending-loop part not re-run)
 
 - **Issue:** The A2A 0.3 error mapping replaces a private attribute of the SDK's dispatcher,
   and the approval gate reads LangGraph's internal task scratchpad to find the pending
@@ -750,7 +828,7 @@ Low · a2a · found in waves 5b and 6b
 - **Workaround:** Upgrade those libraries through the bundled locks and run the template's
   tests.
 
-### KI-059: `run --mode a2a` does not prompt for approvals
+### KI-063: `run --mode a2a` does not prompt for approvals
 
 Low · a2a · found in wave 6
 
@@ -760,7 +838,7 @@ Low · a2a · found in wave 6
 - **Workaround:** Decide with `graph-agents-cli approvals`, or send the data part yourself.
   Also in README Known limitations.
 
-### KI-060: Every eval case runs as one identity
+### KI-064: Every eval case runs as one identity
 
 Low · eval · found in wave 4
 
@@ -770,7 +848,7 @@ Low · eval · found in wave 4
 - **Impact:** Role-based behaviour needs several runs.
 - **Workaround:** Split role-specific cases into datasets run with different credentials.
 
-### KI-061: For `--url` targets the fake-model warning depends on local settings
+### KI-065: For `--url` targets the fake-model warning depends on local settings
 
 Low · eval · found in wave 5
 
@@ -779,7 +857,7 @@ Low · eval · found in wave 5
 - **Impact:** A deployed agent running on the fake model gets no warning.
 - **Workaround:** Check the deployment's `MODEL_PROVIDER` before trusting a gate.
 
-### KI-062: No overall size limit for a judge prompt
+### KI-066: No overall size limit for a judge prompt
 
 Low · eval · found in wave 5
 
@@ -788,7 +866,7 @@ Low · eval · found in wave 5
 - **Impact:** A judge call can exceed the judge model's context window and error the case.
 - **Workaround:** Lower the cap or split long cases.
 
-### KI-063: Credentials in the `--url` of `eval` replace the bearer token
+### KI-067: Credentials in the `--url` of `eval` replace the bearer token
 
 Low · eval · found in wave 5b
 
@@ -798,7 +876,7 @@ Low · eval · found in wave 5b
 - **Impact:** A confusing failed run.
 - **Workaround:** Leave credentials out of `--url` and use `GRAPH_AGENTS_CLI_API_KEY`.
 
-### KI-064: Eval joins the text before and after an approval with no separator
+### KI-068: Eval joins the text before and after an approval with no separator
 
 Low · eval · found in wave 7
 
@@ -809,7 +887,7 @@ Low · eval · found in wave 7
 - **Workaround:** Check words only the final reply uses, or check `expect.approvals` and the
   tool calls.
 
-### KI-065: `eval run` prints no setup hint for a 503 from the local server
+### KI-069: `eval run` prints no setup hint for a 503 from the local server
 
 Low · eval · found in wave 7
 
@@ -819,7 +897,7 @@ Low · eval · found in wave 7
 - **Impact:** A slower first-run diagnosis.
 - **Workaround:** Run `graph-agents-cli login`, or `run "hi"`, to see the hint.
 
-### KI-066: Evaluation is narrower than upstream's
+### KI-070: Evaluation is narrower than upstream's
 
 Low · eval · found in wave 0
 
@@ -828,7 +906,7 @@ Low · eval · found in wave 0
 - **Impact:** More manual work to grow a dataset.
 - **Workaround:** Write cases by hand. See "Where it is behind" in the README.
 
-### KI-067: helm's failure reason is printed on stdout
+### KI-071: helm's failure reason is printed on stdout
 
 Low · deploy · found in wave 2b
 
@@ -838,7 +916,7 @@ Low · deploy · found in wave 2b
   `--wait`.
 - **Workaround:** Keep stdout in CI logs.
 
-### KI-068: `infra check`'s GitHub secret rows are worded imprecisely
+### KI-072: `infra check`'s GitHub secret rows are worded imprecisely
 
 Low · deploy · found in wave 2b
 
@@ -849,7 +927,7 @@ Low · deploy · found in wave 2b
 - **Impact:** Misleading diagnostics.
 - **Workaround:** Check `gh auth status` and the secret names directly.
 
-### KI-069: `deploy` passes the image tag with `--set`, not `--set-string`
+### KI-073: `deploy` passes the image tag with `--set`, not `--set-string`
 
 Low · deploy · found in wave 2b
 
@@ -859,7 +937,7 @@ Low · deploy · found in wave 2b
 - **Impact:** None today; fragile.
 - **Workaround:** None needed.
 
-### KI-070: Secret-only changes and failed first installs need a manual follow-up
+### KI-074: Secret-only changes and failed first installs need a manual follow-up
 
 Low · deploy · found in wave 5
 
@@ -869,7 +947,7 @@ Low · deploy · found in wave 5
 - **Impact:** Extra manual steps.
 - **Workaround:** Run `deploy --restart`; delete the namespace if you do not want it.
 
-### KI-071: The LangGraph Server licence is not checked before a deploy
+### KI-075: The LangGraph Server licence is not checked before a deploy
 
 Low · deploy · found in wave 0
 
@@ -880,7 +958,7 @@ Low · deploy · found in wave 0
 - **Workaround:** Add the licence variable to `secrets.keys`. Also in README Known
   limitations.
 
-### KI-072: Some deploy paths are verified in a narrow set of environments
+### KI-076: Some deploy paths are verified in a narrow set of environments
 
 Low · deploy · found in wave 2
 
@@ -890,7 +968,7 @@ Low · deploy · found in wave 2
 - **Impact:** Other helm versions or local clusters may behave differently.
 - **Workaround:** Run `deploy --dry-run` first there.
 
-### KI-073: No infrastructure provisioning or CI/CD bootstrap
+### KI-077: No infrastructure provisioning or CI/CD bootstrap
 
 Low · deploy · found in wave 0
 
@@ -900,7 +978,7 @@ Low · deploy · found in wave 0
 - **Workaround:** Follow the deploy skill's GitHub settings reference. See "Where it is behind"
   in the README.
 
-### KI-074: Post-deploy verification in the generated workflows is thin
+### KI-078: Post-deploy verification in the generated workflows is thin
 
 Low · chart/CD · found in waves 0 and 2
 
@@ -910,7 +988,7 @@ Low · chart/CD · found in waves 0 and 2
 - **Impact:** A broken image or rollout is found later.
 - **Workaround:** Add a smoke test and an image build to the workflows.
 
-### KI-075: Staging promotion edge cases in argocd mode
+### KI-079: Staging promotion edge cases in argocd mode
 
 Low · chart/CD · found in wave 2b
 
@@ -922,7 +1000,7 @@ Low · chart/CD · found in wave 2b
 - **Workaround:** Close stale staging pull requests, set `GH_PR_TOKEN`, and re-run the
   workflow.
 
-### KI-076: Gaps in the chart's value validation
+### KI-080: Gaps in the chart's value validation
 
 Low · chart/CD · found in wave 2b
 
@@ -932,7 +1010,7 @@ Low · chart/CD · found in wave 2b
 - **Impact:** Errors surface late or unclearly.
 - **Workaround:** Keep those blocks as maps and check paths by hand.
 
-### KI-077: The Bitnami subcharts come from Docker Hub
+### KI-081: The Bitnami subcharts come from Docker Hub
 
 Low · chart/CD · found in wave 2
 
@@ -942,7 +1020,17 @@ Low · chart/CD · found in wave 2
 - **Impact:** CI or local deploys can fail on rate limits.
 - **Workaround:** Authenticate pulls or vendor the charts. Also in README Known limitations.
 
-### KI-078: `secrets status` on a missing Secret does not split required and optional keys
+### KI-082: The helm-push workflows refuse kube context names the CLI accepts
+
+Low · chart/CD · found in wave 8 (reported in wave 2b)
+
+- **Issue:** The generated `staging` and `promote-to-prod` workflows of the helm-push CD mode
+  refuse a kube context name with whitespace or a leading `-`, which the CLI accepts when it
+  records the environment.
+- **Impact:** A CD run fails for an environment the CLI configured without complaint.
+- **Workaround:** Use context names without whitespace and without a leading `-`.
+
+### KI-083: `secrets status` on a missing Secret does not split required and optional keys
 
 Low · secrets · found in wave 7
 
@@ -952,7 +1040,7 @@ Low · secrets · found in wave 7
 - **Impact:** A less useful report.
 - **Workaround:** Run `secrets apply --dry-run` to see what would be applied.
 
-### KI-079: `secrets apply --dry-run` can fail with an empty key list
+### KI-084: `secrets apply --dry-run` can fail with an empty key list
 
 Low · secrets · found in wave 7
 
@@ -964,7 +1052,7 @@ Low · secrets · found in wave 7
 - **Workaround:** Fill the env file, or run without `--dry-run` against a Secret that already
   holds the keys.
 
-### KI-080: `approvals list --json` is not valid JSON when it starts a temporary server
+### KI-085: `approvals list --json` is not valid JSON when it starts a temporary server
 
 Low · cli · found in wave 7
 
@@ -973,7 +1061,7 @@ Low · cli · found in wave 7
 - **Workaround:** Start the local server first (`run --start-server`), or skip the lines
   before the JSON.
 
-### KI-081: A kept local server holding a paused approval is replaced after 30 idle minutes
+### KI-086: A kept local server holding a paused approval is replaced after 30 idle minutes
 
 Low · cli · found in wave 7
 
@@ -983,7 +1071,7 @@ Low · cli · found in wave 7
 - **Impact:** Local development only.
 - **Workaround:** Use a Postgres checkpointer locally for long approvals.
 
-### KI-082: After a crash, a thread answers 409 for up to 30 s with a misleading hint
+### KI-087: After a crash, a thread answers 409 for up to 30 s with a misleading hint
 
 Low · cli · found in wave 7
 
@@ -993,7 +1081,7 @@ Low · cli · found in wave 7
 - **Impact:** Confusing retries.
 - **Workaround:** Wait 30 s and retry. The lease is described in README Known limitations.
 
-### KI-083: Stopping `langgraph dev` can drop its last save
+### KI-088: Stopping `langgraph dev` can drop its last save
 
 Low · cli · found in wave 6b (not re-run)
 
@@ -1003,7 +1091,7 @@ Low · cli · found in wave 6b (not re-run)
 - **Impact:** Local development only; lost threads or a busy port.
 - **Workaround:** Stop the server when it is idle and check the port afterwards.
 
-### KI-084: Robustness and output polish
+### KI-089: Robustness and output polish
 
 Low · cli · found in wave 2b
 
@@ -1013,7 +1101,7 @@ Low · cli · found in wave 2b
 - **Impact:** Cosmetic or rare.
 - **Workaround:** Delete a corrupted `run_server.json`.
 
-### KI-085: `lint` has no type checker or spell checker
+### KI-090: `lint` has no type checker or spell checker
 
 Low · cli · found in wave 0
 
@@ -1021,7 +1109,7 @@ Low · cli · found in wave 0
 - **Impact:** Type errors and typos are found later.
 - **Workaround:** Add a type checker to the project's own CI.
 
-### KI-086: One Python template and no sample catalogue
+### KI-091: One Python template and no sample catalogue
 
 Low · cli · found in wave 0
 
@@ -1030,7 +1118,7 @@ Low · cli · found in wave 0
 - **Impact:** Teams start from the example tool and structure the rest themselves.
 - **Workaround:** Use a remote template (`local@<dir>` or a git reference).
 
-### KI-087: Remote templates skip symlinks; upstream fixes are ported by hand
+### KI-092: Remote templates skip symlinks; upstream fixes are ported by hand
 
 Low · cli · found in wave 0
 
@@ -1041,7 +1129,7 @@ Low · cli · found in wave 0
 - **Workaround:** Use real files in templates. CONTRIBUTING.md describes the upstream-sync
   process.
 
-### KI-088: For maintainers: an in-folder re-render replaces top-level directories
+### KI-093: For maintainers: an in-folder re-render replaces top-level directories
 
 Low · cli · found in wave 1
 
@@ -1052,17 +1140,30 @@ Low · cli · found in wave 1
   files.
 - **Workaround:** None needed; keep the overlay in any new caller.
 
-### KI-089: The manifest's comments are lost when a command rewrites it
+### KI-094: `api approval` answers a wrong rule selection with exit 2 or exit 3
 
-Low · upgrade · found in waves 0 and 7
+Low · cli · found in wave 8
 
-- **Issue:** `scaffold enhance` and `scaffold upgrade` rewrite `graph-agents-cli-manifest.yaml`
-  without its header and field comments.
+- **Issue:** On a list of several rules, a command without `--rule` or `--add-rule` is a
+  usage error (exit 2), while `--rule N` beyond the last rule exits 3.
+- **Impact:** Scripts that branch on the exit code see two codes for one kind of mistake.
+- **Workaround:** Treat any non-zero exit as a refused edit; nothing is written in either
+  case.
+
+### KI-095: The manifest's comments are lost when a command rewrites it
+
+Low · upgrade · found in waves 0, 7 and 8
+
+- **Issue:** `scaffold enhance` (a settings change) and `scaffold upgrade` to a new version
+  rewrite `graph-agents-cli-manifest.yaml` without its header and field comments. Recording
+  the build (`cli_build`) keeps them, and so does an upgrade within one version, except when
+  the manifest cannot be edited in place, where the build is written by a whole-file
+  rewrite too.
 - **Impact:** Cosmetic; the explanations in the file are gone.
 - **Workaround:** Restore the comments from version control. Also in README Known
   limitations.
 
-### KI-090: `scaffold upgrade`'s conflict warning suggests a flag it does not have
+### KI-096: `scaffold upgrade`'s conflict warning suggests a flag it does not have
 
 Low · upgrade · found in wave 7
 
@@ -1071,7 +1172,7 @@ Low · upgrade · found in wave 7
 - **Impact:** A misleading hint.
 - **Workaround:** Merge the file by hand.
 
-### KI-091: `scaffold enhance` reports required follow-ups only once
+### KI-097: `scaffold enhance` reports required follow-ups only once
 
 Low · upgrade · found in waves 2 and 2b
 
@@ -1084,7 +1185,7 @@ Low · upgrade · found in waves 2 and 2b
 - **Workaround:** Act on the first run's "Left for you" list; run `install` after
   `enhance --runtime`. Also in README Known limitations.
 
-### KI-092: `scaffold enhance` checks every chart under `deployment/helm/`
+### KI-098: `scaffold enhance` checks every chart under `deployment/helm/`
 
 Low · upgrade · found in wave 2b
 
@@ -1094,7 +1195,7 @@ Low · upgrade · found in wave 2b
 - **Impact:** A false failure.
 - **Workaround:** Keep other charts outside `deployment/helm/`, or ignore their entries.
 
-### KI-093: The upgrade notes for an edited `app/agent.py` are incomplete
+### KI-099: The upgrade notes for an edited `app/agent.py` are incomplete
 
 Low · upgrade · found in wave 7
 
@@ -1107,7 +1208,7 @@ Low · upgrade · found in wave 7
 - **Impact:** Upgraded agents can miss approval context and prompt guidance.
 - **Workaround:** Diff your `agent.py` against a fresh `create` and port the changes.
 
-### KI-094: Data written before an upgrade keeps its old shape
+### KI-100: Data written before an upgrade keeps its old shape
 
 Low · upgrade · found in wave 2
 
@@ -1119,7 +1220,78 @@ Low · upgrade · found in wave 2
 - **Workaround:** Let `RETENTION_DAYS` age old threads out; delete the dev database's volume
   after upgrading an argocd dev environment.
 
-### KI-095: The workflow skill says `create` runs `uv sync`
+### KI-101: A same-version upgrade by an older build moves the project to older templates
+
+Low · upgrade · found in wave 8
+
+- **Issue:** When the manifest records a newer build of the same version than the one
+  running, `scaffold upgrade` cannot tell which is newer (an installed wheel has no git
+  history) and applies the older templates. The header names both builds.
+- **Impact:** Template fixes can be undone by running an out-of-date CLI.
+- **Workaround:** Compare `graph-agents-cli --version` with the manifest's `cli_build` before
+  upgrading, and preview with `--dry-run`.
+
+### KI-102: Upgrade failure hints for a same-version baseline name options that do not apply
+
+Low · upgrade · found in wave 8
+
+- **Issue:** When the baseline of a same-version upgrade cannot be built, the final hint
+  suggests `--baseline current`, which is refused for a same-version project; for a
+  recorded release it names `--baseline-ref <clone>@<commit>` but not the
+  `GRAPH_AGENTS_CLI_INSTALL_SPEC` `{version}` route that also works; and one message reads
+  "the the".
+- **Impact:** Misleading hints.
+- **Workaround:** Use `--baseline-ref <clone>@<commit>`, or the install-spec override for a
+  release.
+
+### KI-103: A 0.1.0 build named as a 0.2.0 project's baseline exits 2, not 3
+
+Low · upgrade · found in wave 8
+
+- **Issue:** The docs say a baseline must render the manifest's `cli_version` (exit 3
+  otherwise). A 0.1.0 build named for a 0.2.0 project instead fails while rendering (the old
+  CLI rejects a 0.2.0 option) and exits 2 with "source unreachable, ref absent, or uvx
+  missing"; the real cause is in the printed stderr tail.
+- **Impact:** A misleading first line and exit code.
+- **Workaround:** Read the stderr tail; name a build of the manifest's version.
+
+### KI-104: A build with uncommitted changes records a `cli_build` no upgrade can rebuild
+
+Low · upgrade · found in wave 8
+
+- **Issue:** `create`, `enhance` and `upgrade` run from a checkout with uncommitted changes
+  record a `.dirty` build without a warning. A later `scaffold upgrade` stops with exit 3
+  (no commit reproduces those templates) until `--baseline-ref` names a build.
+- **Impact:** An extra step for projects made from a work-in-progress checkout.
+- **Workaround:** Commit before creating projects you mean to upgrade (CONTRIBUTING says so),
+  or name the baseline with `--baseline-ref`.
+
+### KI-105: A build without git data looks like the release and can refuse its own projects
+
+Low · upgrade · found in wave 8
+
+- **Issue:** A wheel built from a tree without `.git` (a source archive) reports exactly the
+  release version. A project it creates with a seeded `--api-policy` records no commit and
+  no digest, and `scaffold upgrade` by that same build stops with exit 3, saying the files
+  differ although nothing was compared.
+- **Impact:** A false refusal, for archive installs only.
+- **Workaround:** Install from a git checkout, tag or commit, or name the baseline with
+  `--baseline-ref`.
+
+### KI-106: Upgrades between builds of one version rebuild the recorded commit when there is no digest
+
+Low · upgrade · found in wave 8
+
+- **Issue:** `cli_build.template_digest` is null for projects created with a seeded
+  `--api-policy` or a local or remote template, so an upgrade between two builds of one
+  version cannot shortcut to "up to date" and rebuilds the recorded commit as its baseline
+  (after the first upgrade the digest is recorded). A recorded commit between releases is
+  fetched from GitHub, so a commit that was never pushed needs `--baseline-ref
+  <clone>@<commit>` (documented).
+- **Impact:** An extra fetch, and a failure without network or for unpushed commits.
+- **Workaround:** `--baseline-ref <clone>@<commit>` with a local clone.
+
+### KI-107: The workflow skill says `create` runs `uv sync`
 
 Low · docs · found in waves 4 and 7
 
@@ -1128,7 +1300,7 @@ Low · docs · found in waves 4 and 7
 - **Impact:** A coding agent may skip `graph-agents-cli install`.
 - **Workaround:** Run `graph-agents-cli install` after `create`.
 
-### KI-096: The eval skill's install line is not pinned to the release tag
+### KI-108: The eval skill's install line is not pinned to the release tag
 
 Low · docs · found in wave 7
 
@@ -1137,7 +1309,7 @@ Low · docs · found in wave 7
 - **Impact:** A user following that line can get a different version.
 - **Workaround:** Install from the pinned tag, as the README shows.
 
-### KI-097: The docs call a server-generated thread id a UUID4 on both runtimes
+### KI-109: The docs call a server-generated thread id a UUID4 on both runtimes
 
 Low · docs · found in wave 5b
 
@@ -1147,7 +1319,7 @@ Low · docs · found in wave 5b
 - **Impact:** Such ids are still hard to guess but reveal their creation time.
 - **Workaround:** Generate a UUID4 in the client if creation times must stay private.
 
-### KI-098: The README's policy lifecycle starts from a read-only API
+### KI-110: The README's policy lifecycle starts from a read-only API
 
 Low · docs · found in wave 3b
 
@@ -1156,7 +1328,7 @@ Low · docs · found in wave 3b
 - **Impact:** Can suggest read-only as the recommended starting point.
 - **Workaround:** Choose the access level your agent needs.
 
-### KI-099: Some test docstrings refer to an internal review
+### KI-111: Some test docstrings refer to an internal review
 
 Low · docs · found in wave 3b
 
@@ -1165,7 +1337,7 @@ Low · docs · found in wave 3b
 - **Impact:** An opaque reference for contributors; not shipped in the package.
 - **Workaround:** None needed.
 
-### KI-100: No documentation site
+### KI-112: No documentation site
 
 Low · docs · found in wave 0
 

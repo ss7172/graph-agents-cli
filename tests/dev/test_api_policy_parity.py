@@ -993,6 +993,7 @@ RULES = yaml.safe_load(
 REQUESTER = (0, ("requester",), 900)
 ADMIN = (1, ("role:admin",), 3600)
 OPS = (2, ("role:ops",), 60)
+CONFLICT = ("refused",)  # gated() raises ApprovalRuleConflict: the call is refused
 
 RULE_CALLS = [
     # (method, operation_id, path, template, (index, approvers, timeout_s), also, fragment)
@@ -1007,7 +1008,9 @@ RULE_CALLS = [
     ("post", None, "/ORDERS/", None, ADMIN, (2,), "path=/orders"),
     ("POST", "createOrder", "/orders.json", None, ADMIN, (2,), "operationId=createOrder"),
     ("PATCH", "renameOrder", "/Orders/7/", None, REQUESTER, (), "operationId=updateOrder"),
-    ("POST", "archiveOrder", None, None, REQUESTER, (1, 2), "names no path, so it cannot be"),
+    # A call that names no path cannot be ruled out of rule 0, and rules with other
+    # approvers cover it too: it could be either rule's call, so it is refused (fail closed).
+    ("POST", "archiveOrder", None, None, CONFLICT, (), "names no path (approval[0]"),
     # The later method rule gates what no earlier rule covers.
     ("POST", "refundOrder", "/orders/7/refund", None, OPS, (), "approval[2].required_for.methods"),
     ("DELETE", "deleteOrder", "/orders/7", None, OPS, (), "approval[2].required_for.methods"),
@@ -1036,11 +1039,20 @@ def test_the_first_rule_that_covers_a_call_gates_it_on_both_sides(
 ) -> None:
     api = RULES["apis"]["orders"]
     assert cli.policy_errors(RULES) == []
+    policy = runtime.ApiPolicy.from_dict(RULES)
+    assert cli.refusal_reason(api, method, operation_id, path) is None
+    if expected == CONFLICT:
+        _assert_refused_as_a_conflict(
+            runtime, RULES, "orders", method, operation_id, path, template
+        )
+        with pytest.raises(cli.ApprovalRuleConflict) as exc:
+            cli.gated(api, method, operation_id, path, template=template)
+        assert fragment in str(exc.value)
+        return
     gate = cli.gated(api, method, operation_id, path, template=template)
     assert _gate_fields(gate) == _gate_fields(
         runtime.gated(api, method, operation_id, path, template=template)
     )
-    policy = runtime.ApiPolicy.from_dict(RULES)
     assert _gate_fields(gate) == _gate_fields(
         policy.gate("orders", method, operation_id, path, template=template)
     )
@@ -1051,7 +1063,166 @@ def test_the_first_rule_that_covers_a_call_gates_it_on_both_sides(
         assert (gate.index, gate.approvers, gate.timeout_s) == expected
         assert gate.also == also
         assert fragment in gate.rule and gate.rule.startswith(f"approval[{gate.index}].")
-    assert cli.refusal_reason(api, method, operation_id, path) is None
+
+
+def _assert_refused_as_a_conflict(
+    runtime: ModuleType,
+    document: dict[str, Any],
+    name: str,
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    template: str | None = None,
+) -> str:
+    """Both sides refuse the call with the same message, and the runtime's gate raises."""
+    api = document["apis"][name]
+    with pytest.raises(cli.ApprovalRuleConflict) as on_cli:
+        cli.gated(api, method, operation_id, path, template=template)
+    with pytest.raises(runtime.ApprovalRuleConflict) as on_runtime:
+        runtime.gated(api, method, operation_id, path, template=template)
+    message = str(on_cli.value)
+    assert message == str(on_runtime.value)
+    assert (on_cli.value.unnamed, on_cli.value.index, on_cli.value.later) == (
+        on_runtime.value.unnamed,
+        on_runtime.value.index,
+        on_runtime.value.later,
+    )
+    assert "it could be either rule's call" in message
+    with pytest.raises(runtime.ApiPolicyError) as refused:
+        runtime.ApiPolicy.from_dict(document).gate(
+            name, method, operation_id, path, template=template
+        )
+    assert refused.value.reason == message
+    assert "refused by the API policy" in str(refused.value)
+    return message
+
+
+# An operationId-only rule before a broader rule with other approvers: a call that names
+# no operation id may be either rule's, so it is refused rather than handed to rule 0's
+# approvers (a requester approving what a later rule gives to role:admin).
+BY_LABEL = yaml.safe_load(
+    "apis:\n"
+    "  orders:\n"
+    "    base_url_env: ORDERS_URL\n"
+    "    auth: none\n"
+    "    allowed_methods: [GET, POST, PATCH]\n"
+    "    approval:\n"
+    "      - required_for:\n"
+    "          operations: [{operationId: updateOrder}, {operationId: cancelOrder}]\n"
+    "        approvers: [requester]\n"
+    "      - required_for: {methods: [POST]}\n"
+    "        approvers: ['role:admin']\n"
+    "        timeout_s: 3600\n"
+)
+
+BY_LABEL_CALLS = [
+    # (method, operation_id, path, template, expected (index, approvers) or CONFLICT)
+    ("POST", None, "/orders", None, CONFLICT),
+    ("POST", None, "/orders/7/cancel", "/orders/{order_id}/cancel", CONFLICT),
+    # Named: each rule knows its calls.
+    ("POST", "createOrder", "/orders", None, (1, ("role:admin",))),
+    ("POST", "cancelOrder", "/orders/7/cancel", None, (0, ("requester",))),
+    ("PATCH", "updateOrder", "/orders/7", None, (0, ("requester",))),
+    # No later rule with other approvers covers these: rule 0 gates them (fail closed).
+    ("PATCH", None, "/orders/7", None, (0, ("requester",))),
+    ("GET", None, "/orders", None, (0, ("requester",))),
+]
+
+
+@pytest.mark.parametrize(("method", "operation_id", "path", "template", "expected"), BY_LABEL_CALLS)
+def test_a_call_either_rule_may_cover_is_refused_on_both_sides(
+    runtime: ModuleType,
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    template: str | None,
+    expected: tuple[Any, ...],
+) -> None:
+    api = BY_LABEL["apis"]["orders"]
+    assert cli.policy_errors(BY_LABEL) == []
+    if expected == CONFLICT:
+        message = _assert_refused_as_a_conflict(
+            runtime, BY_LABEL, "orders", method, operation_id, path, template
+        )
+        assert message.startswith(
+            "approval[0] (approved by requester) covers it only because the call names no "
+            "operation_id"
+        )
+        assert "approval[1] (approved by role:admin) also covers it" in message
+        assert message.endswith(
+            "name the operation_id on the call and in API_CALLS, or pin path and methods in "
+            "approval[0]"
+        )
+        return
+    for side in (cli, runtime):
+        gate = side.gated(api, method, operation_id, path, template=template)
+        assert gate is not None and (gate.index, gate.approvers) == expected
+
+
+def test_rules_with_the_same_approvers_or_a_sure_match_are_not_a_conflict(
+    runtime: ModuleType,
+) -> None:
+    api = BY_LABEL["apis"]["orders"]
+    for side in (cli, runtime):
+        # The later rule names the same approvers (in another order): rule 0 gates it.
+        same = {
+            **api,
+            "approval": [
+                {**api["approval"][0], "approvers": ["requester", "role:admin"]},
+                {**api["approval"][1], "approvers": ["role:admin", "requester"]},
+            ],
+        }
+        gate = side.gated(same, "POST", None, "/orders")
+        assert (gate.index, gate.also) == (0, (1,))
+        assert "names no operation_id, so it cannot be ruled out" in gate.rule
+        # Pinning path and methods makes rule 0 sure of its calls: the rest are rule 1's.
+        pinned = {
+            **api,
+            "approval": [
+                {
+                    "required_for": {
+                        "operations": [
+                            {
+                                "operationId": "cancelOrder",
+                                "path": "/orders/{order_id}/cancel",
+                                "methods": ["POST"],
+                            }
+                        ]
+                    },
+                    "approvers": ["requester"],
+                },
+                api["approval"][1],
+            ],
+        }
+        assert side.gated(pinned, "POST", None, "/orders").approvers == ("role:admin",)
+        gate = side.gated(pinned, "POST", None, "/orders/7/cancel")
+        assert (gate.index, gate.approvers, gate.also) == (0, ("requester",), (1,))
+        # Within one rule, an entry that surely covers the call wins over one that cannot
+        # rule it out: no conflict, and the message names the sure entry.
+        both = {
+            **api,
+            "approval": [
+                {
+                    "required_for": {
+                        "operations": [
+                            {"operationId": "updateOrder"},
+                            {"path": "/orders/{order_id}/cancel", "methods": ["POST"]},
+                        ]
+                    },
+                    "approvers": ["requester"],
+                },
+                api["approval"][1],
+            ],
+        }
+        gate = side.gated(both, "POST", None, "/orders/7/cancel")
+        assert gate.index == 0 and "path=/orders/{order_id}/cancel" in gate.rule
+        assert "cannot be ruled out" not in gate.rule
+        assert side.rule_covers(both["approval"][0], "POST", None, "/orders/7/cancel") == (
+            gate.rule.removeprefix("approval[0].")
+        )
+        # With a template, a sure match on the template wins over an unsure one on the path.
+        gate = side.gated(both, "POST", None, "/v2/7/cancel", template="/orders/{order_id}/cancel")
+        assert gate.index == 0 and "cannot be ruled out" not in gate.rule
 
 
 def test_rule_order_decides_and_a_one_rule_list_means_the_mapping(runtime: ModuleType) -> None:
@@ -1117,8 +1288,12 @@ def test_approval_never_widens_access(
             with pytest.raises(runtime.ApiPolicyError) as exc:
                 policy.check("x", method, operation_id, path)
             assert reason in str(exc.value) and "approval" not in str(exc.value)
-        # The gate itself is there for every call, allowed or not.
-        assert cli.gated(with_gate, method, operation_id, path) is not None
+        # The gate itself is there for every call, allowed or not, unless the call could be
+        # either of two rules' with other approvers: then it is refused (fail closed).
+        try:
+            assert cli.gated(with_gate, method, operation_id, path) is not None
+        except cli.ApprovalRuleConflict:
+            assert isinstance(approval, list) and not operation_id
     assert refused, "each case refuses some call"
 
 
@@ -1201,3 +1376,42 @@ def test_the_runtime_client_asks_the_approvers_of_the_rule_that_gates_the_call(
 
     asyncio.run(calls())
     assert [(r.method, r.url.path) for r in sent] == [("GET", "/orders/7")]
+
+
+def test_the_runtime_client_refuses_a_call_two_rules_with_other_approvers_may_cover(
+    runtime: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call no operation id names, before any pause: refused, nothing sent, nobody asked."""
+    import asyncio
+
+    import httpx
+
+    sent: list[httpx.Request] = []
+    transport = httpx.MockTransport(
+        lambda request: sent.append(request) or httpx.Response(200, json={"ok": True})
+    )
+    monkeypatch.setenv("ORDERS_URL", "http://orders.test")
+    client = runtime.ApiClient(runtime.ApiPolicy.from_dict(BY_LABEL), "orders", transport=transport)
+
+    async def calls() -> None:
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.post("/orders", json_body={"sku": "A-1"})
+        assert "refused by the API policy" in str(exc.value)
+        assert "it could be either rule's call" in str(exc.value)
+        assert "needs human approval" not in str(exc.value)
+        with pytest.raises(runtime.ApiPolicyError, match="either rule's call"):
+            await client.post("/orders/{order_id}/cancel", path_params={"order_id": "7"})
+        # Named, the call goes to its rule's approvers (outside a run: it fails closed).
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.post("/orders", operation_id="createOrder", json_body={"sku": "A-1"})
+        assert "needs human approval (role:admin)" in str(exc.value)
+        with pytest.raises(runtime.ApiPolicyError) as exc:
+            await client.post(
+                "/orders/{order_id}/cancel",
+                operation_id="cancelOrder",
+                path_params={"order_id": "7"},
+            )
+        assert "needs human approval (requester)" in str(exc.value)
+
+    asyncio.run(calls())
+    assert sent == []

@@ -65,6 +65,7 @@ from graph_agents_cli._api_policy import (
     gate_payload,
     parse_policy_yaml,
     policy_errors,
+    rule_conflicts,
     rule_never_applies,
     summarize,
 )
@@ -1257,6 +1258,25 @@ def _order_loosening(
     return reasons
 
 
+def _conflicts(api: Mapping[str, Any]) -> set[tuple[str, frozenset[str], frozenset[str]]]:
+    """The rule conflicts of ``api`` (``rule_conflicts``) as comparable facts.
+
+    Each is an operationId named without a path, the approvers of its rule and
+    those of a later rule that may also cover a call naming no operation id.
+    """
+    rules = approval_rules(api)
+    return {
+        (
+            str(entry["operationId"]),
+            frozenset(str(a) for a in rules[index]["approvers"]),
+            frozenset(str(a) for a in rules[j]["approvers"]),
+        )
+        for index, entries, later in rule_conflicts(api)
+        for entry in entries
+        for j in later
+    }
+
+
 def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
     roles = [a for a in approvers if a.startswith(ROLE_APPROVER_PREFIX)]
     notes = []
@@ -1640,19 +1660,31 @@ def cmd_approval(
     effects = _call_effects(project, project.document, document, name)
     if any(line.startswith("approvers change (new") for line in effects):
         loosening.append("a declared call gets new approver(s) (see above)")
-    verdict = (
-        (
+    if any(line.startswith("now allowed") for line in effects):
+        loosening.append("a declared call the rules refused is now sent after an approval")
+    refuses = bool(_conflicts(target) - _conflicts(api)) or any(
+        line.startswith("now refused") for line in effects
+    )
+    if loosening:
+        verdict = (
             f"This loosens the approval gate on {name} ({'; '.join(loosening)}). "
             f"{GATE_REVIEW_NOTE}",
             "yellow",
         )
-        if loosening
-        else (
+    elif refuses:
+        verdict = (
+            f"This tightens the approval gate on {name}, and the agent refuses the calls to "
+            f"{name} that name no operation_id where rules with other approvers may both cover "
+            "them (see the notes): name the operation_id on those calls, or pin path and "
+            "methods in the rule.",
+            "yellow",
+        )
+    else:
+        verdict = (
             f"This tightens or keeps the approval gate on {name} (always safe); access to "
             f"{name} is unchanged.",
             "dim",
         )
-    )
     _finish(
         project,
         plan,

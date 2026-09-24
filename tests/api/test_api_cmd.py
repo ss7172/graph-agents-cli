@@ -1275,6 +1275,79 @@ def test_approval_rules_let_other_calls_wait_for_other_approvers(
     assert path.read_text() == written
 
 
+def test_a_label_only_rule_before_a_rule_with_other_approvers_refuses_unnamed_calls(
+    project: Path,
+) -> None:
+    """Without a spec, rule 0 knows update and cancel by label only; rule 1 gates every POST.
+
+    A POST that names no operation id cannot be ruled out of rule 0, and rule 1 (other
+    approvers) covers it too: it could be either rule's call, so it is refused (fail closed)
+    instead of letting the requester approve what role:admin should decide.
+    """
+    ok(*ORDERS_ADD)
+    tools = project / "app/tools"
+    (tools / "place_order.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "orders", "method": "POST", "path": "/orders"},\n'
+        "]\nTOOLS: list = []\n"
+    )
+    (tools / "named_order.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "orders", "method": "POST", "operation_id": "createOrder", "path": "/orders"},\n'
+        "]\nTOOLS: list = []\n"
+    )
+    ok("api", "approval", "orders", *REQUESTER_RULE)
+    result = ok(
+        "api", "approval", "orders", "--add-rule", "--methods", "POST", "--approvers", "role:admin"
+    )
+    text = " ".join(result.output.split())
+    assert "always safe" not in text
+    assert "now refused: place_order.py: POST /orders" in text
+    assert "now gated: named_order.py: POST createOrder /orders (approvers: role:admin" in text
+    assert (
+        "apis.orders.approval[0] names operations by operationId alone (operationId=updateOrder; "
+        "operationId=cancelOrder), so it cannot rule out a call that names no operation_id, and "
+        "approval[1] (approved by role:admin) may also cover such a call: the agent refuses it"
+    ) in text
+    assert "This tightens the approval gate on orders, and the agent refuses the calls" in text
+
+    for command in (("api", "check"), ("lint", "--policy-only")):
+        checked = cli(*command)
+        assert checked.exit_code == 1, checked.output
+        flat = " ".join(checked.output.split())
+        assert "it could be either rule's call" in flat
+        assert "name the operation: add operation_id to the call and to API_CALLS" in flat
+    shown = json.loads(ok("api", "show", "orders", "--json").output)
+    statuses = {c["tool"]: (c["status"], c["approval"]) for c in shown["calls"]}
+    assert statuses["place_order.py"][0] == "denied"
+    assert statuses["named_order.py"] == (
+        "allowed",
+        {
+            "approvers": ["role:admin"],
+            "timeout_s": 900,
+            "rule": "approval[1].required_for.methods ['POST']",
+            "rule_index": 1,
+            "also_covered_by": [],
+        },
+    )
+
+    # Naming the operation on the call ends the conflict: rule 1 gates it.
+    (tools / "place_order.py").write_text(
+        (tools / "named_order.py").read_text().replace("named", "place")
+    )
+    assert cli("api", "check").exit_code == 0
+    # Removing rule 1 lets the unnamed call through again (to rule 0's approvers): loosening.
+    (tools / "place_order.py").write_text(
+        "API_CALLS = [\n"
+        '    {"api": "orders", "method": "POST", "path": "/orders"},\n'
+        "]\nTOOLS: list = []\n"
+    )
+    removed = ok("api", "approval", "orders", "--rule", "1", "--remove", "--dry-run")
+    text = " ".join(removed.output.split())
+    assert "This loosens the approval gate on orders" in text
+    assert "now allowed: place_order.py: POST /orders (approvers: requester" in text
+
+
 def test_approval_rule_changes_name_their_rule(project: Path, tmp_path: Path) -> None:
     _orders_with_write_tools(project, tmp_path)
     ok("api", "approval", "orders", *REQUESTER_RULE)

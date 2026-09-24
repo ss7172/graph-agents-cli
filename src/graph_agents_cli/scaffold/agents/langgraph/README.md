@@ -261,9 +261,11 @@ request waits for someone who sees exactly what it does.
   `required_for`, `approvers` and `timeout_s` (the requester confirms changes to their orders; a
   `role:admin` approves new orders). The **first** rule in file order whose `required_for` covers a call
   gates it, with that rule's approvers, which are recorded with the approval and decide it; a later rule
-  that also covers the call does not apply to it. Put narrow rules first. `graph-agents-cli api approval
-  NAME --add-rule ...` adds a rule and `--rule N` changes one (`approval[N]`, from 0); `lint` and
-  `graph-agents-cli api show` name the rule each declared call waits for.
+  that also covers the call does not apply to it. Put narrow rules first, with `path` and `methods` pinned in
+  their entries, and name `operation_id` on every call: an entry by `operationId` alone cannot rule out a call
+  that names none, so such a call that a later rule with other approvers also covers is refused (it could be
+  either rule's). `graph-agents-cli api approval NAME --add-rule ...` adds a rule and `--rule N` changes one
+  (`approval[N]`, from 0); `lint` and `graph-agents-cli api show` name the rule each declared call waits for.
 - **Who approves.** `requester` lets the principal who started the run (the thread's owner) confirm it;
   `role:<name>` lets any principal holding that role decide, never the requester itself (four eyes), unless
   `requester` is listed too. For example `approvers: [requester]` asks the user to confirm each order

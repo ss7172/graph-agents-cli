@@ -611,6 +611,42 @@ def test_with_a_list_of_rules_the_first_that_covers_a_call_gates_it(
     assert policy.gate("shop", "GET", "getOrder", "/orders/7") is None
 
 
+async def test_a_call_either_of_two_rules_with_other_approvers_may_gate_is_refused(
+    gated_policy: Path,
+) -> None:
+    """A rule by operationId alone cannot rule out a call that names no operation id.
+
+    When a later rule with other approvers also covers that call, it could be either
+    rule's: it is refused before anything is sent, instead of going to the first rule's
+    approvers (a requester approving what the later rule gives to role:admin).
+    """
+    gated_policy.write_text(
+        GATED_POLICY.split("    approval:")[0]
+        + "    approval:\n"
+        + "      - required_for: {operations: [{operationId: cancelOrder}]}\n"
+        + "        approvers: [requester]\n"
+        + '      - {required_for: {methods: [POST]}, approvers: ["role:admin"]}\n',
+        encoding="utf-8",
+    )
+    reset_policy_cache()
+    calls: list[httpx.Request] = []
+    client = get_client("shop", transport=_transport(calls))
+    with pytest.raises(ApiPolicyError) as exc:
+        await client.post("/orders", json_body={"sku": "A-1"})
+    assert "refused by the API policy" in str(exc.value)
+    assert "it could be either rule's call" in str(exc.value)
+    assert "name the operation_id on the call" in str(exc.value)
+    # Named, each call goes to its own rule's approvers (outside a run: refused as gated).
+    with pytest.raises(ApiPolicyError, match=r"needs human approval \(role:admin\)"):
+        await client.post("/orders", operation_id="createOrder", json_body={"sku": "A-1"})
+    with pytest.raises(ApiPolicyError, match=r"needs human approval \(requester\)"):
+        await client.post("/orders/7/cancel", operation_id="cancelOrder")
+    # No later rule with other approvers covers an unnamed PATCH: rule 0 gates it.
+    with pytest.raises(ApiPolicyError, match=r"needs human approval \(requester\)"):
+        await client.patch("/orders/7", json_body={"note": "x"})
+    assert calls == []
+
+
 async def test_a_gated_call_is_refused_before_sending(gated_policy: Path) -> None:
     """Outside an agent run nothing can pause for a decision: a gated call fails closed.
 

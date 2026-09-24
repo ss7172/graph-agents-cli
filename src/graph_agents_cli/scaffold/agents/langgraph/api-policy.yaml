@@ -49,8 +49,12 @@ apis:
     #   required_for:                       # they are sent (README "Human approval of calls");
     #     methods: [POST, PATCH]            # a gated call must still be allowed above
     #     operations:                       # and/or entries shaped like allowed_operations
-    #       - operationId: updateOrder
+    #       - operationId: updateOrder      # (pin path and methods too: an entry by
+    #         path: /orders/{order_id}      # operationId alone gates every call that
+    #         methods: [PATCH]              # names no operation_id)
     #   approvers: [requester]              # "requester" and/or "role:<name>" (four eyes)
     #   timeout_s: 900                      # 30..86400; unanswered in time = rejected
     # (or a list of such rules, for other approvers on other calls: the first rule
-    # that covers a call gates it; `graph-agents-cli api approval --add-rule`)
+    # that covers a call gates it; `graph-agents-cli api approval --add-rule`. A call
+    # an earlier rule covers only because it names no operation_id, and that a later
+    # rule with other approvers also covers, is refused.)

@@ -76,6 +76,7 @@ from graph_agents_cli._api_policy import (
     POLICY_FILENAME,
     ApiPolicyFileError,
     ApprovalGate,
+    ApprovalRuleConflict,
     ExampleCall,
     approval_notes,
     denial_match,
@@ -595,7 +596,11 @@ def check_call(
             _spec_fix_hint(call, by_id) if id_mismatch else refusal_hint(call, api, path),
         )
     # Only now, with the call allowed: approval never widens access.
-    gate = gated(api, call.method, call.operation_id, path)
+    try:
+        gate = gated(api, call.method, call.operation_id, path)
+    except ApprovalRuleConflict as exc:
+        # The runtime refuses it too: it could be either rule's call (fail closed).
+        return CheckResult(call, STATUS_DENIED, str(exc), conflict_hint(call, exc))
     if mismatch is not None:
         return CheckResult(
             call,
@@ -646,6 +651,21 @@ def _allow_args(call: DeclaredCall) -> str:
 def _allowed_methods(api: Mapping[str, Any]) -> list[str]:
     methods = [str(m).upper() for m in api.get("allowed_methods") or []]
     return list(HTTP_METHODS) if ANY_METHOD in methods else list(dict.fromkeys(methods))
+
+
+def conflict_hint(call: DeclaredCall, conflict: ApprovalRuleConflict) -> str:
+    """What makes a call that two approval rules with other approvers may cover gateable."""
+    rule = f"approval[{conflict.index}]"
+    if conflict.unnamed == "path":
+        return (
+            f'name the path: add "path" to the call\'s {CALLS_NAME} entry ({rule} knows the '
+            "operation by its path; the client always sends one)"
+        )
+    return (
+        f"name the operation: add operation_id to the call and to {CALLS_NAME}, or pin path "
+        f"and methods in {rule} ({API_COMMAND} approval {call.api} --rule {conflict.index} "
+        "--operations ... pins them from the API's openapi: spec)"
+    )
 
 
 def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -> str:

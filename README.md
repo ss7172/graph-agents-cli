@@ -673,6 +673,15 @@ apis:
   their approvers); `--rule N` changes or, with `--remove`, removes rule N, and a command on a
   list of several rules without either is refused. Put narrow rules before broad ones (an
   `operations` rule before a `methods` rule that would also cover it): the first match wins.
+
+  **Pin path and methods in a rule that comes before a broader one, and name `operation_id` on
+  every call.** An entry by `operationId` alone cannot rule out a call that names no operation
+  id (it gates it, failing closed). When a later rule with other approvers also covers that
+  call, it could be either rule's, so the agent refuses it (nothing is sent) rather than let
+  the first rule's approvers decide a call meant for the later one; `lint` and `api check`
+  report such declared calls, and `api approval` notes the rule and does not call the change
+  safe. Without an `openapi:` spec, `api approval --operations` writes entries by label only:
+  record the spec, or add `path` and `methods` to the entries by hand.
 - **What happens.** Before sending a gated call the agent pauses the run (it stays in the
   checkpointer) and the stream ends with `message.end` status `awaiting_approval` and an
   `approval`: its id, the API, method, full path (ids filled in), query, body (fields the

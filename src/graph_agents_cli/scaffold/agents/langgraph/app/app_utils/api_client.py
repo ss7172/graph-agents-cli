@@ -43,26 +43,28 @@ memory does not grow across runs.
 An API's optional `approval` block names the calls a human must approve before
 they are sent (`gated`, `ApiPolicy.gate`). It is one rule, or a list of rules
 when different calls need different approvers: the first rule in file order
-that covers a call gates it, and the approval is asked of that rule's
-approvers (they are recorded with it and decide it). Approval never widens
-access: a gated call must pass the policy first, and denials still win. A gated call
-pauses the agent run before anything is sent: the client describes the exact
-request (`canonical_call`: API, method, URL with the rendered path, query,
-JSON body, operation id and the tool's own headers), hashes it (`call_hash`)
-and calls LangGraph's `interrupt()` with the approval payload (the call, with
-the fields named in `redact=` masked, the tool and the model's stated purpose,
-the approvers). The chat runtime records the approval and ends the stream
-awaiting a decision (see `approvals.py`). When the run resumes, the tool runs
-again from its start and this client rebuilds the request: it is sent only
-when the decision approves exactly this request (the same hash) and the
+that covers a call gates it, and the approval is asked of that rule's approvers
+(they are recorded with it and decide it). A call the first rule covers only
+because it names no operation id, and that a later rule with other approvers
+also covers, is refused: it could be either rule's call. Approval never widens
+access: a gated call must pass the policy first, and denials still win. A gated
+call pauses the agent run before anything is sent: the client describes the
+exact request (`canonical_call`: API, method, URL with the rendered path,
+query, JSON body, operation id and the tool's own headers), hashes it
+(`call_hash`) and calls LangGraph's `interrupt()` with the approval payload
+(the call, with the fields named in `redact=` masked, the tool and the model's
+stated purpose, the approvers). The chat runtime records the approval and ends
+the stream awaiting a decision (see `approvals.py`). When the run resumes, the
+tool runs again from its start and this client rebuilds the request: it is sent
+only when the decision approves exactly this request (the same hash) and the
 approvals ledger marks that approval used (`set_approval_ledger`), so an
 approval is sent once, never replayed. A rejected or expired approval, a
 request that changed after it was approved, a used approval, or a gated call
 made outside an agent run (nothing can pause it) raises `ApiPolicyError` and
-sends nothing. After an approved call was sent, a second gated call in the
-same tool call is refused (on its resume the tool would run again and meet the
-first, already used, approval): make it in a new tool call. Code before a
-gated call runs again on resume, so keep other side effects after it.
+sends nothing. After an approved call was sent, a second gated call in the same
+tool call is refused (on its resume the tool would run again and meet the
+first, already used, approval): make it in a new tool call. Code before a gated
+call runs again on resume, so keep other side effects after it.
 
 A decision is bound to the call it was taken for, not to the policy of the
 moment: when the resumed tool rebuilds a request to the same API, method and
@@ -178,10 +180,13 @@ _REQUIRED_FOR_KEYS = ("methods", "operations")
 # (`timeout_s`). It is one such rule (a mapping), or a non-empty list of rules
 # of that same shape when different calls need different approvers: a call is
 # gated by the FIRST rule, in file order, whose `required_for` covers it, and a
-# later rule that also covers it does not apply to it. It never widens access:
-# a gated call must still be allowed, and denials still win. It belongs to the
-# API only: on an operation entry the key is refused, with a pointer to
-# `approval.required_for.operations`.
+# later rule that also covers it does not apply to it. A call that an earlier
+# rule covers only because it leaves out what the rule knows the operation by
+# (no operation id, no path), and that a later rule with other approvers also
+# covers, is refused (`ApprovalRuleConflict`): it could be either rule's call.
+# It never widens access: a gated call must still be allowed, and denials still
+# win. It belongs to the API only: on an operation entry the key is refused,
+# with a pointer to `approval.required_for.operations`.
 APPROVAL_KEY = "approval"
 REQUESTER_APPROVER = "requester"  # the principal who started the run confirms
 ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
@@ -802,6 +807,55 @@ def approval_rule_label(api: Mapping[str, Any], index: int) -> str:
     return APPROVAL_KEY
 
 
+class ApprovalRuleConflict(ValueError):
+    """``gated``: the call cannot be given to one approval rule, so it is refused.
+
+    The message says why (the rule that cannot rule the call out, the later
+    rule with other approvers that covers it) and what to name. ``unnamed``
+    is what the call leaves out (``"operation_id"`` or ``"path"``), ``index``
+    and ``later`` are the two rules' indexes.
+    """
+
+    def __init__(self, message: str, *, unnamed: str, index: int, later: int) -> None:
+        super().__init__(message)
+        self.unnamed = unnamed
+        self.index = index
+        self.later = later
+
+
+def _rule_match(
+    rule: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+) -> tuple[str, str] | None:
+    """How one approval rule covers the call: ``(part, unnamed)``, or None.
+
+    ``part`` names what covers it, for messages. ``unnamed`` is ``""`` when
+    the rule surely covers the call, else what the call leaves out
+    (``"operation_id"``, ``"path"``) that the covering entry knows the
+    operation by: the rule covers it only because it cannot be ruled out. A
+    sure match wins over one that only cannot be ruled out.
+    """
+    required_for = rule.get("required_for") or {}
+    methods = [str(m).upper() for m in required_for.get("methods") or []]
+    if ANY_METHOD in methods or method in methods:
+        return f"required_for.methods {methods}", ""
+    unsure: tuple[str, str] | None = None
+    for entry in required_for.get("operations") or []:
+        unnamed = denial_match(entry, method, operation_id, path)
+        if unnamed is None:
+            continue
+        part = f"required_for.operations ({describe_operation(entry)})"
+        if not unnamed:
+            return part, ""
+        if unsure is None:
+            unsure = (part, unnamed)
+    return unsure
+
+
+def _unsure(part: str, unnamed: str) -> str:
+    """``part``, and why it covers the call when the call only leaves out what it names."""
+    return f"{part}: the call names no {unnamed}, so it cannot be ruled out" if unnamed else part
+
+
 def rule_covers(
     rule: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
 ) -> str | None:
@@ -809,22 +863,11 @@ def rule_covers(
 
     ``required_for.methods`` covers a call with one of its methods (``["*"]``:
     every method). An entry of ``required_for.operations`` covers a call as a
-    denial does (``denial_match``: fail closed), not as an allow.
+    denial does (``denial_match``: fail closed), not as an allow; an entry
+    that surely covers it is named before one that only cannot rule it out.
     """
-    required_for = rule.get("required_for") or {}
-    method = method.upper()
-    methods = [str(m).upper() for m in required_for.get("methods") or []]
-    if ANY_METHOD in methods or method in methods:
-        return f"required_for.methods {methods}"
-    for entry in required_for.get("operations") or []:
-        unnamed = denial_match(entry, method, operation_id or None, path or None)
-        if unnamed is None:
-            continue
-        part = f"required_for.operations ({describe_operation(entry)})"
-        if unnamed:
-            part += f": the call names no {unnamed}, so it cannot be ruled out"
-        return part
-    return None
+    match = _rule_match(rule, method.upper(), operation_id or None, path or None)
+    return None if match is None else _unsure(*match)
 
 
 def gated(
@@ -853,9 +896,14 @@ def gated(
     ``approval`` is one rule, or a list of rules: the FIRST rule in file order
     that covers the call gates it, with that rule's approvers and timeout, and
     the later rules that also cover it are listed in ``also`` (they do not
-    apply to it). At runtime, ask with the path that is sent and, when there
-    is one, the ``template`` it was rendered from: a rule covers the call when
-    it covers either.
+    apply to it). Failing closed across rules: when the first rule covers the
+    call only because the call leaves out what the rule knows the operation by
+    (no operation id, no path), and a later rule with other approvers also
+    covers it, the call may be that later rule's, so neither rule's approvers
+    get it: ``ApprovalRuleConflict`` is raised and the call is refused. At
+    runtime, ask with the path that is sent and, when there is one, the
+    ``template`` it was rendered from: a rule covers the call when it covers
+    either (surely, when it surely covers either).
     """
     rules = approval_rules(api)
     if not rules:
@@ -864,24 +912,43 @@ def gated(
     operation_id = operation_id or None
     path = path or None
     template = template or None
-    covering: list[tuple[int, str]] = []
+    covering: list[tuple[int, str, str]] = []
     for index, rule in enumerate(rules):
-        part = rule_covers(rule, method, operation_id, path)
-        if part is None and template is not None:
-            part = rule_covers(rule, method, operation_id, template)
-        if part is not None:
-            covering.append((index, part))
+        match = _rule_match(rule, method, operation_id, path)
+        if template is not None and (match is None or match[1]):
+            other = _rule_match(rule, method, operation_id, template)
+            if other is not None and (match is None or not other[1]):
+                match = other
+        if match is not None:
+            covering.append((index, *match))
     if not covering:
         return None
-    index, part = covering[0]
+    index, part, unnamed = covering[0]
     rule = rules[index]
+    approvers = tuple(str(a) for a in rule.get("approvers") or ())
+    label = approval_rule_label(api, index)
+    if unnamed:
+        pin = f", or pin path and methods in {label}" if unnamed == "operation_id" else ""
+        for later, _part, _unnamed in covering[1:]:
+            others = [str(a) for a in rules[later].get("approvers") or ()]
+            if set(others) != set(approvers):
+                raise ApprovalRuleConflict(
+                    f"{label} (approved by {', '.join(approvers)}) covers it only because the "
+                    f"call names no {unnamed} ({label}.{part}), and "
+                    f"{approval_rule_label(api, later)} (approved by {', '.join(others)}) also "
+                    "covers it: it could be either rule's call, so neither rule's approvers are "
+                    f"asked; name the {unnamed} on the call and in API_CALLS{pin}",
+                    unnamed=unnamed,
+                    index=index,
+                    later=later,
+                )
     listed = isinstance(api.get(APPROVAL_KEY), list)
     return ApprovalGate(
-        approvers=tuple(str(a) for a in rule.get("approvers") or ()),
+        approvers=approvers,
         timeout_s=int(rule.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
-        rule=f"{approval_rule_label(api, index)}.{part}",
+        rule=f"{label}.{_unsure(part, unnamed)}",
         index=index if listed else None,
-        also=tuple(i for i, _ in covering[1:]),
+        also=tuple(i for i, _, _ in covering[1:]),
     )
 
 
@@ -1070,8 +1137,22 @@ class ApiPolicy:
         that covers the call (its sent `path`, or the `template` it was rendered
         from) gates it, with that rule's approvers. Ask only after `check`
         passed: approval never widens access.
+
+        Fails closed across rules: a call the first covering rule cannot rule
+        out only because it names no operation id, and that a later rule with
+        other approvers also covers, could be either rule's call. It raises
+        `ApiPolicyError` (refused, nothing is sent) instead of asking either
+        rule's approvers.
         """
-        return gated(self.api(api_name), method, operation_id, path, template=template)
+        try:
+            return gated(self.api(api_name), method, operation_id, path, template=template)
+        except ApprovalRuleConflict as exc:
+            reason = str(exc)
+            what = operation_id or path or "<unnamed operation>"
+            raise ApiPolicyError(
+                f"{api_name}: {method.upper()} {what} refused by the API policy: {reason}.",
+                reason=reason,
+            ) from None
 
 
 def _beside_pyproject() -> Path | None:

@@ -251,7 +251,12 @@ graph-agents-cli api check
 - Other approvers for other calls of one API: `approval --add-rule` (with `--approvers` and
   `--methods`/`--operations`) appends a rule, turning the block into a list of rules (comments
   kept); it never loosens the gate. A call is gated by the first rule in file order that covers
-  it, with that rule's approvers; later rules that also cover it do not apply. `--rule N`
+  it, with that rule's approvers; later rules that also cover it do not apply. A call that an
+  earlier rule covers only because it names no operation id (an entry by `operationId` alone),
+  and that a later rule with other approvers also covers, is refused at runtime and by `lint`:
+  pin path and methods in the earlier rule (with an `openapi:` spec, `--operations` does) and
+  name `operation_id` on every call; the command notes such a rule and does not call the change
+  safe. `--rule N`
   changes, or with `--remove` removes, rule N (`approval[N]`, from 0, as `show` numbers them);
   on a list of several rules a command without `--add-rule` or `--rule` is refused (exit 2),
   and `--remove` alone removes every rule. It says which declared calls get other approvers,

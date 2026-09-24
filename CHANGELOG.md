@@ -361,8 +361,11 @@ the manifest has to be edited.
   and an approved call is sent only while the rule that gates it then names the same
   approvers. A single mapping keeps its meaning; every rule of a list is validated in full
   (errors name `approval[N]`), fail-closed matching and "approval never widens access" hold
-  per rule, and an operation-level `approval` key stays invalid. The CLI and the runtime share
-  the rules byte for byte.
+  per rule, and an operation-level `approval` key stays invalid. A call that the first rule
+  covers only because it names no operation id (an entry by `operationId` alone), and that a
+  later rule with other approvers also covers, is refused: it could be either rule's call, so
+  neither rule's approvers decide it (`lint` and `api check` report such declared calls, and
+  `api approval` notes the rule). The CLI and the runtime share the rules byte for byte.
 - **`graph-agents-cli api approval NAME`** `[--methods M,...|none] [--operations OP,...|none]
   [--approvers requester,role:NAME] [--timeout-s N] [--add-rule | --rule N] [--remove]
   [--dry-run]`, with the other `api` commands' validate, diff and atomic-write rules: each
