@@ -103,10 +103,10 @@ def _target(url: str | None, header: tuple[str, ...], cookie: tuple[str, ...]) -
     """Where the approvals live: ``--url``, or the project's local server.
 
     Locally, the running server (``run --start-server``, or the one a paused
-    run kept) is used. With none running, a paused run survives only in
-    Postgres: a temporary server is started for a postgres checkpointer
-    (and stopped afterwards); with the in-memory checkpointer nothing can be
-    pending.
+    run kept) is used. With none running, a temporary server is started (and
+    stopped afterwards) where a paused run can outlive its server (a postgres
+    checkpointer, or ``langgraph dev``); under ``fastapi`` with the in-memory
+    checkpointer nothing can be pending.
     """
     headers = build_headers(header, cookie)
     flags = _build_resume_flags(url, "chat", header, cookie, None)
@@ -128,7 +128,9 @@ def _target(url: str | None, header: tuple[str, ...], cookie: tuple[str, ...]) -
         return
     runtime = getattr(cfg, "runtime", "fastapi") or "fastapi"
     checkpointer = _local_checkpointer(root, getattr(cfg, "checkpointer", "memory") or "memory")
-    if checkpointer != "postgres":
+    # `langgraph dev` keeps its own state across restarts; an in-memory fastapi
+    # server's paused runs die with it.
+    if runtime == "fastapi" and checkpointer != "postgres":
         raise NoPendingRun(
             "No local server is running, and with the in-memory checkpointer (CHECKPOINTER="
             f"{checkpointer}) a paused run lives only in the server that ran it: nothing is "
@@ -300,7 +302,8 @@ def cmd_list(
         payload = {"approvals": [dict(a.raw, thread_id=a.thread_id) for a in shown]}
         if cut:
             payload["truncated"] = True
-        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        # ASCII-escaped: the call's text came from the model.
+        click.echo(json.dumps(payload, indent=2))
         return
     what = "approvals" if show_all else "pending approvals"
     where = f"thread {safe_text(thread_id)}" if thread_id else "your threads"
@@ -363,6 +366,8 @@ def _decide(
             raise _http_failure(exc, target, "Looking up the approval") from exc
         except httpx.TransportError as exc:
             raise _transport_failure(exc, target) from exc
+        except ChatClientError as exc:
+            raise click.ClickException(f"Looking up the approval failed: {exc}") from exc
         # The decider sees the call before it is decided, whoever started the run.
         print_approval(approval)
         if not approval.pending:
@@ -408,6 +413,7 @@ def _decide(
         if outcome.status == STATUS_AWAITING_APPROVAL:
             nxt = Approval.from_payload(outcome.approval, thread_id=approval.thread_id)
             if nxt is not None:
+                nxt = replace(nxt, thread_id=approval.thread_id)
                 print_approval(nxt)
                 click.echo()
                 lines = awaiting_lines(nxt, nxt.thread_id, target.flags)

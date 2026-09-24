@@ -36,6 +36,7 @@ import shlex
 import sys
 import uuid
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -272,7 +273,7 @@ class _ChatRenderer:
             return
         self._flush_deltas()
         self._newline_if_needed()
-        click.secho(f"event: {ev.event} {_compact_json(ev.data)}", dim=True)
+        click.secho(terminal_text(f"event: {ev.event} {_compact_json(ev.data)}"), dim=True)
 
     def write_text(self, text: Any) -> None:
         """Print answer text inline (after the ``[agent]:`` tag)."""
@@ -308,14 +309,14 @@ class _ChatRenderer:
             self.write_text(text)
         elif ev.event == EVENT_TOOL_CALL:
             self._newline_if_needed()
-            name = data.get("name", "")
+            name = terminal_text(str(data.get("name", "")))
             args = data.get("args")
             rendered_args = "" if args is None else terminal_text(_json_preview(args, None))
             click.secho(f"[tool_call: {name}({rendered_args})]", dim=True)
             self.rendered = True
         elif ev.event == EVENT_TOOL_RESULT:
             self._newline_if_needed()
-            name = data.get("name", "")
+            name = terminal_text(str(data.get("name", "")))
             limit = None if self.verbose else _RESULT_PREVIEW_CHARS
             result = terminal_text(_json_preview(data.get("result", ""), limit))
             marker = " (error)" if data.get("is_error") else ""
@@ -1031,6 +1032,9 @@ def _settle_approvals(
     """
     while outcome.status == STATUS_AWAITING_APPROVAL:
         approval = Approval.from_payload(outcome.approval, thread_id=outcome.thread_id)
+        if approval is not None and outcome.thread_id:
+            # The decision is about this run's own thread, whatever the payload names.
+            approval = replace(approval, thread_id=outcome.thread_id)
         if approval is None:
             raise click.ClickException(
                 "The run paused for an approval, but the server named no approval id, so it "

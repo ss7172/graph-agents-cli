@@ -323,7 +323,12 @@ def decide_approval(
 def _json_list(resp: httpx.Response, url: str, key: str) -> list[dict[str, Any]]:
     if resp.status_code >= 400:
         raise ChatHTTPError(resp.status_code, resp.text, url)
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        raise ChatClientError(
+            f"unexpected answer from {redact_credentials(url)}: not JSON"
+        ) from None
     if isinstance(data, dict):
         data = data.get(key, [])
     if not isinstance(data, list):

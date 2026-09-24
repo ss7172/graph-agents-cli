@@ -377,3 +377,23 @@ def test_help_lists_the_subcommands():
     assert result.exit_code == 0
     for sub in ("list", "approve", "reject"):
         assert sub in result.output
+
+
+def test_locally_under_langgraph_server_a_temporary_server_is_started(
+    local, chat_server, monkeypatch
+):
+    """`langgraph dev` keeps its state across restarts: look there rather than refuse."""
+    cfg = SimpleNamespace(agent_directory="app", runtime="langgraph-server", checkpointer="memory")
+    monkeypatch.setattr(cmd_approvals, "read_project_config", lambda *a, **k: cfg)
+    listed = approvals("list", "--thread-id", "t-1", token=None)
+    assert "No local server is running" not in listed.output
+    assert len(local.started) == 1 and local.started[0]["runtime"] == "langgraph-server"
+    assert local.stopped == [77]
+
+
+def test_json_listing_escapes_what_the_model_wrote(chat_server):
+    paused(chat_server, body={"note": "\x1b[2J\u202e"})
+    result = approvals("list", "--url", chat_server.url, "--thread-id", "t-1", "--json")
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output and "\\u001b[2J\\u202e" in result.output
+    assert json.loads(result.output)["approvals"][0]["body"] == {"note": "\x1b[2J\u202e"}

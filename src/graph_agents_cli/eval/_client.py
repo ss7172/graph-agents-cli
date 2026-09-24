@@ -35,6 +35,7 @@ from __future__ import annotations
 import itertools
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from graph_agents_cli._approvals import Approval, call_matches, describe_match
@@ -265,6 +266,9 @@ def _resolve_gate(
 ) -> Iterator[Any] | None:
     """Decide the gate a run paused on; the resumed run's events, or None (turn errored)."""
     approval = Approval.from_payload(end.get("approval"), thread_id=turn["thread_id"])
+    if approval is not None and turn["thread_id"]:
+        # The decision is about this case's own thread, whatever the payload names.
+        approval = replace(approval, thread_id=turn["thread_id"])
     if approval is None or not approval.thread_id:
         turn["status"] = STATUS_ERROR
         turn["error"] = "the run paused for an approval without an approval id or thread id"

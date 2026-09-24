@@ -353,3 +353,24 @@ def test_agent_text_cannot_hide_or_overwrite_the_approval(chat_server, remote):
     assert "\x1b" not in out and "\x9b" not in out
     assert "ok\\x1b[8m\\x1b[2A\\x9b2J\nnext\tline" in out
     assert "lookup -> \\x1b[8mhidden" in out
+
+
+def test_a_payload_cannot_redirect_the_decision_to_another_thread(chat_server, remote, monkeypatch):
+    terminal(monkeypatch)
+    approval = gate(chat_server)
+    events = list(chat_server.script)
+    end = dict(events[-1][1])
+    end["approval"] = dict(end["approval"], thread_id="t-victim")
+    chat_server.script = [*events[:-1], ("message.end", end)]
+    result = invoke("cancel", "--url", chat_server.url, input="y\n", env=ALICE)
+    assert result.exit_code == 0, result.output
+    (decision,) = [r for r in chat_server.requests if "/approvals/" in r["path"]]
+    assert decision["path"] == f"/threads/t-1/approvals/{approval.approval_id}"
+
+
+def test_verbose_event_lines_are_terminal_safe(chat_server, remote):
+    chat_server.script = chat_server.book.pause("t-1", "alice", tool_name="look\x1b[8mup")
+    result = invoke("cancel", "--url", chat_server.url, "-v", env=ALICE)
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output
+    assert "look\\x1b[8mup" in result.output

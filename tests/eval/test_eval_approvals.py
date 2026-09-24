@@ -408,3 +408,22 @@ def test_run_checks_reads_the_final_turn_or_every_turn() -> None:
     none = case(expect={"no_approvals": True}).expect
     assert run_checks(none, trace)["no_approvals"]["passed"] is True
     assert run_checks(dict(none, scope="all_turns"), trace)["no_approvals"]["passed"] is False
+
+
+def test_a_payload_cannot_send_the_decision_to_another_thread(fake_chat, fake_decide) -> None:
+    fake_chat({"cancel it": paused(dict(CANCEL, thread_id="t-victim"))})
+    decide = fake_decide()
+    trace = run_case("http://x", case(APPROVE_CANCEL), headers={})
+    assert trace["status"] == "ok"
+    assert decide.calls[0]["thread_id"] == "t-1"
+
+
+def test_a_concrete_path_approves_only_that_record(fake_chat, fake_decide) -> None:
+    fake_chat({"cancel it": paused(dict(CANCEL, path="/orders/ORD-2/cancel"))})
+    decide = fake_decide()
+    only_one = [
+        {"decision": "approve", "match": {"method": "POST", "path": "/orders/ORD-1/cancel"}}
+    ]
+    trace = run_case("http://x", case(only_one), headers={})
+    assert trace["status"] == "error" and "unexpected approval gate" in trace["error"]
+    assert decide.calls == []
