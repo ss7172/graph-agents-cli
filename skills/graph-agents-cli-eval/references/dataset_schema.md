@@ -19,11 +19,13 @@ is added before the extension. `eval grade` picks the newest traces file by mtim
         "not_contains": [],
         "regex": null,
         "json_schema": null,
-        "tool_calls": [{"name": "get_weather", "args_subset": {"query": "SF"}}],
+        "tool_calls": null,
         "ordered": false,
-        "no_tool_calls": false,
+        "no_tool_calls": true,
         "max_latency_ms": null,
-        "max_tokens": null
+        "max_tokens": null,
+        "case_insensitive": true,
+        "scope": "final_turn"
       },
       "judge": { "response_quality": { "threshold": 4 } },
       "reference": "optional reference answer",
@@ -37,14 +39,16 @@ is added before the extension. `eval grade` picks the newest traces file by mtim
 | Field | Required | Meaning |
 |---|---|---|
 | `id` | yes | unique within the dataset; used for planned-case accounting |
-| `messages` | yes | ordered user turns (`role: user`); each is sent as a `/chat` message on the case's thread; the response graded is the final assistant reply |
+| `messages` | yes | ordered user turns (`role: user`); each is sent as a `/chat` message on the case's thread; the response graded is the final assistant reply. `system`/`assistant` entries are not sent: judges see them in place, labelled "from the dataset; not sent to the agent" |
 | `expect` | no | deterministic checks; every key optional; all present checks are mandatory |
-| `expect.contains` / `not_contains` | | case-insensitive substrings of the final response |
+| `expect.contains` / `not_contains` | | substrings of the final response, compared case-insensitively (`"hello"` matches "Hello!") |
+| `expect.case_insensitive` | | default `true`; `false` makes `contains` / `not_contains` exact-case (for `regex`, use `(?i)`) |
 | `expect.regex` | | Python regex searched in the final response |
-| `expect.json_schema` | | the response must parse as JSON and validate |
+| `expect.json_schema` | | the final response must parse as JSON and validate (always the final reply, whatever `scope`) |
 | `expect.tool_calls` | | list of `{name, args_subset}`; each must appear in the trace's `tool_calls` with the subset of args matching; `ordered: true` requires the same relative order |
 | `expect.no_tool_calls` | | the trace must contain no tool call |
 | `expect.max_latency_ms`, `max_tokens` | | upper bounds on `latency_ms` and `usage.input_tokens + output_tokens` |
+| `expect.scope` | | `final_turn` (default): the checks read the final turn of a multi-turn case. `all_turns`: `contains`/`regex` pass when any turn's reply matches, `not_contains` fails when any does, `tool_calls`/`no_tool_calls` read every turn's calls in order, `max_latency_ms` bounds each turn, `max_tokens` bounds their sum. A single-turn case is the same either way |
 | `judge` | no | map of metric name to `{threshold}`; metrics must be a built-in (`response_quality`, `task_success`, `groundedness`), a `judges:` entry, or a `custom_metrics:` callable in `eval_config.yaml`. The threshold resolves as case `judge.<m>.threshold` > `quality_metrics.<m>.threshold` > `judges.<m>.threshold` > custom-metric default (1.0); none found is exit 3 |
 | `reference` | for `task_success`, optional otherwise | the expected answer the judge compares against |
 | `context` | for `groundedness` | the grounding text the response must be supported by |
@@ -58,6 +62,31 @@ Common mistakes:
 - `tool_calls` with the full argument set; use the subset that matters.
 - A `judge` metric that is not declared in `eval_config.yaml`: exit 3.
 - Expecting a `quality_metrics` entry to relax `expect` checks: it never does.
+- A multi-turn case whose `expect.tool_calls` names an earlier turn's call with the default
+  `scope: final_turn`: only the final turn's calls are read; use `scope: all_turns`.
+
+A multi-turn example (two user messages on one thread; the checks read both turns):
+
+```json
+{
+  "id": "weather-follow-up",
+  "messages": [
+    {"role": "user", "content": "What is the weather in Paris?"},
+    {"role": "user", "content": "And what is the weather in Berlin?"}
+  ],
+  "expect": {
+    "scope": "all_turns",
+    "contains": ["sunny"],
+    "tool_calls": [
+      {"name": "get_weather", "args_subset": {"query": "Paris"}},
+      {"name": "get_weather", "args_subset": {"query": "Berlin"}}
+    ],
+    "ordered": true
+  },
+  "judge": {"task_success": {"threshold": 4}},
+  "reference": "Reports the weather in Paris, then in Berlin."
+}
+```
 
 ## Trace file (written by `eval generate`)
 
@@ -92,11 +121,16 @@ is graded. Values are derived from the SSE events `message.delta`, `tool.call`, 
 `message.end`, `error`; `model` is `<provider>/<model>` as the app labels it.
 
 Additive keys the implementation writes (all contract keys above are present unchanged): the
-wrapper also carries `dataset_paths` (project-relative dataset files), `base_url` and
-`app_name`; each trace carries `case` (the original dataset case, so `eval grade` can work from
-the trace file alone) and, only for cases with several user messages, `turns` (one record per
-turn; the top-level `response`/`tool_calls`/`usage`/`latency_ms` are the final turn's).
-`eval grade --dataset` re-reads the dataset instead of `case`.
+wrapper also carries `dataset_paths` (project-relative dataset files), `base_url`, `app_name`,
+`target` (`local` for the project's own local server, `url` for `--url`) and `model_provider`
+(the project's `MODEL_PROVIDER`; it describes the agent only when `target` is `local`); each
+trace carries `case` (the original dataset case, so `eval grade` can work from the trace file
+alone) and, only for cases with several user messages, `turns` (one record per turn with its
+`response`, `tool_calls`, `usage` and `latency_ms`; the top-level fields are the final turn's).
+Judges and `expect.scope: all_turns` read `turns`; a multi-turn trace without them (an older file
+or an `eval.generate` override) shows the judge "[reply not recorded in the trace]" for the
+earlier turns, and `eval grade` warns. `eval grade --dataset` re-reads the dataset instead of
+`case`.
 
 ## Results file (written by `eval grade`)
 
@@ -107,7 +141,7 @@ turn; the top-level `response`/`tool_calls`/`usage`/`latency_ms` are the final t
   "judge": {"provider": "openai", "model": "gpt-5-mini"},
   "capture": "metadata",
   "summary": {"passed": 8, "failed": 1, "quality_below_threshold": 1, "error": 0, "missing": 0, "exit_code": 1},
-  "quality": {"response_quality": {"pass_rate": 0.9, "min_pass_rate": 0.9, "met": true}},
+  "quality": {"response_quality": {"pass_rate": 0.9, "min_pass_rate": 0.9, "met": true, "scored": 10, "passed": 9}},
   "cases": [
     {
       "id": "greeting",
@@ -122,9 +156,12 @@ turn; the top-level `response`/`tool_calls`/`usage`/`latency_ms` are the final t
 }
 ```
 
-`summary.exit_code` is what the command returned. `quality.<metric>.pass_rate` is the fraction of
-planned cases not `quality_below_threshold` on that metric; it is only computed when no case is
-`error` or `missing` (`pass_rate` and `met` are `null` on an incomplete run).
+`summary.exit_code` is what the command returned. `quality.<metric>.pass_rate` is `passed /
+scored`: of the cases scored on that metric (the cases that declare it and reached the judge;
+`scored` is the denominator), the fraction that met the threshold. A case that never declared
+the metric does not count. It is only computed when no case is `error` or `missing`; `pass_rate`
+and `met` are `null` on an incomplete run (`status: incomplete`) and when no case ran the metric
+(`status: not_run`, which cannot fail the gate); otherwise `status` is `met` or `not_met`.
 
 Additive keys the implementation writes: top-level `generated_at`, `agent_version`, `model`,
 `traces_files`, `dataset_paths`, `traces_dataset_hash` (the dataset the traces came from; differs
@@ -135,12 +172,17 @@ object shown above (`score`, `threshold`, `passed`, `quality` = whether the metr
 metric, `reasoning`, `error`, `kind` = `judge` for a model judge or `custom` for a
 `custom_metrics` callable, whose errors read `custom metric <name>: ...` and which `eval analyze`
 groups as `error/custom`) rather than a bare number. Cases already `failed`, `error` or
-`missing` have empty `judge_scores` (judges are not called for them).
+`missing` have empty `judge_scores` (judges are not called for them). Also additive: top-level
+`fake_model` (`["agent"]`, `["judge"]`, both or `[]`: which side ran on the deterministic fake
+model, so a "gate met" proves the plumbing only), `warnings` (the lines printed above the
+result: fake model, tool results cut for the judge, unrecorded turns) and, on a case whose judges
+did not see everything, `judge_notes`.
 
 ## `eval_config.yaml`
 
 ```yaml
 judge: { provider: null, model: null }          # null = agent's provider/model
+                                                 # max_tool_result_chars: 50000 (null = never cut)
 quality_metrics:                                 # only these may be below 100 percent
   response_quality: { threshold: 4, min_pass_rate: 0.9 }
 judges:                                          # rubric text is versioned here
@@ -152,12 +194,22 @@ custom_metrics: []                               # python callables: module:func
 
 - `judge.provider` / `judge.model` override `JUDGE_*` from the environment for this project
   (`null` = `JUDGE_MODEL_PROVIDER`/`JUDGE_MODEL_NAME`, else the agent's `MODEL_*`).
+- `judge.max_tool_result_chars` (default `50000`; `null` = never cut; else a whole number >= 1):
+  the characters of one tool result a judge sees. A longer result is cut with an in-band
+  `[TRUNCATED by graph-agents-cli: the judge sees the first N of M characters ...]` marker that
+  tells the judge not to treat a claim as unsupported only because it could come from the
+  omitted part; `eval grade` warns and records `judge_notes`. Any other `judge:` key is exit 3.
 - `judges: {}` is valid and means the three built-in rubrics; an entry overrides or adds one
   (`scale`, `rubric`, `prompt_template`). A custom `prompt_template` may use exactly `{metric}`,
-  `{rubric}`, `{scale}`, `{conversation}`, `{response}`, `{reference}`, `{context}`,
-  `{reference_section}`, `{context_section}`, `{tool_calls_section}`; anything else is exit 3.
+  `{rubric}`, `{scale}`, `{conversation}`, `{transcript}`, `{response}`, `{reference}`,
+  `{context}`, `{reference_section}`, `{context_section}`, `{tool_calls_section}`; anything else
+  is exit 3 when the config loads. `{conversation}`: every earlier turn in full (user message,
+  `agent tool call: name(args) -> result` lines, the agent's reply) and the latest user message,
+  with `--- turn i of n ---` separators on a multi-turn case. `{tool_calls_section}`: the scored
+  reply's own tool calls. `{transcript}`: `{conversation}` plus the scored reply's tool calls and
+  the reply itself, for templates that want the case as one block.
 - `quality_metrics.<name>` needs both `threshold` (per-case score) and `min_pass_rate`
-  (aggregate fraction of planned cases, default `1.0`).
+  (aggregate fraction of the cases scored on the metric, default `1.0`).
 - A case's `judge.<name>.threshold` overrides the config threshold for that case.
 - `custom_metrics` entries are `module:function` callables
   `fn(case: dict, trace: dict) -> bool | number | {"score": n, "reasoning": str}` (default

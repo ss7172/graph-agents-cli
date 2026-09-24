@@ -30,6 +30,24 @@
       "judge": {"response_quality": {"threshold": 4}},
       "reference": "The agent explains that it can look up the weather for a place.",
       "metadata": {"category": "smoke"}
+    },
+    {
+      "id": "weather-follow-up",
+      "messages": [
+        {"role": "user", "content": "What is the weather in Paris?"},
+        {"role": "user", "content": "And what is the weather in Berlin?"}
+      ],
+      "expect": {
+        "scope": "all_turns",
+        "contains": ["sunny"],
+        "tool_calls": [
+          {"name": "get_weather", "args_subset": {"query": "Paris"}},
+          {"name": "get_weather", "args_subset": {"query": "Berlin"}}
+        ],
+        "ordered": true
+      },
+      "reference": "Reports the weather in Paris, then in Berlin: 90 degrees and sunny in both.",
+      "metadata": {"category": "multi-turn"}
     }
   ]
 }

@@ -24,8 +24,10 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import click
+from rich.markup import escape
 
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
@@ -160,6 +162,83 @@ def _dispatch(
     return [t if t is not None else empty_trace(c.id) for t, c in zip(traces, cases, strict=True)]
 
 
+_WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def display_url(url: str) -> str:
+    """``url`` for the terminal, with any ``user:password@`` replaced by ``***@``."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc="***@" + parts.netloc.rsplit("@", 1)[1]))
+
+
+def _policy_write_access(project_root: Path) -> list[str]:
+    """``"api (METHOD, ...)"`` for each API whose policy allows a write method.
+
+    Read from the project's own ``api-policy.yaml``; the deployed image carries
+    the policy it was built with, so this is a hint, not a guarantee. Any
+    problem reading it yields no hint (``lint`` reports policy problems).
+    """
+    from graph_agents_cli._api_policy import POLICY_FILENAME, load_policy_document
+
+    path = project_root / POLICY_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        document = load_policy_document(path)
+    except Exception:
+        return []
+    found: list[str] = []
+    for name, api in (document.get("apis") or {}).items():
+        if not isinstance(api, dict):
+            continue
+        allowed = _expand([str(m).upper() for m in api.get("allowed_methods") or []])
+        operations = api.get("allowed_operations")
+        if isinstance(operations, list):
+            # An allow-list narrows access to its entries (an entry without
+            # `methods` takes the API's allowed_methods).
+            methods: set[str] = set()
+            for entry in operations:
+                pinned = entry.get("methods") if isinstance(entry, dict) else None
+                if pinned:
+                    methods |= _expand([str(m).upper() for m in pinned]) & allowed
+                else:
+                    methods |= allowed
+            allowed = methods
+        writes = [m for m in _WRITE_METHODS if m in allowed]
+        if writes:
+            found.append(f"{name} ({', '.join(writes)})")
+    return found
+
+
+def _expand(methods: list[str]) -> set[str]:
+    return set(_WRITE_METHODS) | set(methods) if "*" in methods else set(methods)
+
+
+def warn_live_target(
+    console: Console, base_url: str, project_root: Path, cases: int | None
+) -> None:
+    """Say, before any case runs, that `--url` runs the agent's tools for real there."""
+    writes = _policy_write_access(project_root)
+    what = f"{cases} case(s) will run" if cases else "The cases will run"
+    console.print(
+        f"[bold yellow]Warning:[/bold yellow] [yellow]{what} against the agent at "
+        f"{escape(display_url(base_url))} (--url). Every tool call the agent makes runs for "
+        "real in that environment, as the identity these requests authenticate as: tools "
+        "that create, change or delete data do so there.[/yellow]"
+    )
+    if writes:
+        console.print(
+            "[yellow]This project's api-policy.yaml allows write methods: "
+            f"{escape('; '.join(writes))}.[/yellow]"
+        )
+    console.print(
+        "[yellow]Point eval at an environment whose data you can reset, with a dedicated test "
+        "identity; never at production data.[/yellow]"
+    )
+
+
 def _print_incomplete_summary(traces: list[dict[str, Any]]) -> None:
     bad = [t for t in traces if t["status"] != STATUS_OK]
     click.echo("", err=True)
@@ -226,7 +305,8 @@ def generate_traces(
         teardown: Callable[[], None] = lambda: None  # noqa: E731
         if url:
             base_url = url.rstrip("/")
-            console.print(f"Target: [cyan]{base_url}[/cyan]")
+            console.print(f"Target: [cyan]{escape(display_url(base_url))}[/cyan]")
+            warn_live_target(console, base_url, project_root, len(ds.cases))
         else:
             console.print("Starting the local server...")
             base_url, teardown = _start_local_server(project_root, meta)
@@ -259,6 +339,10 @@ def generate_traces(
         "generated_at": utc_now_iso(),
         "agent_version": meta["agent_version"],
         "model": meta["model"],
+        # The model provider is the project's own only for its local server;
+        # `eval grade` warns when that agent ran on the fake model.
+        "model_provider": meta["model_provider"],
+        "target": "url" if url else "local",
         "base_url": base_url,
         "app_name": app_name,
         "traces": traces,
@@ -294,8 +378,9 @@ def generate_traces(
     "--url",
     default=None,
     help=(
-        "Base URL of a running agent (its POST /chat). When omitted the project's local "
-        "server is started for the run and stopped afterwards."
+        "Base URL of a running agent (its POST /chat). Its tools run for real in that "
+        "environment, write tools included. When omitted the project's local server is "
+        "started for the run and stopped afterwards."
     ),
 )
 @click.option(
@@ -359,6 +444,10 @@ def cmd_generate(
     and stopped after the run. With --url, credentials follow the auth policy:
     --header 'Authorization: Bearer ...' or GRAPH_AGENTS_CLI_API_KEY for
     shared-bearer and jwt; --header or --cookie for a custom policy.
+
+    With --url every tool the agent calls runs for real in that environment
+    (a warning names the target first): cases that create, change or delete
+    data do so there. Use a dedicated test identity and data you can reset.
 
     \b
     Exit codes:

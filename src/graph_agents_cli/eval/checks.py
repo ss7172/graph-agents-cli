@@ -26,15 +26,41 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from graph_agents_cli.eval.dataset import SCOPE_ALL_TURNS
+
 CHECK_DESCRIPTIONS: dict[str, str] = {
-    "contains": "Every listed substring appears in the response (case-sensitive).",
-    "not_contains": "None of the listed substrings appears in the response.",
-    "regex": "The response matches the regular expression (re.search, DOTALL).",
-    "json_schema": "The response parses as JSON and validates against the schema.",
+    "contains": (
+        "Every listed substring appears in the response (case-insensitive; "
+        "`case_insensitive: false` for exact case)."
+    ),
+    "not_contains": (
+        "None of the listed substrings appears in the response (case-insensitive; "
+        "`case_insensitive: false` for exact case)."
+    ),
+    "regex": (
+        "The response matches the regular expression (re.search, DOTALL; `(?i)` ignores case)."
+    ),
+    "json_schema": "The final response parses as JSON and validates against the schema.",
     "tool_calls": "The listed tools were called (name + args_subset); `ordered` enforces order.",
     "no_tool_calls": "The agent made no tool calls.",
-    "max_latency_ms": "message.end latency_ms is at or below the limit.",
-    "max_tokens": "usage.input_tokens + usage.output_tokens is at or below the limit.",
+    "max_latency_ms": (
+        "message.end latency_ms is at or below the limit (every turn's, with scope all_turns)."
+    ),
+    "max_tokens": (
+        "usage.input_tokens + usage.output_tokens is at or below the limit "
+        "(summed over the turns with scope all_turns)."
+    ),
+}
+
+# Keys of `expect` that change how checks read the trace; they are not checks.
+MODIFIER_DESCRIPTIONS: dict[str, str] = {
+    "ordered": "tool_calls must appear in the listed order (default false).",
+    "case_insensitive": "contains / not_contains ignore case (default true).",
+    "scope": (
+        "final_turn (default): checks read the final turn of a multi-turn case; all_turns: "
+        "every turn's replies, tool calls, latency and tokens (json_schema always reads the "
+        "final reply)."
+    ),
 }
 
 CheckResult = tuple[bool, str]
@@ -45,27 +71,54 @@ def _short(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def check_contains(expected: list[str], response: str) -> CheckResult:
-    missing = [s for s in expected if s not in response]
+def _replies(response: str | list[str]) -> list[str]:
+    return [response] if isinstance(response, str) else list(response)
+
+
+def _occurs(needle: str, haystacks: list[str], case_insensitive: bool) -> bool:
+    if case_insensitive:
+        folded = needle.casefold()
+        return any(folded in h.casefold() for h in haystacks)
+    return any(needle in h for h in haystacks)
+
+
+def check_contains(
+    expected: list[str], response: str | list[str], *, case_insensitive: bool = True
+) -> CheckResult:
+    """Every substring occurs in the response (or, given every turn's replies, in one of them)."""
+    replies = _replies(response)
+    missing = [s for s in expected if not _occurs(s, replies, case_insensitive)]
     if missing:
-        return False, "response does not contain " + ", ".join(repr(s) for s in missing)
+        subject = "response does not" if isinstance(response, str) else "no reply in any turn"
+        verb = " contain " if isinstance(response, str) else " contains "
+        mode = "" if case_insensitive else " (exact case)"
+        return False, f"{subject}{verb}" + ", ".join(repr(s) for s in missing) + mode
     return True, ""
 
 
-def check_not_contains(forbidden: list[str], response: str) -> CheckResult:
-    present = [s for s in forbidden if s in response]
+def check_not_contains(
+    forbidden: list[str], response: str | list[str], *, case_insensitive: bool = True
+) -> CheckResult:
+    """No substring occurs in the response (or in any turn's reply)."""
+    replies = _replies(response)
+    present = [s for s in forbidden if _occurs(s, replies, case_insensitive)]
     if present:
-        return False, "response contains forbidden " + ", ".join(repr(s) for s in present)
+        subject = "response contains" if isinstance(response, str) else "a turn's reply contains"
+        mode = " (ignoring case)" if case_insensitive else ""
+        return False, f"{subject} forbidden " + ", ".join(repr(s) for s in present) + mode
     return True, ""
 
 
-def check_regex(pattern: str, response: str) -> CheckResult:
+def check_regex(pattern: str, response: str | list[str]) -> CheckResult:
+    """``re.search`` matches the response (or at least one turn's reply)."""
     try:
         compiled = re.compile(pattern, re.DOTALL)
     except re.error as exc:
         return False, f"invalid regex {pattern!r}: {exc}"
-    if compiled.search(response) is None:
-        return False, f"response does not match /{pattern}/"
+    if not any(compiled.search(text) is not None for text in _replies(response)):
+        subject = "response does not" if isinstance(response, str) else "no reply in any turn"
+        verb = " match " if isinstance(response, str) else " matches "
+        return False, f"{subject}{verb}/{pattern}/"
     return True, ""
 
 
@@ -276,7 +329,16 @@ def check_no_tool_calls(actual: list[dict[str, Any]]) -> CheckResult:
     return True, ""
 
 
-def check_max_latency_ms(limit: float, latency_ms: float | None) -> CheckResult:
+def check_max_latency_ms(
+    limit: float, latency_ms: float | list[float | None] | None
+) -> CheckResult:
+    """Latency at or below ``limit``; given every turn's latency, each turn must be."""
+    if isinstance(latency_ms, list):
+        for index, value in enumerate(latency_ms, start=1):
+            passed, reason = check_max_latency_ms(limit, value)
+            if not passed:
+                return False, f"turn {index}: {reason}"
+        return True, ""
     if latency_ms is None:
         return False, "trace has no latency_ms"
     if latency_ms > limit:
@@ -295,7 +357,18 @@ def total_tokens(usage: dict[str, Any] | None) -> int | None:
     return None
 
 
-def check_max_tokens(limit: float, usage: dict[str, Any] | None) -> CheckResult:
+def check_max_tokens(
+    limit: float, usage: dict[str, Any] | list[dict[str, Any] | None] | None
+) -> CheckResult:
+    """Tokens at or below ``limit``; given every turn's usage, their sum must be."""
+    if isinstance(usage, list):
+        totals = [total_tokens(u) for u in usage]
+        if not totals or any(t is None for t in totals):
+            return False, "a turn has no usage.input_tokens/output_tokens"
+        total = sum(t for t in totals if t is not None)
+        if total > limit:
+            return False, f"{total} tokens over {len(totals)} turns exceed {limit:.0f}"
+        return True, ""
     total = total_tokens(usage)
     if total is None:
         return False, "trace has no usage.input_tokens/output_tokens"
@@ -329,28 +402,58 @@ def declared_checks(expect: dict[str, Any]) -> list[str]:
     return names
 
 
+def _all_turns(trace: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Every turn record of a multi-turn trace, or None for a single-turn one."""
+    turns = trace.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return None
+    return [t if isinstance(t, dict) else {} for t in turns]
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
 def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Apply the declared checks to ``trace``; returns ``{name: {passed, reason}}``.
+
+    ``expect.scope`` picks what they read on a multi-turn case: the final turn
+    (``final_turn``, the default; the trace's top-level fields) or every turn
+    (``all_turns``: every reply, every tool call in order, each turn's latency,
+    the summed tokens). ``json_schema`` always reads the final reply.
 
     A check that raises is reported as failed with the exception text, so a bad
     expectation never aborts grading.
     """
-    response = trace.get("response")
-    response = "" if response is None else str(response)
-    tool_calls = trace.get("tool_calls") or []
+    final_response = _text(trace.get("response"))
+    turns = _all_turns(trace) if expect.get("scope") == SCOPE_ALL_TURNS else None
+    response: str | list[str]
+    latency: Any
+    usage: Any
+    if turns is None:
+        response = final_response
+        tool_calls = trace.get("tool_calls") or []
+        latency = trace.get("latency_ms")
+        usage = trace.get("usage")
+    else:
+        response = [_text(t.get("response")) for t in turns]
+        tool_calls = [c for t in turns for c in (t.get("tool_calls") or [])]
+        latency = [t.get("latency_ms") for t in turns]
+        usage = [t.get("usage") for t in turns]
+    fold = bool(expect.get("case_insensitive", True))
     runners: dict[str, Callable[[], CheckResult]] = {
-        "contains": lambda: check_contains(expect["contains"], response),
-        "not_contains": lambda: check_not_contains(expect["not_contains"], response),
+        "contains": lambda: check_contains(expect["contains"], response, case_insensitive=fold),
+        "not_contains": lambda: check_not_contains(
+            expect["not_contains"], response, case_insensitive=fold
+        ),
         "regex": lambda: check_regex(expect["regex"], response),
-        "json_schema": lambda: check_json_schema(expect["json_schema"], response),
+        "json_schema": lambda: check_json_schema(expect["json_schema"], final_response),
         "tool_calls": lambda: check_tool_calls(
             expect["tool_calls"], tool_calls, ordered=bool(expect.get("ordered"))
         ),
         "no_tool_calls": lambda: check_no_tool_calls(tool_calls),
-        "max_latency_ms": lambda: check_max_latency_ms(
-            expect["max_latency_ms"], trace.get("latency_ms")
-        ),
-        "max_tokens": lambda: check_max_tokens(expect["max_tokens"], trace.get("usage")),
+        "max_latency_ms": lambda: check_max_latency_ms(expect["max_latency_ms"], latency),
+        "max_tokens": lambda: check_max_tokens(expect["max_tokens"], usage),
     }
     results: dict[str, dict[str, Any]] = {}
     for name in declared_checks(expect):

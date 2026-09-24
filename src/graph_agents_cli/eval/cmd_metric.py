@@ -23,7 +23,7 @@ from graph_agents_cli._click import LazyGroup
 from graph_agents_cli._output import Console, emit
 from graph_agents_cli._project import find_project_root
 from graph_agents_cli.eval import _paths
-from graph_agents_cli.eval.checks import CHECK_DESCRIPTIONS
+from graph_agents_cli.eval.checks import CHECK_DESCRIPTIONS, MODIFIER_DESCRIPTIONS
 from graph_agents_cli.eval.config import BUILTIN_JUDGES, EvalConfig, load_eval_config
 
 
@@ -88,6 +88,7 @@ def list_metrics(*, as_json: bool) -> None:
 
     catalogue = {
         "checks": [{"name": n, "description": d} for n, d in CHECK_DESCRIPTIONS.items()],
+        "modifiers": [{"name": n, "description": d} for n, d in MODIFIER_DESCRIPTIONS.items()],
         "judges": judges,
         "custom_metrics": custom,
         "quality_metrics": quality,
@@ -105,6 +106,15 @@ def list_metrics(*, as_json: bool) -> None:
     for entry in catalogue["checks"]:
         checks.add_row(entry["name"], entry["description"])
     console.print(checks)
+
+    modifiers = Table(
+        title="Check modifiers (expect.<name>, not checks)", show_header=True, header_style="bold"
+    )
+    modifiers.add_column("Modifier", style="cyan", no_wrap=True)
+    modifiers.add_column("Description")
+    for entry in catalogue["modifiers"]:
+        modifiers.add_row(entry["name"], entry["description"])
+    console.print(modifiers)
 
     table = Table(title="Judge metrics (judge.<name>)", show_header=True, header_style="bold")
     table.add_column("Judge", style="cyan", no_wrap=True)

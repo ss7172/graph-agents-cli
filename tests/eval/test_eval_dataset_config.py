@@ -208,18 +208,26 @@ def test_render_judge_prompt_includes_sections() -> None:
     )
     assert "groundedness" in prompt and "user: hi" in prompt and "hello" in prompt
     assert "Reference answer" in prompt and "Grounding context" in prompt
-    assert "t({'a': 1}) -> r (error)" in prompt
+    assert 't({"a": 1}) -> r (error)' in prompt
     assert '{"score": <number>' in prompt
-    config = parse_eval_config({"judges": {"x": {"rubric": "r", "prompt_template": "{nope}"}}})
+    # An unknown placeholder fails when the config loads, before any agent call.
+    with pytest.raises(EvalConfigError, match=r"unknown placeholder.*allowed: \{metric\}"):
+        parse_eval_config({"judges": {"x": {"rubric": "r", "prompt_template": "{nope}"}}})
     with pytest.raises(EvalConfigError, match="unknown placeholder"):
-        render_judge_prompt(
-            config.judges["x"],
-            conversation="",
-            response="",
-            reference=None,
-            context=None,
-            tool_calls=None,
-        )
+        parse_eval_config({"judges": {"response_quality": {"prompt_template": "{0}"}}})
+    # {transcript} is a known placeholder; built without one it is assembled.
+    config = parse_eval_config(
+        {"judges": {"x": {"rubric": "r", "prompt_template": "T:{transcript}|R:{response}"}}}
+    )
+    prompt = render_judge_prompt(
+        config.judges["x"],
+        conversation="user: hi",
+        response="hello",
+        reference=None,
+        context=None,
+        tool_calls=[{"name": "t", "args": {}, "result": "r"}],
+    )
+    assert prompt == "T:user: hi\nagent tool call: t() -> r\nagent: hello|R:hello"
 
 
 def test_resolve_input_datasets(tmp_path: Path) -> None:

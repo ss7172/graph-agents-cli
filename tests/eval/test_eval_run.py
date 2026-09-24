@@ -188,6 +188,8 @@ def test_run_honours_generate_override(
     ]
     # The deprecated alias warns once and reaches the override as a plain --header.
     assert result.output.count("--session-token is deprecated") == 1
+    # An override runs the same cases against the same live target: warned first.
+    assert "3 case(s) will run against the agent at http://agent.example" in result.output
     # The built-in grade ran on the override's traces.
     assert read_results(project)["summary"]["passed"] == 3
     assert len(fake_judge.calls) == 1

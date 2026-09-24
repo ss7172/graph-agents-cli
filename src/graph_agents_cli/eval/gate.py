@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._output import Console
@@ -39,6 +40,7 @@ from graph_agents_cli.eval._common import (
 from graph_agents_cli.eval.checks import run_checks
 from graph_agents_cli.eval.config import EvalConfig, render_judge_prompt, resolve_threshold
 from graph_agents_cli.eval.dataset import EvalCase
+from graph_agents_cli.eval.transcript import RenderedCase, render_case
 
 STATUS_PASSED = "passed"
 STATUS_FAILED = "failed"
@@ -79,6 +81,11 @@ class CaseGrade:
     errors: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     quality_misses: list[str] = field(default_factory=list)
+    # What the judges of this case could not see in full (cut tool results,
+    # unrecorded earlier turns); reported, never silent.
+    judge_notes: list[str] = field(default_factory=list)
+    truncated_tool_results: int = 0
+    unrecorded_turns: int = 0
 
     @property
     def status(self) -> str:
@@ -102,13 +109,16 @@ class CaseGrade:
         return not (self.missing or self.errors or self.failures)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "status": self.status,
             "reasons": self.reasons,
             "checks": self.checks,
             "judge_scores": self.judge_scores,
         }
+        if self.judge_notes:
+            data["judge_notes"] = list(self.judge_notes)
+        return data
 
 
 # --- deterministic stage ------------------------------------------------------
@@ -172,6 +182,7 @@ def plan_judge_items(
     items: list[dict[str, Any]] = []
     response = trace.get("response")
     response = "" if response is None else str(response)
+    rendered: RenderedCase | None = None
     for name, spec in case_metrics(config, case).items():
         threshold = resolve_threshold(config, name, spec)
         quality = config.is_quality(name)
@@ -200,6 +211,13 @@ def plan_judge_items(
             )
             continue
         judge = config.judges[name]
+        if rendered is None:
+            # Judges see every turn (earlier replies and tool results), not only
+            # the user messages and the final reply.
+            rendered = render_case(case, trace, max_tool_result_chars=config.max_tool_result_chars)
+            grade.judge_notes = rendered.notes
+            grade.truncated_tool_results = rendered.truncated_results
+            grade.unrecorded_turns = rendered.unrecorded_turns
         items.append(
             {
                 "id": item_id(case.id, name),
@@ -209,11 +227,13 @@ def plan_judge_items(
                 "scale": judge.scale,
                 "prompt": render_judge_prompt(
                     judge,
-                    conversation=case.conversation_text(),
+                    conversation=rendered.conversation,
                     response=response,
                     reference=case.reference,
                     context=case.context,
-                    tool_calls=trace.get("tool_calls") or None,
+                    tool_calls=rendered.final_tool_calls or None,
+                    transcript=rendered.transcript,
+                    max_tool_result_chars=config.max_tool_result_chars,
                 ),
             }
         )
@@ -268,33 +288,43 @@ def summarize(grades: list[CaseGrade]) -> dict[str, int]:
 
 
 def compute_quality(config: EvalConfig, grades: list[CaseGrade]) -> dict[str, dict[str, Any]]:
-    """Per quality metric: pass rate over planned cases, ``met``; null when incomplete."""
-    planned = len(grades)
-    complete = all(g.status not in (STATUS_ERROR, STATUS_MISSING) for g in grades)
+    """Per quality metric: pass rate over the cases scored on it, and ``met``.
+
+    The denominator (``scored``) is the cases the metric actually scored: a
+    case that never declared the metric is not a pass. ``pass_rate`` and
+    ``met`` are null on an incomplete run (``status: incomplete``) and when no
+    case ran the metric (``status: not_run``, which cannot fail the gate: there
+    is nothing to measure, and every mandatory item still applies).
+    """
+    complete = bool(grades) and all(g.status not in (STATUS_ERROR, STATUS_MISSING) for g in grades)
     quality: dict[str, dict[str, Any]] = {}
     for name, metric in config.quality_metrics.items():
-        below = sum(
-            1
+        scored = [
+            entry
             for g in grades
             if (entry := g.judge_scores.get(name)) is not None
             and entry.get("quality")
-            and entry.get("passed") is False
-        )
-        if not complete or planned == 0:
-            quality[name] = {
-                "pass_rate": None,
-                "min_pass_rate": metric.min_pass_rate,
-                "met": None,
-                "below_threshold": below,
-            }
-            continue
-        rate = (planned - below) / planned
-        quality[name] = {
-            "pass_rate": round(rate, 4),
+            and entry.get("passed") is not None
+        ]
+        below = sum(1 for entry in scored if entry.get("passed") is False)
+        result: dict[str, Any] = {
+            "pass_rate": None,
             "min_pass_rate": metric.min_pass_rate,
-            "met": rate >= metric.min_pass_rate,
+            "met": None,
             "below_threshold": below,
+            "scored": len(scored),
+            "passed": len(scored) - below,
         }
+        if not complete:
+            result["status"] = "incomplete"
+        elif not scored:
+            result["status"] = "not_run"
+        else:
+            rate = (len(scored) - below) / len(scored)
+            result["pass_rate"] = round(rate, 4)
+            result["met"] = rate >= metric.min_pass_rate
+            result["status"] = "met" if result["met"] else "not_met"
+        quality[name] = result
     return quality
 
 
@@ -326,19 +356,25 @@ def print_summary(console: Console, results: dict[str, Any]) -> None:
         qtable = Table(title="Quality metrics", show_header=True, header_style="bold")
         qtable.add_column("Metric")
         qtable.add_column("Pass rate", justify="right")
+        qtable.add_column("Passed/scored", justify="right")
         qtable.add_column("Min", justify="right")
         qtable.add_column("Met")
+        incomplete = bool(summary.get(STATUS_ERROR) or summary.get(STATUS_MISSING))
         for name, entry in quality.items():
             rate = entry.get("pass_rate")
             met = entry.get("met")
-            met_text = (
-                "n/a (incomplete)"
-                if met is None
-                else ("[green]yes[/green]" if met else "[red]no[/red]")
-            )
+            if met is None:
+                not_run = entry.get("status") == "not_run" or (
+                    not incomplete and entry.get("scored") == 0
+                )
+                met_text = "n/a (no case ran it)" if not_run else "n/a (incomplete)"
+            else:
+                met_text = "[green]yes[/green]" if met else "[red]no[/red]"
+            scored = entry.get("scored")
             qtable.add_row(
                 name,
                 "n/a" if rate is None else f"{rate:.0%}",
+                "n/a" if scored is None else f"{entry.get('passed', 0)}/{scored}",
                 f"{entry.get('min_pass_rate', 1.0):.0%}",
                 met_text,
             )
@@ -358,10 +394,18 @@ def print_summary(console: Console, results: dict[str, Any]) -> None:
                 "\n".join(case["reasons"][:4]) + ("\n..." if len(case["reasons"]) > 4 else ""),
             )
         console.print(ctable)
+    warnings = results.get("warnings") or []
+    for text in warnings:
+        console.print(f"[bold yellow]Warning:[/bold yellow] [yellow]{escape(text)}[/yellow]")
     code = summary.get("exit_code", 0)
     verdict = {
         0: "[green]gate met[/green]",
         1: "[red]gate failed[/red]",
         2: "[magenta]incomplete run[/magenta]",
     }
-    console.print(f"Result: {verdict.get(code, code)} (exit code {code})")
+    caveat = ""
+    if code == 0 and results.get("fake_model"):
+        caveat = (
+            " [bold yellow](fake model: plumbing check only, not a quality signal)[/bold yellow]"
+        )
+    console.print(f"Result: {verdict.get(code, code)} (exit code {code}){caveat}")
