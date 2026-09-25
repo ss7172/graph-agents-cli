@@ -18,11 +18,11 @@ scaffold and only change through the scaffold owner.
 |---|---|---|---|
 | `index.md` | Home | scaffold | done |
 | `getting-started/index.md` | Get started | scaffold | done |
-| `getting-started/installation.md` | Installation & setup | getstarted | stub |
-| `getting-started/quickstart.md` | Quickstart | getstarted | stub |
-| `getting-started/tutorial-coding-agent.md` | Tutorial: build with a coding agent | getstarted | stub |
-| `getting-started/tutorial-manual.md` | Tutorial: manual workflow | getstarted | stub |
-| `getting-started/lifecycle.md` | The lifecycle | getstarted | stub |
+| `getting-started/installation.md` | Installation & setup | getstarted | done |
+| `getting-started/quickstart.md` | Quickstart | getstarted | done |
+| `getting-started/tutorial-coding-agent.md` | Tutorial: build with a coding agent | getstarted | done |
+| `getting-started/tutorial-manual.md` | Tutorial: manual workflow | getstarted | done |
+| `getting-started/lifecycle.md` | The lifecycle | getstarted | done |
 | `guides/index.md` | Guides | scaffold | done |
 | `guides/develop.md` | Develop your agent | guides_build | stub |
 | `guides/authentication.md` | Authentication | guides_build | stub |
@@ -61,9 +61,9 @@ hold the full facts; "also" pages summarize and link to the primary.
 | README heading (line) | Primary page(s) | Also | Lane |
 |---|---|---|---|
 | `# graph-agents-cli` intro (1-31) | `index.md` (pitch, generic, skills); `reference/comparison.md` (fork, NOTICE) | `getting-started/lifecycle.md` | scaffold (done) / reference |
-| `## Install` (33) | `getting-started/installation.md` | `reference/environment.md` (GRAPH_AGENTS_CLI_INSTALL_SPEC, NO_UPDATE_CHECK); `guides/upgrading.md` (install spec `{version}`); `guides/offline.md` (mirror, wheel skills) | getstarted |
-| `## Quick start` (83) | `getting-started/quickstart.md` | `guides/authentication.md` (jwt dev-token block); `getting-started/tutorial-manual.md` (create options); `guides/deploy.md` (local cluster, registry placeholder paragraph) | getstarted |
-| `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted / reference |
+| `## Install` (33) | `getting-started/installation.md` | `reference/environment.md` (GRAPH_AGENTS_CLI_INSTALL_SPEC, NO_UPDATE_CHECK); `guides/upgrading.md` (install spec `{version}`); `guides/offline.md` (mirror, wheel skills) | getstarted (done) |
+| `## Quick start` (83) | `getting-started/quickstart.md` | `guides/authentication.md` (jwt dev-token block); `getting-started/tutorial-manual.md` (create options); `guides/deploy.md` (local cluster, registry placeholder paragraph) | getstarted (done) |
+| `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted (done) / reference |
 | `### Upgrading a project` (196) | `guides/upgrading.md` | `reference/manifest.md` (cli_version, cli_build, template_digest) | guides_ops |
 | `## The generated service` (240) | `guides/develop.md` (tree, runtimes) | `reference/http-api.md` | guides_build |
 | `### Endpoints` (267): route table | `reference/http-api.md` | `guides/develop.md` (summary table) | reference |
@@ -112,7 +112,7 @@ hold the full facts; "also" pages summarize and link to the primary.
 | Human-in-the-loop | `guides/approvals.md` | guides_build |
 | `scaffold enhance` / `scaffold upgrade` rewrite the manifest | `guides/upgrading.md` | guides_ops |
 | Upgrading a 0.1.0 project | `guides/upgrading.md` | guides_ops |
-| The repository has no release tags yet | **stale, drop it**: tags v0.1.0 and v0.2.0 exist and the v0.2.0 release is published (checked 2026-09-24) | getstarted (installation) |
+| The repository has no release tags yet | **stale, drop it**: tags v0.1.0 and v0.2.0 exist and the v0.2.0 release is published (checked 2026-09-24) | getstarted (done: not repeated on `installation.md`) |
 | A project made by a build between releases | `guides/upgrading.md` | guides_ops |
 | The Bitnami subcharts come from `registry-1.docker.io` | `guides/deploy.md`; `guides/offline.md` | guides_ops |
 | The generated workflows reference actions by version tag | `guides/cicd.md` | guides_ops |
