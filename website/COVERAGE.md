@@ -30,13 +30,13 @@ scaffold and only change through the scaffold owner.
 | `guides/approvals.md` | Human approval | guides_build | done |
 | `guides/evaluation.md` | Evaluation | guides_build | done |
 | `guides/extensions.md` | Extensions | guides_build | done |
-| `guides/deploy.md` | Deploy to Kubernetes | guides_ops | stub |
-| `guides/cicd.md` | CI/CD | guides_ops | stub |
-| `guides/secrets.md` | Secrets | guides_ops | stub |
-| `guides/observability.md` | Observability | guides_ops | stub |
-| `guides/upgrading.md` | Upgrading projects | guides_ops | stub |
-| `guides/offline.md` | Offline profile | guides_ops | stub |
-| `guides/security.md` | Security & production | guides_ops | stub |
+| `guides/deploy.md` | Deploy to Kubernetes | guides_ops | done |
+| `guides/cicd.md` | CI/CD | guides_ops | done |
+| `guides/secrets.md` | Secrets | guides_ops | done |
+| `guides/observability.md` | Observability | guides_ops | done |
+| `guides/upgrading.md` | Upgrading projects | guides_ops | done |
+| `guides/offline.md` | Offline profile | guides_ops | done |
+| `guides/security.md` | Security & production | guides_ops | done |
 | `reference/index.md` | Reference | scaffold | done |
 | `reference/cli.md` | CLI | scaffold | done (generated: mkdocs-click + `hooks/cli_reference.py`) |
 | `reference/environment.md` | Environment variables | reference | stub |
@@ -64,12 +64,12 @@ hold the full facts; "also" pages summarize and link to the primary.
 | `## Install` (33) | `getting-started/installation.md` | `reference/environment.md` (GRAPH_AGENTS_CLI_INSTALL_SPEC, NO_UPDATE_CHECK); `guides/upgrading.md` (install spec `{version}`); `guides/offline.md` (mirror, wheel skills) | getstarted (done) |
 | `## Quick start` (83) | `getting-started/quickstart.md` | `guides/authentication.md` (jwt dev-token block); `getting-started/tutorial-manual.md` (create options); `guides/deploy.md` (local cluster, registry placeholder paragraph) | getstarted (done) |
 | `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted (done) / reference |
-| `### Upgrading a project` (196) | `guides/upgrading.md` | `reference/manifest.md` (cli_version, cli_build, template_digest) | guides_ops |
+| `### Upgrading a project` (196) | `guides/upgrading.md` | `reference/manifest.md` (cli_version, cli_build, template_digest) | guides_ops (done) |
 | `## The generated service` (240) | `guides/develop.md` (tree, runtimes) | `reference/http-api.md` | guides_build (done) |
 | `### Endpoints` (267): route table | `reference/http-api.md` | `guides/develop.md` (summary table) | reference |
 | `### Endpoints` bullets One run per thread, Limits, Thread ids, Timeouts, Step limit, A valid history, Tool arguments, Errors, Run records | `reference/http-api.md` | `guides/security.md` (Thread ids); `guides/observability.md` (Run records) | reference |
-| `### Endpoints` bullets Retention, Logging, Tracing | `guides/observability.md` | `reference/environment.md` | guides_ops |
-| `### Endpoints` bullet Database | `guides/deploy.md` (External database section) | `reference/environment.md` (DB_POOL_*) | guides_ops |
+| `### Endpoints` bullets Retention, Logging, Tracing | `guides/observability.md` | `reference/environment.md` | guides_ops (done) |
+| `### Endpoints` bullet Database | `guides/deploy.md` (External database section) | `reference/environment.md` (DB_POOL_*) | guides_ops (done) |
 | `### Endpoints` bullets Settings from `.env`, CORS, closing paragraph (defaults, startup parse rules) | `reference/environment.md` | `guides/develop.md` | reference |
 | `## Authentication` (381) | `guides/authentication.md` | `reference/environment.md` (AUTH_* names) | guides_build (done) |
 | `` ### `shared-bearer` (default) `` (400) | `guides/authentication.md` | `guides/secrets.md` (API_KEY generation) | guides_build (done) |
@@ -79,16 +79,16 @@ hold the full facts; "also" pages summarize and link to the primary.
 | `` ### Human approval of calls (`approval`) `` (613) | `guides/approvals.md` | `reference/api-policy-schema.md` (approval schema); `reference/http-api.md` (approval routes, A2A); `guides/evaluation.md` (eval approvals) | guides_build (done) |
 | `### The policy's lifecycle` (785) | `guides/api-policy.md` | `getting-started/tutorial-manual.md` (worked example) | guides_build (done) |
 | `## Evaluation` (843) | `guides/evaluation.md` | `getting-started/quickstart.md` (one paragraph) | guides_build (done) |
-| `## Environments and CD modes` (897): environments, rules, deploy flags, local clusters | `guides/deploy.md` | `getting-started/lifecycle.md` (at a glance) | guides_ops |
-| `## Environments and CD modes` (897): CD mode table, CI column, GH_HOST | `guides/cicd.md` | `guides/deploy.md` (deploy column) | guides_ops |
-| `### Chart` (982) | `guides/deploy.md` | `guides/observability.md` (metrics values); `guides/security.md` (pod security, NetworkPolicy) | guides_ops |
-| `### External database` (1025) | `guides/deploy.md` | `guides/security.md` (checklist item) | guides_ops |
-| `## Secrets` (1049) | `guides/secrets.md` | `guides/cicd.md` (who runs `secrets apply` in argocd / helm-push) | guides_ops |
-| `` ### Required GitHub settings (`helm-push`, `argocd`) `` (1084) | `guides/cicd.md` | `reference/manifest.md` (`.github/agent.env`) | guides_ops |
+| `## Environments and CD modes` (897): environments, rules, deploy flags, local clusters | `guides/deploy.md` | `getting-started/lifecycle.md` (at a glance) | guides_ops (done) |
+| `## Environments and CD modes` (897): CD mode table, CI column, GH_HOST | `guides/cicd.md` | `guides/deploy.md` (deploy column) | guides_ops (done) |
+| `### Chart` (982) | `guides/deploy.md` | `guides/observability.md` (metrics values); `guides/security.md` (pod security, NetworkPolicy) | guides_ops (done) |
+| `### External database` (1025) | `guides/deploy.md` | `guides/security.md` (checklist item) | guides_ops (done) |
+| `## Secrets` (1049) | `guides/secrets.md` | `guides/cicd.md` (who runs `secrets apply` in argocd / helm-push) | guides_ops (done) |
+| `` ### Required GitHub settings (`helm-push`, `argocd`) `` (1084) | `guides/cicd.md` | `reference/manifest.md` (`.github/agent.env`) | guides_ops (done) |
 | `## Exit codes` (1119) | `reference/exit-codes.md` | `getting-started/lifecycle.md` (the contract in one line) | reference |
-| `## Security model` (1133) | `guides/security.md` | `guides/approvals.md`, `guides/api-policy.md` | guides_ops |
-| `## Production checklist` (1186) | `guides/security.md` (task list, each item linked) | the guide each item points to | guides_ops |
-| `## Disconnected profile` (1233) | `guides/offline.md` | `getting-started/lifecycle.md` (runs locally vs disconnected) | guides_ops |
+| `## Security model` (1133) | `guides/security.md` | `guides/approvals.md`, `guides/api-policy.md` | guides_ops (done) |
+| `## Production checklist` (1186) | `guides/security.md` (task list, each item linked) | the guide each item points to | guides_ops (done) |
+| `## Disconnected profile` (1233) | `guides/offline.md` | `getting-started/lifecycle.md` (runs locally vs disconnected) | guides_ops (done) |
 | `## Compared with google-agents-cli` (1257) | `reference/comparison.md` | | reference |
 | `## Known limitations` (1297) | spread by topic (below); the parked issues are on `reference/known-issues.md` (included) | | per row below |
 | `## Documentation` (1376) | `reference/index.md` ("Project resources") | `index.md` (next steps) | scaffold (done) |
@@ -100,22 +100,22 @@ hold the full facts; "also" pages summarize and link to the primary.
 |---|---|---|
 | LangGraph Server licence | `guides/develop.md` (runtimes) | guides_build (done) |
 | A2A task store | `reference/http-api.md` (A2A) | reference |
-| Prompt injection | `guides/security.md` | guides_ops |
-| No built-in inbound rate limiting | `guides/security.md` | guides_ops |
+| Prompt injection | `guides/security.md` | guides_ops (done) |
+| No built-in inbound rate limiting | `guides/security.md` | guides_ops (done) |
 | Outbound `limits` are per process | `guides/api-policy.md` | guides_build (done) |
 | Run lock across replicas | `reference/http-api.md` (one run per thread) | reference |
-| Rolling upgrades from an older build | `guides/upgrading.md` | guides_ops |
-| A database that stops answering without closing its connections | `guides/deploy.md` | guides_ops |
-| Concurrent deploys to one release | `guides/deploy.md` | guides_ops |
+| Rolling upgrades from an older build | `guides/upgrading.md` | guides_ops (done) |
+| A database that stops answering without closing its connections | `guides/deploy.md` | guides_ops (done) |
+| Concurrent deploys to one release | `guides/deploy.md` | guides_ops (done) |
 | `jwt` | `guides/authentication.md` | guides_build (done) |
 | `langgraph-server` specifics | `guides/develop.md` (runtimes); `reference/http-api.md` | guides_build (done) / reference |
 | Human-in-the-loop | `guides/approvals.md` | guides_build (done) |
-| `scaffold enhance` / `scaffold upgrade` rewrite the manifest | `guides/upgrading.md` | guides_ops |
-| Upgrading a 0.1.0 project | `guides/upgrading.md` | guides_ops |
+| `scaffold enhance` / `scaffold upgrade` rewrite the manifest | `guides/upgrading.md` | guides_ops (done) |
+| Upgrading a 0.1.0 project | `guides/upgrading.md` | guides_ops (done) |
 | The repository has no release tags yet | **stale, drop it**: tags v0.1.0 and v0.2.0 exist and the v0.2.0 release is published (checked 2026-09-24) | getstarted (done: not repeated on `installation.md`) |
-| A project made by a build between releases | `guides/upgrading.md` | guides_ops |
-| The Bitnami subcharts come from `registry-1.docker.io` | `guides/deploy.md`; `guides/offline.md` | guides_ops |
-| The generated workflows reference actions by version tag | `guides/cicd.md` | guides_ops |
+| A project made by a build between releases | `guides/upgrading.md` | guides_ops (done) |
+| The Bitnami subcharts come from `registry-1.docker.io` | `guides/deploy.md`; `guides/offline.md` | guides_ops (done) |
+| The generated workflows reference actions by version tag | `guides/cicd.md` | guides_ops (done) |
 
 ## Rules for every lane
 
