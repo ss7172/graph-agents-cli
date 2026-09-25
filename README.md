@@ -16,7 +16,8 @@ policy (`shared-bearer`, `jwt` or `custom`), declares its outbound APIs in `api-
 and configures everything else through environment variables and chart values.
 
 graph-agents-cli is a fork of [google-agents-cli](https://github.com/google/agents-cli) with
-the Google Cloud specific parts removed (see [NOTICE](NOTICE)). Version 0.2.0, alpha: the
+the Google Cloud specific parts removed (see [NOTICE](NOTICE)). Version 0.2.0, alpha
+([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0)): the
 interfaces below may still change between minor versions; [CHANGELOG.md](CHANGELOG.md)
 lists every breaking change with its migration steps.
 
@@ -232,9 +233,9 @@ graph-agents-cli scaffold upgrade --baseline-ref <clone>@<commit> -y
 
 Afterwards the manifest records the running build, so the next upgrade needs no flag. A build
 with uncommitted changes (`.dirty`) cannot be rebuilt: name the closest commit with
-`--baseline-ref`. Release tags on the remote are created by the repository owner; until
-`v<version>` exists there, the default baseline of that release cannot be fetched and
-`--baseline-ref <clone>@<commit>` is the way to name it.
+`--baseline-ref`. Every release is tagged `v<version>` on this repository (`v0.1.0`,
+`v0.2.0`), and that tag is the default baseline for projects the release created; a build
+between releases has no tag, so name its commit with `--baseline-ref <clone>@<commit>`.
 
 ## The generated service
 

@@ -8,7 +8,7 @@ migration" with the steps to follow.
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-09-23
+## [0.2.0] - 2026-09-24
 
 graph-agents-cli is now a generic CLI for building, evaluating and deploying LangGraph agents
 on self-hosted Kubernetes, for any project and any domain. Nothing in the CLI, the template,
@@ -802,9 +802,8 @@ the manifest has to be edited.
 ## [0.1.0] - 2026-09-23
 
 First public import of graph-agents-cli, a fork of google-agents-cli 1.6.1 with the Google
-Cloud specific parts removed (see NOTICE). It is commit `fc3f2f9` on `main`, with no GitHub
-Release; the release process tags that commit `v0.1.0` so `scaffold upgrade` can rebuild a
-0.1.0 project's baseline.
+Cloud specific parts removed (see NOTICE). It is commit `fc3f2f9`, tagged `v0.1.0` (with no
+GitHub Release) so `scaffold upgrade` can rebuild a 0.1.0 project's baseline.
 
 ### Added
 
@@ -823,4 +822,4 @@ Release; the release process tags that commit `v0.1.0` so `scaffold upgrade` can
 
 [Unreleased]: https://github.com/ss7172/graph-agents-cli/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0
-[0.1.0]: https://github.com/ss7172/graph-agents-cli/commit/fc3f2f9
+[0.1.0]: https://github.com/ss7172/graph-agents-cli/tree/v0.1.0

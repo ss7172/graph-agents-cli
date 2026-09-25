@@ -10,7 +10,7 @@ there say so.
 
 - [Triage and how an issue graduates](#triage-and-how-an-issue-graduates)
 - [Summary](#summary)
-- [Owner actions before release](#owner-actions-before-release)
+- [Owner actions](#owner-actions)
 - [Medium](#medium)
 - [Low](#low)
 
@@ -65,14 +65,10 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | docs | 0 | 6 | 6 |
 | **Total** | **41** | **73** | **114** |
 
-## Owner actions before release
+## Owner actions
 
-- **No release tags are pushed.** Push the release commit, then tag `v0.2.0` on it and
-  `v0.1.0` at `fc3f2f9` (the authentic baseline `scaffold upgrade` needs for 0.1.0 projects;
-  see the release process in [CONTRIBUTING.md](CONTRIBUTING.md)). Until then every pinned
-  install path fails: the README install line, `setup` and `update`, the skills' install
-  pins, and the `GRAPH_AGENTS_CLI_SPEC` of every generated project (so its CI).
-- Optional, for PyPI: register the trusted publisher, create the `pypi` environment and set
+- Optional, for PyPI (0.2.0 is released on GitHub with the tags `v0.1.0` and `v0.2.0`):
+  register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
 
 ## Medium
