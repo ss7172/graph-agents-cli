@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="graph-agents-cli">
+  <!-- graph-agents-cli mark: a three-node directed graph (an agent loop) on a teal tile. Original artwork, Apache-2.0. -->
+  <rect width="48" height="48" rx="12" fill="#0f766e"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15.5 24 L30 14.5"/>
+    <path d="M15.5 24 L30 33.5"/>
+    <path d="M32.5 18.5 L32.5 29.5"/>
+    <path d="M29.5 26.5 L32.5 29.5 L35.5 26.5"/>
+  </g>
+  <circle cx="14" cy="24" r="5.5" fill="#ffffff"/>
+  <circle cx="32.5" cy="14" r="4.5" fill="#99f6e4"/>
+  <circle cx="32.5" cy="34" r="4.5" fill="#fbbf24"/>
+</svg>

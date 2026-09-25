@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{#- A dismissible status line above the header (theme feature announce.dismiss). -#}
+{% block announce %}
+  <span class="gac-announce">
+    <strong>Alpha {{ config.extra.cli_version }}:</strong> interfaces may change between minor
+    releases (see the <a href="{{ 'reference/changelog/' | url }}">changelog</a>). Not on PyPI
+    yet: install from the git tag.
+  </span>
+{% endblock %}

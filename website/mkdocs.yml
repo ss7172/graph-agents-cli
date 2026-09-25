@@ -1,0 +1,192 @@
+# Documentation site for graph-agents-cli (MkDocs Material).
+#
+# Preview:  uv run --group docs mkdocs serve -f website/mkdocs.yml
+# Build:    uv run --group docs mkdocs build --strict -f website/mkdocs.yml
+#
+# Pages live in website/src/, build output in website/build/ (git ignored).
+# The CLI reference is generated from the real Click commands (mkdocs-click),
+# the Skills page from skills/*/SKILL.md (hooks/skills_reference.py), and the
+# Known issues and Changelog pages include the repository's KNOWN_ISSUES.md and
+# CHANGELOG.md (pymdownx.snippets). Publishing is off: .github/workflows/docs.yml
+# deploys to GitHub Pages only when the repository variable PUBLISH_DOCS is 'true'.
+
+site_name: graph-agents-cli
+site_description: >-
+  CLI and coding-agent skills for building, evaluating and deploying LangGraph
+  agents on self-hosted Kubernetes.
+site_url: https://ss7172.github.io/graph-agents-cli/
+site_author: graph-agents-cli contributors
+docs_dir: src
+site_dir: build
+# `mkdocs serve` address; 8000 is the default port of a project's `playground`.
+dev_addr: 127.0.0.1:8200
+
+repo_url: https://github.com/ss7172/graph-agents-cli
+repo_name: ss7172/graph-agents-cli
+edit_uri: edit/main/website/src/
+
+copyright: >-
+  Copyright 2026 graph-agents-cli contributors ·
+  <a href="https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE">Apache-2.0</a> ·
+  a fork of <a href="https://github.com/google/agents-cli">google-agents-cli</a>
+  (<a href="https://github.com/ss7172/graph-agents-cli/blob/main/NOTICE">NOTICE</a>)
+
+theme:
+  name: material
+  custom_dir: overrides
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  icon:
+    repo: octicons/mark-github-16
+    edit: material/pencil-outline
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.code.annotate
+    - content.code.copy
+    - content.code.select
+    - content.tabs.link
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+hooks:
+  - hooks/version.py
+  - hooks/cli_reference.py
+  - hooks/skills_reference.py
+  - hooks/repo_links.py
+  - hooks/strip_comments.py
+
+plugins:
+  - search
+
+# Under `mkdocs build --strict` every warning fails the build: a link to a page
+# or an anchor that does not exist, an absolute link, a page left out of the nav.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  # After attr_list: mkdocs-click gives headings full-path ids
+  # (#graph-agents-cli-api-add) only when attr_list is already registered.
+  - mkdocs-click
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      permalink_title: Link to this section
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets:
+      # Only files under the repository root can be included (KNOWN_ISSUES.md,
+      # CHANGELOG.md); a missing file fails the build.
+      base_path:
+        - !relative $config_dir/..
+      restrict_base_path: true
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+extra:
+  generator: false
+  social:
+    - icon: octicons/mark-github-16
+      link: https://github.com/ss7172/graph-agents-cli
+      name: graph-agents-cli on GitHub
+    - icon: octicons/tag-16
+      link: https://github.com/ss7172/graph-agents-cli/releases
+      name: Releases
+
+extra_css:
+  - stylesheets/custom.css
+
+nav:
+  - Home: index.md
+  - Get started:
+      - getting-started/index.md
+      - Installation & setup: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - "Tutorial: build with a coding agent": getting-started/tutorial-coding-agent.md
+      - "Tutorial: manual workflow": getting-started/tutorial-manual.md
+      - The lifecycle: getting-started/lifecycle.md
+  - Guides:
+      - guides/index.md
+      - Build:
+          - Develop your agent: guides/develop.md
+          - Authentication: guides/authentication.md
+          - Outbound API policy: guides/api-policy.md
+          - Human approval: guides/approvals.md
+          - Evaluation: guides/evaluation.md
+          - Extensions: guides/extensions.md
+      - Operate:
+          - Deploy to Kubernetes: guides/deploy.md
+          - CI/CD: guides/cicd.md
+          - Secrets: guides/secrets.md
+          - Observability: guides/observability.md
+          - Upgrading projects: guides/upgrading.md
+          - Offline profile: guides/offline.md
+          - Security & production: guides/security.md
+  - Reference:
+      - reference/index.md
+      - CLI: reference/cli.md
+      - Environment variables: reference/environment.md
+      - HTTP API: reference/http-api.md
+      - api-policy.yaml: reference/api-policy-schema.md
+      - Project manifest: reference/manifest.md
+      - Exit codes: reference/exit-codes.md
+      - Skills: reference/skills.md
+      - Compared with google-agents-cli: reference/comparison.md
+      - Known issues: reference/known-issues.md
+      - Changelog: reference/changelog.md

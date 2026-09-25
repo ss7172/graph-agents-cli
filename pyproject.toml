@@ -51,6 +51,13 @@ dev = [
     "respx>=0.21",
     "pyfakefs>=5.6",
 ]
+# The documentation site (website/): `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
+# Not a default group: the test suite and a plain `uv sync` never install it.
+docs = [
+    "mkdocs==1.6.1",
+    "mkdocs-material==9.7.7",
+    "mkdocs-click==0.9.0",
+]
 
 [build-system]
 requires = ["hatchling>=1.25"]

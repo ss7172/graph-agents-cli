@@ -1,0 +1,9 @@
+{% extends "main.html" %}
+
+{#- The landing page (index.md, `template: home.html`): its own hero instead of
+    the page title, and no edit button. -#}
+{% block content %}
+  <div class="gac-home">
+    {{ page.content }}
+  </div>
+{% endblock %}

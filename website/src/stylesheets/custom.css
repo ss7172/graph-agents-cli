@@ -1,0 +1,743 @@
+/*
+ * graph-agents-cli documentation theme (MkDocs Material).
+ *
+ * Identity: a deep teal brand on a neutral header, Inter for text and
+ * JetBrains Mono for code, quiet borders instead of shadows. Colours are
+ * tokens (--gac-*) mapped onto Material's variables for both schemes; every
+ * text/background pair meets WCAG AA (4.5:1 for body text, 3:1 for large
+ * text and UI edges).
+ *
+ * Components for pages (usable by every writer):
+ *   .grid.cards                       Material grid cards (section indexes, landing)
+ *   .gac-steps (on .grid.cards)       numbered step cards
+ *   .gac-lifecycle                    the create -> operate lifecycle diagram
+ *   .gac-terminal                     a code block framed as a terminal window
+ *   .gac-pill                         a small text badge
+ *   .gac-lede                         an intro paragraph under a page title
+ */
+
+/* -- Tokens ---------------------------------------------------------------- */
+:root {
+  --gac-brand: #0f766e;           /* teal 700: 5.5:1 on white */
+  --gac-brand-strong: #115e59;    /* teal 800: 7.6:1 on white */
+  --gac-brand-soft: #ccfbf1;
+  --gac-brand-tint: #f0fdfa;
+  --gac-accent: #b45309;          /* amber 700: 5.0:1 on white */
+  --gac-accent-soft: #fef3c7;
+  --gac-muted: #475569;           /* 7.6:1 on white */
+  --gac-border: #e2e8f0;
+  --gac-border-strong: #cbd5e1;
+  --gac-surface: #f8fafc;
+  --gac-header-bg: #ffffff;
+  --gac-header-fg: #0f172a;
+  --gac-term-bg: #0f172a;
+  --gac-term-bar: #1e293b;
+  --gac-radius: 0.6rem;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 200;
+  --gac-brand: #2dd4bf;           /* teal 400: 10:1 on the dark background */
+  --gac-brand-strong: #5eead4;
+  --gac-brand-soft: #134e4a;
+  --gac-brand-tint: #0f1f22;
+  --gac-accent: #fbbf24;
+  --gac-accent-soft: #3a2a07;
+  --gac-muted: #a3b1bd;           /* 8.3:1 on the dark background */
+  --gac-border: #25313a;
+  --gac-border-strong: #33424d;
+  --gac-surface: #141c21;
+  --gac-header-bg: #0e1418;
+  --gac-header-fg: #e6edf3;
+  --gac-term-bg: #0a0f12;
+  --gac-term-bar: #151d23;
+  --md-default-bg-color: #0e1418;
+  --md-code-bg-color: #141c21;
+}
+
+/* Material's custom primary/accent, from the tokens. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--gac-brand);
+  --md-primary-fg-color--light: #14b8a6;
+  --md-primary-fg-color--dark: var(--gac-brand-strong);
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #ffffffb3;
+  --md-accent-fg-color: var(--gac-brand-strong);
+  --md-accent-fg-color--transparent: #0f766e1a;
+  --md-accent-bg-color: #ffffff;
+  --md-typeset-a-color: var(--gac-brand);
+  --md-code-bg-color: #f3f6f8;
+  --md-code-hl-color: #0f766e24;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--gac-brand);
+  --md-primary-fg-color--light: #5eead4;
+  --md-primary-fg-color--dark: #14b8a6;
+  --md-primary-bg-color: #042f2e;           /* dark text on the light teal: 9:1 */
+  --md-primary-bg-color--light: #042f2eb3;
+  --md-accent-fg-color: var(--gac-brand-strong);
+  --md-accent-fg-color--transparent: #2dd4bf1f;
+  --md-accent-bg-color: #042f2e;
+  --md-typeset-a-color: var(--gac-brand-strong);
+  --md-code-hl-color: #2dd4bf26;
+}
+
+/* -- Header and tabs: neutral, the logo carries the brand ----------------- */
+.md-header,
+.md-tabs {
+  background-color: var(--gac-header-bg);
+  color: var(--gac-header-fg);
+}
+
+.md-header {
+  box-shadow: 0 1px 0 var(--gac-border);
+}
+
+.md-header--shadow {
+  box-shadow: 0 1px 0 var(--gac-border), 0 4px 12px #0f172a0d;
+}
+
+.md-tabs {
+  border-bottom: 1px solid var(--gac-border);
+}
+
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.5rem;
+  width: auto;
+}
+
+.md-tabs__link {
+  font-weight: 500;
+  opacity: 0.72;
+}
+
+.md-tabs__link:hover,
+.md-tabs__item--active .md-tabs__link {
+  color: inherit;
+  opacity: 1;
+}
+
+.md-tabs__item--active .md-tabs__link {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--gac-brand);
+  padding-bottom: 0.1rem;
+}
+
+.md-search__form {
+  background-color: var(--gac-surface);
+  border: 1px solid var(--gac-border);
+  border-radius: 0.4rem;
+}
+
+.md-search__form:hover {
+  background-color: var(--gac-surface);
+  border-color: var(--gac-border-strong);
+}
+
+.md-search__input,
+.md-search__icon {
+  color: inherit;
+}
+
+.md-search__input::placeholder {
+  color: var(--gac-muted);
+}
+
+.md-source__fact {
+  opacity: 0.85;
+}
+
+/* Announcement bar: the release status. */
+.md-banner {
+  background-color: var(--gac-brand-tint);
+  color: var(--md-default-fg-color);
+  border-bottom: 1px solid var(--gac-border);
+}
+
+.md-banner__inner {
+  font-size: 0.68rem;
+  margin: 0.45rem auto;
+}
+
+.md-banner a {
+  color: var(--md-typeset-a-color);
+  text-decoration: underline;
+}
+
+.md-banner .md-banner__button {
+  color: var(--gac-muted);
+}
+
+/* -- Sidebar -------------------------------------------------------------- */
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active {
+  color: var(--gac-brand);
+  font-weight: 600;
+}
+
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  color: var(--md-default-fg-color);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.62rem;
+}
+
+/* -- Typography ------------------------------------------------------------ */
+.md-typeset {
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: var(--md-default-fg-color);
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h1 {
+  font-weight: 800;
+  font-size: 2em;
+  margin-bottom: 0.5em;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  margin-top: 2em;
+  padding-top: 0.2em;
+}
+
+.md-typeset h3 {
+  font-weight: 650;
+}
+
+/* Prose stays at a readable measure; tables, code and cards use the full width. */
+.md-typeset > p,
+.md-typeset > ul,
+.md-typeset > ol,
+.md-typeset > dl {
+  max-width: 42rem;
+}
+
+.md-typeset .gac-lede {
+  font-size: 1.05em;
+  color: var(--gac-muted);
+  max-width: 40rem;
+}
+
+.md-typeset a:hover {
+  color: var(--md-accent-fg-color);
+  text-decoration: underline;
+}
+
+.md-typeset hr {
+  border-bottom-color: var(--gac-border);
+}
+
+/* -- Code ------------------------------------------------------------------ */
+.md-typeset code {
+  border-radius: 0.3rem;
+  font-size: 0.84em;
+}
+
+.md-typeset pre > code {
+  border-radius: var(--gac-radius);
+  border: 1px solid var(--gac-border);
+}
+
+.md-typeset .highlight .filename {
+  border-radius: var(--gac-radius) var(--gac-radius) 0 0;
+}
+
+/* On phones Material bleeds top-level code blocks to the screen edges: square them off. */
+@media screen and (max-width: 44.9375em) {
+  .md-content__inner > .highlight pre > code,
+  .md-content__inner > pre > code {
+    border-radius: 0;
+    border-right: 0;
+    border-left: 0;
+  }
+}
+
+/* -- Tables ---------------------------------------------------------------- */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--gac-border);
+  border-radius: var(--gac-radius);
+  font-size: 0.72rem;
+  overflow: hidden;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--gac-surface);
+  font-weight: 650;
+}
+
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th {
+  border-top-color: var(--gac-border);
+  vertical-align: top;
+}
+
+/* -- Admonitions ------------------------------------------------------------ */
+.md-typeset .admonition,
+.md-typeset details {
+  border-width: 1px;
+  border-left-width: 4px;
+  border-radius: var(--gac-radius);
+  box-shadow: none;
+  font-size: 0.76rem;
+}
+
+/* -- Grid cards (section indexes, landing) ------------------------------- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--gac-border);
+  border-radius: var(--gac-radius);
+  background-color: var(--md-default-bg-color);
+  padding: 0.9rem 1rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--gac-brand);
+  box-shadow: 0 4px 14px #0f172a12;
+}
+
+.md-typeset .grid.cards > ul > li > p:first-child,
+.md-typeset .grid.cards > ul > li > :first-child {
+  margin-top: 0;
+}
+
+.md-typeset .grid.cards > ul > li > hr {
+  margin: 0.6em 0;
+}
+
+.md-typeset .grid.cards .twemoji,
+.md-typeset .grid.cards .lg {
+  color: var(--gac-brand);
+}
+
+.md-typeset .grid.cards p {
+  margin: 0.4em 0;
+}
+
+.md-typeset .grid.cards > ul > li > p:last-child a:only-child {
+  font-weight: 600;
+}
+
+/* Three cards in one row wherever they fit (Material's 16rem minimum leaves an orphan
+   card beside the sidebars). Use on the grid: <div class="grid cards gac-cols-3" markdown>. */
+.md-typeset .grid.gac-cols-3,
+.md-typeset .grid.gac-steps {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
+}
+
+/* Numbered step cards. */
+.md-typeset .grid.cards.gac-steps > ul {
+  counter-reset: gac-step;
+}
+
+.md-typeset .grid.cards.gac-steps > ul > li {
+  counter-increment: gac-step;
+  position: relative;
+  padding-top: 2.6rem;
+}
+
+.md-typeset .grid.cards.gac-steps > ul > li::before {
+  content: counter(gac-step);
+  position: absolute;
+  top: 0.9rem;
+  left: 1rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--md-primary-bg-color);
+  background-color: var(--gac-brand);
+}
+
+.md-typeset .grid.cards.gac-steps pre {
+  margin: 0.5em 0;
+}
+
+/* -- Pill badge ------------------------------------------------------------ */
+.md-typeset .gac-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.15em 0.65em;
+  border-radius: 999px;
+  border: 1px solid var(--gac-border-strong);
+  background-color: var(--gac-surface);
+  color: var(--md-default-fg-color);
+  font-size: 0.72rem;
+  font-weight: 550;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.md-typeset .gac-pill--brand {
+  border-color: transparent;
+  background-color: var(--gac-brand-soft);
+  color: var(--gac-brand-strong);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .gac-pill--brand {
+  color: #99f6e4;
+}
+
+.md-typeset .gac-pill--accent {
+  border-color: transparent;
+  background-color: var(--gac-accent-soft);
+  color: var(--gac-accent);
+}
+
+/* -- Terminal frame -------------------------------------------------------- */
+.md-typeset .gac-terminal {
+  border-radius: var(--gac-radius);
+  background-color: var(--gac-term-bg);
+  border: 1px solid #1e293b;
+  box-shadow: 0 12px 32px #0f172a2e;
+  overflow: hidden;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .gac-terminal {
+  border-color: var(--gac-border-strong);
+  box-shadow: 0 12px 32px #00000066;
+}
+
+.md-typeset .gac-terminal::before {
+  content: "";
+  display: block;
+  height: 1.6rem;
+  background:
+    radial-gradient(circle at 0.9rem 50%, #f87171 0.22rem, transparent 0.24rem),
+    radial-gradient(circle at 1.6rem 50%, #fbbf24 0.22rem, transparent 0.24rem),
+    radial-gradient(circle at 2.3rem 50%, #34d399 0.22rem, transparent 0.24rem),
+    var(--gac-term-bar);
+}
+
+.md-typeset .gac-terminal .highlight,
+.md-typeset .gac-terminal pre {
+  margin: 0;
+}
+
+.md-typeset .gac-terminal pre > code {
+  border: 0;
+  border-radius: 0;
+  background-color: var(--gac-term-bg);
+  color: #e2e8f0;
+  font-size: 0.68rem;
+  line-height: 1.75;
+  padding: 0.9rem 1.1rem 1rem;
+}
+
+.md-typeset .gac-terminal .highlight .c1,
+.md-typeset .gac-terminal .highlight .c {
+  color: #94a3b8;
+  font-style: normal;
+}
+
+.md-typeset .gac-terminal .highlight .nb,
+.md-typeset .gac-terminal .highlight .nv,
+.md-typeset .gac-terminal .highlight .nt {
+  color: #5eead4;
+}
+
+.md-typeset .gac-terminal .highlight .s1,
+.md-typeset .gac-terminal .highlight .s2,
+.md-typeset .gac-terminal .highlight .se {
+  color: #fcd34d;
+}
+
+.md-typeset .gac-terminal .highlight .o,
+.md-typeset .gac-terminal .highlight .p {
+  color: #cbd5e1;
+}
+
+.md-typeset .gac-terminal .md-code__nav,
+.md-typeset .gac-terminal :hover > .md-code__nav {
+  background-color: #1e293bcc;
+}
+
+.md-typeset .gac-terminal .md-code__button {
+  color: #94a3b8;
+}
+
+.md-typeset .gac-terminal .md-code__button:hover {
+  color: #e2e8f0;
+}
+
+/* -- Lifecycle diagram ------------------------------------------------------ */
+.md-typeset ol.gac-lifecycle:not([hidden]) {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1.4rem;
+  list-style: none;
+  margin: 1.2rem 0 0;
+  padding: 0;
+  counter-reset: gac-stage;
+}
+
+/* [dir] beats Material's [dir=ltr] .md-typeset ol li margins. */
+[dir] .md-typeset .gac-lifecycle > li {
+  counter-increment: gac-stage;
+  position: relative;
+  margin: 0;
+  list-style: none;
+  padding: 0.8rem 0.85rem 0.85rem;
+  border: 1px solid var(--gac-border);
+  border-top: 3px solid var(--gac-brand);
+  border-radius: var(--gac-radius);
+  background-color: var(--md-default-bg-color);
+}
+
+.md-typeset .gac-lifecycle > li + li::before {
+  /* The arrow from the previous stage. */
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -1.15rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  transform: translateY(-50%);
+  background-color: var(--gac-muted);
+  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11h12.2l-5.6-5.6L12 4l8 8-8 8-1.4-1.4 5.6-5.6H4z"/></svg>') center / contain no-repeat;
+  mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11h12.2l-5.6-5.6L12 4l8 8-8 8-1.4-1.4 5.6-5.6H4z"/></svg>') center / contain no-repeat;
+}
+
+.md-typeset .gac-lifecycle__stage {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+  margin: 0 0 0.25em;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .gac-lifecycle__stage::before {
+  content: counter(gac-stage, decimal-leading-zero);
+  font-family: var(--md-code-font-family);
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--gac-brand);
+}
+
+.md-typeset .gac-lifecycle__stage a {
+  color: inherit;
+}
+
+.md-typeset .gac-lifecycle > li > p:last-child {
+  margin-bottom: 0;
+}
+
+.md-typeset .gac-lifecycle p {
+  margin: 0 0 0.5em;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-lifecycle code {
+  display: inline-block;
+  margin: 0.15em 0.2em 0 0;
+  font-size: 0.64rem;
+  background-color: var(--gac-brand-tint);
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .gac-lifecycle__loop {
+  position: relative;
+  margin: 0.8rem 0 0;
+  padding-left: 1.5rem;
+  font-size: 0.7rem;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-lifecycle__loop::before {
+  content: "";
+  position: absolute;
+  top: 0.15em;
+  left: 0;
+  width: 1rem;
+  height: 1rem;
+  background-color: var(--gac-brand);
+  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 0 1 6 6 6 6 0 0 1-.7 2.8l1.5 1.5A8 8 0 0 0 20 12a8 8 0 0 0-8-8zm0 14a6 6 0 0 1-6-6 6 6 0 0 1 .7-2.8L5.2 7.7A8 8 0 0 0 4 12a8 8 0 0 0 8 8v3l4-4-4-4z"/></svg>') center / contain no-repeat;
+  mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 0 1 6 6 6 6 0 0 1-.7 2.8l1.5 1.5A8 8 0 0 0 20 12a8 8 0 0 0-8-8zm0 14a6 6 0 0 1-6-6 6 6 0 0 1 .7-2.8L5.2 7.7A8 8 0 0 0 4 12a8 8 0 0 0 8 8v3l4-4-4-4z"/></svg>') center / contain no-repeat;
+}
+
+@media screen and (max-width: 60em) {
+  .md-typeset ol.gac-lifecycle:not([hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.2rem;
+  }
+
+  .md-typeset .gac-lifecycle > li + li::before {
+    top: -1.08rem;
+    left: 1.2rem;
+    transform: rotate(90deg);
+  }
+}
+
+/* ==========================================================================
+   Home page
+   ========================================================================== */
+
+.md-typeset .gac-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 2.2rem;
+  align-items: center;
+  padding: 1.2rem 0 1.4rem;
+}
+
+.md-typeset .gac-hero h1 {
+  margin: 0.35em 0 0.4em;
+  font-size: 2.1rem;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+}
+
+.md-typeset .gac-hero h1 .gac-hl {
+  color: var(--gac-brand);
+}
+
+.md-typeset .gac-hero h1 .headerlink {
+  display: none;
+}
+
+.md-typeset .gac-hero .gac-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-family: var(--md-code-font-family);
+  font-size: 0.72rem;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-hero .gac-lede {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  margin: 0 0 1.2em;
+}
+
+.md-typeset .gac-hero .md-button {
+  margin: 0.2rem 0.5rem 0.2rem 0;
+  padding: 0.55em 1.3em;
+  border-radius: 0.45rem;
+  font-size: 0.78rem;
+}
+
+.md-typeset .md-button {
+  border-color: var(--gac-border-strong);
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .md-button:hover,
+.md-typeset .md-button:focus {
+  border-color: var(--gac-brand);
+  background-color: var(--gac-brand-tint);
+  color: var(--md-default-fg-color);
+  text-decoration: none;
+}
+
+.md-typeset .md-button--primary,
+.md-typeset .md-button--primary:hover,
+.md-typeset .md-button--primary:focus {
+  border-color: var(--gac-brand);
+  background-color: var(--gac-brand);
+  color: var(--md-primary-bg-color);
+}
+
+.md-typeset .md-button--primary:hover,
+.md-typeset .md-button--primary:focus {
+  border-color: var(--md-primary-fg-color--dark);
+  background-color: var(--md-primary-fg-color--dark);
+}
+
+.md-typeset .gac-works {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 1.3rem 0 0;
+}
+
+.md-typeset .gac-works__label {
+  margin-right: 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-section {
+  margin: 2.6rem 0 0;
+}
+
+.md-typeset .gac-section > h2 {
+  margin: 0 0 0.2em;
+  padding: 0;
+}
+
+.md-typeset .gac-section > h2 + p {
+  margin: 0 0 1em;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-section .grid.cards > ul > li p:first-child strong {
+  font-size: 0.86rem;
+}
+
+@media screen and (max-width: 60em) {
+  .md-typeset .gac-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.4rem;
+    padding-top: 1rem;
+  }
+
+  .md-typeset .gac-hero h1 {
+    font-size: 1.8rem;
+  }
+}
+
+@media screen and (max-width: 30em) {
+  .md-typeset .gac-hero h1 {
+    font-size: 1.55rem;
+  }
+
+  .md-typeset .gac-hero .md-button {
+    display: block;
+    margin: 0.5rem 0 0;
+    text-align: center;
+  }
+
+  .md-typeset .gac-terminal pre > code {
+    font-size: 0.62rem;
+    padding: 0.8rem 0.9rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .grid.cards > ul > li,
+  .md-typeset .grid > .card {
+    transition: none;
+  }
+}

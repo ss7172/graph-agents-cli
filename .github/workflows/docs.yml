@@ -1,0 +1,114 @@
+# The documentation site (website/, MkDocs Material).
+#
+# - build   on every pull request and push to main: `mkdocs build --strict` (a broken
+#           link or anchor, a page missing from the nav, a CLI command missing from the
+#           generated reference or a stale install tag fails it), then lychee over the
+#           built HTML: internal links and anchors fail the job; external links are only
+#           reported in the job summary (third-party sites rate-limit and flap).
+# - deploy  OFF by default: runs only for main when the repository variable PUBLISH_DOCS
+#           is exactly 'true' (the owner enables GitHub Pages with "GitHub Actions" as the
+#           source first). Until then nothing is published.
+#
+# Preview locally: uv run --group docs mkdocs serve -f website/mkdocs.yml
+#
+# Actions are pinned to full commit SHAs (the version is in the comment); bump them
+# deliberately. The uv version matches ci.yml.
+
+name: docs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GRAPH_AGENTS_CLI_NO_UPDATE_CHECK: "1"
+  GRAPH_AGENTS_CLI_DISABLE_OVERRIDES: "1"
+  UV_VERSION: "0.9.2"
+
+jobs:
+  build:
+    name: build (strict) and check links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install the project and the docs dependencies
+        run: uv sync --locked --group docs
+
+      - name: Build the site (strict)
+        run: uv run --locked --group docs mkdocs build --strict -f website/mkdocs.yml
+
+      - name: Check internal links and anchors
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # 404.html is served from any path, so MkDocs writes it with root-relative links.
+          args: >-
+            --offline --include-fragments --index-files index.html --no-progress
+            --exclude-path 'website/build/404\.html'
+            'website/build/**/*.html'
+          fail: true
+          output: lychee/internal.md
+
+      - name: Check external links (report only)
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # Excluded: the site's own future URL (unpublished), edit links (need a login),
+          # and font preconnect origins (no page at their root).
+          args: >-
+            --no-progress --max-retries 2 --timeout 20 --accept '200..=299,429'
+            --exclude '^https://ss7172\.github\.io/'
+            --exclude '^https://github\.com/ss7172/graph-agents-cli/edit/'
+            --exclude '^https://fonts\.(googleapis|gstatic)\.com'
+            --exclude-path 'website/build/404\.html'
+            'website/build/**/*.html'
+          fail: false
+          output: lychee/external.md
+
+      - name: Upload the site for GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PUBLISH_DOCS == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: website/build
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PUBLISH_DOCS == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: docs-pages
+      cancel-in-progress: false
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
