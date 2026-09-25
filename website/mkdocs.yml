@@ -79,11 +79,13 @@ theme:
     - toc.follow
 
 hooks:
+  - hooks/front_matter.py
   - hooks/version.py
   - hooks/cli_reference.py
   - hooks/skills_reference.py
   - hooks/repo_links.py
   - hooks/strip_comments.py
+  - hooks/table_code.py
 
 plugins:
   - search

@@ -120,9 +120,9 @@ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
   surrogate is 422 (was 500).
 - **Failed tool calls reach clients as an error id.** Outside `APP_ENV=dev` a failed call's
   `tool.result` `result` and its message in `GET /threads/{id}/messages` read "The tool call
-  did not succeed. Reference: <error_id>." with a new `error_id` field; the error text
+  did not succeed. Reference: `<error_id>`." with a new `error_id` field; the error text
   (policy rule, limit, upstream status and reason) goes to the model only. API-policy
-  refusals read "... refused by the API policy: <reason>." (no "(api-policy.yaml)").
+  refusals read "... refused by the API policy: `<reason>`." (no "(api-policy.yaml)").
 - **Outbound calls: stricter headers and no method override.** Tool-supplied `Host`,
   method-override (`X-HTTP-Method-Override` and its underscore spelling), `X-Forwarded-*`,
   `Forwarded`, `X-Original-URL`, `X-Rewrite-URL` and hop-by-hop headers are dropped with a
@@ -477,7 +477,7 @@ the manifest has to be edited.
   about 2 hours); a database restart or a killed session no longer lets a second replica run
   the thread. A run that cannot renew its lease stops (`interrupted`) before it writes.
 - **Database outages**: connections default to `connect_timeout=5` and TCP keepalives (the
-  DSN wins); requests answer 503 "Database unavailable. Reference: <id>" within 5 s (2 s once
+  DSN wins); requests answer 503 "Database unavailable. Reference: `<id>`" within 5 s (2 s once
   the app knows) with one WARNING line and no traceback, on every route; the app starts and
   stays alive while Postgres is unreachable (`/health` 200, `/ready` 503) and becomes ready
   once it answers. New metric `agent_database_up`. The pool checkout timeout is 5 s (was 10).

@@ -728,8 +728,6 @@ def test_check_is_lint_policy_only(project: Path) -> None:
 DOCS = Path(__file__).resolve().parents[2] / "website" / "src"
 API_POLICY_GUIDE = DOCS / "guides" / "api-policy.md"
 APPROVALS_GUIDE = DOCS / "guides" / "approvals.md"
-# The brief a page carries until it is written (see website/COVERAGE.md).
-_STUB_MARKER = "WRITER BRIEF"
 _COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # A fenced bash block, indented or not (content tabs and admonitions indent it), with any
 # attributes after the language (`bash title="..."`).
@@ -740,10 +738,7 @@ _BASH_BLOCK = re.compile(
 
 def _page_text(page: Path) -> str:
     """The page's Markdown without HTML comments (never published, so never an example)."""
-    text = page.read_text(encoding="utf-8")
-    if _STUB_MARKER in text:
-        pytest.skip(f"{page.relative_to(DOCS)} is still a stub: its examples are not written yet")
-    return _COMMENT.sub("", text)
+    return _COMMENT.sub("", page.read_text(encoding="utf-8"))
 
 
 def _commands(block: str, prefix: str) -> list[list[str]]:

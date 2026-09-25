@@ -83,7 +83,8 @@ Medium · auth · found in wave 4 (still present in wave 7)
 - **Impact:** Leaks the existence of other users' threads, and lets a user take an id that
   another client derives predictably (that client then gets 403).
 - **Workaround:** Omit `thread_id` on the first turn so the server generates one, or generate
-  random UUID4s in the client; never derive thread ids from user data (the README says so).
+  random UUID4s in the client; never derive thread ids from user data (the
+  [security guide](website/src/guides/security.md#thread-ids) says so).
 
 ### KI-002: Principal hashes are unsalted unless `PRINCIPAL_HASH_SALT` is set
 
@@ -94,8 +95,9 @@ Medium · auth · found in waves 0 and 2b
   reaches the pods only once it is added to `secrets.keys` by hand.
 - **Impact:** Where principal ids are guessable (email addresses, usernames), anyone who can
   read logs or traces can recover them by hashing candidates.
-- **Workaround:** Set `PRINCIPAL_HASH_SALT` and add it to `secrets.keys`, as the README's
-  production checklist says. Changing the salt changes every hash.
+- **Workaround:** Set `PRINCIPAL_HASH_SALT` and add it to `secrets.keys`, as the
+  [production checklist](website/src/guides/security.md#production-checklist) says. Changing
+  the salt changes every hash.
 
 ### KI-003: `langgraph-server`: the native Store is readable by every authenticated principal
 
@@ -107,7 +109,7 @@ Medium · auth · found in wave 2
 - **Impact:** A graph that writes per-user data to the store without namespacing it exposes
   that data to other users wherever the native routes are reachable.
 - **Workaround:** Namespace every per-user store item by principal, and keep the store routes
-  off the public route. Also in README Known limitations.
+  off the public route. Also documented as a limitation.
 
 ### KI-004: An allow or deny entry by `operationId` alone pins only the tool's label
 
@@ -173,7 +175,9 @@ Medium · approvals · found in waves 6 and 7
 - **Issue:** When someone other than the requester decides an approval (a `role:` approver),
   the decision request streams the resumed run: the approved call's result and every later
   tool call, tool result and reply of that run, made with the requester's authority. The
-  README describes the stream as "the tool result and the agent's reply".
+  0.2.0 README described the stream as "the tool result and the agent's reply"; the
+  [Human approval guide](website/src/guides/approvals.md) now says "the tool result and
+  everything the run does after it".
 - **Impact:** An approver sees data the requester's later tool calls read, on a thread it
   cannot otherwise read.
 - **Workaround:** Name as approvers only roles that may see the requester's data, and keep
@@ -296,7 +300,7 @@ Medium · runtime · found in wave 5
   connections already open can wait up to about a minute.
 - **Impact:** Slow failures and busy workers during that kind of outage.
 - **Workaround:** Set `keepalives_*` and `tcp_user_timeout` in the DSN to your tolerance and
-  alert on `/ready`. Also in README Known limitations.
+  alert on `/ready`. Also documented as a limitation.
 
 ### KI-018: The per-thread run lease is checked in the process, not in the database write
 
@@ -308,7 +312,7 @@ Medium · runtime · found in wave 5
 - **Impact:** A stray checkpoint branch next to the newer run's; normal reads follow the newer
   run. A rare data-integrity edge case.
 - **Workaround:** Keep `tcp_user_timeout` in the DSN below the 30 s lease (it is in
-  milliseconds). Also in README Known limitations.
+  milliseconds). Also documented as a limitation.
 
 ### KI-019: `langgraph-server`: the orphaned run-record sweep never gets past its first pages
 
@@ -332,7 +336,7 @@ Medium · runtime · found in waves 2b and 6b
   tools that need the caller refuse.
 - **Impact:** Raw principal ids, possibly email addresses, are persisted in checkpoints.
 - **Workaround:** Serve users through `/chat` and A2A, and do not publish native run routes
-  (see KI-034). Also in README Known limitations.
+  (see KI-034). Also documented as a limitation.
 
 ### KI-021: The licensed LangGraph Server image with Postgres has not been run end to end
 
@@ -355,7 +359,7 @@ Medium · runtime · found in wave 0
 - **Issue:** The app limits body size, message length, metadata, run steps and run time, and
   outbound calls per API, but has no inbound request rate limit or per-principal quota.
 - **Impact:** One authenticated caller can drive unbounded load and model spend.
-- **Workaround:** Rate-limit at the gateway or ingress. Also in README Known limitations.
+- **Workaround:** Rate-limit at the gateway or ingress. Also documented as a limitation.
 
 ### KI-023: `langgraph-server`: the native state routes return raw tool errors
 
@@ -366,8 +370,7 @@ Medium · runtime · found in wave 5
   dev, `/chat`, `/threads/{id}/messages` and A2A replace that text with an error id.
 - **Impact:** Internal error text reaches thread owners through those routes (information
   disclosure, hence Medium).
-- **Workaround:** Do not publish the native routes (see KI-034). Also in README Known
-  limitations.
+- **Workaround:** Do not publish the native routes (see KI-034). Also documented as a limitation.
 
 ### KI-024: A2A tasks live in process memory; a restart drops tasks waiting for approval
 
@@ -402,7 +405,7 @@ Medium · a2a · found in waves 6 and 7
 - **Impact:** An approver deciding over A2A can approve a displayed value that differs from
   the request that is bound and sent.
 - **Workaround:** Review exact numeric values over HTTP or with `approvals list`, which show
-  the request as it will be sent. The `1.0` display is in README Known limitations.
+  the request as it will be sent. The `1.0` display is documented as a limitation.
 
 ### KI-027: `eval generate` can leave an approval pending after more than 20 gated calls
 
@@ -453,7 +456,7 @@ Medium · deploy · found in wave 2b
   Secret before helm refuses it.
 - **Impact:** A concurrent deploy's revision or Secret can be changed by the wrong run.
 - **Workaround:** Serialize deploys to one environment (one CI concurrency group, one operator
-  at a time). Also in README Known limitations.
+  at a time). Also documented as a limitation.
 
 ### KI-031: A failed reinstall after `uninstall --keep-history` rolls back to the old release
 
@@ -471,10 +474,10 @@ Medium · deploy · found in wave 2b
 
 Medium · chart/CD · found in waves 5 and 7
 
-- **Issue:** The CHANGELOG and README advise upgrading from an older build with a `Recreate`
-  rollout or at one replica, because old and new pods do not share the per-thread run lock.
-  The chart has no `strategy` value, and its default RollingUpdate starts a new pod before the
-  old one stops even at one replica.
+- **Issue:** The CHANGELOG and the upgrading guide advise upgrading from an older build with a
+  `Recreate` rollout or at one replica, because old and new pods do not share the per-thread
+  run lock. The chart has no `strategy` value, and its default RollingUpdate starts a new pod
+  before the old one stops even at one replica.
 - **Impact:** During such an upgrade one thread can run on an old and a new pod at once.
 - **Workaround:** Scale the Deployment to 0 before the upgrade deploy (or patch its strategy to
   `Recreate` by hand).
@@ -501,7 +504,7 @@ Medium · chart/CD · found in wave 2b
 - **Impact:** Authenticated users can start runs outside the app's guardrails; the auth
   handler still limits them to their own threads.
 - **Workaround:** Narrow the route at the gateway to the app's own `GET` and `DELETE` thread
-  routes. Also in README Known limitations.
+  routes. Also documented as a limitation.
 
 ### KI-035: argocd staging promotion trusts the branch names of open pull requests
 
@@ -538,8 +541,7 @@ Medium · chart/CD · found in wave 3 (base images: wave 8)
 - **Impact:** A moved or compromised tag changes what runs next to the repository's deploy
   credentials, or what the agent image is built from.
 - **Workaround:** Pin each action to a commit SHA in the generated workflows, and each base
-  image to a digest (`image:tag@sha256:...`) in the Dockerfiles. Also in README
-  Known limitations.
+  image to a digest (`image:tag@sha256:...`) in the Dockerfiles. Also documented as a limitation.
 
 ### KI-038: A hand edit of a bearer API's token variable is not reflected in `secrets.keys`
 
@@ -608,15 +610,15 @@ Low · auth · found in wave 2
   the JWKS URL must answer without redirects; for a PEM certificate only its public key is
   used.
 - **Impact:** Multi-issuer or scope-based authorization needs other means.
-- **Workaround:** Use a `custom` policy or a gateway for those needs. Also in README Known
-  limitations.
+- **Workaround:** Use a `custom` policy or a gateway for those needs. Also documented as a limitation.
 
 ### KI-043: The docs do not tell tool authors to compare principal ids exactly
 
 Low · auth · found in waves 4 and 7
 
 - **Issue:** `require_owner` compares principal ids exactly, and so does thread ownership, but
-  the README and skills do not say that hand-written ownership checks in tools must too.
+  the skills do not say that hand-written ownership checks in tools must too (the 0.2.0
+  README did not either; the Authentication guide now does).
 - **Impact:** A tool that folds case treats two identities that differ only by case as one.
 - **Workaround:** Use `require_owner`, or compare ids exactly; normalise them once in a
   `custom` policy if your identity provider needs it.
@@ -673,7 +675,7 @@ Low · api-policy · found in wave 8
 
 Low · api-policy · found in wave 8
 
-- **Issue:** Removing an API that names an `openapi:` spec lists "delete <spec> if nothing
+- **Issue:** Removing an API that names an `openapi:` spec lists "delete `<spec>` if nothing
   else uses it" under "Left for you" without checking the other APIs, so it also appears
   when another API in the file names the same spec.
 - **Impact:** A misleading follow-up; deleting the spec would make the remaining API's policy
@@ -690,8 +692,9 @@ Low · approvals · found in waves 7 and 8
   is viewing. `approvals approve|reject` prints "Approving; the resumed run follows." before
   the server refuses a non-approver with 403. A non-approver who runs `approvals approve`
   without `--thread-id` gets "No approval ... on the threads you may see" instead of the
-  server's 403 (with `--thread-id` the server answers 403). The README lists read-across
-  roles among those who see the call's query and body.
+  server's 403 (with `--thread-id` the server answers 403). The 0.2.0 README listed read-across
+  roles among those who see the call's query and body (the [HTTP API
+  reference](website/src/reference/http-api.md#the-approval-object) gives the exact rule).
 - **Impact:** Misleading output.
 - **Workaround:** Read "(none)" as "not shown to you"; the server's 403 is authoritative.
 
@@ -799,7 +802,8 @@ Low · a2a · found in wave 7
 
 - **Issue:** After an approval, the resumed task carries a second `response` artifact; the
   first holds the text from before the pause or is empty, and status-only replies carry an
-  empty text part. The README says a reply is one text part.
+  empty text part. The [HTTP API reference](website/src/reference/http-api.md#a2a) says a
+  reply is one text part.
 - **Impact:** A client that reads the first artifact gets an empty or stale answer.
 - **Workaround:** Read the last `response` artifact.
 
@@ -843,7 +847,7 @@ Low · a2a · found in wave 6
   prompts nor sends the decision.
 - **Impact:** An A2A approval from the CLI needs a second step.
 - **Workaround:** Decide with `graph-agents-cli approvals`, or send the data part yourself.
-  Also in README Known limitations.
+  Also documented as a limitation.
 
 ### KI-065: Every eval case runs as one identity
 
@@ -911,7 +915,8 @@ Low · eval · found in wave 0
 - **Issue:** There is no prompt optimisation, dataset synthesis, user simulation or results
   fetch; eval cases are written by hand.
 - **Impact:** More manual work to grow a dataset.
-- **Workaround:** Write cases by hand. See "Where it is behind" in the README.
+- **Workaround:** Write cases by hand. See
+  [Where it is behind](website/src/reference/comparison.md#where-it-is-behind).
 
 ### KI-072: helm's failure reason is printed on stdout
 
@@ -962,8 +967,7 @@ Low · deploy · found in wave 0
   key or a licence key), but `login`, `infra check` and `deploy` do not check for one, so the
   problem shows up as a crash-looping pod.
 - **Impact:** A slow first deploy of that runtime.
-- **Workaround:** Add the licence variable to `secrets.keys`. Also in README Known
-  limitations.
+- **Workaround:** Add the licence variable to `secrets.keys`. Also documented as a limitation.
 
 ### KI-077: Some deploy paths are verified in a narrow set of environments
 
@@ -982,8 +986,8 @@ Low · deploy · found in wave 0
 - **Issue:** `infra check` only reports: the cluster, database, gateway, GitHub environments
   and runners are set up by hand, where upstream's `infra cicd` automates its equivalent.
 - **Impact:** More one-time setup work.
-- **Workaround:** Follow the deploy skill's GitHub settings reference. See "Where it is behind"
-  in the README.
+- **Workaround:** Follow the deploy skill's GitHub settings reference. See [Where it is
+  behind](website/src/reference/comparison.md#where-it-is-behind).
 
 ### KI-079: Post-deploy verification in the generated workflows is thin
 
@@ -1025,7 +1029,7 @@ Low · chart/CD · found in wave 2
   which rate-limits anonymous pulls; their images are pinned by digest, and a pin must be
   refreshed if the digest is withdrawn.
 - **Impact:** CI or local deploys can fail on rate limits.
-- **Workaround:** Authenticate pulls or vendor the charts. Also in README Known limitations.
+- **Workaround:** Authenticate pulls or vendor the charts. Also documented as a limitation.
 
 ### KI-083: The helm-push workflows refuse kube context names the CLI accepts
 
@@ -1086,7 +1090,7 @@ Low · cli · found in wave 7
   expires (up to 30 s); the CLI's dropped-stream message and its 409 hint suggest a run is
   still in progress.
 - **Impact:** Confusing retries.
-- **Workaround:** Wait 30 s and retry. The lease is described in README Known limitations.
+- **Workaround:** Wait 30 s and retry. The lease is documented as a limitation.
 
 ### KI-089: Stopping `langgraph dev` can drop its last save
 
@@ -1167,8 +1171,7 @@ Low · upgrade · found in waves 0, 7 and 8
   the manifest cannot be edited in place, where the build is written by a whole-file
   rewrite too.
 - **Impact:** Cosmetic; the explanations in the file are gone.
-- **Workaround:** Restore the comments from version control. Also in README Known
-  limitations.
+- **Workaround:** Restore the comments from version control. Also documented as a limitation.
 
 ### KI-097: `scaffold upgrade`'s conflict warning suggests a flag it does not have
 
@@ -1190,7 +1193,7 @@ Low · upgrade · found in waves 2 and 2b
   runtime's lock until `graph-agents-cli install`.
 - **Impact:** A retrying script can miss a broken project.
 - **Workaround:** Act on the first run's "Left for you" list; run `install` after
-  `enhance --runtime`. Also in README Known limitations.
+  `enhance --runtime`. Also documented as a limitation.
 
 ### KI-099: `scaffold enhance` checks every chart under `deployment/helm/`
 
@@ -1317,7 +1320,7 @@ Low · upgrade · found in wave 8
 Low · docs · found in waves 4 and 7
 
 - **Issue:** The scaffold table in the workflow skill's internals reference says `create`
-  ends with `uv sync`; it installs nothing (the scaffold skill and the README are correct).
+  ends with `uv sync`; it installs nothing (the scaffold skill and the documentation are correct).
 - **Impact:** A coding agent may skip `graph-agents-cli install`.
 - **Workaround:** Run `graph-agents-cli install` after `create`.
 
@@ -1344,8 +1347,10 @@ Low · docs · found in wave 5b
 
 Low · docs · found in wave 3b
 
-- **Issue:** Step 1 of the README's policy lifecycle adds an API with `--access read-only`,
-  which reads like a default although `--access` is required and has none.
+- **Issue:** Step 1 of the 0.2.0 README's policy lifecycle added an API with
+  `--access read-only`, which reads like a default although `--access` is required and has
+  none. The [Outbound API policy guide](website/src/guides/api-policy.md) now says why step 1
+  is read-only.
 - **Impact:** Can suggest read-only as the recommended starting point.
 - **Workaround:** Choose the access level your agent needs.
 
@@ -1362,7 +1367,8 @@ Low · docs · found in wave 3b
 
 Low · docs · found in wave 0
 
-- **Issue:** The documentation is the README, CONTRIBUTING.md, the CHANGELOG and the skills;
-  there is no documentation site.
+- **Issue:** The documentation site's sources are in `website/` and CI builds them, but the
+  site is not published yet.
 - **Impact:** Harder to browse than upstream's docs.
-- **Workaround:** Start from the README's contents list and the skills.
+- **Workaround:** Read the pages under `website/src/` on GitHub, or preview the site locally
+  (`uv run --group docs mkdocs serve -f website/mkdocs.yml`).

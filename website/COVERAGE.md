@@ -183,3 +183,47 @@ Defined in `src/stylesheets/custom.css`; see `src/index.md` for markup.
   section (`_readme_approval_examples`, expecting blocks of 2, 1 and 1 `api approval`
   commands). The guides_build lane keeps those examples in that shape in
   `guides/api-policy.md` and `guides/approvals.md` so the tests can be re-targeted unchanged.
+
+Status after integration: the `KNOWN_ISSUES.md` link and the four real placeholders
+(`<error_id>`, `<reason>`, `<id>`, `<spec>`; `<clone>@<commit>` was already in a code span)
+are fixed, and the README tests run against the guides (no skip).
+
+## Integration (2026-09-25)
+
+The four lanes were merged into `docs-site`; every page and README row above is `done`. No
+lane asked for a navigation change. Shared files changed at integration:
+
+- `hooks/front_matter.py` (new): the build fails when a page's front matter is not valid YAML
+  (an unquoted `description:` containing `": "` silently became a stray heading) or has no
+  `description`. All lanes reported this; every page parses now.
+- `hooks/table_code.py` (new) and `custom.css`: inline code in content tables gets break
+  points after `/`, `.` and `_` and before `{` (`<wbr>`, not copied); from 45em up table code
+  breaks only there and at spaces, never mid-name. Phones keep Material's break-anywhere as
+  a last resort so tables still fit. Tables use `overflow: auto` (Material's own value) instead
+  of `hidden`, which clipped the 11 tables that are wider than a 375 px screen instead of
+  letting them scroll.
+- `hooks/repo_links.py`: a link from an included root file to `website/src/<page>.md` becomes
+  a link to that site page (and still works on GitHub).
+- `KNOWN_ISSUES.md`: pointers to the README's former "Known limitations" section now say
+  "Also documented as a limitation."; other README mentions point at the site page that now
+  holds the fact, or say "the 0.2.0 README" where they describe what it used to say. No entry
+  was added, removed or re-graded.
+- `CONTRIBUTING.md`: the documentation duties name `website/src/`, and a paragraph describes
+  the site (preview, strict build, generated pages, KI anchors).
+- `.github/workflows/docs.yml`: `NO_MKDOCS_2_WARNING=1` hides Material's MkDocs 2.0 advisory
+  banner in the build log (mkdocs and mkdocs-material are pinned exactly in the `docs` group).
+
+Left for the owner:
+
+- Entries the site now covers, which may be closed under the triage rule (removed from
+  `KNOWN_ISSUES.md`, the fix recorded in the CHANGELOG): KI-111 (the policy guide says why step 1
+  is read-only), KI-043's docs half (the Authentication guide tells tool authors to compare
+  principal ids exactly), and KI-113 once the site is published.
+- Product observations from the lanes (unchanged code): the argocd deploy branch is
+  `deploy/<env>/<tag>`; `agent_runs_total` also counts `awaiting_approval`, so alerts should
+  key on `error`, `timeout` and `interrupted`; `deploy` refuses a staging or prod values file
+  with `gateway.enabled` and a blank `gateway.parentRef.name`; `login --profile disconnected`
+  fails on a new project because `pr_checks.yaml` uses `runs-on: ubuntu-latest`; `build` has
+  no `--build-arg`; the chart's `charts/` directory is git ignored; the helm-push/argocd secrets
+  notice has a lowercase "the" after a full stop; `login --write-env` with a piped stdin warns
+  and may echo the key; `info` runs `npx skills list` on every call.

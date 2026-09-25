@@ -19,8 +19,9 @@ with pymdownx.snippets, unchanged. Their links are relative to the repository
 root (``[CHANGELOG.md](CHANGELOG.md)``, ``README.md#...``), which would point
 inside the site and fail the strict build. A Markdown preprocessor that runs
 right after snippets rewrites them, on those pages only: a root file the site
-publishes becomes a link to its page, anything else a link to the file on
-GitHub. In-page anchors and absolute URLs are left alone.
+publishes becomes a link to its page, a site page's source
+(``website/src/guides/security.md#...``) a link to that page, anything else a
+link to the file on GitHub. In-page anchors and absolute URLs are left alone.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ SITE_PAGES = {
     "CHANGELOG.md": "reference/changelog.md",
     "KNOWN_ISSUES.md": "reference/known-issues.md",
 }
+# Where the site's page sources live, relative to the repository root.
+SITE_SRC = "website/src/"
 # pymdownx.snippets registers at priority 32; lower priorities run later.
 PRIORITY = 31
 
@@ -49,8 +52,9 @@ def _rewrite(match: re.Match[str]) -> str:
     target, anchor = match.group(1), match.group(2) or ""
     target = target.removeprefix("./")
     page = _state["page"] or ""
-    if target in SITE_PAGES:
-        rel = posixpath.relpath(SITE_PAGES[target], posixpath.dirname(page) or ".")
+    if target in SITE_PAGES or target.startswith(SITE_SRC):
+        site_page = SITE_PAGES.get(target) or target.removeprefix(SITE_SRC)
+        rel = posixpath.relpath(site_page, posixpath.dirname(page) or ".")
         return f"]({rel}{anchor})"
     return f"]({_state['blob']}{target}{anchor})"
 

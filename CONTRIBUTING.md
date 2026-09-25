@@ -264,8 +264,8 @@ diff -r -x .DS_Store skills src/graph_agents_cli/skills/data
 uv run pytest tests/skills -q
 ```
 
-`ruff format` also formats the Python blocks inside Markdown files (the README, `skills/`), and
-CI runs `ruff format --check .`. `src/graph_agents_cli/skills/data` is excluded from ruff so the
+`ruff format` also formats the Python blocks inside Markdown files (the README, `skills/`, the
+documentation site's pages), and CI runs `ruff format --check .`. `src/graph_agents_cli/skills/data` is excluded from ruff so the
 bundle is never reformatted on its own: run `ruff format` first, then sync the bundle.
 
 `tests/skills/test_bundle.py` enforces: the two copies are byte-identical (ignoring
@@ -287,11 +287,19 @@ never document hidden or deprecated flags there.
 ## Compatibility and documentation
 
 A change to a manifest key, environment variable, command flag, exit code, endpoint or chart
-value updates, in the same pull request: the README, the template's `README.md`,
-`.env.example` and guidance file when a generated project is affected, the relevant skill
-references (both copies), schemas where applicable, regression tests, and CHANGELOG.md
-(`## [Unreleased]`, with migration steps for anything breaking). Describe compatibility
-implications in the pull request.
+value updates, in the same pull request: the documentation site's pages (`website/src/`), the
+template's `README.md`, `.env.example` and guidance file when a generated project is affected,
+the relevant skill references (both copies), schemas where applicable, regression tests, and
+CHANGELOG.md (`## [Unreleased]`, with migration steps for anything breaking). Describe
+compatibility implications in the pull request.
+
+The documentation site is MkDocs Material in `website/` (pages in `website/src/`). Preview it
+with `uv run --group docs mkdocs serve -f website/mkdocs.yml`; CI (`docs.yml`) builds it with
+`mkdocs build --strict` and checks its links. The CLI and Skills reference pages are generated
+from the Click commands and `skills/`, and the Known issues and Changelog pages include
+`KNOWN_ISSUES.md` and `CHANGELOG.md`, so those need no page edits. A page that links to a
+`KI-` entry by anchor must drop the link when the entry is fixed and removed, or the strict
+build fails.
 
 Keep the public repository focused on reusable source, templates, tests and user guidance.
 Shipped files explain their rationale in place; they never cite internal planning records,
@@ -310,8 +318,9 @@ owner tags releases.
    bundle sync above), the workflow skill's `Requires: graph-agents-cli ~= X.Y.Z` line,
    `EXPECTED_VERSION` in `tests/skills/test_bundle.py`, the `cli_version` example in the
    langgraph-code skill's `template-contract.md`, and every pinned install command
-   (`git grep -n '@v<old version>' -- README.md skills` finds the `uv tool install ...@vX.Y.Z`
-   lines, including each `SKILL.md`'s `requires.install`).
+   (`git grep -n '@v<old version>' -- README.md skills website/src` finds the
+   `uv tool install ...@vX.Y.Z` lines, including each `SKILL.md`'s `requires.install`; the
+   site's strict build also fails on a page that installs another version).
 2. **Regenerate the fixtures** (`uv run python scripts/regen_fixtures.py`): the manifests
    record `cli_version`. Generated projects pin `GRAPH_AGENTS_CLI_SPEC` to
    `git+https://github.com/ss7172/graph-agents-cli@vX.Y.Z` from the installed version.
@@ -354,7 +363,7 @@ owner tags releases.
    first step therefore refuses any value but exactly `true`. Publishing uses OIDC, no
    token. Once a version is on PyPI, `install_spec()` in `scaffold/utils/version.py` is the
    one place to switch the default install spec to the index, and the README install
-   section changes with it.
+   section and the site's Installation page change with it.
 
 The workflows pin actions to full commit SHAs with the version in a comment. To bump one,
 resolve the new tag's commit (`git ls-remote https://github.com/<owner>/<action>

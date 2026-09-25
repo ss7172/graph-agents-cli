@@ -269,11 +269,24 @@
 }
 
 /* -- Tables ---------------------------------------------------------------- */
+/* overflow: auto (Material's own value) keeps the rounded corners and lets a table that
+   is wider than the column scroll sideways instead of being clipped. */
 .md-typeset table:not([class]) {
   border: 1px solid var(--gac-border);
   border-radius: var(--gac-radius);
   font-size: 0.72rem;
-  overflow: hidden;
+  overflow: auto;
+}
+
+/* Code in tables names things (a variable, a route, an action). hooks/table_code.py marks
+   its separators as break points; from tablet width up it breaks only there and at spaces,
+   never inside a name. Phones keep Material's break-anywhere as a last resort, so tables
+   stay as narrow as they can, but the marked separators are tried first. */
+@media screen and (min-width: 45em) {
+  .md-typeset table:not([class]) code {
+    word-break: normal;
+    overflow-wrap: normal;
+  }
 }
 
 .md-typeset table:not([class]) th {
