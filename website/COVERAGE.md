@@ -24,12 +24,12 @@ scaffold and only change through the scaffold owner.
 | `getting-started/tutorial-manual.md` | Tutorial: manual workflow | getstarted | stub |
 | `getting-started/lifecycle.md` | The lifecycle | getstarted | stub |
 | `guides/index.md` | Guides | scaffold | done |
-| `guides/develop.md` | Develop your agent | guides_build | stub |
-| `guides/authentication.md` | Authentication | guides_build | stub |
-| `guides/api-policy.md` | Outbound API policy | guides_build | stub |
-| `guides/approvals.md` | Human approval | guides_build | stub |
-| `guides/evaluation.md` | Evaluation | guides_build | stub |
-| `guides/extensions.md` | Extensions | guides_build | stub |
+| `guides/develop.md` | Develop your agent | guides_build | done |
+| `guides/authentication.md` | Authentication | guides_build | done |
+| `guides/api-policy.md` | Outbound API policy | guides_build | done |
+| `guides/approvals.md` | Human approval | guides_build | done |
+| `guides/evaluation.md` | Evaluation | guides_build | done |
+| `guides/extensions.md` | Extensions | guides_build | done |
 | `guides/deploy.md` | Deploy to Kubernetes | guides_ops | stub |
 | `guides/cicd.md` | CI/CD | guides_ops | stub |
 | `guides/secrets.md` | Secrets | guides_ops | stub |
@@ -65,20 +65,20 @@ hold the full facts; "also" pages summarize and link to the primary.
 | `## Quick start` (83) | `getting-started/quickstart.md` | `guides/authentication.md` (jwt dev-token block); `getting-started/tutorial-manual.md` (create options); `guides/deploy.md` (local cluster, registry placeholder paragraph) | getstarted |
 | `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted / reference |
 | `### Upgrading a project` (196) | `guides/upgrading.md` | `reference/manifest.md` (cli_version, cli_build, template_digest) | guides_ops |
-| `## The generated service` (240) | `guides/develop.md` (tree, runtimes) | `reference/http-api.md` | guides_build |
+| `## The generated service` (240) | `guides/develop.md` (tree, runtimes) | `reference/http-api.md` | guides_build (done) |
 | `### Endpoints` (267): route table | `reference/http-api.md` | `guides/develop.md` (summary table) | reference |
 | `### Endpoints` bullets One run per thread, Limits, Thread ids, Timeouts, Step limit, A valid history, Tool arguments, Errors, Run records | `reference/http-api.md` | `guides/security.md` (Thread ids); `guides/observability.md` (Run records) | reference |
 | `### Endpoints` bullets Retention, Logging, Tracing | `guides/observability.md` | `reference/environment.md` | guides_ops |
 | `### Endpoints` bullet Database | `guides/deploy.md` (External database section) | `reference/environment.md` (DB_POOL_*) | guides_ops |
 | `### Endpoints` bullets Settings from `.env`, CORS, closing paragraph (defaults, startup parse rules) | `reference/environment.md` | `guides/develop.md` | reference |
-| `## Authentication` (381) | `guides/authentication.md` | `reference/environment.md` (AUTH_* names) | guides_build |
-| `` ### `shared-bearer` (default) `` (400) | `guides/authentication.md` | `guides/secrets.md` (API_KEY generation) | guides_build |
-| `` ### `jwt` `` (408) | `guides/authentication.md` (full AUTH_JWT_* table) | `reference/environment.md` (names, link) | guides_build |
-| `` ### `custom` `` (442) | `guides/authentication.md` | `reference/manifest.md` (auth_policy_implemented) | guides_build |
-| `` ## Outbound API policy (`api-policy.yaml`) `` (486) | `guides/api-policy.md` (concepts, access, auth modes, per-user authorization, limits, API_CALLS, lint) | `reference/api-policy-schema.md` (every key, the fail-closed matching rules) | guides_build |
-| `` ### Human approval of calls (`approval`) `` (613) | `guides/approvals.md` | `reference/api-policy-schema.md` (approval schema); `reference/http-api.md` (approval routes, A2A); `guides/evaluation.md` (eval approvals) | guides_build |
-| `### The policy's lifecycle` (785) | `guides/api-policy.md` | `getting-started/tutorial-manual.md` (worked example) | guides_build |
-| `## Evaluation` (843) | `guides/evaluation.md` | `getting-started/quickstart.md` (one paragraph) | guides_build |
+| `## Authentication` (381) | `guides/authentication.md` | `reference/environment.md` (AUTH_* names) | guides_build (done) |
+| `` ### `shared-bearer` (default) `` (400) | `guides/authentication.md` | `guides/secrets.md` (API_KEY generation) | guides_build (done) |
+| `` ### `jwt` `` (408) | `guides/authentication.md` (full AUTH_JWT_* table) | `reference/environment.md` (names, link) | guides_build (done) |
+| `` ### `custom` `` (442) | `guides/authentication.md` | `reference/manifest.md` (auth_policy_implemented) | guides_build (done) |
+| `` ## Outbound API policy (`api-policy.yaml`) `` (486) | `guides/api-policy.md` (concepts, access, auth modes, per-user authorization, limits, API_CALLS, lint) | `reference/api-policy-schema.md` (every key, the fail-closed matching rules) | guides_build (done) |
+| `` ### Human approval of calls (`approval`) `` (613) | `guides/approvals.md` | `reference/api-policy-schema.md` (approval schema); `reference/http-api.md` (approval routes, A2A); `guides/evaluation.md` (eval approvals) | guides_build (done) |
+| `### The policy's lifecycle` (785) | `guides/api-policy.md` | `getting-started/tutorial-manual.md` (worked example) | guides_build (done) |
+| `## Evaluation` (843) | `guides/evaluation.md` | `getting-started/quickstart.md` (one paragraph) | guides_build (done) |
 | `## Environments and CD modes` (897): environments, rules, deploy flags, local clusters | `guides/deploy.md` | `getting-started/lifecycle.md` (at a glance) | guides_ops |
 | `## Environments and CD modes` (897): CD mode table, CI column, GH_HOST | `guides/cicd.md` | `guides/deploy.md` (deploy column) | guides_ops |
 | `### Chart` (982) | `guides/deploy.md` | `guides/observability.md` (metrics values); `guides/security.md` (pod security, NetworkPolicy) | guides_ops |
@@ -98,18 +98,18 @@ hold the full facts; "also" pages summarize and link to the primary.
 
 | Bullet | Page | Lane |
 |---|---|---|
-| LangGraph Server licence | `guides/develop.md` (runtimes) | guides_build |
+| LangGraph Server licence | `guides/develop.md` (runtimes) | guides_build (done) |
 | A2A task store | `reference/http-api.md` (A2A) | reference |
 | Prompt injection | `guides/security.md` | guides_ops |
 | No built-in inbound rate limiting | `guides/security.md` | guides_ops |
-| Outbound `limits` are per process | `guides/api-policy.md` | guides_build |
+| Outbound `limits` are per process | `guides/api-policy.md` | guides_build (done) |
 | Run lock across replicas | `reference/http-api.md` (one run per thread) | reference |
 | Rolling upgrades from an older build | `guides/upgrading.md` | guides_ops |
 | A database that stops answering without closing its connections | `guides/deploy.md` | guides_ops |
 | Concurrent deploys to one release | `guides/deploy.md` | guides_ops |
-| `jwt` | `guides/authentication.md` | guides_build |
-| `langgraph-server` specifics | `guides/develop.md` (runtimes); `reference/http-api.md` | guides_build / reference |
-| Human-in-the-loop | `guides/approvals.md` | guides_build |
+| `jwt` | `guides/authentication.md` | guides_build (done) |
+| `langgraph-server` specifics | `guides/develop.md` (runtimes); `reference/http-api.md` | guides_build (done) / reference |
+| Human-in-the-loop | `guides/approvals.md` | guides_build (done) |
 | `scaffold enhance` / `scaffold upgrade` rewrite the manifest | `guides/upgrading.md` | guides_ops |
 | Upgrading a 0.1.0 project | `guides/upgrading.md` | guides_ops |
 | The repository has no release tags yet | **stale, drop it**: tags v0.1.0 and v0.2.0 exist and the v0.2.0 release is published (checked 2026-09-24) | getstarted (installation) |

@@ -1,40 +1,300 @@
 ---
-description: Choose and configure the auth policy that guards every surface of a graph-agents-cli agent: shared-bearer, jwt or custom.
+description: "Choose and configure the auth policy that guards every surface of a graph-agents-cli agent: shared-bearer, jwt or custom."
 ---
 
 # Authentication
 
-One auth policy guards every surface of the generated service. Choose `shared-bearer`, per-user `jwt` or a `custom` policy, configure it, and run it locally.
+<p class="gac-lede">One auth policy guards every surface of the generated service. Choose
+<code>shared-bearer</code>, per-user <code>jwt</code> or a <code>custom</code> policy of your
+own, configure it, and run it locally with the same credentials a client would send.</p>
 
-<!--
-WRITER BRIEF (lane: guides_build). Replace this comment and the paragraph above with the finished
-page; keep the H1 and the front-matter description (update it if the scope changes).
-Rules and shared components: website/COVERAGE.md. Code is the source of truth: when the
-README and the code disagree, follow the code and say so in your report.
-Paths: CLI = src/graph_agents_cli/   TPL = CLI + scaffold/agents/langgraph/
-       K8S = CLI + scaffold/deployment_targets/kubernetes/python/   CHART = K8S + deployment/helm/{{cookiecutter.project_name}}/
-       BASE = CLI + scaffold/base_templates/
-Upstream pages: git show HEAD:<path> in a google/agents-cli checkout (tracked files only; your task names its location).
+## What the policy guards
 
-Must cover:
-- AUTH_POLICY selects the policy (recorded as auth_policy in the manifest); what it guards (/chat and thread routes, the A2A card and JSON-RPC, the langgraph-server native API) and what it does not (/health, /ready, /metrics, dev-only pages).
-- Fail-closed startup: an unknown policy never starts; a misconfigured one stops the process outside APP_ENV=dev (in dev: logged, requests get 503); APP_ENV counts as dev only when exactly `dev`.
-- Common settings: AUTH_READ_ACROSS_ROLES, AUTH_ADMIN_ROLES (langgraph-server assistants, crons, store writes) and the native-run restrictions around approvals.
-- Content tabs shared-bearer | jwt | custom, one per policy:
-- shared-bearer: Authorization: Bearer <API_KEY>, constant-time compare, one principal `shared` (ownership separates nobody: internal tools, service-to-service, development); unset API_KEY answers 503; login --write-env and secrets apply / deploy generate keys.
-- jwt: example identity providers; the AUTH_JWT_* table (the full table lives here; reference/environment.md links to it); 401 messages and the WWW-Authenticate challenge; key fetching and caching behaviour; nothing from the token is logged; local runs with auth dev-token and GRAPH_AGENTS_CLI_API_KEY (never --header); dev-token refusals (not jwt, APP_ENV not exactly dev, .env names a JWKS URL or another key: exit 3).
-- custom: create --auth-policy custom scaffolds app/policies/custom.py (a stub answering 503) and auth_policy_implemented: false, which blocks deploy to staging/prod; the CustomPolicy example; the rules (401 with WWW-Authenticate, 503 when the issuer is down, never log credentials, async I/O); attributes['credentials'][<api>] for auth: forward; Principal.public_attributes(); AUTH_FORWARD_HEADERS under langgraph-server with LANGGRAPH_SERVER_URL; clients use run --header or --cookie.
-- Limitations: jwt has one issuer and no claim-to-permission mapping; the JWKS URL must answer directly.
+`AUTH_POLICY` selects the policy; `create --auth-policy` sets it and the manifest records it as
+`auth_policy`.
 
-Sources:
-- README: "## Authentication", "### `shared-bearer` (default)", "### `jwt`", "### `custom`" (all); "## Quick start" (jwt block and dev-token paragraph); "## Commands" row auth dev-token; "## Known limitations" bullet "`jwt`".
-- CHANGELOG 0.2.0: Breaking "`--auth-policy product-session` is now `custom`"; Added "`jwt` auth policy", "`custom` auth policy", "`graph-agents-cli auth dev-token ...`".
-- KNOWN_ISSUES: KI-042, KI-043, KI-055.
-- Skills: graph-agents-cli-langgraph-code/SKILL.md (the auth policy adapter).
-- Code: TPL/app/app_utils/auth.py, TPL/app/policies/custom.py, TPL/.env.example (AUTH_*); CLI setup/cmd_dev_token.py, setup/cmd_auth.py, deploy/_preflight.py (jwt checks outside dev).
+| Surface | Guarded |
+|---|---|
+| `POST /chat`, the thread routes, the approval routes | yes |
+| The A2A agent card and JSON-RPC endpoint | yes |
+| Under `langgraph-server`: the server's native API (assistants, threads, runs, crons, store) | yes, as the server's auth handler |
+| `GET /health`, `GET /ready` | no (probes) |
+| `GET /metrics` | no, unless `METRICS_TOKEN` is set ([Observability](observability.md)) |
+| `/playground`, `/docs`, `/openapi.json` | no; they exist only under `APP_ENV=dev` |
 
-Verify (MODEL_PROVIDER=fake, GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1, scratch dirs only):
-- auth dev-token --help; create --auth-policy jwt in a scratch dir, mint a token, run with GRAPH_AGENTS_CLI_API_KEY; run without it to see the 401 text.
+Threads and A2A tasks belong to the principal that created them, whatever the policy.
 
-Link to at least: ../reference/environment.md, approvals.md, security.md, ../reference/cli.md#graph-agents-cli-auth-dev-token
--->
+## Choose a policy
+
+| Policy | Principals | Roles | Use it for |
+|---|---|---|---|
+| `shared-bearer` (default) | one: every caller is `shared` | none | internal tools, service-to-service calls, development |
+| `jwt` | one per user, from a verified OIDC/JWT token | from a token claim | users signed in through an identity provider (Keycloak, Auth0, Entra ID, Okta, Dex, ...) |
+| `custom` | whatever your code returns | whatever your code returns | anything else: an existing application's session cookie, an API gateway's identity headers |
+
+Under `shared-bearer` thread ownership separates nobody and only `requester` approval gates can
+be decided; per-user ownership, read-across roles and four-eyes [approvals](approvals.md) need
+`jwt` or `custom`.
+
+## Startup fails closed
+
+- An unknown `AUTH_POLICY` never starts, in any environment.
+- A misconfigured policy (a `jwt` policy without a key, issuer or audience, say) stops the
+  process outside `APP_ENV=dev`. Under dev the process starts, logs the problem and answers
+  every request with 503 until it is fixed.
+- `APP_ENV` counts as dev only when it is exactly `dev`: `DEV`, `development`, or `dev` with a
+  space around it is a deployed environment. The app and the chart compare it as is.
+
+## Set up your policy
+
+=== "shared-bearer"
+
+    Clients send `Authorization: Bearer <API_KEY>`; the server compares it in constant time.
+
+    ```bash
+    graph-agents-cli create my-agent      # shared-bearer is the default
+    cd my-agent && cp .env.example .env
+    graph-agents-cli login --write-env    # generates API_KEY in .env
+    graph-agents-cli run "hello"          # sends the API_KEY from .env
+    ```
+
+    - An unset `API_KEY` answers 503, never "no auth".
+    - For each environment, `secrets apply` and `deploy` generate a key when neither the env
+      file nor the live Secret has one, and never replace a live key without
+      `--rotate-api-key` ([Secrets](secrets.md)).
+    - To call a deployed agent, put its key in `GRAPH_AGENTS_CLI_API_KEY`.
+
+=== "jwt"
+
+    Clients send `Authorization: Bearer <token>`: a token your identity provider signed.
+
+    ```bash
+    graph-agents-cli create my-agent --auth-policy jwt
+    cd my-agent && cp .env.example .env
+    graph-agents-cli install
+    export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"
+    graph-agents-cli run "hello"
+    ```
+
+    - Locally, [`auth dev-token`](#local-runs-with-dev-tokens) stands in for the identity
+      provider.
+    - For each deployed environment, set `AUTH_JWT_JWKS_URL` (or `AUTH_JWT_PUBLIC_KEY`),
+      `AUTH_JWT_ISSUER` and `AUTH_JWT_AUDIENCE` under `env:` in `values-<env>.yaml`. Outside
+      dev, `deploy` refuses (exit 3) while one is missing: the pods would refuse to start.
+    - Every setting is in the [`jwt` settings](#jwt-settings) table below.
+
+=== "custom"
+
+    Your own code authenticates each request.
+
+    ```bash
+    graph-agents-cli create my-agent --auth-policy custom
+    ```
+
+    - `create` scaffolds `app/policies/custom.py`, a documented stub that answers 503 to every
+      request, and records `auth_policy_implemented: false` in the manifest.
+    - `deploy --env staging|prod` refuses until you implement the policy and set
+      `auth_policy_implemented: true`.
+    - Clients send what your policy reads: `run --header 'Name: value'` or
+      `--cookie name=value`.
+    - How to implement it: [Write a `custom` policy](#write-a-custom-policy).
+
+## `jwt` settings
+
+Per-user principals from a verified OIDC/JWT bearer token. The settings live in `.env` locally
+and in the chart values per environment; only `AUTH_JWT_SECRET` is a secret.
+
+| Variable | Meaning |
+|---|---|
+| `AUTH_JWT_JWKS_URL` | The issuer's JWK set: fetched directly (no redirects), https outside dev unless the host is loopback. Set this or `AUTH_JWT_PUBLIC_KEY`, not both |
+| `AUTH_JWT_PUBLIC_KEY` | One PEM public key or certificate (only its key is used; `\n` escapes accepted) |
+| `AUTH_JWT_ISSUER` | The expected `iss`; required outside `APP_ENV=dev` |
+| `AUTH_JWT_AUDIENCE` | The expected `aud` (a comma list is accepted); required outside `APP_ENV=dev` |
+| `AUTH_JWT_ALGORITHMS` | Allow-list: RS, PS and ES 256/384/512 and EdDSA; never `none`; the key type must match. Default `RS256,ES256` |
+| `AUTH_JWT_ALLOW_HS` | `true` also allows HS256/384/512, verified with `AUTH_JWT_SECRET`. Default `false` |
+| `AUTH_JWT_SECRET` | Shared secret for the HS algorithms, at least 32 bytes. A secret: the CLI adds it to the Secret's allow-list when the chart values or env file opt into them |
+| `AUTH_JWT_PRINCIPAL_CLAIM` | Claim holding the principal id (dotted path allowed; at most 256 characters). Default `sub` |
+| `AUTH_JWT_ROLES_CLAIM` | Claim holding the roles: a list, or a space- or comma-separated string (dotted path allowed, for example `realm_access.roles`). Default `roles` |
+| `AUTH_JWT_LEEWAY_S` | Clock skew allowed for `exp`, `nbf` and `iat` (0-600). Default `60` |
+| `AUTH_JWT_JWKS_CACHE_S` | How long fetched keys are cached, in seconds (1-86400). Default `300` |
+| `AUTH_JWT_JWKS_ALLOW_HTTP` | Allow a plain-http JWKS URL outside dev (a trusted in-cluster issuer only). Default `false` |
+
+### Responses
+
+| Request | Answer |
+|---|---|
+| No token | 401 `Missing bearer token.` |
+| An invalid token: expired, not yet valid, wrong audience or issuer, bad signature, algorithm not allowed, unknown key, malformed, over 16384 characters, no principal claim | 401 `Invalid bearer token: <reason>.` with an RFC 6750 challenge: `WWW-Authenticate: Bearer error="invalid_token", error_description="<reason>"` |
+| A misconfigured policy, or no usable keys | 503 (the details are in the server log) |
+
+Nothing from the token is logged.
+
+### Keys
+
+- One fetch at a time; an unknown key id triggers at most one refetch per 30 s.
+- An expired cache is refreshed in the background while the cached keys keep verifying.
+- When the issuer is unreachable, the last good keys stay usable for one more hour, then
+  requests get 503 until it answers.
+
+### Local runs with dev tokens
+
+`graph-agents-cli auth dev-token` lets a `jwt` project run without an identity provider:
+
+```bash
+export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"
+graph-agents-cli run "hello"
+graph-agents-cli eval run
+```
+
+The first call creates an RSA key pair in `.graph-agents-cli/dev-jwt/` (git ignored; the
+private key is mode 0600) and fills the blank `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER` and
+`AUTH_JWT_AUDIENCE` in `.env`. It prints the token alone on stdout, so the command above keeps
+it out of argv and your shell history. Tokens last 12 hours by default (`--ttl`, at most 7d).
+Restart a kept local server (`graph-agents-cli run --stop-server`) after the first call.
+
+Mint one token per test user to try thread ownership, roles and approvals: a token for
+`--sub bob --roles ops` decides the calls a `role:ops` gate holds.
+
+`auth dev-token` refuses (exit 3) unless the project's policy is `jwt`, `APP_ENV` is exactly
+`dev`, and `.env` names no JWKS URL and no other public key:
+
+```text title="Output"
+Error: APP_ENV is 'staging'; dev tokens are only for a local server under APP_ENV=dev (set it in .env, as .env.example does). Deployed environments take tokens from your identity provider.
+```
+
+!!! danger "Never deploy the dev key"
+
+    The dev key lives only in `.env` and `.graph-agents-cli/dev-jwt/`. Deployed environments
+    verify tokens from your identity provider (`AUTH_JWT_JWKS_URL` in the chart values);
+    `deploy` and `secrets` read `values-<env>.yaml` and `.env.<env>`, never your `.env`.
+
+## Write a `custom` policy
+
+Implement `CustomPolicy` in `app/policies/custom.py`. Both methods are awaited on every request:
+
+```python title="app/policies/custom.py"
+from fastapi import HTTPException, Request
+
+from app.app_utils.auth import ACTIONS, Principal
+
+
+class CustomPolicy:
+    async def authenticate(self, request: Request) -> Principal:
+        session = request.cookies.get("session")
+        user = await my_session_store.lookup(session)  # your async lookup
+        if user is None:
+            raise HTTPException(401, "Not signed in.", headers={"WWW-Authenticate": "Cookie"})
+        return Principal(
+            id=user.id,  # stable, unique: owns threads and A2A tasks
+            roles=user.roles,  # matched against AUTH_*_ROLES and role: approvers
+            permissions=set(ACTIONS),
+            attributes={"tenant": user.tenant},  # secrets only under "credentials"
+        )
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        if action not in principal.permissions:
+            raise HTTPException(403, f"{action} is not allowed.")
+
+    def startup_problems(self) -> list[str]:  # optional: stops startup outside dev
+        return [] if MY_SETTING else ["MY_SETTING is not set"]
+```
+
+Rules for the implementation:
+
+- Raise 401 with a `WWW-Authenticate` header for a missing or invalid credential, and 503 when
+  the issuer cannot be reached.
+- Never put the credential in an error detail or a log line.
+- Do I/O asynchronously and cache sessions or keys briefly.
+- Keep principal ids stable, unique and compared exactly: two callers with one id see each
+  other's conversations, and ids that differ only in case are two principals. Role names must
+  not contain commas.
+- Thread ownership is enforced outside the policy; `authorize` decides actions (the `ACTIONS`
+  of `app_utils.auth`: `chat.send`, `thread.read`, `thread.list`, `thread.delete`,
+  `run.read`, `a2a.invoke`, `card.read`, `approval.read`, `approval.decide`).
+
+A credential that tools must forward to an [`auth: forward` API](api-policy.md#auth-modes) goes in
+`attributes["credentials"][<api name>]`: the only attribute that may hold a secret.
+`Principal.public_attributes()` (every attribute but `credentials`) is what gets persisted,
+logged or traced.
+
+Under `langgraph-server` with `LANGGRAPH_SERVER_URL` set, `AUTH_FORWARD_HEADERS` (default
+`authorization,cookie`) lists the request headers passed on to the server's auth handler: the
+headers your policy reads.
+
+When it works, add tests beside `tests/unit/test_policy.py` (a valid credential, a missing one,
+an invalid one, two principals that must not see each other's threads), then set
+`auth_policy_implemented: true` in the manifest.
+
+## Roles and shared settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_READ_ACROSS_ROLES` | empty | Comma list of roles that may read other principals' threads (and list, never decide, their approvals); never continue or delete them |
+| `AUTH_ADMIN_ROLES` | empty (nobody) | Under `langgraph-server`: roles that may create, update or delete assistants and crons and write the store. Reads are open to any authenticated principal; every other native-API action is denied |
+
+Under `langgraph-server`, the native API is also held to the approval rules: a native run
+cannot resume a paused run (decide through the [approval routes](approvals.md)), a run without
+input or from a checkpoint is refused on a thread that has approvals or waits on a gated call,
+and a thread that has approvals is not copied.
+
+## Clients and credentials
+
+`run`, `eval` and `approvals` send the same credentials, locally and with `--url`:
+
+| Policy | How the CLI authenticates |
+|---|---|
+| `shared-bearer` | `GRAPH_AGENTS_CLI_API_KEY=<API_KEY>`; locally, the `API_KEY` in `.env` when the variable is unset |
+| `jwt` | `GRAPH_AGENTS_CLI_API_KEY=<token>`; locally, a token from `auth dev-token` |
+| `custom` | `--header 'Name: value'` or `--cookie name=value` (repeatable) |
+
+The CLI sends `GRAPH_AGENTS_CLI_API_KEY` as `Authorization: Bearer <value>`. Prefer it to
+`--header` for any bearer credential: argv is visible to other local users and lands in shell
+history. An `Authorization` header given with `-H` overrides the variable.
+
+`graph-agents-cli login` reports what is missing: the provider key, `API_KEY` under
+`shared-bearer`, the verification key and the token under `jwt`, and a `.env` other users can
+read. A run that fails authentication prints the fix:
+
+```text title="Output"
+Error: Agent request failed (HTTP 401):
+  {"detail":"Missing bearer token."}
+  Authentication failed. jwt: export GRAPH_AGENTS_CLI_API_KEY=<token>; for a local token: export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user>)".
+```
+
+## Known limitations
+
+!!! info "Limits of the built-in policies"
+
+    - `jwt` accepts one issuer and maps no tenant or scope claims to permissions: every
+      authenticated principal may use every action, and ownership is per thread. The JWKS URL
+      must answer without redirects; for a PEM certificate only its public key is used. Use a
+      `custom` policy or a gateway for more
+      ([KI-042](../reference/known-issues.md#ki-042-jwt-one-issuer-and-no-claim-to-permission-mapping)).
+    - Hand-written ownership checks in tools must compare principal ids exactly, as
+      `require_owner` does
+      ([KI-043](../reference/known-issues.md#ki-043-the-docs-do-not-tell-tool-authors-to-compare-principal-ids-exactly)).
+    - Under `langgraph-server`, the server's own access log records auth failures that clients
+      see as 503 as 500
+      ([KI-055](../reference/known-issues.md#ki-055-langgraph-server-the-server-logs-500-for-auth-failures-that-clients-see-as-503)).
+
+## Next steps
+
+<div class="grid cards" markdown>
+
+-   :material-account-check-outline:{ .lg } **[Human approval](approvals.md)**
+
+    With per-user principals, a second person holding a role can approve risky calls.
+
+-   :material-shield-lock-outline:{ .lg } **[Security & production](security.md)**
+
+    The security model and the checklist before production traffic.
+
+-   :material-variable:{ .lg } **[Environment variables](../reference/environment.md)**
+
+    Every setting the service reads, with its default.
+
+-   :material-console:{ .lg } **[`auth dev-token`](../reference/cli.md#graph-agents-cli-auth-dev-token)**
+
+    The command's flags and exit codes.
+
+</div>
