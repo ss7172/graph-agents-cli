@@ -1,10 +1,12 @@
 # Known issues
 
+<!-- --8<-- [start:intro] -->
 Medium- and low-priority issues known in graph-agents-cli 0.2.0 and parked for a future
 release. Each entry gives a severity, the area, what happens, its impact, a workaround where
 one exists, and the review round that found it. Design limits that are not planned to change
 are described in the documentation, on the page of the feature they concern (they were the
 README's "Known limitations" until 0.2.0); entries that also appear there say so.
+<!-- --8<-- [end:intro] -->
 
 ## Contents
 
@@ -44,6 +46,7 @@ gate; wave 7, a regression review of the upgraded deployment; wave 8, the fixes 
 high-priority issues (build identity and upgrades between builds of one version, and approval
 rules for other approvers on other calls of one API) and their reviews.
 
+<!-- --8<-- [start:summary] -->
 ## Summary
 
 Entries are sorted by severity, then by area in this order: auth, api-policy, approvals,
@@ -64,6 +67,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 6 | 6 |
 | **Total** | **41** | **73** | **114** |
+<!-- --8<-- [end:summary] -->
 
 ## Owner actions
 
@@ -71,6 +75,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
   register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
 
+<!-- --8<-- [start:entries] -->
 ## Medium
 
 ### KI-001: Thread ids reveal whether a thread exists, and a predictable id can be claimed
@@ -109,7 +114,7 @@ Medium · auth · found in wave 2
 - **Impact:** A graph that writes per-user data to the store without namespacing it exposes
   that data to other users wherever the native routes are reachable.
 - **Workaround:** Namespace every per-user store item by principal, and keep the store routes
-  off the public route. Also documented as a limitation.
+  off the public route. Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
 ### KI-004: An allow or deny entry by `operationId` alone pins only the tool's label
 
@@ -300,7 +305,7 @@ Medium · runtime · found in wave 5
   connections already open can wait up to about a minute.
 - **Impact:** Slow failures and busy workers during that kind of outage.
 - **Workaround:** Set `keepalives_*` and `tcp_user_timeout` in the DSN to your tolerance and
-  alert on `/ready`. Also documented as a limitation.
+  alert on `/ready`. Also documented as a limitation in [Deploy to Kubernetes](website/src/guides/deploy.md#limitations).
 
 ### KI-018: The per-thread run lease is checked in the process, not in the database write
 
@@ -312,7 +317,7 @@ Medium · runtime · found in wave 5
 - **Impact:** A stray checkpoint branch next to the newer run's; normal reads follow the newer
   run. A rare data-integrity edge case.
 - **Workaround:** Keep `tcp_user_timeout` in the DSN below the 30 s lease (it is in
-  milliseconds). Also documented as a limitation.
+  milliseconds). Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
 ### KI-019: `langgraph-server`: the orphaned run-record sweep never gets past its first pages
 
@@ -336,7 +341,7 @@ Medium · runtime · found in waves 2b and 6b
   tools that need the caller refuse.
 - **Impact:** Raw principal ids, possibly email addresses, are persisted in checkpoints.
 - **Workaround:** Serve users through `/chat` and A2A, and do not publish native run routes
-  (see KI-034). Also documented as a limitation.
+  (see KI-034). Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
 ### KI-021: The licensed LangGraph Server image with Postgres has not been run end to end
 
@@ -359,7 +364,7 @@ Medium · runtime · found in wave 0
 - **Issue:** The app limits body size, message length, metadata, run steps and run time, and
   outbound calls per API, but has no inbound request rate limit or per-principal quota.
 - **Impact:** One authenticated caller can drive unbounded load and model spend.
-- **Workaround:** Rate-limit at the gateway or ingress. Also documented as a limitation.
+- **Workaround:** Rate-limit at the gateway or ingress. Also documented as a limitation in [Security & production](website/src/guides/security.md#limitations).
 
 ### KI-023: `langgraph-server`: the native state routes return raw tool errors
 
@@ -370,7 +375,7 @@ Medium · runtime · found in wave 5
   dev, `/chat`, `/threads/{id}/messages` and A2A replace that text with an error id.
 - **Impact:** Internal error text reaches thread owners through those routes (information
   disclosure, hence Medium).
-- **Workaround:** Do not publish the native routes (see KI-034). Also documented as a limitation.
+- **Workaround:** Do not publish the native routes (see KI-034). Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
 ### KI-024: A2A tasks live in process memory; a restart drops tasks waiting for approval
 
@@ -456,7 +461,7 @@ Medium · deploy · found in wave 2b
   Secret before helm refuses it.
 - **Impact:** A concurrent deploy's revision or Secret can be changed by the wrong run.
 - **Workaround:** Serialize deploys to one environment (one CI concurrency group, one operator
-  at a time). Also documented as a limitation.
+  at a time). Also documented as a limitation in [Deploy to Kubernetes](website/src/guides/deploy.md#limitations).
 
 ### KI-031: A failed reinstall after `uninstall --keep-history` rolls back to the old release
 
@@ -504,7 +509,7 @@ Medium · chart/CD · found in wave 2b
 - **Impact:** Authenticated users can start runs outside the app's guardrails; the auth
   handler still limits them to their own threads.
 - **Workaround:** Narrow the route at the gateway to the app's own `GET` and `DELETE` thread
-  routes. Also documented as a limitation.
+  routes. Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
 ### KI-035: argocd staging promotion trusts the branch names of open pull requests
 
@@ -541,7 +546,7 @@ Medium · chart/CD · found in wave 3 (base images: wave 8)
 - **Impact:** A moved or compromised tag changes what runs next to the repository's deploy
   credentials, or what the agent image is built from.
 - **Workaround:** Pin each action to a commit SHA in the generated workflows, and each base
-  image to a digest (`image:tag@sha256:...`) in the Dockerfiles. Also documented as a limitation.
+  image to a digest (`image:tag@sha256:...`) in the Dockerfiles. Also documented as a limitation in [CI/CD](website/src/guides/cicd.md#limitations).
 
 ### KI-038: A hand edit of a bearer API's token variable is not reflected in `secrets.keys`
 
@@ -610,7 +615,7 @@ Low · auth · found in wave 2
   the JWKS URL must answer without redirects; for a PEM certificate only its public key is
   used.
 - **Impact:** Multi-issuer or scope-based authorization needs other means.
-- **Workaround:** Use a `custom` policy or a gateway for those needs. Also documented as a limitation.
+- **Workaround:** Use a `custom` policy or a gateway for those needs. Also documented as a limitation in [Authentication](website/src/guides/authentication.md#known-limitations).
 
 ### KI-043: The docs do not tell tool authors to compare principal ids exactly
 
@@ -847,7 +852,7 @@ Low · a2a · found in wave 6
   prompts nor sends the decision.
 - **Impact:** An A2A approval from the CLI needs a second step.
 - **Workaround:** Decide with `graph-agents-cli approvals`, or send the data part yourself.
-  Also documented as a limitation.
+  Also documented as a limitation in [Human approval](website/src/guides/approvals.md#a2a).
 
 ### KI-065: Every eval case runs as one identity
 
@@ -967,7 +972,7 @@ Low · deploy · found in wave 0
   key or a licence key), but `login`, `infra check` and `deploy` do not check for one, so the
   problem shows up as a crash-looping pod.
 - **Impact:** A slow first deploy of that runtime.
-- **Workaround:** Add the licence variable to `secrets.keys`. Also documented as a limitation.
+- **Workaround:** Add the licence variable to `secrets.keys`. Also documented as a limitation in [Deploy to Kubernetes](website/src/guides/deploy.md#limitations).
 
 ### KI-077: Some deploy paths are verified in a narrow set of environments
 
@@ -1029,7 +1034,7 @@ Low · chart/CD · found in wave 2
   which rate-limits anonymous pulls; their images are pinned by digest, and a pin must be
   refreshed if the digest is withdrawn.
 - **Impact:** CI or local deploys can fail on rate limits.
-- **Workaround:** Authenticate pulls or vendor the charts. Also documented as a limitation.
+- **Workaround:** Authenticate pulls or vendor the charts. Also documented as a limitation in [Deploy to Kubernetes](website/src/guides/deploy.md#limitations).
 
 ### KI-083: The helm-push workflows refuse kube context names the CLI accepts
 
@@ -1171,7 +1176,7 @@ Low · upgrade · found in waves 0, 7 and 8
   the manifest cannot be edited in place, where the build is written by a whole-file
   rewrite too.
 - **Impact:** Cosmetic; the explanations in the file are gone.
-- **Workaround:** Restore the comments from version control. Also documented as a limitation.
+- **Workaround:** Restore the comments from version control. Also documented as a limitation in [Upgrading projects](website/src/guides/upgrading.md#limitations).
 
 ### KI-097: `scaffold upgrade`'s conflict warning suggests a flag it does not have
 
@@ -1193,7 +1198,7 @@ Low · upgrade · found in waves 2 and 2b
   runtime's lock until `graph-agents-cli install`.
 - **Impact:** A retrying script can miss a broken project.
 - **Workaround:** Act on the first run's "Left for you" list; run `install` after
-  `enhance --runtime`. Also documented as a limitation.
+  `enhance --runtime`. Also documented as a limitation in [Upgrading projects](website/src/guides/upgrading.md#change-settings-with-scaffold-enhance).
 
 ### KI-099: `scaffold enhance` checks every chart under `deployment/helm/`
 
@@ -1372,3 +1377,4 @@ Low · docs · found in wave 0
 - **Impact:** Harder to browse than upstream's docs.
 - **Workaround:** Read the pages under `website/src/` on GitHub, or preview the site locally
   (`uv run --group docs mkdocs serve -f website/mkdocs.yml`).
+<!-- --8<-- [end:entries] -->

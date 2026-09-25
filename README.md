@@ -5,15 +5,15 @@
 **Build, evaluate and deploy [LangGraph](https://langchain-ai.github.io/langgraph/) agents on
 your own Kubernetes, with one CLI and six skills for your coding agent.**
 
-[![CI](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml)
+[![CI](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
 [![Release](https://img.shields.io/github/v/release/ss7172/graph-agents-cli?sort=semver)](https://github.com/ss7172/graph-agents-cli/releases)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Docs](https://github.com/ss7172/graph-agents-cli/actions/workflows/docs.yml/badge.svg)](website/src/index.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-site-0f766e)](https://ss7172.github.io/graph-agents-cli/)
 
-[Get started](website/src/getting-started/index.md) ·
-[Guides](website/src/guides/index.md) ·
-[Reference](website/src/reference/index.md) ·
-[Changelog](CHANGELOG.md)
+[Get started](https://ss7172.github.io/graph-agents-cli/getting-started/) ·
+[Guides](https://ss7172.github.io/graph-agents-cli/guides/) ·
+[Reference](https://ss7172.github.io/graph-agents-cli/reference/) ·
+[Changelog](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md)
 
 </div>
 
@@ -37,28 +37,27 @@ its APIs and configures the rest through environment variables and chart values.
 ## Install
 
 You need Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-Deploying also needs `helm`, `kubectl`, `docker` and `git`.
+Deploying also needs `helm`, `kubectl`, `git` and a `docker` that builds with BuildKit.
 
 ```bash
 uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 graph-agents-cli setup      # optional: install the skills into your coding agents
 ```
 
-> [!NOTE]
-> graph-agents-cli is not on PyPI yet. Until this repository's release workflow publishes
-> it, a package named `graph-agents-cli` on an index is not this project: install from the
-> release tag as above.
-
+**Not on PyPI yet.** Until this repository's release workflow publishes it, a package named
+`graph-agents-cli` on an index is not this project: install from the release tag as above.
 More options (extras, mirrors, disconnected installs):
-[Installation & setup](website/src/getting-started/installation.md).
+[Installation & setup](https://ss7172.github.io/graph-agents-cli/getting-started/installation/).
 
 ## Quick start
 
-Run a new agent locally. `MODEL_PROVIDER=fake` in `.env` needs no model key.
+Run a new agent locally. The fake model needs no key; for a real one, leave out the
+`export` line and `login --write-env` asks for `OPENAI_API_KEY`.
 
 ```bash
 graph-agents-cli create my-agent && cd my-agent
-cp .env.example .env                  # set OPENAI_API_KEY, or MODEL_PROVIDER=fake to try it keyless
+cp .env.example .env
+export MODEL_PROVIDER=fake            # the keyless, deterministic test model
 graph-agents-cli login --write-env    # checks the setup, generates API_KEY
 graph-agents-cli install
 graph-agents-cli run "What's the weather in San Francisco?"
@@ -66,44 +65,48 @@ graph-agents-cli eval run             # the exit code is the gate
 ```
 
 Or ask your coding agent to "use graph-agents-cli to build ..." once `setup` has installed
-the skills. The [Quickstart](website/src/getting-started/quickstart.md) walks through each
-step and switches to a real provider.
+the skills. The [Quickstart](https://ss7172.github.io/graph-agents-cli/getting-started/quickstart/)
+walks through each step and switches to a real provider.
 
 ## Documentation
 
-The documentation is a site in [`website/`](website/src/index.md), built with MkDocs
-Material. It will be published at `https://ss7172.github.io/graph-agents-cli/` (not yet
-enabled); until then, read the pages here or preview the site:
+The documentation site is built with MkDocs Material from
+[`website/`](https://github.com/ss7172/graph-agents-cli/blob/main/website/mkdocs.yml).
+
+| Section | Pages |
+|---|---|
+| **Get started** | [Installation & setup](https://ss7172.github.io/graph-agents-cli/getting-started/installation/) · [Quickstart](https://ss7172.github.io/graph-agents-cli/getting-started/quickstart/) · [Tutorial: build with a coding agent](https://ss7172.github.io/graph-agents-cli/getting-started/tutorial-coding-agent/) · [Tutorial: manual workflow](https://ss7172.github.io/graph-agents-cli/getting-started/tutorial-manual/) · [The lifecycle](https://ss7172.github.io/graph-agents-cli/getting-started/lifecycle/) |
+| **Build** | [Develop your agent](https://ss7172.github.io/graph-agents-cli/guides/develop/) · [Authentication](https://ss7172.github.io/graph-agents-cli/guides/authentication/) · [Outbound API policy](https://ss7172.github.io/graph-agents-cli/guides/api-policy/) · [Human approval](https://ss7172.github.io/graph-agents-cli/guides/approvals/) · [Evaluation](https://ss7172.github.io/graph-agents-cli/guides/evaluation/) · [Extensions](https://ss7172.github.io/graph-agents-cli/guides/extensions/) |
+| **Operate** | [Deploy to Kubernetes](https://ss7172.github.io/graph-agents-cli/guides/deploy/) · [CI/CD](https://ss7172.github.io/graph-agents-cli/guides/cicd/) · [Secrets](https://ss7172.github.io/graph-agents-cli/guides/secrets/) · [Observability](https://ss7172.github.io/graph-agents-cli/guides/observability/) · [Upgrading projects](https://ss7172.github.io/graph-agents-cli/guides/upgrading/) · [Offline profile](https://ss7172.github.io/graph-agents-cli/guides/offline/) · [Security & production](https://ss7172.github.io/graph-agents-cli/guides/security/) |
+| **Reference** | [CLI](https://ss7172.github.io/graph-agents-cli/reference/cli/) · [Environment variables](https://ss7172.github.io/graph-agents-cli/reference/environment/) · [HTTP API](https://ss7172.github.io/graph-agents-cli/reference/http-api/) · [api-policy.yaml](https://ss7172.github.io/graph-agents-cli/reference/api-policy-schema/) · [Project manifest](https://ss7172.github.io/graph-agents-cli/reference/manifest/) · [Exit codes](https://ss7172.github.io/graph-agents-cli/reference/exit-codes/) · [Skills](https://ss7172.github.io/graph-agents-cli/reference/skills/) · [Compared with google-agents-cli](https://ss7172.github.io/graph-agents-cli/reference/comparison/) |
+
+**The site is not published yet.** Until GitHub Pages is enabled for it, preview it from a
+checkout:
 
 ```bash
 uv run --group docs mkdocs serve -f website/mkdocs.yml    # http://127.0.0.1:8200
 ```
 
-| Section | Pages |
-|---|---|
-| **Get started** | [Installation & setup](website/src/getting-started/installation.md) · [Quickstart](website/src/getting-started/quickstart.md) · [Tutorial: build with a coding agent](website/src/getting-started/tutorial-coding-agent.md) · [Tutorial: manual workflow](website/src/getting-started/tutorial-manual.md) · [The lifecycle](website/src/getting-started/lifecycle.md) |
-| **Build** | [Develop your agent](website/src/guides/develop.md) · [Authentication](website/src/guides/authentication.md) · [Outbound API policy](website/src/guides/api-policy.md) · [Human approval](website/src/guides/approvals.md) · [Evaluation](website/src/guides/evaluation.md) · [Extensions](website/src/guides/extensions.md) |
-| **Operate** | [Deploy to Kubernetes](website/src/guides/deploy.md) · [CI/CD](website/src/guides/cicd.md) · [Secrets](website/src/guides/secrets.md) · [Observability](website/src/guides/observability.md) · [Upgrading projects](website/src/guides/upgrading.md) · [Offline profile](website/src/guides/offline.md) · [Security & production](website/src/guides/security.md) |
-| **Reference** | [Environment variables](website/src/reference/environment.md) · [HTTP API](website/src/reference/http-api.md) · [api-policy.yaml](website/src/reference/api-policy-schema.md) · [Project manifest](website/src/reference/manifest.md) · [Exit codes](website/src/reference/exit-codes.md) · [Compared with google-agents-cli](website/src/reference/comparison.md) |
-
-The CLI reference is generated from the commands themselves when the site is built; on the
-command line, `graph-agents-cli <command> --help` shows the same. The bundled skills are
-described in [skills/README.md](skills/README.md).
+On the command line, `graph-agents-cli <command> --help` prints the same reference as the
+site's CLI page.
 
 ## Status
 
 Version 0.2.0, **alpha**
 ([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0)).
-Interfaces may still change between minor versions; [CHANGELOG.md](CHANGELOG.md) lists every
-breaking change with its migration steps. Publication on PyPI is pending.
+Interfaces may still change between minor versions; the changelog lists every breaking
+change with its migration steps. Publication on PyPI is pending.
 
-- [Known issues](KNOWN_ISSUES.md): parked issues, each with its impact and workaround.
-- [Changelog](CHANGELOG.md): every release and its migration steps.
-- [Contributing](CONTRIBUTING.md): development setup, tests, templates, releases and the
-  upstream-sync process.
+- [Known issues](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md): parked issues, each with its
+  impact and workaround.
+- [Changelog](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md): every release and its migration
+  steps.
+- [Contributing](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md): development setup, tests,
+  templates, releases and the upstream-sync process.
 
 ## License
 
-Apache-2.0: see [LICENSE](LICENSE). graph-agents-cli is a fork of
-[google-agents-cli](https://github.com/google/agents-cli) with the Google Cloud specific parts
-removed; [NOTICE](NOTICE) lists the attribution and the modifications.
+Apache-2.0: see [LICENSE](https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE). graph-agents-cli is a
+fork of [google-agents-cli](https://github.com/google/agents-cli) with the Google Cloud
+specific parts removed; [NOTICE](https://github.com/ss7172/graph-agents-cli/blob/main/NOTICE) lists the attribution
+and the modifications.

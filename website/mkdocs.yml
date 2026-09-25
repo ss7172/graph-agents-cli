@@ -86,6 +86,8 @@ hooks:
   - hooks/repo_links.py
   - hooks/strip_comments.py
   - hooks/table_code.py
+  - hooks/toc_depth.py
+  - hooks/output_blocks.py
 
 plugins:
   - search

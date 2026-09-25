@@ -14,6 +14,11 @@
  *   .gac-terminal                     a code block framed as a terminal window
  *   .gac-pill                         a small text badge
  *   .gac-lede                         an intro paragraph under a page title
+ *   .gac-tables                       consecutive tables sharing the full width
+ * Set by hooks (never written by hand):
+ *   .gac-output                       command output (hooks/output_blocks.py)
+ *   .gac-nb                           an unbreakable piece of table code (table_code.py)
+ *   .gac-cli                          the CLI reference page (cli_reference.py)
  */
 
 /* -- Tokens ---------------------------------------------------------------- */
@@ -68,7 +73,22 @@
   --md-accent-bg-color: #ffffff;
   --md-typeset-a-color: var(--gac-brand);
   --md-code-bg-color: #f3f6f8;
-  --md-code-hl-color: #0f766e24;
+  /* Highlighted lines (hl_lines): a teal bar and tint. Material's token colours sit at
+     4.5:1 on the plain code background and drop below it on any tint, so they are a
+     shade darker here: every token is at least 4.75:1 on a highlighted line. */
+  --md-code-hl-color: #0f766e;
+  --md-code-hl-color--light: #0f766e12;
+  --md-code-hl-keyword-color: #3964b4;
+  --md-code-hl-constant-color: #6653ca;
+  --md-code-hl-function-color: #9b40aa;
+  --md-code-hl-number-color: #c42727;
+  --md-code-hl-special-color: #c91250;
+  --md-code-hl-string-color: #1a7448;
+  --md-code-hl-comment-color: #5c6670;
+  --md-code-hl-generic-color: #5c6670;
+  --md-code-hl-operator-color: #5c6670;
+  --md-code-hl-punctuation-color: #5c6670;
+  --md-code-hl-variable-color: #5c6670;
 }
 
 [data-md-color-scheme="slate"] {
@@ -81,7 +101,11 @@
   --md-accent-fg-color--transparent: #2dd4bf1f;
   --md-accent-bg-color: #042f2e;
   --md-typeset-a-color: var(--gac-brand-strong);
-  --md-code-hl-color: #2dd4bf26;
+  /* Every token stays at or above 4.75:1 on a highlighted line. */
+  --md-code-hl-color: #2dd4bf;
+  --md-code-hl-color--light: #2dd4bf14;
+  --md-code-hl-constant-color: #9585e3;
+  --md-code-hl-number-color: #e66c5e;
 }
 
 /* -- Header and tabs: neutral, the logo carries the brand ----------------- */
@@ -176,6 +200,20 @@
   color: var(--gac-muted);
 }
 
+.gac-announce--short {
+  display: none;
+}
+
+@media screen and (max-width: 44.9375em) {
+  .gac-announce--long {
+    display: none;
+  }
+
+  .gac-announce--short {
+    display: inline;
+  }
+}
+
 /* -- Sidebar -------------------------------------------------------------- */
 .md-nav__link--active,
 .md-nav__item .md-nav__link--active {
@@ -210,6 +248,13 @@
   margin-bottom: 0.5em;
 }
 
+/* The hidden permalink after a page title wraps onto a line of its own on phones. */
+@media screen and (max-width: 44.9375em) {
+  .md-typeset h1 .headerlink {
+    display: none;
+  }
+}
+
 .md-typeset h2 {
   font-weight: 700;
   margin-top: 2em;
@@ -226,6 +271,10 @@
 .md-typeset > ol,
 .md-typeset > dl {
   max-width: 42rem;
+}
+
+.md-typeset > ol.gac-lifecycle {
+  max-width: none;
 }
 
 .md-typeset .gac-lede {
@@ -268,6 +317,91 @@
   }
 }
 
+/* What a command prints (hooks/output_blocks.py): a lighter, dashed frame, an "Output"
+   label and no copy button, so it never reads as a command to type. */
+.md-typeset .gac-output pre > code {
+  background-color: transparent;
+  border-style: dashed;
+  border-color: var(--gac-border-strong);
+}
+
+.md-typeset .gac-output--label::before {
+  content: "Output";
+  display: block;
+  margin: 0 0 0.3em;
+  font-size: 0.62rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-terminal .gac-output pre > code {
+  border-style: none;
+  background-color: var(--gac-term-bg);
+}
+
+.md-typeset .gac-terminal .gac-output--label::before {
+  display: none;
+}
+
+/* -- Definition lists (environment variables, CLI options, guardrails) ----- */
+.md-typeset dl > dt {
+  margin-top: 1.1em;
+}
+
+.md-typeset dl > dt code {
+  font-size: 0.9em;
+  font-weight: 650;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset dl > dd {
+  margin-top: 0.3em;
+}
+
+.md-typeset dl > dd > p {
+  margin: 0.4em 0;
+}
+
+/* -- CLI reference (hooks/cli_reference.py wraps the page in .gac-cli) ----- */
+.md-typeset .gac-cli h2,
+.md-typeset .gac-cli h3,
+.md-typeset .gac-cli h4 {
+  margin-top: 2.2em;
+  padding-top: 0.9em;
+  border-top: 1px solid var(--gac-border);
+  font-family: var(--md-code-font-family);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset .gac-cli h2 {
+  font-size: 1.15em;
+}
+
+.md-typeset .gac-cli h3,
+.md-typeset .gac-cli h4 {
+  font-size: 1em;
+}
+
+/* The subcommand list (mkdocs-click italicises each name). */
+.md-typeset .gac-cli li > em:first-child {
+  font-style: normal;
+  font-family: var(--md-code-font-family);
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.md-typeset .gac-cli dl > dt {
+  margin-top: 0.8em;
+}
+
+.md-typeset .gac-cli dl > dd {
+  margin-left: 1.2em;
+  color: var(--md-default-fg-color);
+}
+
 /* -- Tables ---------------------------------------------------------------- */
 /* overflow: auto (Material's own value) keeps the rounded corners and lets a table that
    is wider than the column scroll sideways instead of being clipped. */
@@ -278,15 +412,32 @@
   overflow: auto;
 }
 
-/* Code in tables names things (a variable, a route, an action). hooks/table_code.py marks
-   its separators as break points; from tablet width up it breaks only there and at spaces,
-   never inside a name. Phones keep Material's break-anywhere as a last resort, so tables
-   stay as narrow as they can, but the marked separators are tried first. */
-@media screen and (min-width: 45em) {
-  .md-typeset table:not([class]) code {
-    word-break: normal;
-    overflow-wrap: normal;
-  }
+/* Code in tables names things (a variable, a route, a flag). hooks/table_code.py cuts it
+   into segments at spaces and after / . _ with a <wbr> between them; each segment stays
+   whole (no break after a hyphen, no break mid-name). A table that still does not fit
+   scrolls sideways inside Material's wrapper. */
+.md-typeset table:not([class]) code {
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.md-typeset table:not([class]) code .gac-nb {
+  white-space: nowrap;
+}
+
+/* Tables of one shape that follow each other (<div class="gac-tables" markdown>) share the
+   full width and their first column, so their edges line up. */
+.md-typeset .gac-tables .md-typeset__table {
+  display: block;
+}
+
+.md-typeset .gac-tables table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+.md-typeset .gac-tables table:not([class]) th:first-child {
+  width: 34%;
 }
 
 .md-typeset table:not([class]) th {
@@ -567,10 +718,20 @@
 
 .md-typeset .gac-lifecycle code {
   display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
   margin: 0.15em 0.2em 0 0;
   font-size: 0.64rem;
   background-color: var(--gac-brand-tint);
   color: var(--md-default-fg-color);
+}
+
+/* Between tablet and wide desktop the lifecycle page's five columns share the space with
+   the table of contents: a command may wrap there rather than overflow its card. */
+@media screen and (min-width: 60em) and (max-width: 76.1875em) {
+  .md-typeset .gac-lifecycle code {
+    white-space: normal;
+  }
 }
 
 .md-typeset .gac-lifecycle__loop {
@@ -693,11 +854,22 @@
 }
 
 .md-typeset .gac-works__label {
+  flex-basis: 100%;
   margin-right: 0.3rem;
   font-size: 0.66rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  color: var(--gac-muted);
+}
+
+.md-typeset .gac-works .gac-pill {
+  font-size: 0.68rem;
+  padding: 0.12em 0.6em;
+}
+
+.md-typeset .gac-works__more {
+  font-size: 0.68rem;
   color: var(--gac-muted);
 }
 

@@ -184,11 +184,12 @@ Every run is recorded in the app database when it starts (`running`) and updated
 | Status | Meaning |
 |---|---|
 | `ok` | the run finished |
+| `awaiting_approval` | the run paused before a gated API call and waits for a decision (see [Human approval](approvals.md)) |
 | `step_limit` | the run reached `RECURSION_LIMIT` and ended with a reply saying so |
 | `error` | the run failed |
 | `timeout` | the run exceeded `RUN_TIMEOUT_S` (default 300) |
-| `cancelled` | the client disconnected, or the run was stopped during a pod's shutdown drain (see [Limitations](#limitations)) |
-| `interrupted` | the run lost its lease on the thread, or its process died |
+| `cancelled` | the client disconnected |
+| `interrupted` | the run lost its lease on the thread, its process died, or a pod's shutdown drain cut it (see [Limitations](#limitations)) |
 
 A record left `running` by a dead process is marked `interrupted` (error type `ProcessLost`)
 about a minute after its lease expires, and counted in `agent_runs_total{status="interrupted"}`.

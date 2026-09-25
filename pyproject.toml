@@ -41,6 +41,8 @@ graph-agents-cli = "graph_agents_cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/ss7172/graph-agents-cli"
+Documentation = "https://ss7172.github.io/graph-agents-cli/"
+Changelog = "https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ss7172/graph-agents-cli/issues"
 
 [dependency-groups]

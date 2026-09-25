@@ -54,11 +54,15 @@ and keeps the rest. The formal schema is in the
 nothing, and `api approval` and `lint` say so. An `approval` key on an operation entry is
 refused: gate an operation with `approval.required_for.operations`.
 
-**An operations entry holds like a denial.** Its `path` gates every call to that path, its
-`operationId` the calls that name it, and a call that leaves out what the entry knows the
-operation by is gated too. Pin the path and methods: with the API's `openapi:` spec recorded,
-`api approval --operations` does it for you; without one it writes entries by label only, and
-says so.
+**An operations entry holds like a denial.** It gates:
+
+- every call to its `path`;
+- every call that names its `operationId`;
+- a call that leaves out what the entry knows the operation by.
+
+Pin the path and methods. With the API's `openapi:` spec recorded,
+`api approval --operations` does it for you; without one it writes entries by label only,
+and says so.
 
 ## Other approvers for other calls
 

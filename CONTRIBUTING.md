@@ -293,7 +293,8 @@ the relevant skill references (both copies), schemas where applicable, regressio
 CHANGELOG.md (`## [Unreleased]`, with migration steps for anything breaking). Describe
 compatibility implications in the pull request.
 
-The documentation site is MkDocs Material in `website/` (pages in `website/src/`). Preview it
+The documentation site is MkDocs Material in `website/` (pages in `website/src/`;
+[`website/README.md`](website/README.md) has the rules for writing a page). Preview it
 with `uv run --group docs mkdocs serve -f website/mkdocs.yml`; CI (`docs.yml`) builds it with
 `mkdocs build --strict` and checks its links. The CLI and Skills reference pages are generated
 from the Click commands and `skills/`, and the Known issues and Changelog pages include

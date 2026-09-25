@@ -11,7 +11,7 @@ hide:
 
 <div class="gac-hero__copy" markdown>
 
-<p class="gac-eyebrow"><span class="gac-pill gac-pill--brand">graph-agents-cli</span> <span>Graphs in, agents out.</span></p>
+<p class="gac-eyebrow">Graphs in, agents out.</p>
 
 # Build, evaluate and deploy <span class="gac-hl">LangGraph agents</span> on your own Kubernetes
 
@@ -23,13 +23,13 @@ auth, an outbound API policy, human approval of risky calls and an eval gate CI 
 [View on GitHub](https://github.com/ss7172/graph-agents-cli){ .md-button }
 
 <div class="gac-works">
-  <span class="gac-works__label">Works with</span>
+  <span class="gac-works__label">Works with your coding agent</span>
   <span class="gac-pill">Claude Code</span>
   <span class="gac-pill">Codex</span>
   <span class="gac-pill">Gemini CLI</span>
   <span class="gac-pill">Cursor</span>
   <span class="gac-pill">Antigravity</span>
-  <span class="gac-pill">and more</span>
+  <span class="gac-works__more">and more</span>
 </div>
 
 </div>
@@ -41,9 +41,10 @@ auth, an outbound API policy, human approval of risky calls and an eval gate CI 
 uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
 graph-agents-cli setup
 
-# create and run an agent (MODEL_PROVIDER=fake needs no key)
+# create an agent and ask it a question: the fake model needs no key
 graph-agents-cli create my-agent && cd my-agent
 cp .env.example .env
+export MODEL_PROVIDER=fake
 graph-agents-cli login --write-env
 graph-agents-cli install
 graph-agents-cli run "What's the weather in San Francisco?"
@@ -63,28 +64,22 @@ Everything runs on your machine first; a model key and a cluster come later.
 
 -   **Install the CLI and the skills**
 
-    ```bash
-    uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
-    graph-agents-cli setup
-    ```
+    One `uv tool install` from the release tag, then `setup` adds the skills to the coding
+    agents it finds.
 
     [Installation & setup](getting-started/installation.md)
 
 -   **Create and run an agent**
 
-    ```bash
-    graph-agents-cli create my-agent
-    graph-agents-cli run "What's the weather in San Francisco?"
-    ```
+    `create` a project, let `login --write-env` fill in `.env`, `install`, then `run` a
+    prompt. Five minutes on the fake model, no key.
 
     [Quickstart](getting-started/quickstart.md)
 
 -   **Evaluate and deploy it**
 
-    ```bash
-    graph-agents-cli eval run
-    graph-agents-cli deploy --env dev
-    ```
+    Add an API tool under a policy, pass the `eval run` gate, then `deploy --env dev` to a
+    local kind cluster.
 
     [Tutorial: manual workflow](getting-started/tutorial-manual.md)
 
@@ -124,7 +119,8 @@ A generic toolkit: nothing in the CLI or the generated project is specific to on
 -   :material-kubernetes:{ .lg } **Deploy to any Kubernetes**
 
     `deploy --env dev|staging|prod` with Helm, directly or through Argo CD pull requests.
-    Local clusters (kind, k3d, minikube, Docker Desktop) need no registry.
+    Local clusters (kind, k3d, minikube, Docker Desktop) need no registry push: any valid
+    name, such as `--registry localhost/dev`, works.
 
     [Deploy to Kubernetes](guides/deploy.md)
 

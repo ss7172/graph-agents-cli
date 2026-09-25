@@ -18,7 +18,7 @@ database. How CI builds and promotes images is on [CI/CD](cicd.md); the app Secr
 | Tool | Needed for |
 |---|---|
 | `helm`, `kubectl` | every deploy, `secrets`, `infra check` |
-| `docker` (or a Docker-compatible CLI) | building the image (`build`, direct `deploy`) |
+| `docker` (or a Docker-compatible CLI) with BuildKit | building the image (`build`, direct `deploy`); the Dockerfile's `RUN --mount` needs BuildKit (the `buildx` plugin, the default in Docker Desktop) |
 | `git` | image tags (the short commit sha), `argocd` mode |
 | `gh` (or `GITHUB_TOKEN`) | `argocd` mode: opening the pull request |
 

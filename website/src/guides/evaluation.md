@@ -322,7 +322,9 @@ fake model; the eval gate uses a real model when:
 
 - the provider's key is a repository secret (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   `GOOGLE_API_KEY` or `MODEL_API_KEY`), or
-- the `MODEL_PROVIDER` / `MODEL_NAME` repository variables are set.
+- the `MODEL_PROVIDER` repository variable is set (with `MODEL_NAME` when it names another
+  provider than the project's). `MODEL_NAME` alone only changes the model once a key or
+  `MODEL_PROVIDER` has switched the gate to a real one.
 
 `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME` and `JUDGE_BASE_URL` variables and a `JUDGE_API_KEY`
 secret pick a separate judge. Without a key the gate runs on the fake model and warns that it

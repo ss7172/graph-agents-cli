@@ -14,11 +14,14 @@
 
 """MkDocs hook: inline code in tables wraps at its separators, never mid-name.
 
-Material lets inline code break anywhere, so a narrow table column splits names like
-``thread.lis|t`` or ``/approval|s``. This adds a break opportunity (``<wbr>``, which is
-not copied with the text) after ``/``, ``.`` and ``_`` and before ``{`` inside the plain
-inline code of content tables; ``custom.css`` then turns off breaking anywhere else.
-A route wraps between its segments and a dotted or snake_case name between its parts.
+Material lets inline code break anywhere, and browsers also break after every hyphen, so a
+narrow table column splits names like ``thread.lis|t``, ``/approval|s`` or
+``--model-|provider``. This cuts the plain inline code of content tables into segments at
+spaces and, in words over ``SHORT_NAME`` characters, after ``/``, ``.`` and ``_`` (and
+before ``{``). Each segment is wrapped in ``<span class="gac-nb">`` (``white-space:
+nowrap`` in ``custom.css``), with a ``<wbr>`` (not copied with the text) between segments.
+A long route wraps between its segments, a flag list between its flags, and a short name
+never; a table that still does not fit scrolls sideways.
 """
 
 from __future__ import annotations
@@ -27,6 +30,9 @@ import re
 
 # Content tables only (Material's own tables, like code line numbers, carry a class).
 _TABLE = re.compile(r"<table>.*?</table>", re.DOTALL)
+# Words up to this many characters never break inside (entities count, which only errs
+# towards breaking a little earlier).
+SHORT_NAME = 16
 # Inline code with plain text only: highlighted code has tags inside and is left alone.
 _CODE = re.compile(r"<code>([^<]+)</code>")
 # After `.` or `_` between name parts; after a `/` that ends a segment (a name, `}` or an
@@ -34,8 +40,21 @@ _CODE = re.compile(r"<code>([^<]+)</code>")
 _SOFT = re.compile(r"(?<=[\w}][._])(?=[\w{])|(?<=[\w};]/)(?=[\w{&.])|(?<=\w)(?=\{)")
 
 
+def _segments(text: str) -> str:
+    out = []
+    for word in re.split(r"( +)", text):
+        if not word or word.isspace():
+            out.append(word)
+            continue
+        # A short name (``thread.list``, ``METRICS_TOKEN``) is kept whole; a long route or
+        # path gets its break points.
+        pieces = [word] if len(word) <= SHORT_NAME else _SOFT.split(word)
+        out.append("<wbr>".join(f'<span class="gac-nb">{piece}</span>' for piece in pieces))
+    return "".join(out)
+
+
 def _soften(code: re.Match[str]) -> str:
-    return f"<code>{_SOFT.sub('<wbr>', code.group(1))}</code>"
+    return f"<code>{_segments(code.group(1))}</code>"
 
 
 def on_page_content(html, page, **kwargs):

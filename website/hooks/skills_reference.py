@@ -17,7 +17,7 @@
 ``reference/skills.md`` holds the page's introduction and a marker line; at
 build time the marker is replaced with one section per bundled skill, read from
 its SKILL.md frontmatter (name, description, version) and its ``references/``
-directory. Nothing is written to disk, so the page can never drift from the
+directory, the entry-point skill first. Nothing is written to disk, so the page can never drift from the
 skills it describes. A skills directory without skills, or a SKILL.md without
 frontmatter, fails the build.
 """
@@ -34,6 +34,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS_DIR = REPO_ROOT / "skills"
 SKILLS_PAGE = "reference/skills.md"
 MARKER = "<!-- skills-reference:generated -->"
+# The entry point every request starts from is listed first; the rest follow by name.
+ENTRY_SKILL = "graph-agents-cli-workflow"
 
 _blob_base: dict[str, str] = {"url": ""}
 
@@ -109,7 +111,10 @@ def on_page_markdown(markdown, page, **kwargs):
         return markdown
     if MARKER not in markdown:
         raise PluginError(f"skills_reference hook: {SKILLS_PAGE} lost its marker {MARKER!r}.")
-    skill_dirs = sorted(p.parent for p in SKILLS_DIR.glob("*/SKILL.md"))
+    skill_dirs = sorted(
+        (p.parent for p in SKILLS_DIR.glob("*/SKILL.md")),
+        key=lambda d: (d.name != ENTRY_SKILL, d.name),
+    )
     if not skill_dirs:
         raise PluginError(f"skills_reference hook: no skills under {SKILLS_DIR}.")
     sections = "\n---\n\n".join(_skill_section(d) for d in skill_dirs)

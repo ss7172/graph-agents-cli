@@ -79,7 +79,7 @@ You can type every command yourself or ask a coding agent that has the skills. B
 same CLI, and the skills stop for your review where a human decision belongs: the spec, a
 wider API policy, an approval, a deploy.
 
-<div class="grid cards gac-cols-3" markdown>
+<div class="grid cards" markdown>
 
 -   :material-robot-outline:{ .lg } **[With a coding agent](tutorial-coding-agent.md)**
 
@@ -89,16 +89,17 @@ wider API policy, an approval, a deploy.
 
     Every command, with its output and what to notice.
 
--   :material-rocket-launch-outline:{ .lg } **[Quickstart](quickstart.md)**
-
-    Five minutes, no model key.
-
 </div>
+
+New to both? The [Quickstart](quickstart.md) runs a first agent in five minutes, without a
+model key.
 
 ## Commands by stage
 
 Each command links to its entry in the [CLI reference](../reference/cli.md), which lists
 every flag.
+
+<div class="gac-tables" markdown>
 
 ### Before the first project
 
@@ -164,6 +165,8 @@ every flag.
 |---|---|
 | [`extension`](../reference/cli.md#graph-agents-cli-extension) | Add, list, remove or update extensions that override or add commands (experimental) |
 
+</div>
+
 ## Exit codes
 
 Every command follows one contract, which is what CI jobs and coding agents act on:
@@ -172,7 +175,7 @@ Every command follows one contract, which is what CI jobs and coding agents act 
 |---|---|
 | 0 | Success: the eval gate is met, the Secret holds every required key, a run finished or waits for an approval |
 | 1 | Refused or failed: a policy or mode said no, a confirmation was declined, a gate failed |
-| 2 | A tool failed: helm, kubectl, docker, git or gh failed or is missing, the agent could not be reached, an eval case errored |
+| 2 | A tool failed: helm, kubectl, docker, git or gh returned an error or is missing, the agent could not be reached, an eval case errored (`build` and `install` exit 1 when docker or uv is missing) |
 | 3 | Configuration error: not in a project, an invalid manifest, env file, policy, port or context |
 
 A failed gate (1) asks for a change to the agent; a tool failure (2) asks for a retry or a

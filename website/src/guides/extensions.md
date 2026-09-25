@@ -127,7 +127,7 @@ did not change is "Already up to date" without a prompt, and new code needs your
 This example adds a `release-notes` command and makes `lint` refuse `TODO` markers before
 running the built-in lint. The directory:
 
-```text
+```text title="Extension layout"
 team-tools/
 ├── graph-agents-cli-extension.yaml
 └── scripts/

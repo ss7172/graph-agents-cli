@@ -16,8 +16,10 @@ agents can act on a result without parsing its output.</p>
 | `2` | A tool failed or could not be reached: `helm`, `kubectl`, `docker`, `git`, `gh`, `uvx`, a local server, the agent. Also an incomplete eval run, a Click usage error and an unexpected crash. | Retrying once the tool or network works, or reporting a bug. |
 | `3` | Configuration error: not in a project, an invalid manifest, env file, policy, port or kube context, a placeholder left in place. | Fixing the configuration the message names. |
 
-The scheme is the same everywhere; each command's `--help` ends with the cases it maps to
-it (rendered in the [CLI reference](cli.md)).
+The scheme is the same everywhere, and this page maps every command to it. The gate and run
+commands (`run`, `lint`, `login`, `auth dev-token`, `eval run`, `eval generate`, `eval grade`,
+`secrets status`, `scaffold enhance`) and the `api`, `approvals` and `eval` groups also list
+their cases in `--help` (rendered in the [CLI reference](cli.md)).
 
 ## Beyond 0 to 3
 
@@ -72,7 +74,7 @@ the traceback is printed and the command exits `2`.
 
     | Command | `1` | `2` | `3` |
     |---|---|---|---|
-    | [`build`](cli.md#graph-agents-cli-build) | | `docker` failed or is missing | A placeholder (`ghcr.io/CHANGE-ME`) or invalid registry |
+    | [`build`](cli.md#graph-agents-cli-build) | `docker` is missing | `docker` failed | A placeholder (`ghcr.io/CHANGE-ME`) or invalid registry |
     | [`deploy`](cli.md#graph-agents-cli-deploy) | Refused by the CD mode or by policy, a declined context confirmation, a required Secret key missing, `--status` not complete within `--timeout` | `helm`, `kubectl`, `docker`, `git` or `gh` failed or is missing; another helm operation holds the release; `--restart` pods not ready | No env file for the environment, a placeholder registry, a `CHANGE-ME` left in the chart `env` or incomplete `jwt` settings outside dev, an unknown context |
     | [`secrets apply`](cli.md#graph-agents-cli-secrets-apply) | Refused (a declined confirmation) | `kubectl` failed | No env file, unknown environment or context |
     | [`secrets status`](cli.md#graph-agents-cli-secrets-status) | The Secret is missing, or a required key is (any key with `--strict`) | `kubectl` failed (unreachable cluster, credentials, RBAC) | Unknown environment or context, no manifest |
@@ -130,7 +132,7 @@ $ echo $?
 
 -   :material-console:{ .lg } **[CLI reference](cli.md)**
 
-    Every command's own `Exit codes` block and flags.
+    Every command and flag, as `--help` prints them.
 
 -   :material-check-decagram-outline:{ .lg } **[Evaluation](../guides/evaluation.md)**
 

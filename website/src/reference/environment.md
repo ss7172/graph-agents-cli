@@ -14,42 +14,57 @@ locally from `.env`, in a cluster from the chart values and the app Secret.
 ## The CLI
 
 `GRAPH_AGENTS_CLI_API_KEY`
-:   The bearer credential `run`, `approvals` and `eval` send, locally and with `--url`, when no
-    `Authorization` header is given: an `API_KEY` or a JWT. Read from the process environment
-    only, never from `.env`; it keeps the credential out of the process list and your shell
-    history. Locally, a `shared-bearer` project's `API_KEY` from `.env` is used when it is
-    unset. Default: unset.
+:   The bearer credential `run`, `approvals` and `eval` send, locally and with `--url`, when
+    no `Authorization` header is given: an `API_KEY` or a JWT. Read from the process
+    environment only, never from `.env`; it keeps the credential out of the process list and
+    your shell history. Locally, a `shared-bearer` project's `API_KEY` from `.env` is used
+    when it is unset.
+
+    **Default:** unset.
 
 `GRAPH_AGENTS_CLI_APPROVER_API_KEY`
-:   The bearer credential `eval generate` decides `role:` approval gates with. A gate that lists
-    `requester` is decided as the eval identity instead. See
-    [Evaluation](../guides/evaluation.md). Default: unset.
+:   The bearer credential `eval generate` decides `role:` approval gates with. A gate that
+    lists `requester` is decided as the eval identity instead. See
+    [Evaluation](../guides/evaluation.md).
+
+    **Default:** unset.
 
 `GRAPH_AGENTS_CLI_RUN_PORT`
-:   Port of the local server `run`, `approvals` and `eval` start on demand; used exactly (exit 3
-    when it is taken or not a port). `run --port` wins over it. Default: first free of
-    `18080`-`18089`.
+:   Port of the local server `run`, `approvals` and `eval` start on demand; used exactly
+    (exit 3 when it is taken or not a port). `run --port` wins over it.
+
+    **Default:** first free of `18080`-`18089`.
 
 `GRAPH_AGENTS_CLI_INSTALL_SPEC`
-:   Where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install
-    the CLI from: a private mirror, a wheel, or a package index. See [Install source
-    override](#install-source-override). Default: the release tag of this repository.
+:   Where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI
+    install the CLI from: a private mirror, a wheel, or a package index. See [Install source
+    override](#install-source-override).
+
+    **Default:** the release tag of this repository.
 
 `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK`
 :   `1` turns off the check for a newer release on GitHub (at most every 12 hours) and the
-    skills version check. Set it for disconnected installs. Default: unset.
+    skills version check. Set it for disconnected installs.
+
+    **Default:** unset.
 
 `GRAPH_AGENTS_CLI_DEBUG`
 :   `1` shows the traceback behind a one-line network, file or parse error. See [Exit
-    codes](exit-codes.md). Default: unset.
+    codes](exit-codes.md).
+
+    **Default:** unset.
 
 `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES`
-:   `1` ignores extension overrides and additions; every generated CI and CD job sets it. See
-    [Extensions](../guides/extensions.md). Default: unset.
+:   `1` ignores extension overrides and additions; every generated CI and CD job sets it.
+    See [Extensions](../guides/extensions.md).
+
+    **Default:** unset.
 
 `GRAPH_AGENTS_CLI_SKIP_VERSION_LOCK`
-:   `1` lets `scaffold enhance` run with the running build instead of the version the project
-    records. Default: unset.
+:   `1` lets `scaffold enhance` run with the running build instead of the version the
+    project records.
+
+    **Default:** unset.
 
 ### Install source override
 

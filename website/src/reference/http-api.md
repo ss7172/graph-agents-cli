@@ -149,8 +149,10 @@ One run per thread
 :   A second `/chat` on a thread with a run in progress gets 409 `thread_busy`. The lock is in
     the process and, under `CHECKPOINTER=postgres`, a lease row shared by every replica. The
     holder renews it every 5 s; a replica lost without closing its connections frees its
-    threads 30 s later. A run whose lease cannot be renewed is stopped (run status
-    `interrupted`) before it writes, so two replicas never run one thread at once.
+    threads 30 s later. A lease is a row, not a database session, so a Postgres restart or
+    failover keeps it and the run goes on. A run whose lease cannot be renewed is stopped
+    (run status `interrupted`) before it writes, so two replicas never run one thread at
+    once.
 
 Limits
 :   Bodies over `MAX_REQUEST_BYTES` (1 MiB) get 413. A message over `MAX_MESSAGE_CHARS`
@@ -362,8 +364,12 @@ above behaves the same, with these differences:
     - **The A2A task store is per replica.** `GetTask` or a resubscribe routed to another pod
       reads as not found. Use one replica, or sticky routing, for long A2A tasks.
     - **The run lease is checked in the process**, not by the database in the same
-      transaction, and a thread whose run was on a replica that died answers 409
-      `thread_busy` for up to 30 s.
+      transaction: a write already sent when a network partition starts can land after
+      another replica took the thread (normal reads still follow the newer run's
+      checkpoints). Keep `tcp_user_timeout` in the DSN below the 30 s lease
+      ([KI-018](known-issues.md#ki-018-the-per-thread-run-lease-is-checked-in-the-process-not-in-the-database-write)).
+      A thread whose run was on a replica that died answers 409 `thread_busy` for up to
+      30 s.
     - **Native runs under `langgraph-server`** carry the caller's raw id in checkpoint metadata,
       and store reads are open to every authenticated principal: namespace per-user data by
       principal, and do not publish the native routes you do not need.

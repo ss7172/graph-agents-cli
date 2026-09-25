@@ -17,7 +17,7 @@ You need Python and uv for everything; the rest only for the stage that uses it.
 | Python 3.12 or 3.13 | The CLI and every project it generates |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Installing the CLI; `install`, `run`, `playground`, `lint` and `eval` run the project through it |
 | Node.js (`npx`) | `setup` and `update` install the skills with `npx skills`; without it `setup` copies them instead |
-| `helm`, `kubectl`, a Docker-compatible `docker` CLI, `git` | `build`, `deploy` and `secrets` |
+| `helm`, `kubectl`, a Docker-compatible `docker` CLI that builds with BuildKit, `git` | `build`, `deploy` and `secrets`. The generated Dockerfile uses `RUN --mount`, which needs BuildKit (the `buildx` plugin; the default in Docker Desktop) |
 | `gh` | Argo CD mode (`deploy` opens pull requests) and GitHub-hosted CD |
 
 Everything up to deployment runs on your machine. A tool that `deploy` needs and cannot
@@ -129,15 +129,19 @@ graph-agents-cli setup --dry-run
 
 ### Where the skills come from
 
-The skills always match the CLI you run. `setup` tries three sources in order, each only
-when the one before it fails:
+The skills match the release your CLI's version names. `setup` tries three sources in
+order, each only when the one before it fails:
 
-1. `npx skills add` from this repository at the running release's tag
-   (`https://github.com/ss7172/graph-agents-cli#v0.2.0`); a development build uses the
-   default branch. Needs `git` and network access.
-2. `npx skills add` from the copy bundled in the installed CLI (same version, no network).
+1. `npx skills add` from this repository at that release's tag
+   (`https://github.com/ss7172/graph-agents-cli#v0.2.0`). Needs `git` and network access.
+2. `npx skills add` from the copy bundled in the installed CLI (same build, no network).
 3. A plain copy of the bundled skills into `~/.agents/skills` (`./.agents/skills` with
    `--workspace`), for machines without Node.js.
+
+A build between releases (`0.2.0+g<commit>`) still installs the `v0.2.0` skills in step 1.
+Only a version with no release behind it (`0.0.0`, a `.devN` or a `+local` version) uses the
+default branch. For skills that match a checkout's own code, run `setup --dev` from the
+checkout (it also installs the CLI from it, editable) or pass `--skills-source <checkout>`.
 
 `--skills-source` names another source instead: a local path, a GitHub `owner/repo`, or a
 URL with a `#<ref>`. An explicit source never falls back to the bundled copy.

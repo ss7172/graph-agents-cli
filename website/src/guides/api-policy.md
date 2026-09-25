@@ -47,10 +47,16 @@ apis:
     allowed_methods: [GET, HEAD]
 ```
 
-It also adds `ORDERS_API_TOKEN` to `secrets.keys` in the manifest, `ORDERS_API_BASE_URL` and
-`ORDERS_API_TOKEN` to `.env.example`, and a `CHANGE-ME` base URL to the chart's `values.yaml`,
-then lists what is left for you: the base URL in `.env` and in each `values-<env>.yaml`, and
-the token in `.env` and `.env.<env>` before `secrets apply`.
+It changes three more files and then lists what is left for you:
+
+| File | What `api add` changes |
+|---|---|
+| `graph-agents-cli-manifest.yaml` | `ORDERS_API_TOKEN` joins `secrets.keys` |
+| `.env.example` | `ORDERS_API_BASE_URL` and `ORDERS_API_TOKEN` lines |
+| the chart's `values.yaml` | a `CHANGE-ME` base URL |
+
+Left for you: the base URL in `.env` and in each `values-<env>.yaml`, and the token in `.env`
+and `.env.<env>` before `secrets apply`.
 
 The access presets are written into the file as the methods themselves, never as a name:
 

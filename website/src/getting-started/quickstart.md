@@ -35,7 +35,7 @@ cd my-agent
    graph-agents-cli deploy --env dev
 ```
 
-!!! note "The `ghcr.io/CHANGE-ME` warning"
+??? warning "`create` warned about `ghcr.io/CHANGE-ME`?"
     Outside a git repository with an `origin` remote, `create` has no registry to name the
     image after and records the placeholder `ghcr.io/CHANGE-ME`. That is harmless until
     `build` or `deploy`, which refuse it (exit 3). Set a real one later with

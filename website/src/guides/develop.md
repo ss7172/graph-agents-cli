@@ -15,7 +15,7 @@ A project has one agent directory (`app/` by default, `--agent-directory` to ren
 what `graph-agents-cli create my-agent` generates with the defaults (the `fastapi` runtime, the
 `kubernetes` target, `--cd skip`):
 
-```text
+```text title="Project layout"
 my-agent/
 ├── app/
 │   ├── agent.py             # exports `graph` (no checkpointer bound)
@@ -29,13 +29,16 @@ my-agent/
 ├── langgraph.json           # graph, app and auth for LangGraph Server
 ├── Dockerfile               # the runtime's image (runs as uid 1000)
 ├── .env.example             # every setting, with its default
+├── README.md                # how to run and change this project
 ├── AGENTS.md                # guidance for coding agents
 ├── graph-agents-cli-manifest.yaml
 ├── pyproject.toml
 └── uv.lock
 ```
 
-`api-policy.yaml` appears once you declare an outbound API (`create --api-policy FILE`, or
+The project's own `README.md` and `AGENTS.md` describe that project: how to run, test and
+deploy it, for you and for a coding agent. `api-policy.yaml` appears once you declare an
+outbound API (`create --api-policy FILE`, or
 `graph-agents-cli api add` later). `--prototype` (or `-d none`) leaves out `deployment/` and
 keeps only the `pr_checks` workflow; `--cd argocd` adds `deployment/argocd/`.
 [Tutorial: manual workflow](../getting-started/tutorial-manual.md) walks through the `create`

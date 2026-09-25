@@ -80,7 +80,7 @@ graph-agents-cli create my-agent --model-provider openai-compatible --model my-m
 cd my-agent
 cp .env.example .env        # set OPENAI_BASE_URL to the on-network server
 graph-agents-cli install --locked
-graph-agents-cli login --profile disconnected
+graph-agents-cli login --write-env --profile disconnected
 ```
 
 `create` defaults to `fastapi` and `cd: skip`, and `--registry` keeps the image off hosted

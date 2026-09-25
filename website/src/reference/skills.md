@@ -13,8 +13,8 @@ graph-agents-cli setup     # install the CLI and the skills
 graph-agents-cli update    # refresh the skills, upgrade the CLI
 ```
 
-`setup` installs the skills of the running release, so they always match your CLI, and falls
-back to the copy bundled in the wheel when it cannot fetch them.
+`setup` installs the skills of the release your CLI's version names, and falls back to the
+copy bundled in the wheel when it cannot fetch them.
 [Installation & setup](../getting-started/installation.md) covers the options (a workspace
 install, another source, a specific agent). Once installed, ask your coding agent to "use
 graph-agents-cli to build ..." and the `graph-agents-cli-workflow` skill leads.

@@ -8,6 +8,24 @@ migration" with the steps to follow.
 
 ## [Unreleased]
 
+### Added
+
+- **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
+  five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
+  agent, and a reference whose CLI and Skills pages are generated from the commands and
+  `skills/`. `.github/workflows/docs.yml` builds it with `mkdocs build --strict` and checks its
+  links on every pull request; publishing to GitHub Pages stays off until the repository
+  variable `PUBLISH_DOCS` is `true`. Preview it with
+  `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
+
+### Changed
+
+- **The README is a short entry point** with absolute links (it is also the PyPI page). Its
+  former sections, including "Known limitations" and "Where it is behind", moved to the
+  site's pages: each limitation now sits on the page of the feature it concerns, the
+  comparison on [Compared with google-agents-cli](website/src/reference/comparison.md). The
+  tests that ran README examples now run the same examples from the site's guides.
+
 ## [0.2.0] - 2026-09-24
 
 graph-agents-cli is now a generic CLI for building, evaluating and deploying LangGraph agents
@@ -16,7 +34,9 @@ the skills or a generated project is shaped around one consumer: projects choose
 policy and declare the outbound APIs their tools may call. This release also closes most of
 the production-readiness findings of an independent assessment of 0.1.0 (runtime guardrails,
 per-user authentication, deploy safety, supply chain, release engineering); the remaining
-ones are listed under "Known limitations" and "Where it is behind" in the README.
+ones were listed under "Known limitations" and "Where it is behind" in the 0.2.0 README, and
+are now on the documentation site's feature pages and its
+[Compared with google-agents-cli](website/src/reference/comparison.md) page.
 
 Parked medium- and low-priority issues are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 

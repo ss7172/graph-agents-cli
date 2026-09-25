@@ -175,8 +175,9 @@ See [Secrets](secrets.md).
       `REGISTRY_PASSWORD` secrets (GHCR uses the workflow token).
 - [ ] **`argocd`:** Argo CD with a credential for this repository, and the
       `deployment/argocd/` Applications applied once with `repoURL` set.
-- [ ] **Optional:** a provider key secret or the `MODEL_PROVIDER` / `MODEL_NAME` variables, so
-      the eval gate runs on a real model ([above](#the-eval-gate-in-ci)).
+- [ ] **Optional:** a provider key secret or the `MODEL_PROVIDER` variable (with `MODEL_NAME`
+      when it differs from the project's provider), so the eval gate runs on a real model
+      ([above](#the-eval-gate-in-ci)).
 
 [`graph-agents-cli infra check --env <env>`](../reference/cli.md#graph-agents-cli-infra-check)
 reports these settings when `gh` is logged in or `GITHUB_TOKEN` is set: the two environments
