@@ -1,41 +1,231 @@
 ---
-description: Install graph-agents-cli from its release tag, add the skills to your coding agents and check your environment.
+description: Install graph-agents-cli from its release tag, add the skills to your coding agents and check your environment with login.
 ---
 
 # Installation & setup
 
-Install the CLI from its pinned release tag, install the skills into your coding agents, and check that your machine is ready before you create a project.
+<p class="gac-lede">Install the CLI from its release tag, give your coding agents the six
+skills, and let <code>login</code> tell you what is still missing before you create a
+project.</p>
 
-<!--
-WRITER BRIEF (lane: getstarted). Replace this comment and the paragraph above with the finished
-page; keep the H1 and the front-matter description (update it if the scope changes).
-Rules and shared components: website/COVERAGE.md. Code is the source of truth: when the
-README and the code disagree, follow the code and say so in your report.
-Paths: CLI = src/graph_agents_cli/   TPL = CLI + scaffold/agents/langgraph/
-       K8S = CLI + scaffold/deployment_targets/kubernetes/python/   CHART = K8S + deployment/helm/{{cookiecutter.project_name}}/
-       BASE = CLI + scaffold/base_templates/
-Upstream pages: git show HEAD:<path> in a google/agents-cli checkout (tracked files only; your task names its location).
+## Prerequisites
 
-Must cover:
-- Prerequisites table (tool / needed for): Python 3.12 or 3.13, uv; Node.js only for the skills installer (setup falls back to a plain copy without it); helm, kubectl, a Docker-compatible docker CLI and git to deploy; gh for argocd or GitHub-hosted CD; a tool missing from PATH makes deploy exit 2.
-- Install: uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0. Warning admonition: PyPI publication is pending, and a package named graph-agents-cli on an index is not this project until the release workflow publishes it.
-- Optional extras: a2a (run --mode a2a) and langsmith (eval submit): uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.2.0'.
-- --version build ids: 0.2.0 (release), 0.2.0+g<commit> (other commits), .dirty suffix; info shows the full commit. Installing a build from a checkout: link CONTRIBUTING on GitHub.
-- setup: npx skills add from this repository at the running release's tag (#v0.2.0), default branch for a development build; fallback to the wheel's bundled copy, then a plain copy into ~/.agents/skills (./.agents/skills with --workspace); --skills-source (path, owner/repo, URL#ref); --agent (claude-code, cursor, ... or all); --dry-run; --dev; the Antigravity mirror (~/.gemini/config/skills, ~/.gemini/antigravity-cli/skills). Tabs for 'all detected agents' / 'one agent' / 'this workspace only' work well.
-- update: refreshes the skills, then upgrades the CLI to the latest GitHub release (best effort) and moves the skills to that release's tag.
-- login: what it checks (provider key or OPENAI_BASE_URL, API_KEY under shared-bearer, jwt key and local token, LANGSMITH_API_KEY when tracing, a .env other users can read, kubeconfig); --write-env (prompts without echo, generates API_KEY, fills blank KEY= lines in place, leaves .env at 0600); --profile disconnected; --cluster; --status (exit 0); --json; exit 1 on a failed check. The CLI stores no credentials.
-- Update check at most every 12 hours; GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1 turns it off. GRAPH_AGENTS_CLI_INSTALL_SPEC (mirror, wheel, index; {version} placeholder, refusals exit 3): one paragraph here, full rules in reference/environment.md.
+You need Python and uv for everything; the rest only for the stage that uses it.
 
-Sources:
-- README: "## Install" (all); "## Quick start" (the login line); "## Commands" rows setup, update, login, info; "## Known limitations" bullet "The repository has no release tags yet" is STALE: tags v0.1.0 and v0.2.0 exist and the v0.2.0 GitHub release is published (checked 2026-09-24 with git tag and gh release list), so do not repeat it.
-- CHANGELOG 0.2.0: Breaking "Installation moved to a pinned git reference", "`CLI_VERSION_PIN` is now `GRAPH_AGENTS_CLI_SPEC`"; Added "The manifest records the build that rendered the project".
-- CONTRIBUTING.md: "### Installing a build from a checkout" (link to it on GitHub, do not copy it).
-- Skills: skills/graph-agents-cli-workflow/references/commands.md.
-- Code: CLI setup/cmd_setup.py, setup/cmd_update.py, setup/cmd_auth.py (login), setup/_antigravity.py, scaffold/utils/version.py (install spec, update check), _build.py (--version), info/cmd_info.py, _skills_check.py; pyproject.toml [project.optional-dependencies].
-- Upstream model: docs/src/guide/getting-started.md.
+| Tool | Needed for |
+|---|---|
+| Python 3.12 or 3.13 | The CLI and every project it generates |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Installing the CLI; `install`, `run`, `playground`, `lint` and `eval` run the project through it |
+| Node.js (`npx`) | `setup` and `update` install the skills with `npx skills`; without it `setup` copies them instead |
+| `helm`, `kubectl`, a Docker-compatible `docker` CLI, `git` | `build`, `deploy` and `secrets` |
+| `gh` | Argo CD mode (`deploy` opens pull requests) and GitHub-hosted CD |
 
-Verify (MODEL_PROVIDER=fake, GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1, scratch dirs only):
-- graph-agents-cli --version; setup --help; setup --dry-run; update --help; login --help; login --status inside a fresh scratch project.
+Everything up to deployment runs on your machine. A tool that `deploy` needs and cannot
+find on `PATH` makes it exit 2.
 
-Link to at least: quickstart.md, ../reference/environment.md, ../reference/cli.md#graph-agents-cli-setup, tutorial-coding-agent.md, ../guides/offline.md
--->
+## Install the CLI
+
+Install a pinned release tag with `uv tool`:
+
+```bash
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+graph-agents-cli --version
+```
+
+```text
+graph-agents-cli, version 0.2.0
+```
+
+!!! warning "Not on PyPI yet"
+    Publication on PyPI is pending. Until this repository's release workflow publishes it,
+    a package named `graph-agents-cli` on a package index is **not** this project: install
+    from the git tag.
+
+### Optional extras
+
+Two commands need an extra dependency:
+
+| Extra | For |
+|---|---|
+| `a2a` | `run --mode a2a` (talk to an agent over A2A JSON-RPC) |
+| `langsmith` | `eval submit` (upload a dataset and results to LangSmith) |
+
+```bash
+uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.2.0'
+```
+
+### Which build you are running
+
+`--version` names the build, and `info` adds the full commit:
+
+| `--version` prints | Meaning |
+|---|---|
+| `0.2.0` | The release, built from the `v0.2.0` tag |
+| `0.2.0+g<commit>` | A build of another commit (a checkout between releases) |
+| `0.2.0+g<commit>.dirty` | A build with uncommitted changes |
+
+Every project records the build that created it, which is what
+[`scaffold upgrade`](../guides/upgrading.md) replays later. To install a build from a
+source checkout, see
+[Installing a build from a checkout](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md#installing-a-build-from-a-checkout)
+in CONTRIBUTING.md.
+
+## Install the skills
+
+`setup` installs the six [skills](../reference/skills.md) into the coding agents it finds
+(Claude Code, Codex, Gemini CLI, Cursor, Antigravity and others), so you can ask your agent
+to "use graph-agents-cli to build ...". It also runs `uv tool install` for the pinned CLI
+(nothing changes when it is already installed).
+
+=== "Every detected agent"
+
+    ```bash
+    graph-agents-cli setup
+    ```
+
+    Installs globally for every coding agent `npx skills` detects.
+
+=== "Chosen agents"
+
+    ```bash
+    graph-agents-cli setup --agent claude-code --agent cursor
+    ```
+
+    Repeat `--agent` for each one; `--agent all` installs for every agent that
+    `npx skills` supports.
+
+=== "This workspace only"
+
+    ```bash
+    graph-agents-cli setup --workspace
+    ```
+
+    Installs into the current directory instead of your home directory.
+
+Preview any of these with `--dry-run`, which prints the commands and changes nothing:
+
+```bash
+graph-agents-cli setup --dry-run
+```
+
+<div class="gac-terminal" markdown>
+
+```text
+ 1. Dry Run
+ ──────────
+
+  Would install graph-agents-cli:
+  ▸ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+
+  Would install skills:
+  ▸ npx -y skills@1.5.9 add 'https://github.com/ss7172/graph-agents-cli#v0.2.0' -y -g
+    (falls back to the bundled skills, then to a copy into ~/.agents/skills)
+  Scope: global
+
+  No changes made (dry run).
+```
+
+</div>
+
+### Where the skills come from
+
+The skills always match the CLI you run. `setup` tries three sources in order, each only
+when the one before it fails:
+
+1. `npx skills add` from this repository at the running release's tag
+   (`https://github.com/ss7172/graph-agents-cli#v0.2.0`); a development build uses the
+   default branch. Needs `git` and network access.
+2. `npx skills add` from the copy bundled in the installed CLI (same version, no network).
+3. A plain copy of the bundled skills into `~/.agents/skills` (`./.agents/skills` with
+   `--workspace`), for machines without Node.js.
+
+`--skills-source` names another source instead: a local path, a GitHub `owner/repo`, or a
+URL with a `#<ref>`. An explicit source never falls back to the bundled copy.
+
+!!! note "Antigravity"
+    A global `setup` also links the skills into the directories Antigravity reads
+    (`~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills`) when `~/.gemini`
+    exists, because `npx skills` installs global skills into `~/.agents/skills`.
+
+The CLI stores no credentials: `setup` never asks for a key. See
+[`setup`](../reference/cli.md#graph-agents-cli-setup) in the CLI reference for every flag,
+including `--dev` for contributors.
+
+## Keep up to date
+
+```bash
+graph-agents-cli update
+```
+
+`update` refreshes the installed skills, then reinstalls the CLI from the latest GitHub
+release when it is newer than the one you run (best effort: offline, it leaves the CLI as
+it is) and moves the skills to that release's tag, so the two stay in step. Add `-i` to
+confirm before it starts.
+
+The CLI also checks GitHub for a newer release at most once every 12 hours and prints an
+"Update available" line when there is one. Set `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` to turn
+the check off, for example on a machine without internet access.
+
+## Check your environment
+
+`login` is a preflight, not a sign-in: it reads the process environment and the project's
+`.env`, reports what is missing, and stores nothing. Run it inside a project; the
+[Quickstart](quickstart.md) does that right after `create`.
+
+```bash
+graph-agents-cli login --write-env
+```
+
+| Check | Passes when |
+|---|---|
+| `provider`, `provider_key` | The provider's key is set (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GOOGLE_API_KEY`); for `openai-compatible`, `OPENAI_BASE_URL` is set (whether it answers is reported as advice) and `MODEL_API_KEY` is optional |
+| `api_key` | Under the `shared-bearer` auth policy, `API_KEY` is set (without it the local server answers 503) |
+| `jwt_key`, `jwt_token` | Under `jwt`, a verification key is set and `GRAPH_AGENTS_CLI_API_KEY` holds a token for `run` and `eval` |
+| `env_file` | `.env` is not readable by other users |
+| `judge` | The eval judge's provider and key, when `JUDGE_MODEL_PROVIDER` is set |
+| `tracing` | With `TRACING_ENABLED=true`, `LANGSMITH_API_KEY` or an OTLP endpoint is set |
+| `kubeconfig` | `kubectl` has a current context (`--cluster` also checks that the cluster answers) |
+
+`--write-env` fixes what it can: it prompts for missing keys without echoing them, fills
+blank `KEY=` lines of `.env` in place, generates an `API_KEY` for a `shared-bearer` project
+and leaves `.env` at mode 0600.
+
+| Flag | Effect |
+|---|---|
+| `--status` | Print the report and exit 0 even when a check fails |
+| `--json` | Print the report as JSON |
+| `--cluster` | Also run `kubectl cluster-info` against the current context |
+| `--profile disconnected` | Fail on every hosted dependency (see [Offline profile](../guides/offline.md)) |
+| `--env-file FILE` | Read (and write) another env file |
+
+Without `--status`, a failed check makes `login` exit 1, so a script or a coding agent can
+stop there.
+
+## Install sources
+
+`setup`, `update`, the `scaffold upgrade` baseline and the CI of every generated project
+(`GRAPH_AGENTS_CLI_SPEC` in its `.github/agent.env`) install the CLI from the same pinned
+git tag. `GRAPH_AGENTS_CLI_INSTALL_SPEC` points all of
+them somewhere else: a private mirror, a wheel, or a package index. Write `{version}` where
+the release number goes (`git+https://git.example.com/graph-agents-cli@v{version}`) so an
+upgrade can install an older release; an override that cannot work is refused with exit 3.
+[Environment variables](../reference/environment.md) has the full rules, and
+[Offline profile](../guides/offline.md) shows a complete disconnected setup.
+
+## Next steps
+
+<div class="grid cards gac-cols-3" markdown>
+
+-   :material-rocket-launch-outline:{ .lg } **[Quickstart](quickstart.md)**
+
+    Create a project and talk to your first agent in five minutes, without a model key.
+
+-   :material-robot-outline:{ .lg } **[Build with a coding agent](tutorial-coding-agent.md)**
+
+    Let the skills drive the lifecycle while you review each step.
+
+-   :material-console:{ .lg } **[CLI reference](../reference/cli.md)**
+
+    Every command and flag, generated from the CLI itself.
+
+</div>
