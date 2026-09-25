@@ -26,6 +26,12 @@ migration" with the steps to follow.
   comparison on [Compared with google-agents-cli](website/src/reference/comparison.md). The
   tests that ran README examples now run the same examples from the site's guides.
 
+### Fixed
+
+- KI-111: the policy lifecycle no longer starts from a read-only example; the
+  [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
+  explicit choice at every step.
+
 ## [0.2.0] - 2026-09-24
 
 graph-agents-cli is now a generic CLI for building, evaluating and deploying LangGraph agents

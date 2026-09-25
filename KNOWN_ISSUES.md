@@ -65,12 +65,15 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | secrets | 1 | 2 | 3 |
 | cli | 1 | 10 | 11 |
 | upgrade | 2 | 13 | 15 |
-| docs | 0 | 6 | 6 |
-| **Total** | **41** | **73** | **114** |
+| docs | 0 | 9 | 9 |
+| **Total** | **41** | **76** | **117** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
 
+- **Publish the documentation site** before (or with) any PyPI release: in the repository's
+  Settings, set Pages to deploy from GitHub Actions, and set the repository variable
+  `PUBLISH_DOCS` to `true`. The README's links point to the published site (KI-113).
 - Optional, for PyPI (0.2.0 is released on GitHub with the tags `v0.1.0` and `v0.2.0`):
   register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
@@ -1348,17 +1351,6 @@ Low · docs · found in wave 5b
 - **Impact:** Such ids are still hard to guess but reveal their creation time.
 - **Workaround:** Generate a UUID4 in the client if creation times must stay private.
 
-### KI-111: The README's policy lifecycle starts from a read-only API
-
-Low · docs · found in wave 3b
-
-- **Issue:** Step 1 of the 0.2.0 README's policy lifecycle added an API with
-  `--access read-only`, which reads like a default although `--access` is required and has
-  none. The [Outbound API policy guide](website/src/guides/api-policy.md) now says why step 1
-  is read-only.
-- **Impact:** Can suggest read-only as the recommended starting point.
-- **Workaround:** Choose the access level your agent needs.
-
 ### KI-112: Some test docstrings refer to an internal review
 
 Low · docs · found in wave 3b
@@ -1368,13 +1360,70 @@ Low · docs · found in wave 3b
 - **Impact:** An opaque reference for contributors; not shipped in the package.
 - **Workaround:** None needed.
 
-### KI-113: No documentation site
+### KI-113: The documentation site is not published yet
 
 Low · docs · found in wave 0
 
-- **Issue:** The documentation site's sources are in `website/` and CI builds them, but the
-  site is not published yet.
-- **Impact:** Harder to browse than upstream's docs.
+- **Issue:** The site's sources are in `website/` and CI builds and link-checks them, but
+  GitHub Pages publishing is off until the repository variable `PUBLISH_DOCS` is `true`, so
+  the README's links to the site (and a PyPI page built from the README) return 404.
+- **Impact:** Readers of the README cannot follow its documentation links yet.
 - **Workaround:** Read the pages under `website/src/` on GitHub, or preview the site locally
-  (`uv run --group docs mkdocs serve -f website/mkdocs.yml`).
+  (`uv run --group docs mkdocs serve -f website/mkdocs.yml`). See Owner actions.
+
+### KI-115: A few statements on the docs site do not match the code
+
+Low · docs · found in the docs-site review
+
+- **Issue:** Small factual slips remain on individual pages: the lifecycle page's file
+  ownership table disagrees with the upgrade guide and the code for `pyproject.toml` (merged)
+  and `deployment/argocd/` (never overwritten); the authentication guide says `shared-bearer`
+  has no roles, but its one principal holds the role `shared`; the approval guide's sample
+  output shows a different order id in the result than in the approved call; the
+  installation page's `login` check table omits the `openai_base_url` check; the upgrade
+  guide shows a "(build ...)" suffix that `info` prints only for non-release builds; the
+  deploy guide implies `deploy --dry-run` refuses everything the real run refuses, and no
+  longer says how `infra check` rates the chart-env placeholder; the README says
+  authentication covers every route (health, readiness and metrics are exempt); and the
+  comparison page cites upstream 1.7.0 details that could not be checked against the
+  reviewed upstream 1.6.1.
+- **Impact:** A reader can be misled on those details; the code is authoritative.
+- **Workaround:** Where a page and `--help` or the code disagree, trust `--help` and the
+  generated CLI reference.
+
+### KI-116: Some docs pages are cramped on phones
+
+Low · docs · found in the docs-site review
+
+- **Issue:** At phone widths, reference tables (environment variables, HTTP API routes,
+  authentication, extensions, deploy, api-policy schema) scroll sideways inside their frames
+  and squeeze descriptions to a few words per line; the landing page's install command is
+  cut off; the "Output" label touches the screen edge; and code copy buttons can cover the
+  end of long first lines.
+- **Impact:** Harder to read on a phone; nothing is lost (the page itself never overflows).
+- **Workaround:** Rotate to landscape or use a wider screen.
+
+### KI-117: Desktop rendering polish on the docs site
+
+Low · docs · found in the docs-site review
+
+- **Issue:** The CI/CD guide's five-column workflow table is clipped; inline code in prose
+  can break after hyphens; wrapped code in the HTTP API table breaks inside `{thread_id}`;
+  Click's verbatim help paragraphs render as monospace boxes in the CLI reference; the
+  project tree's comment column is misaligned; the Get started index squeezes its step cards
+  beside a nearly empty table of contents; and the landing page's hero sentence and "Where
+  to next" link text could read better.
+- **Impact:** Cosmetic.
+- **Workaround:** None needed.
+
+### KI-118: Some facts are repeated on two docs pages
+
+Low · docs · found in the docs-site review
+
+- **Issue:** A few statements (for example between the CI/CD guide and the manifest
+  reference, and the file ownership table on three pages) are written out in full on more
+  than one page. They agree today but can drift apart.
+- **Impact:** A future change can update one copy and miss the other.
+- **Workaround:** None needed; the fix is to keep each fact on one page and link to it.
+
 <!-- --8<-- [end:entries] -->
