@@ -39,13 +39,13 @@ scaffold and only change through the scaffold owner.
 | `guides/security.md` | Security & production | guides_ops | stub |
 | `reference/index.md` | Reference | scaffold | done |
 | `reference/cli.md` | CLI | scaffold | done (generated: mkdocs-click + `hooks/cli_reference.py`) |
-| `reference/environment.md` | Environment variables | reference | stub |
-| `reference/http-api.md` | HTTP API | reference | stub |
-| `reference/api-policy-schema.md` | api-policy.yaml | reference | stub |
-| `reference/manifest.md` | Project manifest | reference | stub |
-| `reference/exit-codes.md` | Exit codes | reference | stub |
+| `reference/environment.md` | Environment variables | reference | done |
+| `reference/http-api.md` | HTTP API | reference | done |
+| `reference/api-policy-schema.md` | api-policy.yaml | reference | done |
+| `reference/manifest.md` | Project manifest | reference | done |
+| `reference/exit-codes.md` | Exit codes | reference | done |
 | `reference/skills.md` | Skills | scaffold | done (generated: `hooks/skills_reference.py`) |
-| `reference/comparison.md` | Compared with google-agents-cli | reference | stub |
+| `reference/comparison.md` | Compared with google-agents-cli | reference | done |
 | `reference/known-issues.md` | Known issues | scaffold | done (includes `KNOWN_ISSUES.md`) |
 | `reference/changelog.md` | Changelog | scaffold | done (includes `CHANGELOG.md`) |
 
@@ -60,17 +60,17 @@ hold the full facts; "also" pages summarize and link to the primary.
 
 | README heading (line) | Primary page(s) | Also | Lane |
 |---|---|---|---|
-| `# graph-agents-cli` intro (1-31) | `index.md` (pitch, generic, skills); `reference/comparison.md` (fork, NOTICE) | `getting-started/lifecycle.md` | scaffold (done) / reference |
+| `# graph-agents-cli` intro (1-31) | `index.md` (pitch, generic, skills); `reference/comparison.md` (fork, NOTICE) | `getting-started/lifecycle.md` | scaffold (done) / reference (done) |
 | `## Install` (33) | `getting-started/installation.md` | `reference/environment.md` (GRAPH_AGENTS_CLI_INSTALL_SPEC, NO_UPDATE_CHECK); `guides/upgrading.md` (install spec `{version}`); `guides/offline.md` (mirror, wheel skills) | getstarted |
 | `## Quick start` (83) | `getting-started/quickstart.md` | `guides/authentication.md` (jwt dev-token block); `getting-started/tutorial-manual.md` (create options); `guides/deploy.md` (local cluster, registry placeholder paragraph) | getstarted |
-| `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted / reference |
+| `## Commands` (145) | `reference/cli.md` (generated: every command and flag) | `getting-started/lifecycle.md` (commands by stage); `reference/environment.md` (the "CLI environment variables" paragraph); each guide for its commands | scaffold (done) / getstarted / reference (done) |
 | `### Upgrading a project` (196) | `guides/upgrading.md` | `reference/manifest.md` (cli_version, cli_build, template_digest) | guides_ops |
 | `## The generated service` (240) | `guides/develop.md` (tree, runtimes) | `reference/http-api.md` | guides_build |
-| `### Endpoints` (267): route table | `reference/http-api.md` | `guides/develop.md` (summary table) | reference |
-| `### Endpoints` bullets One run per thread, Limits, Thread ids, Timeouts, Step limit, A valid history, Tool arguments, Errors, Run records | `reference/http-api.md` | `guides/security.md` (Thread ids); `guides/observability.md` (Run records) | reference |
+| `### Endpoints` (267): route table | `reference/http-api.md` | `guides/develop.md` (summary table) | reference (done) |
+| `### Endpoints` bullets One run per thread, Limits, Thread ids, Timeouts, Step limit, A valid history, Tool arguments, Errors, Run records | `reference/http-api.md` | `guides/security.md` (Thread ids); `guides/observability.md` (Run records) | reference (done) |
 | `### Endpoints` bullets Retention, Logging, Tracing | `guides/observability.md` | `reference/environment.md` | guides_ops |
 | `### Endpoints` bullet Database | `guides/deploy.md` (External database section) | `reference/environment.md` (DB_POOL_*) | guides_ops |
-| `### Endpoints` bullets Settings from `.env`, CORS, closing paragraph (defaults, startup parse rules) | `reference/environment.md` | `guides/develop.md` | reference |
+| `### Endpoints` bullets Settings from `.env`, CORS, closing paragraph (defaults, startup parse rules) | `reference/environment.md` | `guides/develop.md` | reference (done) |
 | `## Authentication` (381) | `guides/authentication.md` | `reference/environment.md` (AUTH_* names) | guides_build |
 | `` ### `shared-bearer` (default) `` (400) | `guides/authentication.md` | `guides/secrets.md` (API_KEY generation) | guides_build |
 | `` ### `jwt` `` (408) | `guides/authentication.md` (full AUTH_JWT_* table) | `reference/environment.md` (names, link) | guides_build |
@@ -85,11 +85,11 @@ hold the full facts; "also" pages summarize and link to the primary.
 | `### External database` (1025) | `guides/deploy.md` | `guides/security.md` (checklist item) | guides_ops |
 | `## Secrets` (1049) | `guides/secrets.md` | `guides/cicd.md` (who runs `secrets apply` in argocd / helm-push) | guides_ops |
 | `` ### Required GitHub settings (`helm-push`, `argocd`) `` (1084) | `guides/cicd.md` | `reference/manifest.md` (`.github/agent.env`) | guides_ops |
-| `## Exit codes` (1119) | `reference/exit-codes.md` | `getting-started/lifecycle.md` (the contract in one line) | reference |
+| `## Exit codes` (1119) | `reference/exit-codes.md` | `getting-started/lifecycle.md` (the contract in one line) | reference (done) |
 | `## Security model` (1133) | `guides/security.md` | `guides/approvals.md`, `guides/api-policy.md` | guides_ops |
 | `## Production checklist` (1186) | `guides/security.md` (task list, each item linked) | the guide each item points to | guides_ops |
 | `## Disconnected profile` (1233) | `guides/offline.md` | `getting-started/lifecycle.md` (runs locally vs disconnected) | guides_ops |
-| `## Compared with google-agents-cli` (1257) | `reference/comparison.md` | | reference |
+| `## Compared with google-agents-cli` (1257) | `reference/comparison.md` | | reference (done) |
 | `## Known limitations` (1297) | spread by topic (below); the parked issues are on `reference/known-issues.md` (included) | | per row below |
 | `## Documentation` (1376) | `reference/index.md` ("Project resources") | `index.md` (next steps) | scaffold (done) |
 | `## License` (1385) | site footer (`mkdocs.yml` copyright); `reference/index.md` | | scaffold (done) |
@@ -99,16 +99,16 @@ hold the full facts; "also" pages summarize and link to the primary.
 | Bullet | Page | Lane |
 |---|---|---|
 | LangGraph Server licence | `guides/develop.md` (runtimes) | guides_build |
-| A2A task store | `reference/http-api.md` (A2A) | reference |
+| A2A task store | `reference/http-api.md` (A2A) | reference (done) |
 | Prompt injection | `guides/security.md` | guides_ops |
 | No built-in inbound rate limiting | `guides/security.md` | guides_ops |
 | Outbound `limits` are per process | `guides/api-policy.md` | guides_build |
-| Run lock across replicas | `reference/http-api.md` (one run per thread) | reference |
+| Run lock across replicas | `reference/http-api.md` (one run per thread) | reference (done) |
 | Rolling upgrades from an older build | `guides/upgrading.md` | guides_ops |
 | A database that stops answering without closing its connections | `guides/deploy.md` | guides_ops |
 | Concurrent deploys to one release | `guides/deploy.md` | guides_ops |
 | `jwt` | `guides/authentication.md` | guides_build |
-| `langgraph-server` specifics | `guides/develop.md` (runtimes); `reference/http-api.md` | guides_build / reference |
+| `langgraph-server` specifics | `guides/develop.md` (runtimes); `reference/http-api.md` | guides_build / reference (done) |
 | Human-in-the-loop | `guides/approvals.md` | guides_build |
 | `scaffold enhance` / `scaffold upgrade` rewrite the manifest | `guides/upgrading.md` | guides_ops |
 | Upgrading a 0.1.0 project | `guides/upgrading.md` | guides_ops |

@@ -1,36 +1,99 @@
 ---
-description: How graph-agents-cli relates to google-agents-cli: what it keeps, where it goes further, where it is behind.
+description: "How graph-agents-cli relates to google-agents-cli, the project it forked: what it keeps, where it goes further, where it is behind."
 ---
 
 # Compared with google-agents-cli
 
-How graph-agents-cli relates to the project it forked: what it keeps, where it goes further, where it is behind, and what is out of scope.
+<p class="gac-lede">graph-agents-cli is a fork of
+<a href="https://github.com/google/agents-cli">google-agents-cli</a>. It keeps the lifecycle and
+the scaffold engine, and targets LangGraph on any Kubernetes cluster instead of ADK on Google
+Cloud.</p>
 
-<!--
-WRITER BRIEF (lane: reference). Replace this comment and the paragraph above with the finished
-page; keep the H1 and the front-matter description (update it if the scope changes).
-Rules and shared components: website/COVERAGE.md. Code is the source of truth: when the
-README and the code disagree, follow the code and say so in your report.
-Paths: CLI = src/graph_agents_cli/   TPL = CLI + scaffold/agents/langgraph/
-       K8S = CLI + scaffold/deployment_targets/kubernetes/python/   CHART = K8S + deployment/helm/{{cookiecutter.project_name}}/
-       BASE = CLI + scaffold/base_templates/
-Upstream pages: git show HEAD:<path> in a google/agents-cli checkout (tracked files only; your task names its location).
+graph-agents-cli started from google-agents-cli 1.6.1, with the Google Cloud specific parts
+removed and the agent framework, deployment target, evaluation backend and observability
+replaced. [NOTICE](https://github.com/ss7172/graph-agents-cli/blob/main/NOTICE) lists the
+modifications; files kept from the original project keep their Google LLC copyright headers.
+This comparison is as of google-agents-cli 1.7.0 (September 2026).
 
-Must cover:
-- The fork: started from google-agents-cli 1.6.1 with the Google Cloud specific parts removed (see NOTICE); keeps the lifecycle and the scaffold engine; LangGraph on any Kubernetes instead of ADK on Google Cloud; compared as of google-agents-cli 1.7.0 (September 2026).
-- A comparison table (area / graph-agents-cli / google-agents-cli), then the 'further', 'behind' and 'out of scope' lists.
-- Update the README's 'Maturity' bullet: this documentation site now exists (published once the owner enables it), tags v0.1.0 and v0.2.0 exist, PyPI publication is still pending.
-- Upstream fixes are ported by hand (CONTRIBUTING's upstream-sync process); remote templates still skip symlinks.
+## What it keeps
 
-Sources:
-- README: intro (the fork paragraph); "## Compared with google-agents-cli" (all).
-- NOTICE (attribution and the list of modifications).
-- CONTRIBUTING.md: "## Upstream sync".
-- KNOWN_ISSUES: KI-071, KI-078, KI-091, KI-092, KI-093.
-- Upstream facts: a google/agents-cli checkout via git show HEAD:<path> (for example CHANGELOG.md, docs/src/reference/about.md); check the version claims there.
+- **The lifecycle**: `setup`, `create` and `scaffold`, `run`, `eval`, `deploy`, extensions and
+  a suite of coding-agent skills, in the same order and with the same shape.
+- **The scaffold engine**: template layering, remote templates, and the 3-way merge behind
+  `scaffold enhance` and `scaffold upgrade`.
+- **The extension system**: command overrides and additions from git repositories or local
+  paths.
 
-Verify (MODEL_PROVIDER=fake, GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1, scratch dirs only):
-- Upstream version claims against the upstream checkout's tags and changelog.
+## Side by side
 
-Link to at least: ../index.md, known-issues.md, changelog.md
--->
+| Area | graph-agents-cli | google-agents-cli |
+|---|---|---|
+| Agent framework | LangGraph (one Python template) | ADK (Python and other languages), plus a LangChain template |
+| Where agents run | Any Kubernetes cluster, with Helm | Agent Runtime, Cloud Run, GKE |
+| Continuous delivery | Direct `deploy`, a self-hosted runner (`helm-push`), or Argo CD through pull requests (`argocd`) | Cloud Build or GitHub Actions pipelines set up by `infra cicd` |
+| Infrastructure | `infra check` reports prerequisites; creates nothing | `infra single-project` and `infra cicd` provision with Terraform |
+| Authentication | In the app, on every surface: `shared-bearer`, `jwt` (OIDC) or a `custom` policy | Google Cloud's identity layer |
+| Outbound calls | `api-policy.yaml` in the project, enforced at runtime and checked by `lint`, with human approval of chosen calls | An Agent Gateway bound at deploy time (Agent Runtime) |
+| Evaluation | Local deterministic checks and model judges, an enforceable gate, a keyless fake model | Agent Platform evaluation, dataset synthesis, user simulation, prompt optimisation |
+| Secrets | `secrets apply` and `secrets status` for an allow-listed Kubernetes Secret | Secret Manager |
+| Observability | LangSmith or OpenTelemetry, opt-in, metadata-only by default | Cloud Trace, logging, BigQuery Agent Analytics |
+| Publishing | Out of scope | Gemini Enterprise, Agent Registry |
+| Distribution | Pinned git tags; PyPI publication pending | PyPI |
+
+## Where it goes further
+
+- **An enforceable eval gate**: every planned case accounted for, deterministic checks and
+  mandatory judges with no threshold, quality metrics with an explicit `min_pass_rate`, exit
+  codes CI can use, `eval compare --fail-on-regression`, and a deterministic fake model for
+  keyless CI. See [Evaluation](../guides/evaluation.md).
+- **An outbound API policy** enforced at runtime and checked by `lint`, with
+  [human approval](../guides/approvals.md) of the calls a prompt injection could abuse. See
+  [Outbound API policy](../guides/api-policy.md).
+- **Kubernetes Secrets management** (`secrets apply` and `status`, allow-listed keys,
+  pre-deploy checks) and Argo CD GitOps through pull requests.
+- **A disconnected profile**, verified by `login` and `infra check`. See
+  [Offline profile](../guides/offline.md).
+- **Self-hosted auth policies** (shared bearer, OIDC/JWT, custom) enforced in the app on every
+  surface, instead of a cloud provider's identity layer.
+
+## Where it is behind
+
+- **Evaluation**: no prompt optimisation, dataset synthesis, user simulation or results fetch
+  (`eval optimize`, `eval dataset synthesize`, `eval results` upstream); eval cases are written
+  by hand.
+- **Infrastructure**: no provisioning. `infra check` only reports; upstream's `infra cicd`
+  creates the CI/CD setup with Terraform.
+- **Templates and languages**: one Python LangGraph template and no sample catalogue, against
+  upstream's ADK templates in several languages, samples and a LangChain template.
+- **Lint**: no type checker or spell checker in the generated project's `lint`.
+- **Maturity**: upstream has a long release history and PyPI distribution. This project has
+  two tagged releases (`v0.1.0`, `v0.2.0`), this documentation site (published once the
+  maintainers enable it) and the skills; PyPI publication is pending.
+- **Upstream fixes are ported by hand** after 1.6.1, following the upstream-sync process in
+  [CONTRIBUTING.md](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md#upstream-sync).
+  For example, remote templates still skip symlinks, which upstream 1.7.0 copies when they
+  stay inside the repository.
+
+Each gap is tracked in [Known issues](known-issues.md), for example
+[KI-093](known-issues.md#ki-093-remote-templates-skip-symlinks-upstream-fixes-are-ported-by-hand).
+
+## Out of scope
+
+Google Cloud targets (Agent Runtime, Cloud Run, GKE-specific integrations), publishing to
+Gemini Enterprise and BigQuery analytics are out of scope, not gaps.
+
+<div class="grid cards gac-cols-3" markdown>
+
+-   :material-home-outline:{ .lg } **[Home](../index.md)**
+
+    What graph-agents-cli does, in one page.
+
+-   :material-alert-circle-outline:{ .lg } **[Known issues](known-issues.md)**
+
+    Parked issues, each with its impact and workaround.
+
+-   :material-history:{ .lg } **[Changelog](changelog.md)**
+
+    Every release and its migration steps.
+
+</div>

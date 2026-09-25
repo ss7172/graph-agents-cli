@@ -724,7 +724,38 @@ def test_check_is_lint_policy_only(project: Path) -> None:
 # The documented lifecycle
 # ---------------------------------------------------------------------------
 
-README = Path(__file__).resolve().parents[2] / "README.md"
+# The documentation pages whose examples these tests run, word for word.
+DOCS = Path(__file__).resolve().parents[2] / "website" / "src"
+API_POLICY_GUIDE = DOCS / "guides" / "api-policy.md"
+APPROVALS_GUIDE = DOCS / "guides" / "approvals.md"
+# The brief a page carries until it is written (see website/COVERAGE.md).
+_STUB_MARKER = "WRITER BRIEF"
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# A fenced bash block, indented or not (content tabs and admonitions indent it), with any
+# attributes after the language (`bash title="..."`).
+_BASH_BLOCK = re.compile(
+    r"^[ \t]*```(?:bash|shell|sh)\b[^\n]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE
+)
+
+
+def _page_text(page: Path) -> str:
+    """The page's Markdown without HTML comments (never published, so never an example)."""
+    text = page.read_text(encoding="utf-8")
+    if _STUB_MARKER in text:
+        pytest.skip(f"{page.relative_to(DOCS)} is still a stub: its examples are not written yet")
+    return _COMMENT.sub("", text)
+
+
+def _commands(block: str, prefix: str) -> list[list[str]]:
+    """The ``graph-agents-cli <prefix>`` lines of a bash block, as argv without the program."""
+    joined = block.replace("\\\n", " ")
+    return [
+        shlex.split(line.strip().split(" #", 1)[0])[1:]
+        for line in joined.splitlines()
+        if line.strip().startswith(f"graph-agents-cli {prefix}")
+    ]
+
+
 LIST_TOOL = """\
 API_CALLS = [
     {"api": "orders", "method": "GET", "operation_id": "listOrders", "path": "/orders"},
@@ -739,24 +770,28 @@ TOOLS: list = []
 """
 
 
-def _readme_example() -> list[list[str]]:
-    """The `graph-agents-cli api` commands of the README's "working agent" example."""
-    text = README.read_text(encoding="utf-8")
-    section = text.split("Adding functionality to a working agent", 1)[1]
-    block = section.split("```bash\n", 1)[1].split("```", 1)[0]
-    commands = []
-    for line in block.splitlines():
-        if line.startswith("graph-agents-cli api "):
-            commands.append(shlex.split(line.split(" #", 1)[0])[1:])
-    return commands
+def _documented_example() -> list[list[str]]:
+    """The `graph-agents-cli api` commands of the "working agent" example in the policy guide.
+
+    The first bash block after the words "Adding functionality to a working agent" on
+    `guides/api-policy.md`.
+    """
+    text = _page_text(API_POLICY_GUIDE)
+    marker = "Adding functionality to a working agent"
+    assert marker in text, f"{API_POLICY_GUIDE.name} lost the worked example ({marker!r})"
+    block = _BASH_BLOCK.search(text.split(marker, 1)[1])
+    assert block is not None, f"no bash block after {marker!r} in {API_POLICY_GUIDE.name}"
+    return _commands(block.group(1), "api ")
 
 
-def test_the_readme_example_adds_functionality_without_breaking_the_agent(project: Path) -> None:
-    """Step 1 of the README (read-only, no allow-list, a GET tool), then its worked example."""
+def test_the_documented_example_adds_functionality_without_breaking_the_agent(
+    project: Path,
+) -> None:
+    """Step 1 of the guide (read-only, no allow-list, a GET tool), then its worked example."""
+    commands = _documented_example()
     ok(*[a if a != "read-write" else "read-only" for a in ORDERS_ADD])
     (project / "app/tools/list_orders.py").write_text(LIST_TOOL)
     ok("api", "check")
-    commands = _readme_example()
     assert any(c[:2] == ["api", "access"] for c in commands)
     for command in commands:
         result = ok(*command)
@@ -1529,26 +1564,21 @@ def test_approval_rule_options_refuse_bad_input_and_write_nothing(
     assert (project / "api-policy.yaml").read_text() == before
 
 
-def _readme_approval_examples() -> list[list[list[str]]]:
-    """The `graph-agents-cli api approval` commands of the README's approval section, per block."""
-    text = README.read_text(encoding="utf-8")
-    section = text.split("### Human approval of calls (`approval`)", 1)[1].split("\n### ", 1)[0]
+def _documented_approval_examples() -> list[list[list[str]]]:
+    """The `graph-agents-cli api approval` commands of the approval guide, per bash block."""
+    text = _page_text(APPROVALS_GUIDE)
     blocks = []
-    for block in section.split("```bash\n")[1:]:
-        joined = block.split("```", 1)[0].replace("\\\n", " ")
-        commands = [
-            shlex.split(line.strip().split(" #", 1)[0])[1:]
-            for line in joined.splitlines()
-            if line.strip().startswith("graph-agents-cli api approval ")
-        ]
+    for block in _BASH_BLOCK.finditer(text):
+        commands = _commands(block.group(1), "api approval ")
         if commands:
             blocks.append(commands)
     return blocks
 
 
-def test_the_readme_approval_examples_work(project: Path) -> None:
-    """Each example block works on its own, from a policy without approval blocks."""
-    blocks = _readme_approval_examples()
+def test_the_documented_approval_examples_work(project: Path) -> None:
+    """Each example block of `guides/approvals.md` works on its own, from a policy without
+    approval blocks: the list of rules, requester confirmation, four-eyes."""
+    blocks = _documented_approval_examples()
     assert [len(commands) for commands in blocks] == [2, 1, 1], blocks
     ok(*ORDERS_ADD)
     ok(
