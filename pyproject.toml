@@ -64,7 +64,7 @@ packages = ["src/graph_agents_cli"]
 artifacts = ["src/graph_agents_cli/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/graph_agents_cli", "/hatch_build.py", "/schemas", "/skills", "/LICENSE", "/NOTICE", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md"]
+include = ["/src/graph_agents_cli", "/hatch_build.py", "/schemas", "/skills", "/LICENSE", "/NOTICE", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md", "/KNOWN_ISSUES.md"]
 
 # hatch_build.py records the git commit a wheel or sdist is built from in
 # graph_agents_cli/_build_info.json, so `--version` and project manifests can

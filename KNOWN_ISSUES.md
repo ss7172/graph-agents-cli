@@ -61,9 +61,9 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
 | cli | 1 | 10 | 11 |
-| upgrade | 2 | 12 | 14 |
+| upgrade | 2 | 13 | 15 |
 | docs | 0 | 6 | 6 |
-| **Total** | **41** | **72** | **113** |
+| **Total** | **41** | **73** | **114** |
 
 ## Owner actions before release
 
@@ -1231,7 +1231,7 @@ Low · upgrade · found in wave 2
 - **Workaround:** Let `RETENTION_DAYS` age old threads out; delete the dev database's volume
   after upgrading an argocd dev environment.
 
-### KI-102: A same-version upgrade by an older build moves the project to older templates
+### KI-102: `scaffold upgrade` has no downgrade guard
 
 Low · upgrade · found in wave 8
 
@@ -1239,8 +1239,10 @@ Low · upgrade · found in wave 8
   running, `scaffold upgrade` cannot tell which is newer (an installed wheel has no git
   history) and applies the older templates. The header names both builds.
 - **Impact:** Template fixes can be undone by running an out-of-date CLI.
-- **Workaround:** Compare `graph-agents-cli --version` with the manifest's `cli_build` before
-  upgrading, and preview with `--dry-run`.
+  Across versions there is no guard either: running an older CLI version against a project
+  recorded by a newer one also applies the older templates.
+- **Workaround:** Compare `graph-agents-cli --version` with the manifest's `cli_version` and
+  `cli_build` before upgrading, and preview with `--dry-run`.
 
 ### KI-103: Upgrade failure hints for a same-version baseline name options that do not apply
 
@@ -1301,6 +1303,18 @@ Low · upgrade · found in wave 8
   <clone>@<commit>` (documented).
 - **Impact:** An extra fetch, and a failure without network or for unpushed commits.
 - **Workaround:** `--baseline-ref <clone>@<commit>` with a local clone.
+
+### KI-114: A plain upgrade of a project with no recorded build reports "already at version"
+
+Low · upgrade · found in wave 8
+
+- **Issue:** For a project whose manifest has no `cli_build` (created before builds were
+  recorded), a plain `scaffold upgrade` compares versions only and opens with the green
+  "already at version 0.2.0" line before its note that the comparison was by version only,
+  and exits 0.
+- **Impact:** A project made by an earlier build of the same version can look up to date.
+- **Workaround:** Read the note under the first line, and upgrade with
+  `--baseline-ref <clone>@<commit>` as it describes.
 
 ### KI-108: The workflow skill says `create` runs `uv sync`
 
