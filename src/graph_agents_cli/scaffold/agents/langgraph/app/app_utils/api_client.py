@@ -31,7 +31,10 @@ sets for the graph run, and nothing is sent when the caller has no credential.
 
 Every method the policy allows can be sent (`request()`, or `get`, `head`,
 `post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
-parameters and extra headers. An API's optional `limits` cap the calls before
+parameters and extra headers. The app adds its correlation headers to every
+call (`set_outbound_headers`: the request id and, under OTLP tracing, the W3C
+trace context), unless the tool sets the same header; they differ per request,
+so an approval does not bind them. An API's optional `limits` cap the calls before
 they are sent: `max_calls_per_run` counts the calls to that API within one
 agent run (the run id of the LangGraph run, else the request's; calls made
 outside any run share one count), and `rate_per_minute` is a token bucket per
@@ -1478,6 +1481,37 @@ def approval_ledger() -> ApprovalLedger | None:
     return _ledger
 
 
+# Headers that follow a request to the services it calls (see set_outbound_headers).
+_outbound_headers: Callable[[], Mapping[str, str]] | None = None
+
+
+def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> None:
+    """Install what adds the correlation headers to every outbound call.
+
+    The app installs `telemetry.outbound_trace_headers` (this request's
+    `X-Request-ID` and, under OTLP tracing, its W3C trace context), so an agent
+    or service this call reaches logs the same request id and continues the same
+    trace. A header the tool sets itself wins, and a header a tool may not set
+    (`forbidden_header`) is never added. The headers differ for every request,
+    so they are not part of the request an approval binds (`canonical_call`).
+    """
+    global _outbound_headers
+    _outbound_headers = provider
+
+
+def outbound_headers() -> dict[str, str]:
+    """The correlation headers for a call made now (empty without a provider)."""
+    provider = _outbound_headers
+    if provider is None:
+        return {}
+    try:
+        headers = {str(name): str(value) for name, value in dict(provider()).items()}
+    except Exception as exc:  # correlation never stops a call
+        logger.warning("api call: no correlation headers (%s)", type(exc).__name__)
+        return {}
+    return {name: value for name, value in headers.items() if not forbidden_header(name)}
+
+
 def _run_thread_id() -> str | None:
     """The thread of the current graph run (its `configurable.thread_id`), if any."""
     try:
@@ -2127,6 +2161,9 @@ class ApiClient:
             for name, value in request_headers.multi_items()
             if name.lower() not in {c.lower() for c in credentials}
         ]
+        for name, value in outbound_headers().items():
+            if name not in request_headers:  # the tool's own header wins
+                request_headers[name] = value  # not in tool_headers: no approval binds it
         for name, value in credentials.items():
             request_headers[name] = value  # the policy's credential always wins
         secrets = tuple(credentials.values()) + tuple(

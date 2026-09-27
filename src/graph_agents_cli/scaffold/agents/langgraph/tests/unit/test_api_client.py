@@ -48,6 +48,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     render_path,
     reset_limits,
     reset_policy_cache,
+    set_outbound_headers,
 )
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 
@@ -278,6 +279,44 @@ async def test_allowed_call_is_sent_with_the_bearer_token(policy_file: Path) -> 
     assert [c.headers["authorization"] for c in calls] == ["Bearer tok"] * 3
     assert str(calls[0].url) == "http://items.test/items/42"
     assert calls[0].extensions["timeout"]["connect"] == 1.5
+
+
+async def test_correlation_headers_are_sent_but_not_bound_by_an_approval(
+    policy_file: Path,
+) -> None:
+    calls: list[httpx.Request] = []
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    set_outbound_headers(
+        lambda: {"X-Request-ID": "req-1", "traceparent": traceparent, "Host": "elsewhere.test"}
+    )
+    try:
+        client = get_client("items", transport=_transport(calls))
+        await client.get("/listing")
+        await client.get("/listing", headers={"X-Request-ID": "tool-own"})
+        prepared = client._prepare("GET", "/listing", None, None, None, None, {"X-Tool": "t"})
+    finally:
+        set_outbound_headers(None)
+    assert calls[0].headers["x-request-id"] == "req-1"
+    assert calls[0].headers["traceparent"] == traceparent
+    assert calls[0].headers["host"] == "items.test"  # a header a tool may not set is never added
+    assert calls[1].headers["x-request-id"] == "tool-own"  # the tool's own header wins
+    # They differ per request, so the request an approval binds leaves them out.
+    assert prepared.tool_headers == [("x-tool", "t")]
+    assert prepared.headers["traceparent"] == traceparent
+
+
+async def test_a_failing_correlation_provider_does_not_stop_the_call(policy_file: Path) -> None:
+    calls: list[httpx.Request] = []
+
+    def broken() -> dict[str, str]:
+        raise RuntimeError("no tracer")
+
+    set_outbound_headers(broken)
+    try:
+        await get_client("items", transport=_transport(calls)).get("/listing")
+    finally:
+        set_outbound_headers(None)
+    assert len(calls) == 1 and "x-request-id" not in calls[0].headers
 
 
 async def test_bearer_without_a_token_sends_nothing(

@@ -756,9 +756,14 @@ Low · approvals · found in wave 7
 Low · approvals · found in wave 6
 
 - **Issue:** Headers a tool adds to a gated request are part of the call's hash, so they
-  cannot change after the approval, but the approval card does not show them.
-- **Impact:** An approver cannot review them.
-- **Workaround:** Keep decision-relevant data in the path, query or body.
+  cannot change after the approval, but the approval card does not show them. A tool that
+  puts a per-request value in a gated call's headers (its own request id or trace header)
+  can never send it: the request that resumes the run differs, and the refusal ("differs
+  from the request that was approved") does not say that a header is why.
+- **Impact:** An approver cannot review them; such a gated call is refused after approval.
+- **Workaround:** Keep decision-relevant data in the path, query or body, and leave
+  correlation headers to the app, which adds `X-Request-ID` and `traceparent` outside the
+  approval (found again by the A2A multi-agent experiment).
 
 ### KI-052: No policy-level redaction list for approval bodies
 

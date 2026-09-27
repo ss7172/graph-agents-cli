@@ -253,6 +253,30 @@ tracing:
 The policy is applied before export, so a collector never sees what it excludes. Any other
 value of `TRACE_CAPTURE` stops the app at startup.
 
+### Across agents and services
+
+A request that crosses services keeps one request id and, under OTLP, one trace. Every call
+a tool makes through the policy client (`get_client`) carries:
+
+- `X-Request-ID`: this request's id. An agent built from this template takes a caller's id as
+  its own, so its log records carry the same `request_id` as the caller's.
+- Under OTLP tracing, the W3C trace context of the current span (`traceparent`, and
+  `tracestate` when there is one).
+
+On the receiving side, a request that carries a `traceparent` continues that trace: its root
+span is a child of the caller's span, so an agent that asks another agent over A2A and the
+runs it causes there show as one trace in Jaeger, Tempo or any other OTLP backend.
+
+- A header the tool sets itself wins over the propagated one.
+- These headers differ for every request, so an [approval](approvals.md) does not bind them:
+  the approved call is sent with the headers of the request that resumes it.
+- Only W3C Trace Context is propagated, never baggage. Under LangSmith tracing only the
+  request id is passed on, so each agent's run is its own LangSmith trace.
+- `PROPAGATE_TRACE_HEADERS=false` turns both directions off: set it on an agent whose outbound
+  APIs are outside your trust boundary, or whose callers should not choose its trace ids.
+- Under `langgraph-server`, a graph run in a process that never loads the app (the server's
+  own queue worker, say) sends no correlation headers.
+
 ### Hashed principal ids
 
 Logs, traces and run records carry a hashed principal id, never the raw one. It is a plain

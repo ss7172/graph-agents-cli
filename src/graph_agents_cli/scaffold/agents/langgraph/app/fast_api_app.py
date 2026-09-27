@@ -132,6 +132,7 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     legacy_request_error,
     task_ttl_s,
 )
+from {{cookiecutter.agent_directory}}.app_utils.api_client import set_outbound_headers
 from {{cookiecutter.agent_directory}}.app_utils.approvals import CODE_APPROVAL_PENDING, STATUSES
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
@@ -188,6 +189,7 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     bind_log_context,
     log_format,
     log_level,
+    outbound_trace_headers,
     setup_logging,
     setup_server_logging,
     setup_telemetry,
@@ -204,6 +206,10 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Outbound API calls carry this request's id and trace context to the services they reach
+# (another agent's A2A endpoint, say), unless PROPAGATE_TRACE_HEADERS=false.
+set_outbound_headers(outbound_trace_headers)
 
 if detect_runtime() == FASTAPI:
     # Now rather than in the lifespan: what is logged before it (the A2A

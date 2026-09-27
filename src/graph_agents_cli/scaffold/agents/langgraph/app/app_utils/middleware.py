@@ -16,7 +16,8 @@
 
 * `RequestContextMiddleware`: takes the caller's `X-Request-ID` (letters,
   digits and `._:-`, at most 128) or makes one, returns it on the response,
-  binds it to every log record of the request, and records the request metrics.
+  binds it to every log record of the request, continues the caller's W3C
+  trace (`traceparent`, under OTLP tracing), and records the request metrics.
 * `BodySizeLimitMiddleware`: refuses a body over `MAX_REQUEST_BYTES` with 413,
   from `Content-Length` before reading anything, or while reading a chunked body.
 * `max_message_chars()`: `MAX_MESSAGE_CHARS` (default 32000), the longest user
@@ -63,7 +64,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from {{cookiecutter.agent_directory}}.app_utils.auth import AUTH_CHALLENGE_STATE_KEY
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError, max_request_bytes
 from {{cookiecutter.agent_directory}}.app_utils.metrics import observe_request, route_label
-from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
+from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
+    attach_trace_context,
+    bind_log_context,
+    detach_trace_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,9 +139,13 @@ class RequestContextMiddleware:
                 MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
             await send(message)
 
+        # A caller's W3C trace context (another agent's `traceparent`): this request's
+        # spans join its trace (OTLP tracing only; see telemetry.attach_trace_context).
+        trace_token = attach_trace_context(scope.get("headers") or ())
         try:
             await self.app(scope, receive, send_with_id)
         finally:
+            detach_trace_context(trace_token)
             observe_request(
                 scope.get("method", "GET"),
                 route_label(scope),

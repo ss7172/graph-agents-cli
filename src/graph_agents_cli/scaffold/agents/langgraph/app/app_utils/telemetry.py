@@ -60,6 +60,15 @@ applied to LangSmith (`hide_inputs`/`hide_outputs` plus a client anonymizer
 that reduces a run's `error` to the exception class), to OpenInference (its
 masking config plus an exporter that strips exception messages, stack traces
 and the span status description) and to the run records the app keeps.
+
+Correlation across services (`PROPAGATE_TRACE_HEADERS`, default true): every
+outbound call of the policy client carries this request's `X-Request-ID` and,
+when spans go over OTLP, the W3C trace context of the current span
+(`outbound_trace_headers`, installed with `api_client.set_outbound_headers`);
+an incoming `traceparent` is attached to the request's context
+(`attach_trace_context`, in `middleware.RequestContextMiddleware`), so an agent
+this one calls over A2A logs the same request id and its spans join this
+trace. Under LangSmith tracing only the request id is passed on.
 """
 
 from __future__ import annotations
@@ -69,6 +78,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Iterable
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +89,8 @@ from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 logger = logging.getLogger(__name__)
 
 _initialized = False
+# Set once spans are exported over OTLP: the W3C trace context is then passed on and taken.
+_otlp_active = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -398,6 +410,7 @@ def _setup_langsmith(full: bool) -> None:
 
 
 def _setup_otlp(full: bool) -> None:
+    global _otlp_active
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
     if not endpoint:
         logger.warning(
@@ -447,7 +460,81 @@ def _setup_otlp(full: bool) -> None:
         hide_llm_tools=False,
     )
     LangChainInstrumentor().instrument(tracer_provider=provider, config=config)
+    _otlp_active = True
     logger.info("Tracing over OTLP to %s (capture=%s).", endpoint, "full" if full else "metadata")
+
+
+# ---------------------------------------------------------------------------
+# Correlation across services
+# ---------------------------------------------------------------------------
+
+TRACE_CONTEXT_HEADERS = ("traceparent", "tracestate")
+_FALSE = ("0", "false", "no", "off")
+
+
+def propagate_trace_headers() -> bool:
+    """`PROPAGATE_TRACE_HEADERS` (default true): pass the request id and trace context on,
+    and continue an incoming trace. false turns both off (at a trust boundary, say)."""
+    return (os.environ.get("PROPAGATE_TRACE_HEADERS") or "true").strip().lower() not in _FALSE
+
+
+def _trace_context_propagator() -> Any:
+    # W3C Trace Context only, whatever OTEL_PROPAGATORS says: no baggage leaves or enters.
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+    return TraceContextTextMapPropagator()
+
+
+def outbound_trace_headers() -> dict[str, str]:
+    """The headers that carry this request's correlation to the services it calls.
+
+    `X-Request-ID`, the id every log record of this request carries (a service
+    built from this template takes a caller's id as its own), and, when spans are
+    exported over OTLP, the W3C trace context of the current span (`traceparent`,
+    `tracestate`), so the callee's spans join this trace. Empty under
+    `PROPAGATE_TRACE_HEADERS=false`.
+    """
+    if not propagate_trace_headers():
+        return {}
+    headers: dict[str, str] = {}
+    request_id = LOG_CONTEXT["request_id"].get()
+    if request_id:
+        headers["X-Request-ID"] = request_id
+    if _otlp_active:
+        carrier: dict[str, str] = {}
+        _trace_context_propagator().inject(carrier)
+        headers.update({k: v for k, v in carrier.items() if k in TRACE_CONTEXT_HEADERS})
+    return headers
+
+
+def attach_trace_context(headers: Iterable[tuple[bytes, bytes]]) -> Any:
+    """Continue the caller's trace: attach the W3C trace context of an incoming request.
+
+    `headers` are the ASGI scope's. Returns the token `detach_trace_context`
+    takes, or None when nothing was attached (no `traceparent`, spans not
+    exported over OTLP, or `PROPAGATE_TRACE_HEADERS=false`). A malformed
+    `traceparent` starts a new trace, as if there were none.
+    """
+    if not (_otlp_active and propagate_trace_headers()):
+        return None
+    carrier: dict[str, str] = {}
+    for key, value in headers:
+        name = key.decode("latin-1").lower()
+        if name in TRACE_CONTEXT_HEADERS:
+            carrier[name] = value.decode("latin-1")
+    if "traceparent" not in carrier:
+        return None
+    from opentelemetry import context as otel_context
+
+    return otel_context.attach(_trace_context_propagator().extract(carrier))
+
+
+def detach_trace_context(token: Any) -> None:
+    """Undo `attach_trace_context` (a None token: nothing was attached)."""
+    if token is not None:
+        from opentelemetry import context as otel_context
+
+        otel_context.detach(token)
 
 
 class _MetadataOnlyExporter:

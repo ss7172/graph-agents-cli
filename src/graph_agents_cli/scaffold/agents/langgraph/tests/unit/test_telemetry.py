@@ -177,3 +177,88 @@ def test_otlp_exporter_strips_error_text_from_events_and_status() -> None:
         assert "message" not in by_name[name]["status"]
     event_attrs = {a["key"] for a in by_name["with-events"]["events"][0]["attributes"]}
     assert event_attrs == {"exception.type"}
+
+
+# --- correlation across services ---------------------------------------------------------
+
+TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+TRACEPARENT = f"00-{TRACE_ID}-00f067aa0ba902b7-01"
+
+
+def test_outbound_headers_carry_the_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(telemetry, "_otlp_active", False)
+    monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
+    token = telemetry.LOG_CONTEXT["request_id"].set("req-9")
+    try:
+        # Without OTLP tracing only the request id is passed on.
+        assert telemetry.outbound_trace_headers() == {"X-Request-ID": "req-9"}
+        monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "false")
+        assert telemetry.outbound_trace_headers() == {}
+    finally:
+        telemetry.LOG_CONTEXT["request_id"].reset(token)
+
+
+def test_an_incoming_trace_is_continued_and_passed_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setattr(telemetry, "_otlp_active", True)
+    monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
+    tracer = TracerProvider().get_tracer("test")
+    incoming = [(b"traceparent", TRACEPARENT.encode()), (b"baggage", b"user=alice")]
+    token = telemetry.attach_trace_context(incoming)
+    assert token is not None
+    try:
+        with tracer.start_as_current_span("run") as span:
+            outbound = telemetry.outbound_trace_headers()
+    finally:
+        telemetry.detach_trace_context(token)
+    context = span.get_span_context()
+    # The run's span joined the caller's trace, and the next hop continues it from the run.
+    assert format(context.trace_id, "032x") == TRACE_ID
+    _, trace_id, parent_id, _ = outbound["traceparent"].split("-")
+    assert (trace_id, parent_id) == (TRACE_ID, format(context.span_id, "016x"))
+    assert "baggage" not in outbound  # W3C trace context only
+    # Nothing is attached without a traceparent, without OTLP tracing, or when switched off.
+    assert telemetry.attach_trace_context([(b"x-request-id", b"r")]) is None
+    monkeypatch.setattr(telemetry, "_otlp_active", False)
+    assert telemetry.attach_trace_context(incoming) is None
+    monkeypatch.setattr(telemetry, "_otlp_active", True)
+    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "false")
+    assert telemetry.attach_trace_context(incoming) is None
+
+
+async def test_the_request_middleware_continues_the_callers_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from opentelemetry import trace
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from {{cookiecutter.agent_directory}}.app_utils.middleware import RequestContextMiddleware
+
+    monkeypatch.setattr(telemetry, "_otlp_active", True)
+    monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
+
+    async def endpoint(request: Request) -> JSONResponse:
+        context = trace.get_current_span().get_span_context()
+        return JSONResponse(
+            {
+                "trace_id": format(context.trace_id, "032x"),
+                "out": telemetry.outbound_trace_headers(),
+            }
+        )
+
+    app = RequestContextMiddleware(Starlette(routes=[Route("/", endpoint)]))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        body = (
+            await c.get("/", headers={"traceparent": TRACEPARENT, "X-Request-ID": "req-7"})
+        ).json()
+        other = (await c.get("/")).json()
+    assert body["trace_id"] == TRACE_ID
+    assert body["out"]["X-Request-ID"] == "req-7"
+    assert body["out"]["traceparent"].split("-")[1] == TRACE_ID
+    # The context is detached after the request: the next one starts on its own.
+    assert other["trace_id"] == "0" * 32 and "traceparent" not in other["out"]
