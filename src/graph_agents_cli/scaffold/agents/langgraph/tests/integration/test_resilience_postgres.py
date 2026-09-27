@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Failures against a real Postgres: lost replicas, dropped sessions, outages, crashes.
+"""Failures against a real Postgres: lost replicas, dropped sessions, outages, crashes,
+and A2A tasks across replicas.
 
 Opt-in: set `TEST_POSTGRES_DSN` to the URL of a server where the user may
 create databases (each test gets a fresh one, dropped afterwards). Outages are
@@ -553,9 +554,10 @@ import os, sys, time
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from {agent} import agent
-from {agent}.app_utils import chat, run_locks
+from {agent}.app_utils import a2a, chat, run_locks
 run_locks.LEASE_TTL_S, run_locks.RENEW_EVERY_S, run_locks.LOCAL_VALIDITY_S = 2.0, 0.2, 1.0
 chat.RECONCILE_INTERVAL_S, chat.RECONCILE_GRACE_S = 0.5, 0.0
+a2a.TASK_SWEEP_INTERVAL_S = 0.5
 @tool
 def probe(query: str) -> str:
     \"\"\"Test-only tool: reports what it was asked about.\"\"\"
@@ -658,3 +660,111 @@ def test_a_crash_mid_tool_call_leaves_a_usable_thread_and_an_interrupted_run(
             server.wait(10)
         if server.poll() is None:
             server.kill()
+
+
+# --- A2A tasks across replicas -----------------------------------------------------------------
+
+A2A_PATH = f"/a2a/{AGENT_DIR}"
+
+
+def _a2a(base: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """One JSON-RPC call on a new connection (a load balancer may send each to any replica)."""
+    r = httpx.post(
+        f"{base}{A2A_PATH}",
+        json={"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params},
+        headers={**AUTH, "A2A-Version": "1.0"},
+        timeout=30,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _say(text: str, **configuration: Any) -> dict[str, Any]:
+    message = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER", "parts": [{"text": text}]}
+    return {"message": message, "configuration": configuration}
+
+
+def _stop(server: subprocess.Popen[bytes]) -> None:
+    server.terminate()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        server.wait(10)
+    if server.poll() is None:
+        server.kill()
+
+
+def test_a2a_tasks_are_seen_by_every_replica_and_survive_a_crash(dsn: str, tmp_path: Path) -> None:
+    ports = [_free_port(), _free_port()]
+    a, b = (f"http://127.0.0.1:{port}" for port in ports)
+    log = tmp_path / "server.log"
+    servers = [_start_server(dsn, port, log) for port in ports]
+    try:
+        task = _a2a(a, "SendMessage", _say("hello"))["result"]["task"]
+        assert task["status"]["state"] == "TASK_STATE_COMPLETED", task
+        # Another replica has the task, its reply and its listing (-32001 there before).
+        seen = _a2a(b, "GetTask", {"id": task["id"]})["result"]
+        assert seen["id"] == task["id"] and seen["artifacts"] == task["artifacts"]
+        listed = _a2a(b, "ListTasks", {"contextId": task["contextId"]})["result"]
+        assert [t["id"] for t in listed["tasks"]] == [task["id"]]
+        # The replica that ran it is killed; its replacement still has the task.
+        servers[0].send_signal(signal.SIGKILL)
+        servers[0].wait()
+        servers[0] = _start_server(dsn, ports[0], log)
+        again = _a2a(a, "GetTask", {"id": task["id"]})["result"]
+        assert again["status"]["state"] == "TASK_STATE_COMPLETED"
+        # Deleting the conversation on one replica deletes its tasks for every replica.
+        assert httpx.delete(f"{b}/threads/{task['contextId']}", headers=AUTH).status_code == 204
+        assert _a2a(a, "GetTask", {"id": task["id"]})["error"]["code"] == -32001
+    finally:
+        for server in servers:
+            _stop(server)
+
+
+def test_an_a2a_task_whose_replica_dies_is_failed_and_not_canceled_elsewhere(
+    dsn: str, tmp_path: Path
+) -> None:
+    ports = [_free_port(), _free_port()]
+    a, b = (f"http://127.0.0.1:{port}" for port in ports)
+    log = tmp_path / "server.log"
+    servers = [_start_server(dsn, port, log) for port in ports]
+    try:
+        request = _say("Run the probe for slow city", returnImmediately=True)
+        task = _a2a(a, "SendMessage", request)["result"]["task"]
+        deadline = time.monotonic() + 10
+        while not asyncio.run(
+            _sql(
+                dsn,
+                "SELECT 1 FROM thread_locks WHERE thread_id = %s AND expires_at > now()",
+                (task["contextId"],),
+            )
+        ):
+            assert time.monotonic() < deadline, "the run never took its thread"
+            time.sleep(0.1)
+        # The run is in replica a: a cancel reaching b is refused, not reported as done.
+        refused = _a2a(b, "CancelTask", {"id": task["id"]})
+        assert refused.get("error", {}).get("code") == -32002, refused
+        assert "another replica" in refused["error"]["message"]
+        # So is a subscription there: the run's events happen in a only.
+        subscribe = {"jsonrpc": "2.0", "id": "s", "method": "SubscribeToTask"}
+        r = httpx.post(
+            f"{b}{A2A_PATH}",
+            json={**subscribe, "params": {"id": task["id"]}},
+            headers={**AUTH, "A2A-Version": "1.0"},
+            timeout=10,
+        )
+        assert '"code":-32004' in r.text.replace(" ", ""), r.text
+        assert _a2a(b, "GetTask", {"id": task["id"]})["result"]["status"]["state"] == (
+            "TASK_STATE_WORKING"
+        )
+        servers[0].send_signal(signal.SIGKILL)  # the replica running it dies mid-run
+        servers[0].wait()
+        deadline = time.monotonic() + 20
+        while True:
+            status = _a2a(b, "GetTask", {"id": task["id"]})["result"]["status"]
+            if status["state"] != "TASK_STATE_WORKING" or time.monotonic() > deadline:
+                break
+            time.sleep(0.3)
+        assert status["state"] == "TASK_STATE_FAILED", status
+        assert "Send the message again" in status["message"]["parts"][0]["text"]
+    finally:
+        for server in servers:
+            _stop(server)

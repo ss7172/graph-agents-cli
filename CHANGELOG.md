@@ -65,6 +65,26 @@ migration" with the steps to follow.
   listing is skipped like the skills version check, and `info` says so ("Installed skills:
   not listed (... skips `npx skills list`)"; `--json` adds `installed_skills_skipped` with the
   reason, null when the listing ran).
+- **A2A tasks are shared by every replica and survive restarts** (KI-024, now Low). The task
+  store was in process memory, per replica, while the production values run two replicas:
+  `GetTask`, `ListTasks`, `CancelTask` and a message naming a `taskId` (an approval decision)
+  failed with -32001 "Task not found" whenever a request reached the other pod (7 of 30
+  `GetTask` calls over new connections in the A2A experiment), and a restart or rollout
+  dropped every task, including those waiting for an approval. Under `CHECKPOINTER=postgres`
+  (and a Postgres `DATABASE_URI` under `langgraph-server`) tasks are now kept in the app's
+  database, table `a2a_tasks` (`agent_a2a_tasks`), with the same per-principal ownership,
+  `A2A_TASK_TTL_S` expiry (on the database clock; `0` now keeps a task until its thread is
+  deleted) and deletion with their thread, on every replica. A task whose run ended with its
+  process turns `failed` instead of staying `working`. A `SubscribeToTask` or `CancelTask`
+  that reaches a replica other than the one running the task is refused (-32004, -32002)
+  instead of waiting for events that happen elsewhere, or reporting a cancel the run then
+  overwrites. Streamed reply chunks are written at most once a second per task.
+  `CHECKPOINTER=memory` keeps the in-memory store. The a2a SDK's `DatabaseTaskStore` was
+  not used: its Postgres extra is SQLAlchemy on asyncpg (the template uses psycopg only),
+  its `context_id` column holds 36 characters where the template accepts 128, and it
+  creates its table on first use, outside the schema lock that replicas share. Existing
+  projects get it from `scaffold upgrade` (it changes `app_utils/a2a.py` and
+  `app_utils/db.py`); the table is created at the next start.
 - **`deploy` works for a project that needs no Secret key.** An env file that sets none of
   the allow-listed keys (a keyless project: the `fake` model, a keyless `openai-compatible`
   endpoint, no `shared-bearer` key) made `deploy` exit 3, "No allow-listed secret values to

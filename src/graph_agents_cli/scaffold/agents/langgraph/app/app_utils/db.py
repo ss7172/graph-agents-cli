@@ -21,7 +21,9 @@ nothing collides with the server's own schema). Otherwise they live in a
 bounded in-process dict (the newest `MEMORY_RUNS_CAP` records). Approvals of
 gated API calls (`approvals.py`) live beside them the same way: table
 `approvals` (fastapi) or `agent_approvals` (langgraph-server), else in process
-memory, which `langgraph dev` also writes to a file beside its own threads.
+memory, which `langgraph dev` also writes to a file beside its own threads. So
+do A2A tasks (`a2a.py`): table `a2a_tasks` (fastapi) or `agent_a2a_tasks`
+(langgraph-server), else in process memory.
 
 A run's record is written when it starts, with status `running`, and
 updated when it ends (`ok`, `step_limit`, `error`, `timeout`, `cancelled` or
@@ -67,6 +69,8 @@ LOCKS_TABLE = "thread_locks"
 SERVER_LOCKS_TABLE = "agent_thread_locks"
 APPROVALS_TABLE = "approvals"
 SERVER_APPROVALS_TABLE = "agent_approvals"
+A2A_TASKS_TABLE = "a2a_tasks"
+SERVER_A2A_TASKS_TABLE = "agent_a2a_tasks"
 MEMORY_RUNS_CAP = 10_000
 
 # Run statuses owned by the store (the others are set by `chat.py`).
@@ -150,6 +154,31 @@ CREATE INDEX IF NOT EXISTS {approvals}_requester_idx ON {approvals} (requester_h
 CREATE INDEX IF NOT EXISTS {approvals}_approvers_idx ON {approvals} USING gin (approvers);
 """
 
+# A2A tasks (see `a2a.py`): the SDK's Task as JSON, keyed by its owner (the principal
+# id, as `threads.principal_id`) and its id. `thread_id` is the conversation its
+# contextId names (deleting the thread deletes its tasks), `state` and `status_at`
+# its status (ListTasks filters and orders by them), `updated_at` its last save
+# (`A2A_TASK_TTL_S` counts from it, on the database clock).
+A2A_TASKS_DDL = """
+CREATE TABLE IF NOT EXISTS {tasks} (
+    owner      TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    context_id TEXT NOT NULL,
+    thread_id  TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    status_at  TIMESTAMPTZ,
+    task       JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner, task_id)
+);
+CREATE INDEX IF NOT EXISTS {tasks}_thread_id_idx ON {tasks} (thread_id);
+CREATE INDEX IF NOT EXISTS {tasks}_updated_at_idx ON {tasks} (updated_at);
+CREATE INDEX IF NOT EXISTS {tasks}_owner_status_idx
+    ON {tasks} (owner, status_at DESC, task_id DESC);
+CREATE INDEX IF NOT EXISTS {tasks}_running_idx ON {tasks} (updated_at)
+    WHERE state IN ('TASK_STATE_SUBMITTED', 'TASK_STATE_WORKING');
+"""
+
 THREADS_DDL = """
 CREATE TABLE IF NOT EXISTS threads (
     thread_id    TEXT PRIMARY KEY,
@@ -221,6 +250,7 @@ class Database:
         runs_table: str = RUNS_TABLE,
         locks_table: str = LOCKS_TABLE,
         approvals_table: str = APPROVALS_TABLE,
+        a2a_tasks_table: str = A2A_TASKS_TABLE,
         with_threads: bool = True,
     ) -> None:
         self.kind = kind
@@ -228,6 +258,7 @@ class Database:
         self.runs_table = runs_table
         self.locks_table = locks_table
         self.approvals_table = approvals_table
+        self.a2a_tasks_table = a2a_tasks_table
         self.with_threads = with_threads
         self.health = DbHealth()
         self.pool: Any = None
@@ -254,6 +285,7 @@ class Database:
             "runs_table": SERVER_RUNS_TABLE,
             "locks_table": SERVER_LOCKS_TABLE,
             "approvals_table": SERVER_APPROVALS_TABLE,
+            "a2a_tasks_table": SERVER_A2A_TASKS_TABLE,
         }
         if is_postgres_url(uri):
             return cls(POSTGRES, uri, with_threads=False, **tables)
@@ -288,6 +320,7 @@ class Database:
             RUNS_DDL.format(runs=self.runs_table)
             + LOCKS_DDL.format(locks=self.locks_table)
             + APPROVALS_DDL.format(approvals=self.approvals_table)
+            + A2A_TASKS_DDL.format(tasks=self.a2a_tasks_table)
             + (THREADS_DDL if self.with_threads else "")
         )
 

@@ -25,7 +25,7 @@ scaffolding files implement them.
 │   │   ├── db.py                # run records (`runs` table under postgres; `agent_runs` under langgraph-server; `running` until they end, reconciled to `interrupted`), lease table, schema setup under an advisory lock
 │   │   ├── content.py           # message content helpers
 │   │   ├── playground.py        # the /playground page (APP_ENV=dev only)
-│   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events; tasks per principal, A2A_TASK_TTL_S
+│   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events; tasks per principal in Postgres (a2a_tasks) or memory, A2A_TASK_TTL_S
 │   ├── policies/
 │   │   └── custom.py            # CustomPolicy stub (fails closed with HTTPException 503)
 │   └── tools/
@@ -110,7 +110,7 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT` | Secret (add to `secrets.keys`) | bearer token required by `/metrics`; HMAC key of the principal hash |
 | `CORS_ALLOW_ORIGINS` | `.env` / chart | comma list; empty = no CORS |
 | `DB_POOL_MIN_SIZE` (1), `DB_POOL_MAX_SIZE` (10) | `.env` / chart | connection pool per process |
-| `A2A_TASK_TTL_S` (3600) | `.env` / chart | in-memory A2A tasks dropped this long after their last update (0 = until restart; a value that is not a whole number >= 0 stops startup) |
+| `A2A_TASK_TTL_S` (3600) | `.env` / chart | A2A tasks dropped this long after their last update (0 = kept until the thread is deleted, in memory until restart; a value that is not a whole number >= 0 stops startup) |
 | `APP_URL` | chart (`appUrl` / hostname) / `.env` | public base URL in the A2A agent card; unset = bind address (warned outside dev) |
 | `A2A_DESCRIPTION`, `AGENT_VERSION` (0.1.0) | `.env` / chart | the A2A card's description (and its chat skill's) and version; `A2A_NAME` (the agent directory) is its name and mount |
 | `<API>_BASE_URL` (each API's `base_url_env`) | `.env` / chart | one per API in `api-policy.yaml` |

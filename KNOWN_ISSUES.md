@@ -58,7 +58,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | api-policy | 4 | 7 | 11 |
 | approvals | 7 | 5 | 12 |
 | runtime | 10 | 6 | 16 |
-| a2a | 3 | 8 | 11 |
+| a2a | 2 | 9 | 11 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 7 | 11 |
 | chart/CD | 6 | 5 | 11 |
@@ -66,7 +66,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 11 | 12 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **42** | **82** | **124** |
+| **Total** | **41** | **83** | **124** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -399,18 +399,6 @@ Medium · runtime · found in the skill-optimisation experiment
   JWKS fetch.
 - **Workaround:** Unset `ALL_PROXY`/`all_proxy` for the project's processes, use an HTTP proxy
   in `HTTP(S)_PROXY` instead, or add `socksio` to the project's dependencies.
-
-### KI-024: A2A tasks live in process memory; a restart drops tasks waiting for approval
-
-Medium · a2a · found in waves 0 and 7
-
-- **Issue:** The A2A task store is in memory, per replica, with an `A2A_TASK_TTL_S` expiry. A
-  restart, rollout or crash drops every task, including one in `input-required` waiting for
-  an approval: answering on that task then fails (task not found) while the approval stays
-  pending and blocks the thread. The recovery that works is not documented.
-- **Impact:** A2A clients lose tasks on routine rollouts and can get stuck on approvals.
-- **Workaround:** Send the decision data part as a new message on the same `contextId` (no
-  `taskId`), or decide over HTTP; use one replica or sticky routing for long tasks.
 
 ### KI-025: A2A tasks waiting for approval do not follow the approval's outcome
 
@@ -874,6 +862,22 @@ Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent
   gate; the replacement removed the called agents' confirmation offers (4 of 24 runs to 0)
   and cost about 12% less per task. Not yet adopted: the difference is within noise at this
   sample size.
+
+### KI-024: A running A2A task's subscription and cancel work only on the replica running it
+
+Low · a2a · found in waves 0 and 7; narrowed by the A2A multi-agent experiment
+
+- **Issue:** A2A tasks are kept in the app's Postgres database (`CHECKPOINTER=postgres`, or a
+  Postgres `DATABASE_URI` under `langgraph-server`), so every replica sees them and restarts
+  and rollouts keep them; this entry was Medium while they lived in process memory (see the
+  CHANGELOG). A running task's events stay in the process running it, though: while its run
+  goes on, `SubscribeToTask` and `CancelTask` that reach another replica are refused
+  (`-32004`, `-32002`) instead of served. Under `CHECKPOINTER=memory` tasks are still in
+  process memory, and a restart drops them with the paused runs.
+- **Impact:** With several replicas and no sticky routing, a client that streams or cancels
+  a running task may have to retry until a request reaches that pod.
+- **Workaround:** Follow long tasks with `GetTask` (any replica answers), retry a refused
+  subscription or cancel, or give A2A clients that stream session affinity.
 
 ### KI-060: A resumed A2A task ends with two response artifacts
 

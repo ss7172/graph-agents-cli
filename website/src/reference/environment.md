@@ -242,7 +242,7 @@ See [Observability](../guides/observability.md) for what each mode sends where.
 | `APP_URL` | `http://HOST:PORT` | The public base URL the agent card advertises; the chart sets it from `appUrl` or the route hostname. |
 | `A2A_NAME` | the agent directory (`app`) | Mount name: the card at `/a2a/<name>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<name>`. |
 | `A2A_DESCRIPTION` | a generic description | What the card (and its chat skill) says the agent does. |
-| `A2A_TASK_TTL_S` | `3600` | Seconds a task is kept after its last update; `0` keeps tasks until restart. |
+| `A2A_TASK_TTL_S` | `3600` | Seconds a task is kept after its last update; `0` keeps a task until its thread is deleted (in process memory, until restart). |
 
 See [HTTP API](http-api.md#a2a).
 

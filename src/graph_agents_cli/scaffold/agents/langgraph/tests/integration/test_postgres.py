@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Postgres behaviour: schema setup across replicas, run locks, atomic claims, pool healing.
+"""Postgres behaviour: schema setup across replicas, run locks, atomic claims, pool healing,
+and the A2A task store (shared by replicas, kept across restarts).
 
 Opt-in: set `TEST_POSTGRES_DSN` to the URL of a server where the user may
 create databases (each test gets a fresh one, dropped afterwards), for example
@@ -25,9 +26,20 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
+from a2a.server.context import ServerCallContext
+from a2a.types import ListTasksRequest, Task, TaskState
+from google.protobuf import json_format
 
+from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module
+from {{cookiecutter.agent_directory}}.app_utils.a2a import (
+    INTERRUPTED_TASK_TEXT,
+    ExpiringTaskStore,
+    PostgresTaskStore,
+    PrincipalUser,
+)
 from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import POSTGRES, get_checkpointer
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunRecord, RunStore
@@ -266,4 +278,152 @@ async def test_an_id_with_state_but_no_owner_row_is_never_claimed(dsn: str) -> N
             await store.ensure("fresh", bob, has_state=always)
         assert getattr(exc.value, "status_code", None) == 403
     finally:
+        await db.close()
+
+
+# --- A2A tasks ----------------------------------------------------------------------------
+
+
+def _ctx(owner: str) -> ServerCallContext:
+    return ServerCallContext(user=PrincipalUser(owner))
+
+
+def _a2a_task(
+    task_id: str, context_id: str = "c1", state: int = TaskState.TASK_STATE_COMPLETED, **extra: Any
+) -> Task:
+    task = Task(id=task_id, context_id=context_id)
+    task.status.state = state
+    if "second" in extra:
+        task.status.timestamp.FromSeconds(1_800_000_000 + extra["second"])
+    if "text" in extra:
+        artifact = task.artifacts.add()
+        artifact.artifact_id = "a1"
+        artifact.parts.add().text = extra["text"]
+    return task
+
+
+async def _opened(dsn: str) -> Database:
+    db = Database(POSTGRES, dsn)
+    await db.open()  # creates the tables, the A2A task table included
+    return db
+
+
+async def test_a2a_tasks_are_shared_by_replicas_and_kept_across_restarts(dsn: str) -> None:
+    replica_a, replica_b = await _opened(dsn), await _opened(dsn)
+    try:
+        store_a = PostgresTaskStore(3600, replica_a)
+        store_b = PostgresTaskStore(3600, replica_b)
+        task = _a2a_task("t1", "orders-thread.billing" * 3, second=5, text="Order 1 is on its way.")
+        await store_a.save(task, _ctx("alice"))
+        seen = await store_b.get("t1", _ctx("alice"))
+        assert seen is not None
+        assert json_format.MessageToDict(seen) == json_format.MessageToDict(task)
+        assert await store_b.get("t1", _ctx("bob")) is None  # another principal: not found
+        assert (await store_b.list(ListTasksRequest(), _ctx("alice"))).total_size == 1
+        assert (await store_b.list(ListTasksRequest(), _ctx("bob"))).total_size == 0
+    finally:
+        await replica_a.close()
+    restarted = await _opened(dsn)
+    try:
+        assert await PostgresTaskStore(3600, restarted).get("t1", _ctx("alice")) is not None
+        await replica_b.close()
+    finally:
+        await restarted.close()
+
+
+async def test_a2a_task_listing_matches_the_in_memory_store(dsn: str) -> None:
+    """Filters, order (newest status first, no timestamp last), pages and totals as the SDK's."""
+    db = await _opened(dsn)
+    try:
+        postgres = PostgresTaskStore(0, db)
+        memory = ExpiringTaskStore(0)
+        tasks = [
+            _a2a_task("t1", "c1", TaskState.TASK_STATE_COMPLETED, second=10),
+            _a2a_task("t2", "c1", TaskState.TASK_STATE_INPUT_REQUIRED, second=30),
+            _a2a_task("t3", "c2", TaskState.TASK_STATE_COMPLETED, second=20),
+            _a2a_task("t4", "c2", TaskState.TASK_STATE_FAILED),
+            _a2a_task("t5", "c1", TaskState.TASK_STATE_COMPLETED, second=30),
+            _a2a_task("t6", "c1", TaskState.TASK_STATE_COMPLETED),
+        ]
+        for task in tasks:
+            for store in (postgres, memory):
+                await store.save(task, _ctx("alice"))
+        await postgres.save(_a2a_task("t7", "c1", second=40), _ctx("bob"))
+        after = _a2a_task("x", second=20).status.timestamp
+        requests = [
+            ListTasksRequest(),
+            ListTasksRequest(context_id="c1"),
+            ListTasksRequest(status=TaskState.TASK_STATE_COMPLETED),
+            ListTasksRequest(status_timestamp_after=after),
+        ]
+        for request in requests:
+            for page_size in (2, 3, 50):
+                pages: dict[str, list[list[str]]] = {}
+                for name, store in (("postgres", postgres), ("memory", memory)):
+                    got: list[list[str]] = []
+                    token = ""
+                    while True:
+                        page_request = ListTasksRequest()
+                        page_request.CopyFrom(request)
+                        page_request.page_size = page_size
+                        page_request.page_token = token
+                        page = await store.list(page_request, _ctx("alice"))
+                        got.append([t.id for t in page.tasks] + [f"total={page.total_size}"])
+                        token = page.next_page_token
+                        if not token:
+                            break
+                    pages[name] = got
+                assert pages["postgres"] == pages["memory"], (request, page_size)
+    finally:
+        await db.close()
+
+
+async def test_a2a_tasks_expire_and_go_with_their_thread(dsn: str) -> None:
+    db = await _opened(dsn)
+    try:
+        store = PostgresTaskStore(1, db)
+        await store.save(_a2a_task("old", "c1"), _ctx("alice"))
+        await asyncio.sleep(1.2)
+        assert await store.get("old", _ctx("alice")) is None  # expired on the database clock
+        assert await store.sweep() == (1, 0)  # and deleted by the sweep
+        store = PostgresTaskStore(3600, db)
+        owned = (("alice", "a", "c1"), ("bob", "b", "c1"), ("bob", "c", "c2"))
+        for owner, task_id, context in owned:
+            await store.save(_a2a_task(task_id, context), _ctx(owner))
+        assert await store.delete_context("c1") == 2  # every owner's tasks of that thread
+        assert await store.get("c", _ctx("bob")) is not None
+    finally:
+        await db.close()
+
+
+async def test_a2a_tasks_of_a_dead_run_are_failed_not_left_working(
+    dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task `working` in a process that died is failed once its thread's lease is gone."""
+    monkeypatch.setattr(chat_module, "RECONCILE_GRACE_S", 0.0)
+    db = await _opened(dsn)
+    locks = ThreadLocks(dsn)
+    try:
+        store = PostgresTaskStore(3600, db)
+        await store.save(_a2a_task("dead", "t-dead", TaskState.TASK_STATE_WORKING), _ctx("alice"))
+        await store.save(_a2a_task("live", "t-live", TaskState.TASK_STATE_WORKING), _ctx("alice"))
+        await store.save(
+            _a2a_task("paused", "t-paused", TaskState.TASK_STATE_INPUT_REQUIRED), _ctx("alice")
+        )
+        lease = await locks.acquire("t-live")  # its run goes on in some replica
+        await asyncio.sleep(0.05)
+        assert await store.sweep() == (0, 1)
+        dead = await store.get("dead", _ctx("alice"))
+        assert dead is not None and dead.status.state == TaskState.TASK_STATE_FAILED
+        assert dead.status.message.parts[0].text == INTERRUPTED_TASK_TEXT
+        live = await store.get("live", _ctx("alice"))
+        assert live is not None and live.status.state == TaskState.TASK_STATE_WORKING
+        # The lease is not this app's: a CancelTask here is refused (see a2a.py).
+        assert await store.running_elsewhere(live) is True
+        await lease.release()
+        assert await store.running_elsewhere(live) is False
+        paused = await store.get("paused", _ctx("alice"))
+        assert paused is not None and paused.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
+    finally:
+        await locks.close()
         await db.close()

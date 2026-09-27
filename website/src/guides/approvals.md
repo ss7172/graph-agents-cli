@@ -373,10 +373,10 @@ left pending. See [Evaluation](evaluation.md#cases-that-reach-an-approval-gate).
     - A project whose runtime predates approval rules refuses every call once the policy holds
       a list of rules: upgrade the project first
       ([KI-007](../reference/known-issues.md#ki-007-a-list-of-approval-rules-makes-a-runtime-that-predates-them-refuse-every-call)).
-    - A2A: tasks live in process memory, a restart drops tasks waiting for approval, and a
-      task does not follow an approval decided over HTTP
-      ([KI-024](../reference/known-issues.md#ki-024-a2a-tasks-live-in-process-memory-a-restart-drops-tasks-waiting-for-approval),
-      [KI-025](../reference/known-issues.md#ki-025-a2a-tasks-waiting-for-approval-do-not-follow-the-approvals-outcome)).
+    - A2A: a task does not follow an approval decided over HTTP
+      ([KI-025](../reference/known-issues.md#ki-025-a2a-tasks-waiting-for-approval-do-not-follow-the-approvals-outcome)).
+      Under `CHECKPOINTER=memory` a restart drops the tasks waiting for approval (with the
+      paused runs); under Postgres they are kept, and a decision on one works on any replica.
       Its approval prompt shows body numbers as doubles (`1` reads `1.0`)
       ([KI-026](../reference/known-issues.md#ki-026-the-a2a-approval-prompt-shows-numbers-as-doubles-and-its-text-omits-the-body)).
     - CLI output: `approvals list` prints "body: (none)" when the server withholds the body

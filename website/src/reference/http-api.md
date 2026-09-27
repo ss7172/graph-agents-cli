@@ -317,8 +317,14 @@ Errors
 
 Tasks
 :   A task belongs to the principal that created it: another principal's task id reads as
-    not found. Tasks are kept in process memory and dropped `A2A_TASK_TTL_S` (3600 s) after
-    their last update.
+    not found. Under `CHECKPOINTER=postgres` (and under `langgraph-server` with a Postgres
+    `DATABASE_URI`) tasks are kept in the database, in table `a2a_tasks` (`agent_a2a_tasks`):
+    every replica sees them and they survive restarts and rollouts, so `GetTask`, `ListTasks`
+    and a decision naming a `taskId` work whichever pod they reach. Under
+    `CHECKPOINTER=memory` they are kept in process memory. A task is dropped `A2A_TASK_TTL_S`
+    (3600 s) after its last update (`0`: when its thread is deleted), and deleting a thread
+    deletes its tasks. A task whose run ended with its process (a crash, an OOM kill) turns
+    `failed` instead of staying `working`.
 
 Approvals
 :   A gated run moves the task to `input-required`, with a data part
@@ -364,8 +370,10 @@ above behaves the same, with these differences:
 
 !!! warning "Limitations"
 
-    - **The A2A task store is per replica.** `GetTask` or a resubscribe routed to another pod
-      reads as not found. Use one replica, or sticky routing, for long A2A tasks.
+    - **A running A2A task streams from its own replica.** While its run goes on,
+      `SubscribeToTask` and `CancelTask` reaching another pod are refused (`-32004`,
+      `-32002`): retry, or follow the task with `GetTask`
+      ([KI-024](known-issues.md#ki-024-a-running-a2a-tasks-subscription-and-cancel-work-only-on-the-replica-running-it)).
     - **The run lease is checked in the process**, not by the database in the same
       transaction: a write already sent when a network partition starts can land after
       another replica took the thread (normal reads still follow the newer run's

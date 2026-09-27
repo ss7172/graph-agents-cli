@@ -12,7 +12,7 @@ choosing flags or editing configuration.
 | "LangGraph Platform", "LangGraph Server", "Agent Server", "langgraph-api", "Assistants/Threads/Runs API", "Studio-compatible server" | `--runtime langgraph-server` (needs Postgres and Redis; the deployed `langgraph-api` image checks for a LangGraph licence at startup, so it is outside the disconnected profile; the local `langgraph dev` server needs no licence) |
 | "LangGraph Studio", "visual graph debugger" | `graph-agents-cli playground --graph` (`langgraph dev`, bypasses auth) |
 | "chat page", "try it in the browser" | `graph-agents-cli playground` (`/playground`, only when `APP_ENV=dev`) |
-| "A2A", "agent-to-agent", "agent card" | built in: `/a2a/<agent_directory>/.well-known/agent-card.json`; `run --mode a2a`; tasks are private to their principal and kept in memory per replica (`A2A_TASK_TTL_S`) |
+| "A2A", "agent-to-agent", "agent card" | built in: `/a2a/<agent_directory>/.well-known/agent-card.json`; `run --mode a2a`; tasks are private to their principal, kept in Postgres under `CHECKPOINTER=postgres` (every replica sees them, restarts keep them), else in process memory (`A2A_TASK_TTL_S`) |
 | "health check", "liveness", "readiness", "probe" | `GET /health` (liveness), `GET /ready` (the database answers) |
 | "metrics", "Prometheus", "monitoring" | `GET /metrics` (`METRICS_ENABLED`, optional `METRICS_TOKEN`); chart `metrics.serviceMonitor` / `metrics.scrapeAnnotations` |
 | "timeout", "runaway agent", "loop" | `RUN_TIMEOUT_S`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`, `RECURSION_LIMIT` |

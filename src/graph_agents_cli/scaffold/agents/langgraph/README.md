@@ -111,7 +111,7 @@ graph-agents-cli-manifest.yaml
 | `GET /health` | Liveness: `{"status": "ok", "runtime", "checkpointer"}` (no auth) |
 | `GET /ready` | Readiness: 200 when the database is set up and answers within 2 s, else 503 (no auth) |
 | `GET /metrics` | Prometheus text (no auth unless `METRICS_TOKEN` is set; `METRICS_ENABLED=false` turns it off) |
-| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` (description `A2A_DESCRIPTION`, version `AGENT_VERSION`); tasks are private to their principal and kept in memory per replica for `A2A_TASK_TTL_S` (an unknown task is -32001, A2A 0.3 included); `SendMessage` returns the reply as one text part |
+| `/a2a/{{cookiecutter.agent_directory}}` | A2A JSON-RPC; card at `/a2a/{{cookiecutter.agent_directory}}/.well-known/agent-card.json` (description `A2A_DESCRIPTION`, version `AGENT_VERSION`); tasks are private to their principal and kept for `A2A_TASK_TTL_S` after their last update, in the app's database when it has one (table `a2a_tasks`{% if cookiecutter.runtime == 'langgraph-server' %}; `agent_a2a_tasks` in the server's `DATABASE_URI`{% endif %}: every replica sees them, and they survive restarts), else in process memory (an unknown task is -32001, A2A 0.3 included); `SendMessage` returns the reply as one text part |
 | `/playground`, `/docs`, `/openapi.json` | Only under `APP_ENV=dev` |
 {%- if cookiecutter.runtime == 'langgraph-server' %}
 

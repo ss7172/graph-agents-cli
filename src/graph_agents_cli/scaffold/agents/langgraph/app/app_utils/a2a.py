@@ -27,11 +27,20 @@ A2A tasks belong to the principal that created them: the call context's user
 is the authenticated principal, and the task store keys every task by that
 principal's id, so ListTasks, GetTask, CancelTask and SubscribeToTask only
 ever see the caller's own tasks (another principal's task id reads as "not
-found"). The task store is in process memory: it is per replica (a task
-created on one pod is not visible on another) and a task is evicted
-`A2A_TASK_TTL_S` seconds (default 3600; 0 keeps tasks until restart) after
-its last update. The conversation itself is the thread, which is durable
-under `CHECKPOINTER=postgres`. Deleting the thread (the owner's
+found"). Where the chat runtime has a Postgres database (`CHECKPOINTER=postgres`,
+or a Postgres `DATABASE_URI` under langgraph-server) the tasks are kept there
+(`PostgresTaskStore`): every replica sees them and they survive restarts and
+rollouts, so `GetTask`, `ListTasks`, `CancelTask` and a message naming a
+`taskId` (an approval decision) work on any replica. Otherwise
+(`CHECKPOINTER=memory`) they are in process memory, per process. A task is
+dropped `A2A_TASK_TTL_S` seconds (default 3600) after its last update; 0 keeps
+it until its thread is deleted (in memory: until restart). A task whose run
+ended with its process (a crash, an OOM kill) is failed rather than left
+`working`. Live streams stay with the replica running the task: while its run
+goes on, `SubscribeToTask` and `CancelTask` on another replica are refused
+(-32004 and -32002: the caller may retry, or follow the task with `GetTask`). The
+conversation itself is the thread, which is durable under
+`CHECKPOINTER=postgres`. Deleting the thread (the owner's
 `DELETE /threads/{id}`, or the retention purge under fastapi) drops the tasks
 of that conversation too.
 
@@ -65,13 +74,16 @@ version `AGENT_VERSION`, its name the mount name `A2A_NAME`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from contextlib import aclosing
+from datetime import UTC, datetime
 from typing import Any
 
 from a2a.auth.user import User
@@ -99,6 +111,7 @@ from a2a.types import (
     Role,
     SecurityScheme,
     Task,
+    TaskState,
 )
 from a2a.types.a2a_pb2 import (
     CancelTaskRequest,
@@ -107,18 +120,27 @@ from a2a.types.a2a_pb2 import (
     SendMessageRequest,
     SubscribeToTaskRequest,
 )
-from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH, PROTOCOL_VERSION_1_0
+from a2a.utils.constants import (
+    AGENT_CARD_WELL_KNOWN_PATH,
+    DEFAULT_LIST_TASKS_PAGE_SIZE,
+    PROTOCOL_VERSION_1_0,
+)
 from a2a.utils.errors import (
     JSON_RPC_ERROR_CODE_MAP,
     A2AError,
+    InternalError,
     InvalidParamsError,
+    TaskNotCancelableError,
     TaskNotFoundError,
+    UnsupportedOperationError,
 )
+from a2a.utils.task import decode_page_token, encode_page_token
 from fastapi import FastAPI, HTTPException
 from google.protobuf import json_format, struct_pb2
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from {{cookiecutter.agent_directory}}.app_utils import chat as chat_runtime
 from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     CODE_APPROVAL_PENDING,
     COMMENT_MAX_CHARS,
@@ -142,6 +164,13 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     ApprovalError,
     ChatRequest,
     detect_runtime,
+    new_error_id,
+    unavailable,
+)
+from {{cookiecutter.agent_directory}}.app_utils.db import (
+    Database,
+    StorageNotReady,
+    is_database_unavailable,
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.middleware import max_message_chars
@@ -198,7 +227,9 @@ CONTEXT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def task_ttl_s() -> int:
-    """`A2A_TASK_TTL_S`: seconds a task is kept after its last update; 0 = until restart.
+    """`A2A_TASK_TTL_S`: seconds a task is kept after its last update; 0 = no expiry.
+
+    Without expiry a task is kept until its thread is deleted (in memory: until restart).
 
     Anything but a whole number >= 0 is a `SettingsError`, which the app's
     startup settings check reports with every other bad setting.
@@ -403,8 +434,368 @@ class ExpiringTaskStore(TaskStore):
         return len(members)
 
 
+# Task states whose run is still going (or about to start). A task left in one of
+# them by a process that died is failed by the Postgres store's sweep once its
+# thread's run lease has expired (`chat.RECONCILE_GRACE_S` after its last save).
+RUNNING_STATES = frozenset({TaskState.TASK_STATE_SUBMITTED, TaskState.TASK_STATE_WORKING})
+# The Postgres store's sweep (expired tasks, tasks of dead runs): at most this often
+# per process, on access.
+TASK_SWEEP_INTERVAL_S = 60.0
+# A save that changes only the reply (a streamed chunk: the status is the same) is
+# written at most this often per task; any status change is written at once, whole.
+CHUNK_SAVE_INTERVAL_S = 1.0
+_CHUNK_TRACKING_CAP = 10_000
+_ORPHANS_PER_SWEEP = 200
+INTERRUPTED_TASK_TEXT = (
+    "This task stopped: the agent process running it ended before it finished. "
+    "Send the message again."
+)
+
+
+def _status_at(task: Task) -> datetime | None:
+    if not task.status.HasField("timestamp"):
+        return None
+    return task.status.timestamp.ToDatetime(tzinfo=UTC)
+
+
+def _task_json(task: Task) -> str:
+    return json.dumps(json_format.MessageToDict(task))
+
+
+def _task_from(value: Any) -> Task:
+    task = Task()
+    data = json.loads(value) if isinstance(value, str | bytes) else value
+    # A newer SDK on another replica (a rolling upgrade) may write fields this one lacks.
+    json_format.ParseDict(data, task, ignore_unknown_fields=True)
+    return task
+
+
+class PostgresTaskStore(TaskStore):
+    """A2A tasks in the app's Postgres database, shared by every replica, kept across restarts.
+
+    Table `a2a_tasks` (`agent_a2a_tasks` under langgraph-server), created with
+    the app tables (`db.py`). The same contract as `ExpiringTaskStore`: tasks
+    are scoped by `task_owner` (the table's key is the owner and the task id,
+    so another principal's task reads as not found), a task is invisible
+    `ttl_s` seconds after its last save and deleted by a sweep (`ttl_s <= 0`:
+    kept until its thread is deleted), and deleting a thread deletes its tasks
+    (`delete_context`), whoever created them, for every replica. The TTL runs
+    on the database clock, so replicas agree on it.
+
+    The sweep also ends tasks whose run died with its process (a crash, an OOM
+    kill, a lost node): a task still `submitted` or `working` whose thread has
+    had no live run lease since `chat.RECONCILE_GRACE_S` after its last save is
+    failed with a message saying so, instead of looking busy until it expires.
+
+    Database failures surface as the app's 503 (`unavailable`, logged with an
+    error id), never as the database's own message, which the JSON-RPC layer
+    would otherwise pass to the caller.
+    """
+
+    def __init__(
+        self, ttl_s: float, db: Database, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.ttl_s = ttl_s
+        self.db = db
+        self.table = db.a2a_tasks_table
+        self.locks_table = db.locks_table
+        self._clock = clock
+        self._next_sweep = 0.0
+        # (owner, task id) -> (status as saved, when): the last write of a running task.
+        self._written: OrderedDict[tuple[str, str], tuple[bytes, float]] = OrderedDict()
+
+    def _visible(self) -> tuple[str, tuple[float, float]]:
+        """The SQL condition (and its parameters) of a task that has not expired."""
+        ttl = float(self.ttl_s)
+        return "(%s <= 0 OR updated_at > now() - make_interval(secs => %s))", (ttl, ttl)
+
+    async def _db(self, call: Awaitable[Any]) -> Any:
+        """Run a database call; an unreachable database is a 503, anything else an internal error."""
+        try:
+            return await call
+        except (A2AError, HTTPException):
+            raise
+        except Exception as exc:
+            if is_database_unavailable(exc):
+                raise unavailable("Database", exc) from exc
+            error_id = new_error_id()
+            logger.error("A2A task store failed (error_id=%s)", error_id, exc_info=exc)
+            raise InternalError(message=f"The task store failed. Reference: {error_id}.") from None
+
+    async def save(self, task: Task, context: ServerCallContext) -> None:
+        owner = task_owner(context)
+        await self._maybe_sweep()
+        task = coalesce_text_parts(task)
+        key = (owner, task.id)
+        status = task.status.SerializeToString(deterministic=True)
+        now = self._clock()
+        last = self._written.get(key)
+        if last is not None and last[0] == status and now - last[1] < CHUNK_SAVE_INTERVAL_S:
+            # A reply chunk: the next save of this task (its end, at the latest) writes it.
+            return
+        await self._db(
+            self.db.execute(
+                f"""
+                INSERT INTO {self.table} (owner, task_id, context_id, thread_id, state,
+                    status_at, task, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, now())
+                ON CONFLICT (owner, task_id) DO UPDATE SET
+                    context_id = EXCLUDED.context_id, thread_id = EXCLUDED.thread_id,
+                    state = EXCLUDED.state, status_at = EXCLUDED.status_at,
+                    task = EXCLUDED.task, updated_at = now()
+                """,
+                (
+                    owner,
+                    task.id,
+                    task.context_id,
+                    context_key(task.context_id) if task.context_id else "",
+                    TaskState.Name(task.status.state),
+                    _status_at(task),
+                    _task_json(task),
+                ),
+            )
+        )
+        if task.status.state in RUNNING_STATES:
+            self._written[key] = (status, now)
+            self._written.move_to_end(key)
+            while len(self._written) > _CHUNK_TRACKING_CAP:
+                self._written.popitem(last=False)
+        else:
+            self._written.pop(key, None)
+
+    async def get(self, task_id: str, context: ServerCallContext) -> Task | None:
+        owner = task_owner(context)
+        await self._maybe_sweep()
+        visible, ttl = self._visible()
+        row = await self._db(
+            self.db.fetchone(
+                f"SELECT task FROM {self.table} WHERE owner = %s AND task_id = %s AND {visible}",
+                (owner, task_id, *ttl),
+            )
+        )
+        return _task_from(row["task"]) if row else None
+
+    async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
+        """The owner's tasks, newest status first, as the SDK's stores order and page them."""
+        owner = task_owner(context)
+        await self._maybe_sweep()
+        visible, ttl = self._visible()
+        where = ["owner = %s", visible]
+        args: list[Any] = [owner, *ttl]
+        if params.context_id:
+            where.append("context_id = %s")
+            args.append(params.context_id)
+        if params.status:
+            where.append("state = %s")
+            args.append(TaskState.Name(params.status))
+        if params.HasField("status_timestamp_after"):
+            where.append("status_at >= %s")
+            args.append(params.status_timestamp_after.ToDatetime(tzinfo=UTC))
+        condition = " AND ".join(where)
+        counted = await self._db(
+            self.db.fetchone(f"SELECT count(*) AS n FROM {self.table} WHERE {condition}", args)
+        )
+        total = int(counted["n"]) if counted else 0
+        page_where, page_args = list(where), list(args)
+        if params.page_token:
+            start_id = decode_page_token(params.page_token)
+            start = await self._db(
+                self.db.fetchone(
+                    f"SELECT status_at FROM {self.table} "
+                    f"WHERE owner = %s AND task_id = %s AND {visible}",
+                    (owner, start_id, *ttl),
+                )
+            )
+            if start is None:
+                raise InvalidParamsError(f"Invalid page token: {params.page_token}")
+            if start["status_at"] is not None:
+                page_where.append(
+                    "((status_at = %s AND task_id <= %s) OR status_at < %s OR status_at IS NULL)"
+                )
+                page_args += [start["status_at"], start_id, start["status_at"]]
+            else:
+                page_where.append("(status_at IS NULL AND task_id <= %s)")
+                page_args.append(start_id)
+        page_size = params.page_size or DEFAULT_LIST_TASKS_PAGE_SIZE
+        rows = await self._db(
+            self.db.fetchall(
+                f"SELECT task_id, task FROM {self.table} WHERE {' AND '.join(page_where)} "
+                "ORDER BY (status_at IS NULL), status_at DESC, task_id DESC LIMIT %s",
+                [*page_args, page_size + 1],
+            )
+        )
+        next_token = (
+            encode_page_token(rows[page_size]["task_id"]) if len(rows) > page_size else None
+        )
+        return ListTasksResponse(
+            tasks=[_task_from(row["task"]) for row in rows[:page_size]],
+            total_size=total,
+            next_page_token=next_token,
+            page_size=page_size,
+        )
+
+    async def delete(self, task_id: str, context: ServerCallContext) -> None:
+        owner = task_owner(context)
+        self._written.pop((owner, task_id), None)
+        await self._db(
+            self.db.execute(
+                f"DELETE FROM {self.table} WHERE owner = %s AND task_id = %s", (owner, task_id)
+            )
+        )
+
+    async def delete_context(self, thread_id: str) -> int:
+        """Drop every task of the conversation `thread_id` (any owner); how many were dropped."""
+        rows = await self.db.fetchall(
+            f"DELETE FROM {self.table} WHERE thread_id = %s RETURNING owner, task_id",
+            (context_key(thread_id),),
+        )
+        for row in rows:
+            self._written.pop((row["owner"], row["task_id"]), None)
+        return len(rows)
+
+    async def running_elsewhere(self, task: Task) -> bool:
+        """Whether `task`'s run is going on in another process (its thread's live lease is not ours)."""
+        if task.status.state not in RUNNING_STATES or not task.context_id:
+            return False
+        thread_id = context_key(task.context_id)
+        if RUNTIME.locks.lease(thread_id) is not None:
+            return False
+        row = await self._db(
+            self.db.fetchone(
+                f"SELECT 1 AS held FROM {self.locks_table} "
+                "WHERE thread_id = %s AND expires_at > now()",
+                (thread_id,),
+            )
+        )
+        return row is not None
+
+    async def _maybe_sweep(self) -> None:
+        now = self._clock()
+        if now < self._next_sweep:
+            return
+        self._next_sweep = now + TASK_SWEEP_INTERVAL_S
+        try:
+            await self.sweep()
+        except Exception as exc:  # the request itself answers for an unreachable database
+            logger.warning("A2A task sweep failed (%s); retrying later", type(exc).__name__)
+
+    async def sweep(self) -> tuple[int, int]:
+        """Delete expired tasks and fail the tasks of dead runs; (deleted, failed)."""
+        deleted = 0
+        if self.ttl_s > 0:
+            rows = await self.db.fetchall(
+                f"DELETE FROM {self.table} "
+                "WHERE updated_at <= now() - make_interval(secs => %s) RETURNING task_id",
+                (float(self.ttl_s),),
+            )
+            deleted = len(rows)
+        orphans = await self.db.fetchall(
+            f"""
+            SELECT t.owner, t.task_id, t.task, t.updated_at FROM {self.table} AS t
+             WHERE t.state IN ('TASK_STATE_SUBMITTED', 'TASK_STATE_WORKING')
+               AND t.updated_at < now() - make_interval(secs => %s)
+               AND NOT EXISTS (
+                   SELECT 1 FROM {self.locks_table} AS l
+                    WHERE l.thread_id = t.thread_id AND l.expires_at > now())
+             ORDER BY t.updated_at LIMIT %s
+            """,
+            (float(chat_runtime.RECONCILE_GRACE_S), _ORPHANS_PER_SWEEP),
+        )
+        failed = 0
+        for row in orphans:
+            task = _task_from(row["task"])
+            if task.status.HasField("message"):
+                task.history.append(task.status.message)
+            task.status.state = TaskState.TASK_STATE_FAILED
+            task.status.message.CopyFrom(
+                Message(
+                    message_id=uuid.uuid4().hex,
+                    role=Role.ROLE_AGENT,
+                    task_id=task.id,
+                    context_id=task.context_id,
+                    parts=[Part(text=INTERRUPTED_TASK_TEXT)],
+                )
+            )
+            task.status.timestamp.GetCurrentTime()
+            # Only if nothing saved the task since it was read (its run came back to it).
+            updated = await self.db.fetchone(
+                f"""
+                UPDATE {self.table}
+                   SET state = %s, status_at = %s, task = %s::jsonb, updated_at = now()
+                 WHERE owner = %s AND task_id = %s AND updated_at = %s
+                RETURNING task_id
+                """,
+                (
+                    TaskState.Name(task.status.state),
+                    _status_at(task),
+                    _task_json(task),
+                    row["owner"],
+                    row["task_id"],
+                    row["updated_at"],
+                ),
+            )
+            failed += updated is not None
+        if failed:
+            logger.info("failed %d A2A task(s) whose run ended with its process", failed)
+        return deleted, failed
+
+
+class RuntimeTaskStore(TaskStore):
+    """The app's A2A task store: Postgres when the chat runtime's database is Postgres.
+
+    That is `CHECKPOINTER=postgres` (fastapi) or a Postgres `DATABASE_URI`
+    (langgraph-server), where run records and approvals live too: the tasks are
+    then shared by every replica and survive restarts (`PostgresTaskStore`).
+    Otherwise they are in process memory (`ExpiringTaskStore`). The choice is
+    made on each call, since the routes are mounted before the runtime starts;
+    while the database is not set up yet, calls answer 503.
+    """
+
+    def __init__(self, ttl_s: float) -> None:
+        self.ttl_s = ttl_s
+        self.memory = ExpiringTaskStore(ttl_s)
+        self._postgres: PostgresTaskStore | None = None
+
+    def postgres(self) -> PostgresTaskStore | None:
+        """The Postgres store of the running runtime's database, or None (memory)."""
+        db = RUNTIME.db
+        if db is None or not db.is_postgres:
+            return None
+        if not RUNTIME.started or RUNTIME.initialising:
+            raise unavailable("Database", StorageNotReady("the database is not set up yet"))
+        if self._postgres is None or self._postgres.db is not db:
+            self._postgres = PostgresTaskStore(self.ttl_s, db)
+        return self._postgres
+
+    def _store(self) -> TaskStore:
+        return self.postgres() or self.memory
+
+    async def save(self, task: Task, context: ServerCallContext) -> None:
+        await self._store().save(task, context)
+
+    async def get(self, task_id: str, context: ServerCallContext) -> Task | None:
+        return await self._store().get(task_id, context)
+
+    async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
+        return await self._store().list(params, context)
+
+    async def delete(self, task_id: str, context: ServerCallContext) -> None:
+        await self._store().delete(task_id, context)
+
+    async def delete_context(self, thread_id: str) -> int:
+        dropped = await self.memory.delete_context(thread_id)
+        store = self.postgres()
+        if store is not None:
+            dropped += await store.delete_context(thread_id)
+        return dropped
+
+    async def running_elsewhere(self, task: Task) -> bool:
+        store = self.postgres()
+        return store is not None and await store.running_elsewhere(task)
+
+
 # The stores of the mounted A2A routes (one per app), for `forget_context`.
-_STORES: list[ExpiringTaskStore] = []
+_STORES: list[RuntimeTaskStore] = []
 
 
 async def forget_context(thread_id: str) -> None:
@@ -716,7 +1107,11 @@ class PolicyRequestHandler(DefaultRequestHandler):
     `SubscribeToTask`, 0.3 `tasks/cancel`, `tasks/resubscribe`) before the SDK
     sets the task up: the SDK starts two event-queue loops first and leaves
     them running when the task is not found, which logs two ERROR records
-    ("Task was destroyed but it is pending!") per request.
+    ("Task was destroyed but it is pending!") per request. A cancel or a
+    subscription that reaches a replica other than the one running the task
+    is refused (-32002 not cancelable, -32004 unsupported): the SDK would mark
+    the task canceled here while its run goes on there and overwrites that, or
+    wait here for events that only happen there.
     """
 
     async def on_message_send(  # type: ignore[override]
@@ -737,15 +1132,29 @@ class PolicyRequestHandler(DefaultRequestHandler):
     async def on_cancel_task(  # type: ignore[override]
         self, params: CancelTaskRequest, context: ServerCallContext
     ) -> Any:
-        if await self.task_store.get(params.id, context) is None:
+        task = await self.task_store.get(params.id, context)
+        if task is None:
             raise TaskNotFoundError
+        store = self.task_store
+        if isinstance(store, RuntimeTaskStore) and await store.running_elsewhere(task):
+            raise TaskNotCancelableError(
+                message="The task is running on another replica of this agent: send the cancel "
+                "again (it may reach that replica), or wait for the task to end."
+            )
         return await super().on_cancel_task(params, context)
 
     async def on_subscribe_to_task(  # type: ignore[override]
         self, params: SubscribeToTaskRequest, context: ServerCallContext
     ) -> Any:
-        if await self.task_store.get(params.id, context) is None:
+        task = await self.task_store.get(params.id, context)
+        if task is None:
             raise TaskNotFoundError
+        store = self.task_store
+        if isinstance(store, RuntimeTaskStore) and await store.running_elsewhere(task):
+            raise UnsupportedOperationError(
+                message="The task is running on another replica of this agent: follow it with "
+                "GetTask, or subscribe again (it may reach that replica)."
+            )
         async for event in super().on_subscribe_to_task(params, context):
             yield event
 
@@ -1053,7 +1462,7 @@ def add_a2a_routes(app: FastAPI) -> Any:
         # The app is assembled at import; its lifespan's settings check then
         # refuses to start and names this variable with every other bad one.
         ttl = DEFAULT_TASK_TTL_S
-    store = ExpiringTaskStore(ttl)
+    store = RuntimeTaskStore(ttl)
     _STORES.append(store)
     if forget_context not in DELETE_LISTENERS:
         DELETE_LISTENERS.append(forget_context)

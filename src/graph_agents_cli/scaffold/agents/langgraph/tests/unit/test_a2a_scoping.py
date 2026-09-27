@@ -16,6 +16,10 @@
 
 Two principals come from a header test policy swapped in for the selected
 one; the app runs in-process with `MODEL_PROVIDER=fake` and `CHECKPOINTER=memory`.
+Which store serves the tasks (Postgres under a Postgres runtime database) and how
+the Postgres store writes and fails are checked here without a database; the
+store against a real Postgres is in `tests/integration/test_postgres.py`, and
+across real server processes in `tests/integration/test_resilience_postgres.py`.
 """
 
 from __future__ import annotations
@@ -60,17 +64,22 @@ from a2a.types import (
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from {{cookiecutter.agent_directory}}.app_utils import a2a as a2a_module
 from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
 from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module
 from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     DEFAULT_TASK_TTL_S,
     ExpiringTaskStore,
     PolicyContextBuilder,
+    PostgresTaskStore,
     PrincipalUser,
+    RuntimeTaskStore,
     task_owner,
     task_ttl_s,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS, Principal
+from {{cookiecutter.agent_directory}}.app_utils.checkpointer import MEMORY, POSTGRES
+from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.fast_api_app import app
 
@@ -306,3 +315,107 @@ async def test_without_the_policy_override_the_rpc_still_requires_the_key() -> N
     ) as client:
         r = await client.post(A2A_PATH, json={"jsonrpc": "2.0", "id": "1", "method": "ListTasks"})
         assert r.status_code == 401
+
+
+# --- which store, and how the Postgres store writes and fails (no database) --------------
+
+
+class RecordingDb:
+    """Stands in for `Database`: records statements, or fails them with `error`."""
+
+    a2a_tasks_table = "a2a_tasks"
+    locks_table = "thread_locks"
+    is_postgres = True
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.statements: list[tuple[str, Any]] = []
+
+    async def _run(self, sql: str, params: Any) -> Any:
+        self.statements.append((" ".join(sql.split()), params))
+        if self.error is not None:
+            raise self.error
+        return None
+
+    async def execute(self, sql: str, params: Any = ()) -> None:
+        await self._run(sql, params)
+
+    async def fetchone(self, sql: str, params: Any = ()) -> Any:
+        return await self._run(sql, params)
+
+    async def fetchall(self, sql: str, params: Any = ()) -> list[Any]:
+        return await self._run(sql, params) or []
+
+    def writes(self) -> list[str]:
+        return [sql for sql, _ in self.statements if sql.startswith("INSERT")]
+
+
+def _task(state: int, text: str = "", second: int = 0) -> Task:
+    task = Task(id="t1", context_id="c1")
+    task.status.state = state
+    task.status.timestamp.FromSeconds(1_800_000_000 + second)
+    if text:
+        artifact = task.artifacts.add()
+        artifact.artifact_id = "a1"
+        artifact.parts.add().text = text
+    return task
+
+
+async def test_the_task_store_follows_the_runtime_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Postgres (shared by replicas) when the runtime's database is, memory otherwise."""
+    runtime = chat_module.RUNTIME
+    store = RuntimeTaskStore(60)
+    monkeypatch.setattr(runtime, "db", Database(MEMORY))
+    assert store.postgres() is None
+    db = Database(POSTGRES, "postgresql://agent@db.invalid/agent")
+    monkeypatch.setattr(runtime, "db", db)
+    monkeypatch.setattr(runtime, "started", True)
+    monkeypatch.setattr(runtime, "initialising", True)
+    with pytest.raises(HTTPException) as refused:  # the schema is not set up yet
+        store.postgres()
+    assert refused.value.status_code == 503
+    monkeypatch.setattr(runtime, "initialising", False)
+    postgres = store.postgres()
+    assert isinstance(postgres, PostgresTaskStore)
+    assert postgres.db is db and postgres.table == "a2a_tasks" and store.postgres() is postgres
+    server = Database.for_server()
+    assert (server.a2a_tasks_table, db.a2a_tasks_table) == ("agent_a2a_tasks", "a2a_tasks")
+    assert "CREATE TABLE IF NOT EXISTS a2a_tasks" in db.ddl()
+
+
+async def test_reply_chunks_are_written_at_most_once_a_second() -> None:
+    """A streamed reply is not one database write per chunk; a status change always is."""
+    clock = Clock()
+    db = RecordingDb()
+    store = PostgresTaskStore(60, db, clock=clock)  # type: ignore[arg-type]
+    await store.save(_task(TaskState.TASK_STATE_WORKING), _ctx("alice"))
+    for text in ("Hel", "Hello", "Hello, wor"):
+        clock.now += 0.2
+        await store.save(_task(TaskState.TASK_STATE_WORKING, text), _ctx("alice"))
+    assert len(db.writes()) == 1
+    clock.now += 1
+    await store.save(_task(TaskState.TASK_STATE_WORKING, "Hello, world"), _ctx("alice"))
+    assert len(db.writes()) == 2
+    await store.save(_task(TaskState.TASK_STATE_COMPLETED, "Hello, world!", 1), _ctx("alice"))
+    assert len(db.writes()) == 3
+    # Another principal's task of the same id is its own.
+    await store.save(_task(TaskState.TASK_STATE_WORKING), _ctx("bob"))
+    assert len(db.writes()) == 4
+    owners = [params[0] for sql, params in db.statements if sql.startswith("INSERT")]
+    assert owners == ["alice", "alice", "alice", "bob"]
+
+
+async def test_database_errors_never_reach_the_caller_as_text() -> None:
+    import psycopg
+
+    unreachable = RecordingDb(psycopg.OperationalError("host db.internal:5432"))
+    down = PostgresTaskStore(60, unreachable)  # type: ignore[arg-type]
+    with pytest.raises(HTTPException) as unavailable:
+        await down.get("t1", _ctx("alice"))
+    assert unavailable.value.status_code == 503
+    assert "db.internal" not in str(unavailable.value.detail)
+    failing = RecordingDb(RuntimeError("syntax error at SELECT secret"))
+    broken = PostgresTaskStore(60, failing)  # type: ignore[arg-type]
+    with pytest.raises(a2a_module.InternalError) as internal:
+        await broken.get("t1", _ctx("alice"))
+    assert "Reference" in str(internal.value) and "secret" not in str(internal.value)
