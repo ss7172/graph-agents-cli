@@ -245,7 +245,7 @@ def test_wait_and_open_opens_once_ready(monkeypatch):
             raise value
         return value
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("graph_agents_cli._http.get", fake_get)
     monkeypatch.setattr(cmd_playground.webbrowser, "open", lambda url: opened.append(url))
     monkeypatch.setattr(cmd_playground.time, "sleep", lambda s: None)
     assert (

@@ -28,6 +28,17 @@ migration" with the steps to follow.
 
 ### Fixed
 
+- **`run`, `eval run`, `eval generate` and `approvals` no longer fail under a SOCKS proxy.**
+  With `ALL_PROXY=socks5h://...` in the environment (as coding-agent sandboxes such as Codex's
+  network proxy set it), every request crashed with `ImportError: Using SOCKS proxy, but the
+  'socksio' package is not installed`, even to the command's own local server and even when
+  `NO_PROXY` listed it: httpx builds a transport for every proxy variable when a client is
+  created. Requests to this machine (the local server, the playground) now never use the
+  environment's proxies. Requests to another machine still honour `HTTP_PROXY`, `HTTPS_PROXY`
+  and `NO_PROXY`, and SOCKS proxies now work too: graph-agents-cli depends on `httpx[socks]`
+  (adds the pure-Python `socksio`). A proxy setting httpx cannot use (another scheme) is a
+  one-line error naming the variable, exit 3, instead of a traceback; `eval generate --url`
+  reports it once, before any case runs.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

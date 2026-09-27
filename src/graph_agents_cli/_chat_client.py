@@ -26,7 +26,10 @@ A run that reaches a call its API's policy gates pauses: its stream ends with
 ``approval`` names the call. Deciding it (``decide_approval``) resumes the run
 and streams the continuation with the same events as ``POST /chat``.
 
-Only ``httpx`` is imported here: no model SDK, no framework.
+Only ``httpx`` is imported here: no model SDK, no framework. Clients come from
+``graph_agents_cli._http``: a request to the local server never goes through a
+proxy, and a remote one fails with one line when the environment names a proxy
+httpx cannot use.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ from typing import Any, NamedTuple
 from urllib.parse import quote
 
 import httpx
+
+from graph_agents_cli import _http
 
 # Event names the scaffolded app streams from POST /chat.
 EVENT_MESSAGE_START = "message.start"
@@ -262,7 +267,7 @@ def _post_stream(
     if timeout is None:
         timeout = STREAM_TIMEOUT
     with (
-        httpx.Client(timeout=timeout) as client,
+        _http.client(url, timeout=timeout) as client,
         client.stream("POST", url, json=dict(body), headers=_stream_headers(headers)) as resp,
     ):
         if resp.status_code >= 400:
@@ -351,7 +356,7 @@ def list_approvals(
     The server may wrap the list as ``{"approvals": [...]}``; both shapes are accepted.
     """
     url = approval_url(base_url, thread_id)
-    resp = httpx.get(url, headers=dict(headers or {}), timeout=timeout)
+    resp = _http.get(url, headers=dict(headers or {}), timeout=timeout)
     return _json_list(resp, url, "approvals")
 
 
@@ -374,7 +379,7 @@ def list_visible_approvals(
     params: dict[str, Any] = {"limit": limit, "offset": offset}
     if status:
         params["status"] = status
-    resp = httpx.get(url, params=params, headers=dict(headers or {}), timeout=timeout)
+    resp = _http.get(url, params=params, headers=dict(headers or {}), timeout=timeout)
     return _json_list(resp, url, "approvals")
 
 
@@ -388,7 +393,7 @@ def list_threads(
 ) -> list[dict[str, Any]]:
     """GET ``/threads``: the caller's own threads (``{thread_id, ...}`` rows), one page."""
     url = f"{_normalise_base(base_url)}/threads"
-    resp = httpx.get(
+    resp = _http.get(
         url,
         params={"limit": limit, "offset": offset},
         headers=dict(headers or {}),
@@ -411,7 +416,7 @@ def delete_thread(
     transport errors propagate.
     """
     url = f"{_normalise_base(base_url)}/threads/{path_segment(thread_id, 'thread id')}"
-    resp = httpx.delete(url, headers=dict(headers or {}), timeout=timeout)
+    resp = _http.delete(url, headers=dict(headers or {}), timeout=timeout)
     if resp.status_code >= 300:
         raise ChatHTTPError(resp.status_code, resp.text, url)
 
@@ -428,7 +433,7 @@ def get_health(
     errors propagate.
     """
     url = f"{_normalise_base(base_url)}/health"
-    resp = httpx.get(url, headers=dict(headers or {}), timeout=timeout)
+    resp = _http.get(url, headers=dict(headers or {}), timeout=timeout)
     if resp.status_code >= 400:
         raise ChatHTTPError(resp.status_code, resp.text, url)
     data = resp.json()
@@ -448,7 +453,7 @@ def get_thread_messages(
     accepted.
     """
     url = f"{_normalise_base(base_url)}/threads/{thread_id}/messages"
-    resp = httpx.get(url, headers=dict(headers or {}), timeout=timeout)
+    resp = _http.get(url, headers=dict(headers or {}), timeout=timeout)
     if resp.status_code >= 400:
         raise ChatHTTPError(resp.status_code, resp.text, url)
     data = resp.json()

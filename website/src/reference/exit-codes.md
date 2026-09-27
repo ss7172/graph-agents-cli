@@ -36,7 +36,9 @@ A signal ends a command with `128 + N` only after the local server it started (`
 run leaves no server behind.
 
 A network, file-system or parse problem prints one line instead of a traceback: invalid YAML
-or JSON is `3`, a connection error, a timeout or an OS error is `2`. Set
+or JSON is `3`, and so is a proxy setting the CLI cannot use (see
+[Environment variables](environment.md#read-by-the-tools-the-cli-runs)); a connection error, a
+timeout or an OS error is `2`. Set
 `GRAPH_AGENTS_CLI_DEBUG=1` to see the traceback behind it. Anything else unexpected is a bug:
 the traceback is printed and the command exits `2`.
 

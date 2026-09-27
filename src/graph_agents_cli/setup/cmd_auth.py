@@ -235,10 +235,19 @@ def probe_openai_compatible(base_url: str, api_key: str = "") -> Check:
     """GET ``<OPENAI_BASE_URL>/models`` with a short timeout. Advisory only."""
     import httpx
 
+    from graph_agents_cli import _http
+
     url = _models_url(base_url)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        response = httpx.get(url, headers=headers, timeout=MODELS_PROBE_TIMEOUT_S)
+        response = _http.get(url, headers=headers, timeout=MODELS_PROBE_TIMEOUT_S)
+    except _http.ProxyConfigError as e:
+        return Check(
+            "openai_base_url",
+            WARN,
+            f"OPENAI_BASE_URL set but {url} was not probed: {e.message}",
+            "Fix the proxy setting it names; the check is advisory.",
+        )
     except httpx.HTTPError as e:
         return Check(
             "openai_base_url",

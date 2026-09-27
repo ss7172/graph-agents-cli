@@ -210,6 +210,21 @@ def test_generate_with_url_warns_that_tools_run_for_real_there(
     assert doc["target"] == "url" and doc["base_url"] == "https://agent.staging.example"
 
 
+def test_generate_with_url_stops_once_on_a_proxy_it_cannot_use(
+    project: Path, runner: CliRunner, fake_chat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Up front, as one line: not one `error` trace per case."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks4://127.0.0.1:1080")
+    chat = fake_chat(GOOD_STREAMS)
+    result = runner.invoke(cmd_generate, ["--url", "https://agent.example"])
+    assert result.exit_code == 3, result.output
+    assert "ALL_PROXY=socks4://127.0.0.1:1080 cannot be used" in result.output
+    assert chat.calls == []
+
+
 def test_url_credentials_are_not_echoed(project: Path, runner: CliRunner, fake_chat) -> None:
     fake_chat(GOOD_STREAMS)
     result = runner.invoke(cmd_generate, ["--url", "https://bob:s3cret@agent.example/x"])

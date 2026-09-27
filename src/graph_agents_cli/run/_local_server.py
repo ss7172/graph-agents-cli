@@ -77,6 +77,7 @@ import psutil
 from filelock import FileLock
 from filelock import Timeout as LockTimeout
 
+from graph_agents_cli import _http
 from graph_agents_cli._runner import popen_resolved_detached, redact_cmd
 from graph_agents_cli.run._signals import shielded
 
@@ -574,9 +575,13 @@ def _start_server(
 
 
 def _fetch_health(port: int, timeout: float = 1.0) -> dict[str, Any] | None:
-    """GET ``/health`` on the local port; ``None`` until it answers 200."""
+    """GET ``/health`` on the local port; ``None`` until it answers 200.
+
+    Never through a proxy (``_http``): a proxy in the environment (an agent
+    sandbox's SOCKS ``ALL_PROXY``) would fail or divert the loopback request.
+    """
     try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
+        resp = _http.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
     except httpx.HTTPError:
         return None
     if resp.status_code != 200:

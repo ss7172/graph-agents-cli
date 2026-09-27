@@ -29,6 +29,7 @@ from urllib.parse import urlsplit, urlunsplit
 import click
 from rich.markup import escape
 
+from graph_agents_cli import _http
 from graph_agents_cli._chat_client import redact_credentials
 from graph_agents_cli._output import Console
 from graph_agents_cli._project import find_project_root
@@ -348,6 +349,9 @@ def generate_traces(
         teardown: Callable[[], None] = lambda: None  # noqa: E731
         if url:
             base_url = url.rstrip("/")
+            # A proxy setting that would fail every case fails the command once, up front
+            # (each case would otherwise record it as its own error).
+            _http.check_env_proxies(base_url)
             console.print(f"Target: [cyan]{escape(display_url(base_url))}[/cyan]")
             warn_live_target(console, base_url, project_root, len(ds.cases))
             approving = approving_cases(ds.cases)

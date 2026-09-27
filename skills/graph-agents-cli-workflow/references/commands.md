@@ -398,6 +398,7 @@ namespaces, and active extensions with their sources and conflicts.
 | `GRAPH_AGENTS_CLI_INSTALL_SPEC` | where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install the CLI from (a mirror, a wheel); `{version}` is replaced by the version needed, a release number, so it cannot name a build between releases (`scaffold upgrade --baseline-ref` does); control characters and whitespace are refused (exit 3), except the spaces of `name @ url` |
 | `GRAPH_AGENTS_CLI_RUN_PORT` | port of the local server `run` and `eval generate` start |
 | `GRAPH_AGENTS_CLI_DEBUG=1` | print the traceback behind a one-line network, file or parse error |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS too), `NO_PROXY` | used for `--url` agents and other remote requests; the local server (`run`, `approvals`, `eval`) is never reached through a proxy; a proxy the CLI cannot use is a one-line error (exit 3) |
 | `GRAPH_AGENTS_CLI_API_KEY` | bearer credential `run` and `eval` send (locally and with `--url`) when no `Authorization` header is given: the `API_KEY` (`shared-bearer`) or a JWT (`jwt`; locally from `auth dev-token`); keeps it out of argv |
 | `GRAPH_AGENTS_CLI_E2E=1` | opts the CLI repository's slow end-to-end test suite in (contributors only) |
 | `GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1` | bypass extension overrides (set automatically inside an override) |

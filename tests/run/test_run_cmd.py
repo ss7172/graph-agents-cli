@@ -594,6 +594,42 @@ def test_remote_unreachable_is_a_clean_error(monkeypatch, tmp_path):
     assert "Could not reach remote agent" in result.output
 
 
+def _proxies(monkeypatch, **values: str) -> None:
+    """Only the given proxy variables (none from the developer's shell)."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def test_a_local_run_ignores_the_proxies_of_an_agent_sandbox(local_project, monkeypatch):
+    """Codex's network proxy: `run` failed with ImportError (socksio) on its own server."""
+    _proxies(
+        monkeypatch,
+        HTTP_PROXY="http://127.0.0.1:9",
+        HTTPS_PROXY="http://127.0.0.1:9",
+        ALL_PROXY="socks5h://127.0.0.1:9",
+    )
+    result = invoke("hi")
+    assert result.exit_code == 0, result.output
+    assert "[agent]: Hello" in result.output
+    assert "[tool_result: get_weather -> sunny]" in result.output
+
+
+def test_a_proxy_the_cli_cannot_use_is_one_line_for_a_remote_agent(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_AGENTS_CLI_API_KEY", raising=False)
+    _proxies(monkeypatch, ALL_PROXY="socks4://127.0.0.1:1080")
+    result = invoke("hi", "--url", "https://agent.example.invalid")
+    assert result.exit_code == 3, result.output
+    assert (
+        "Error: Cannot send requests to https://agent.example.invalid: the proxy in "
+        "ALL_PROXY=socks4://127.0.0.1:1080 cannot be used" in result.output
+    )
+    assert "Traceback" not in result.output
+
+
 def test_remote_a2a_without_sdk_fails_before_any_request(chat_server, monkeypatch, tmp_path):
     # The missing extra is detected before the card probe or any server start,
     # and the hint is a single line.

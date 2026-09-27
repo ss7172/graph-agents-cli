@@ -132,10 +132,13 @@ def _wait_and_open(url: str, ready_url: str, timeout: float = _OPEN_TIMEOUT) -> 
     """Poll ``ready_url`` until it answers, then open ``url`` in the browser."""
     import httpx
 
+    from graph_agents_cli import _http
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            resp = httpx.get(ready_url, timeout=1.0)
+            # The local server: never through a proxy from the environment.
+            resp = _http.get(ready_url, timeout=1.0)
             if resp.status_code < 500:
                 webbrowser.open(url)
                 return True

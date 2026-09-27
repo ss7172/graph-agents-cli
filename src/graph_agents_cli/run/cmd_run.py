@@ -44,7 +44,7 @@ from urllib.parse import urlsplit
 import click
 import httpx
 
-from graph_agents_cli import _chat_client
+from graph_agents_cli import _chat_client, _http
 from graph_agents_cli._approvals import (
     DECISION_REFUSALS,
     Approval,
@@ -722,8 +722,10 @@ def _query_a2a(
                 elif getattr(part, "url", ""):
                     renderer.write_text(f"\n[file: {part.url}]")
 
-        async with httpx.AsyncClient(
-            headers=req_headers, timeout=_chat_client.STREAM_TIMEOUT
+        # A local target never goes through a proxy; a remote one fails with one line on a
+        # proxy setting httpx cannot use (`_http`).
+        async with _http.async_client(
+            target.base_url, headers=req_headers, timeout=_chat_client.STREAM_TIMEOUT
         ) as http_client:
             bindings = [TransportProtocol.JSONRPC, TransportProtocol.HTTP_JSON]
             config = ClientConfig(

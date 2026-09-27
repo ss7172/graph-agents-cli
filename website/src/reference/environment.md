@@ -111,6 +111,7 @@ by the CLI itself:
 | `GITHUB_TOKEN`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN` | The token for that pull request (the first one set). `infra check` reports the repository's GitHub settings only when `gh` is logged in or `GITHUB_TOKEN` is set. |
 | `GITHUB_ACTIONS` | `true` marks a GitHub Actions job: a `helm-push` project deploys to staging and prod directly only there (or with `--force-direct`). |
 | `CI`, `BUILD_ID`, `GITHUB_ACTIONS`, `GITLAB_CI` | Any of them skips the skills version check. |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | The CLI's own requests to another machine (a `--url` agent, the `login` model probe, the GitHub API) go through them, SOCKS (`socks5://`, `socks5h://`) included. Requests to this machine (the local server of `run`, `approvals` and `eval`, the playground) never use a proxy. A proxy the CLI cannot use (another scheme) is a one-line error naming the variable, exit 3. |
 
 ## The generated service
 

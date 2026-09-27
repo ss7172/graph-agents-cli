@@ -244,7 +244,7 @@ def test_probe_uses_three_second_timeout(monkeypatch):
         seen["timeout"] = timeout
         return httpx.Response(200, json={"data": []})
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("graph_agents_cli._http.get", fake_get)
     check = cmd_auth.probe_openai_compatible("http://x/v1")
     assert check.status == "ok"
     assert seen["timeout"] == 3.0

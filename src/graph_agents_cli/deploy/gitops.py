@@ -428,8 +428,6 @@ def _pr_via_rest(
     dry_run: bool,
     console: Console,
 ) -> tuple[str | None, bool]:
-    import httpx
-
     pulls = f"{remote.api_base}/repos/{remote.owner}/{remote.repo}/pulls"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -446,7 +444,10 @@ def _pr_via_rest(
             f"  [dry-run] POST {pulls} (or PATCH the open pull request)", style="cyan", markup=False
         )
         return None, False
-    with httpx.Client(headers=headers, timeout=30) as client:
+    from graph_agents_cli import _http
+
+    # Honours the environment's proxies; one that cannot be used is a one-line error.
+    with _http.client(pulls, headers=headers, timeout=30) as client:
         resp = client.get(
             pulls, params={"head": f"{remote.owner}:{branch}", "base": base, "state": "open"}
         )

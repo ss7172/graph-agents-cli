@@ -38,6 +38,8 @@ from typing import NamedTuple
 import click
 import httpx
 
+from graph_agents_cli import _http
+
 API_KEY_ENV = "GRAPH_AGENTS_CLI_API_KEY"
 SESSION_TOKEN_HEADER = "X-Session-Token"
 AGENT_CARD_PATH = "/.well-known/agent-card.json"
@@ -192,7 +194,7 @@ def classify_url(
     for candidate in a2a_candidates(base, agent_directory):
         card_url = f"{candidate}{AGENT_CARD_PATH}"
         try:
-            resp = httpx.get(card_url, headers=dict(headers or {}), timeout=timeout)
+            resp = _http.get(card_url, headers=dict(headers or {}), timeout=timeout)
         except httpx.TransportError as exc:
             failures.append((card_url, f"unreachable: {exc}"))
             continue
