@@ -55,10 +55,10 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
-| api-policy | 4 | 6 | 10 |
+| api-policy | 4 | 7 | 11 |
 | approvals | 7 | 5 | 12 |
 | runtime | 10 | 6 | 16 |
-| a2a | 3 | 5 | 8 |
+| a2a | 3 | 8 | 11 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 7 | 11 |
 | chart/CD | 6 | 5 | 11 |
@@ -66,7 +66,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 11 | 12 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **42** | **78** | **120** |
+| **Total** | **42** | **82** | **124** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -710,6 +710,17 @@ Low · api-policy · found in wave 8
   invalid, which `lint` then reports.
 - **Workaround:** Check `api-policy.yaml` for other `openapi:` entries before deleting a spec.
 
+### KI-122: `api approval --operations` writes a label-only gate the allow-list could pin
+
+Low · api-policy · found in the A2A multi-agent experiment
+
+- **Issue:** Without an `openapi:` spec, `api approval NAME --operations OP` writes the gate's
+  entry by `operationId` alone (and says so), even when `allowed_operations` already pins
+  `OP`'s method and path; the command has no `--path`/`--method` to pin it.
+- **Impact:** The gate holds only for calls that name `OP` (or no operation id), not for a call
+  to the same endpoint under another label, until someone edits the entry by hand.
+- **Workaround:** Add `path` and `methods` to the gate's entry by hand, or record the API's
+  OpenAPI spec before running `api approval`.
 ### KI-130: `lint` accepts a tools module that declares no `API_CALLS`
 
 Low · api-policy · found in the skill-optimisation experiment
@@ -836,14 +847,31 @@ Low · runtime · found in wave 3
 
 ### KI-059: The default prompt's approval paragraph can make a model ask instead of acting
 
-Low · runtime · found in wave 7 (depends on the model; not re-run)
+Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent experiment
 
 - **Issue:** The default system prompt asks the model to say what it is about to do before a
   tool that acts. Some models then ask the user to confirm in chat and do not call the tool,
-  so a gated write is confirmed twice or not made.
-- **Impact:** Extra turns; eval cases for writes can fail.
+  so a gated write is confirmed twice or not made. Between agents it compounds: a called
+  agent's question ends its A2A task as `completed` (not `input-required`), so the caller
+  relays "please confirm" instead of an approval, and a caller whose request says "if this
+  needs approval, ask" primes the called agent to ask. With gpt-5-mini, before the calling
+  agent's prompt was fixed, a specialist asked instead of acting in 5 of 14 runs (one wrote
+  an invented task id the caller then used), and gated writes were missed in 2 of 14; with
+  it fixed, the orchestrator still asked in text instead of relaying in 1 of 9 approval
+  runs on the cluster and 1 of 10 eval cases.
+- **Impact:** Extra turns; eval cases for writes can fail; in a multi-agent system a write the
+  user asked for is not made.
 - **Workaround:** Add "then call the tool in the same reply" to your prompt and test with your
-  model.
+  model. In a calling agent's prompt, ask the called agent to do what the user asked and
+  never to wait for or ask for approval. A replacement paragraph was A/B-tested in the
+  experiment (4 rounds of 6 scenarios per variant, 24 runs each): "Some actions need a
+  person's approval before they happen; the system asks for it by itself when you call the
+  tool. So when the user has asked for an action, do not ask them to confirm it in your
+  reply, and never ask before looking something up: before a tool that changes something,
+  say ... then call the tool in the same reply." Both variants passed 24/24 with no missed
+  gate; the replacement removed the called agents' confirmation offers (4 of 24 runs to 0)
+  and cost about 12% less per task. Not yet adopted: the difference is within noise at this
+  sample size.
 
 ### KI-060: A resumed A2A task ends with two response artifacts
 
@@ -897,6 +925,42 @@ Low · a2a · found in wave 6
 - **Impact:** An A2A approval from the CLI needs a second step.
 - **Workaround:** Decide with `graph-agents-cli approvals`, or send the data part yourself.
   Also documented as a limitation in [Human approval](website/src/guides/approvals.md#a2a).
+
+### KI-119: A2A replies carry every model turn's text, joined with no separator
+
+Low · a2a · found in the A2A multi-agent experiment
+
+- **Issue:** A task's `response` artifact is every text delta of the run, so it holds the
+  model's narration before each tool call ("I'll look up order ORD-1001 ...") glued to the
+  answer with no separator (`...total.Found 3 orders`). `/chat`'s `message.delta` stream
+  joins them the same way (see KI-069 for eval).
+- **Impact:** An agent that calls another over A2A pays for the narration as input tokens and
+  its model reads run-together sentences.
+- **Workaround:** Ask the called agent's prompt for a short final answer, or keep only the text
+  after the last tool call on the caller's side.
+
+### KI-120: The agent card lists one generic skill, and reading it needs a credential
+
+Low · a2a · found in the A2A multi-agent experiment
+
+- **Issue:** The card's only skill is `chat`, whose description is `A2A_DESCRIPTION`; a
+  project cannot declare skills (ids, tags, examples). The card is behind the auth policy
+  (`card.read`), so a client needs a credential before it can discover anything.
+- **Impact:** A router agent cannot pick among many agents from their cards, and discovery
+  needs credentials provisioned first.
+- **Workaround:** Put what the agent does in `A2A_DESCRIPTION` and route on it, or keep a
+  static roster in the calling agent's prompt.
+
+### KI-121: With OTLP tracing on, the a2a SDK adds dozens of spans to every A2A request
+
+Low · a2a · found in the A2A multi-agent experiment
+
+- **Issue:** Once the app sets a tracer provider, the a2a SDK's own instrumentation records
+  its internals (event-queue enqueue, dequeue, dispatch): about 55 of the roughly 62 spans of
+  one agent's A2A request.
+- **Impact:** Cross-agent traces are mostly noise; storage cost in the tracing backend.
+- **Workaround:** Set `OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false` (the SDK's documented
+  switch; not verified by the experiment) in the chart `env`.
 
 ### KI-065: Every eval case runs as one identity
 
