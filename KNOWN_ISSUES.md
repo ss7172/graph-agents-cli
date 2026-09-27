@@ -855,10 +855,12 @@ Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent
   agent's question ends its A2A task as `completed` (not `input-required`), so the caller
   relays "please confirm" instead of an approval, and a caller whose request says "if this
   needs approval, ask" primes the called agent to ask. With gpt-5-mini, before the calling
-  agent's prompt was fixed, a specialist asked instead of acting in 5 of 14 runs (one wrote
-  an invented task id the caller then used), and gated writes were missed in 2 of 14; with
-  it fixed, the orchestrator still asked in text instead of relaying in 1 of 9 approval
-  runs on the cluster and 1 of 10 eval cases.
+  agent's prompt was fixed, a called agent asked in text instead of acting in 4 of 14 runs
+  (the orders agent on both cancels, one writing an invented task id the caller then used;
+  a read-only agent asking whether it may look something up in two), and 2 of 14 gated
+  writes were never reached. With it fixed, the orchestrator still asked in text instead of
+  relaying the called agent's approval in 3 of 20 approval runs on the cluster (scenarios,
+  eval and a final smoke test) and in none of 24 local ones.
 - **Impact:** Extra turns; eval cases for writes can fail; in a multi-agent system a write the
   user asked for is not made.
 - **Workaround:** Add "then call the tool in the same reply" to your prompt and test with your
