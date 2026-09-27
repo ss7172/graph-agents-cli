@@ -48,7 +48,7 @@ the traceback is printed and the command exits `2`.
 
     | Command | `1` | `2` | `3` |
     |---|---|---|---|
-    | [`run`](cli.md#graph-agents-cli-run) | The agent answered with an error (an HTTP error or an `error` event), or the server refused a decision (not an approver, already decided, expired) | The agent could not be reached or went silent; the local server did not start | No project; the port is unavailable |
+    | [`run`](cli.md#graph-agents-cli-run) | The agent answered with an error (an HTTP error or an `error` event), or the server refused a decision (not an approver, already decided, expired) | The agent could not be reached or went silent; the local server did not start, or `--stop-server` could not stop it (the processes still running are named and its record is kept) | No project; the port is unavailable |
     | [`approvals`](cli.md#graph-agents-cli-approvals) | The server refused (not an approver, already decided, expired, not found), or the resumed run ended with an error | The agent could not be reached | Not in a project and no `--url` |
     | [`lint`](cli.md#graph-agents-cli-lint) | A refused call or an unreadable `API_CALLS`, or ruff failed | | An invalid `api-policy.yaml`, the retired product policy, or not in a project |
     | [`api`](cli.md#graph-agents-cli-api) | `api check`: a declared call is refused | Usage error | An invalid result (nothing is written), an invalid `api-policy.yaml`, or not in a project |

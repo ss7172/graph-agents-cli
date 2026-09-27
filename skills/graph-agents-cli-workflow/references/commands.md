@@ -145,7 +145,9 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   `auth dev-token`); `--header` or `--cookie` for `custom`. An explicit `--header
   'Authorization: ...'` wins over the variable. The 401 and 503 hints name what the project's
   policy needs. `--file` attaches UTF-8 text files as extra context. `--start-server` keeps
-  the local server for later runs (idle timeout 30 minutes); `--stop-server` stops it. `-v` adds
+  the local server for later runs (idle timeout 30 minutes); `--stop-server` stops it, or exits 2
+  naming the processes still running when the OS refuses the signal (a sandbox may let a command
+  signal only what it started itself), keeping the record so later runs reuse that server. `-v` adds
   one compact line per SSE event (a run of text deltas is one counted line). The footer (thread
   id and resume command) is printed after an `error` event too, with the run id; a stream that
   drops after the run started is reported as such (not as "could not reach"), with the thread

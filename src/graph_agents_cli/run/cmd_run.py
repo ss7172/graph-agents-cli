@@ -84,8 +84,10 @@ from graph_agents_cli._remote import (
     fold_session_token,
 )
 from graph_agents_cli.run._local_server import (
+    ServerStopError,
     ensure_server,
     stop_server,
+    warn_not_stopped,
 )
 from graph_agents_cli.run._signals import terminate_like_interrupt
 
@@ -797,7 +799,12 @@ def _query_a2a(
 
 
 def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
-    """Eager callback for ``--stop-server``: stop and exit before argument parsing."""
+    """Eager callback for ``--stop-server``: stop and exit before argument parsing.
+
+    A server the operating system does not let this command stop is a
+    :class:`ServerStopError` (exit 2) that names what is still running; its
+    record is kept.
+    """
     if not value:
         return
     chdir_project_root()
@@ -1202,7 +1209,10 @@ def _a2a_awaiting_lines(approval: Approval) -> list[str]:
     is_eager=True,
     expose_value=False,
     callback=_handle_stop_server,
-    help="Stop the local background server and exit.",
+    help=(
+        "Stop the local background server and exit. Exit 2, naming the processes still "
+        "running, when the operating system refuses to stop them (the record is kept)."
+    ),
 )
 @click.option(
     "--port",
@@ -1276,7 +1286,9 @@ def cmd_run(
       0  the agent answered, or the run is awaiting an approval
       1  the agent refused or reported an error (HTTP error, error event), or
          the decision was refused (not an approver, already decided, expired)
-      2  the agent could not be reached or went silent
+      2  the agent could not be reached or went silent; --stop-server could
+         not stop the local server (the processes still running are named,
+         and its record is kept)
       3  configuration error (no project, port unavailable)
     """
     mode = mode.lower()
@@ -1383,8 +1395,12 @@ def cmd_run(
                 ) from exc
         finally:
             if should_stop_server:
-                # cwd is the project root here (set by _resolve_target).
-                stop_server(Path.cwd(), pid=target.server_pid)
+                # cwd is the project root here (set by _resolve_target). A server that
+                # cannot be stopped is a warning: it never replaces the run's own outcome.
+                try:
+                    stop_server(Path.cwd(), pid=target.server_pid)
+                except ServerStopError as exc:
+                    warn_not_stopped(exc)
 
         # After an error event too: the thread keeps every turn that finished.
         _print_footer(

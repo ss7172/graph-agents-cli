@@ -47,6 +47,14 @@ migration" with the steps to follow.
   own process group (it is started in a new session, and its uvicorn child stays in it) and,
   for a server this invocation started, its process handle; no error from the teardown
   replaces the error of a failed start any more.
+- **`run --stop-server` no longer reports success for a server it could not stop.** When the
+  operating system refused the signal (Claude Code's sandbox lets a command signal only the
+  processes it started itself, so a server started by an earlier command survives), it
+  printed "Local server stopped." and deleted the record while the server kept its port; the
+  next `eval run` then failed with "something is already listening". It now exits 2, names
+  the processes still running and how to stop them, and keeps the record, so later runs reuse
+  that server. A server that `run`, `approvals` or `eval generate` cannot stop after their
+  work is a warning that never replaces their own result or error.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

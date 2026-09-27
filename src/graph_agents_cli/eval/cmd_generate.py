@@ -116,10 +116,14 @@ def _start_local_server(project_root: Path, meta: dict[str, Any]) -> tuple[str, 
             if not started:
                 return
             stop = _local_server.stop_server
-            if pid is not None and "pid" in inspect.signature(stop).parameters:
-                stop(project_root, pid=pid)
-            else:
-                stop(project_root)
+            try:
+                if pid is not None and "pid" in inspect.signature(stop).parameters:
+                    stop(project_root, pid=pid)
+                else:
+                    stop(project_root)
+            except _local_server.ServerStopError as exc:
+                # A warning: the traces (or the error that ended the run) stand.
+                _local_server.warn_not_stopped(exc)
 
     return str(base_url), teardown
 

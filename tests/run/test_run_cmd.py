@@ -594,6 +594,45 @@ def test_remote_unreachable_is_a_clean_error(monkeypatch, tmp_path):
     assert "Could not reach remote agent" in result.output
 
 
+def test_stop_server_fails_loudly_when_the_server_survives(monkeypatch, tmp_path):
+    """Exit 2 with what is still running; never "Local server stopped."."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_run, "chdir_project_root", lambda *a, **k: None)
+
+    def refused(root, pid=None):
+        raise _local_server.ServerStopError(
+            "Could not stop the local server (PID 4242, port 18080): PID 4242 still running",
+            pid=4242,
+            port=18080,
+            left=[4242],
+        )
+
+    monkeypatch.setattr(cmd_run, "stop_server", refused)
+    result = invoke("--stop-server")
+    assert result.exit_code == 2
+    assert "Error: Could not stop the local server (PID 4242, port 18080)" in result.output
+    assert "Local server stopped." not in result.output
+
+
+def test_a_one_off_server_that_cannot_be_stopped_is_a_warning(local_project, monkeypatch):
+    """The run's own result stands (exit 0 here); the leftover server is reported."""
+
+    def refused(root, pid=None):
+        local_project.stop_calls.append({"root": root, "pid": pid})
+        raise _local_server.ServerStopError(
+            "Could not stop the local server (PID 4242, port 18080): PID 4242 still running",
+            pid=4242,
+            port=18080,
+            left=[4242],
+        )
+
+    monkeypatch.setattr(cmd_run, "stop_server", refused)
+    result = invoke("hi")
+    assert result.exit_code == 0, result.output
+    assert local_project.stop_calls == [{"root": Path.cwd(), "pid": 4242}]
+    assert "Warning: Could not stop the local server (PID 4242, port 18080)" in result.output
+
+
 def _proxies(monkeypatch, **values: str) -> None:
     """Only the given proxy variables (none from the developer's shell)."""
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):

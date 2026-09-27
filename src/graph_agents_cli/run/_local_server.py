@@ -107,6 +107,9 @@ DEFAULT_IDLE_TIMEOUT = 1800  # 30 minutes
 _STARTUP_TIMEOUT_POSIX = 60
 _STARTUP_TIMEOUT_WINDOWS = 120
 DEFAULT_STARTUP_TIMEOUT = _STARTUP_TIMEOUT_WINDOWS if os.name == "nt" else _STARTUP_TIMEOUT_POSIX
+# Seconds a stopped server gets to exit after SIGTERM, then after SIGKILL.
+_TERM_WAIT = 3.0
+_KILL_WAIT = 2.0
 # Extra seconds a second invocation waits for the first one to finish starting.
 _LOCK_GRACE = 30
 DEFAULT_HEARTBEAT_INTERVAL = 60.0
@@ -183,6 +186,22 @@ class ServerStartError(click.ClickException):
     """The local server could not be started or reused (exit 2, a tool failure)."""
 
     exit_code = EXIT_SERVER_START_FAILED
+
+
+class ServerStopError(click.ClickException):
+    """A running local server could not be stopped (exit 2, a tool failure).
+
+    Its record is kept, so ``run --stop-server`` can try again and later runs
+    reuse the server instead of colliding with its port.
+    """
+
+    exit_code = EXIT_SERVER_START_FAILED
+
+    def __init__(self, message: str, *, pid: int, port: int | None, left: list[int]) -> None:
+        super().__init__(message)
+        self.pid = pid
+        self.port = port
+        self.left = left
 
 
 class UnsupportedRuntimeError(click.ClickException):
@@ -444,7 +463,11 @@ def stop_server(project_root: Path, pid: int | None = None) -> bool:
     signalled; its record is just removed.
 
     Returns ``True`` if a running server was stopped (``False`` for none, or
-    only a stale record, which is removed).
+    only a stale record, which is removed). Raises :class:`ServerStopError`
+    when the server is still running afterwards (the operating system refused
+    the signal, as a sandbox does for a process an earlier command started);
+    its record is kept then. A teardown after a command catches it and warns,
+    so it never replaces that command's own result or error.
     """
     with shielded():
         info = read_pid_file(project_root)
@@ -463,6 +486,11 @@ def stop_server(project_root: Path, pid: int | None = None) -> bool:
                 "Removed the record of a local server that was no longer running.", dim=True
             )
         return stopped
+
+
+def warn_not_stopped(exc: ServerStopError) -> None:
+    """Report a server a teardown could not stop, without replacing the command's own result."""
+    click.secho(f"Warning: {exc.format_message()}", fg="yellow", err=True)
 
 
 def get_server_port(project_root: Path) -> int | None:
@@ -828,14 +856,20 @@ def _signal_tree(
     group: int | None,
     handle: subprocess.Popen | None,
     kill: bool,
-) -> None:
-    """SIGTERM (``kill``: SIGKILL) to ``processes``, the process ``group`` and the ``handle``."""
+) -> bool:
+    """SIGTERM (``kill``: SIGKILL) to ``processes``, the process ``group`` and the ``handle``.
+
+    Returns True when the operating system refused a signal (permission denied).
+    """
+    refused = False
     for process in processes:
         try:
             if kill:
                 process.kill()
             else:
                 process.terminate()
+        except (psutil.AccessDenied, PermissionError):
+            refused = True
         except (psutil.Error, OSError):
             pass
     if group is not None:
@@ -843,6 +877,8 @@ def _signal_tree(
 
         try:
             os.killpg(group, signal.SIGKILL if kill else signal.SIGTERM)
+        except PermissionError:
+            refused = True
         except OSError:
             pass
     if handle is not None and not processes and handle.poll() is None:
@@ -851,8 +887,21 @@ def _signal_tree(
                 handle.kill()
             else:
                 handle.terminate()
+        except PermissionError:
+            refused = True
         except OSError:
             pass
+    return refused
+
+
+def _still_running(process: psutil.Process) -> bool:
+    """Whether ``process`` is alive (a zombie has exited; an unreadable one counts as alive)."""
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.Error, OSError):
+        return True
 
 
 def _group_alive(group: int) -> bool:
@@ -912,7 +961,11 @@ def _terminate_process(
     ``psutil.Error``). The server's own process group is signalled then, and
     the ``Popen`` handle when psutil cannot see the server at all. No OS or
     psutil error escapes: a teardown must never replace the error that led to it.
-    Returns True when it was stopped.
+
+    Returns True when it was stopped, False when ``pid`` is not (or no longer)
+    the server. Raises :class:`ServerStopError`, naming what is still running,
+    when a process of the server survives: a refused signal (a sandbox lets a
+    command signal only the processes it started itself) is never "stopped".
     """
     handle = proc if proc is not None else _HANDLES.get(pid)
     if handle is not None and handle.poll() is None:
@@ -944,18 +997,57 @@ def _terminate_process(
             group = _own_group(pid)
     else:
         group = _own_group(pid)
-    _signal_tree(processes, group=group, handle=handle, kill=False)
-    alive = _wait_tree(processes, group=group, handle=handle, timeout=3)
+    refused = _signal_tree(processes, group=group, handle=handle, kill=False)
+    alive = _wait_tree(processes, group=group, handle=handle, timeout=_TERM_WAIT)
     if alive or (group is not None and _group_alive(group)):
-        _signal_tree(alive, group=group, handle=handle, kill=True)
-        _wait_tree(alive, group=group, handle=handle, timeout=2)
+        refused |= _signal_tree(alive, group=group, handle=handle, kill=True)
+        alive = _wait_tree(alive, group=group, handle=handle, timeout=_KILL_WAIT)
+    left = sorted(process.pid for process in alive if _still_running(process))
+    if handle is not None and not processes and handle.poll() is None:
+        left.append(pid)
+    group_left = group is not None and _group_alive(group)
+    if left or group_left:
+        raise ServerStopError(
+            _stop_failure(
+                pid, port=port, left=left, group=group if group_left else None, refused=refused
+            ),
+            pid=pid,
+            port=port,
+            left=left,
+        )
     return True
+
+
+def _stop_failure(
+    pid: int, *, port: int | None, left: list[int], group: int | None, refused: bool
+) -> str:
+    """The one-paragraph message of a :class:`ServerStopError`."""
+    where = f"PID {pid}, port {port}" if port else f"PID {pid}"
+    what = []
+    if left:
+        what.append(f"PID{'s' if len(left) > 1 else ''} {', '.join(map(str, left))}")
+    if group is not None:
+        what.append(f"processes of its group {group}")
+    why = (
+        "the operating system refused the signal (permission denied)"
+        if refused
+        else "they did not exit after SIGKILL"
+    )
+    kill_cmd = f"kill {' '.join(map(str, left))}" if left else f"kill -- -{group}"
+    return (
+        f"Could not stop the local server ({where}): {' and '.join(what)} still "
+        f"running; {why}. Its record is kept: later runs reuse the server, and "
+        "`graph-agents-cli run --stop-server` tries again. Stop it from a shell that may "
+        f"signal it (`{kill_cmd}`), such as the one that started it or one outside the "
+        "sandbox this command runs in."
+    )
 
 
 def _cleanup(project_root: Path, info: dict) -> bool:
     """Stop the recorded server (if it is still that server) and remove its record.
 
     Returns True when a running server was stopped, False for a stale record.
+    A server that could not be stopped keeps its record (:class:`ServerStopError`).
     """
     with shielded():
         pid = info.get("pid")

@@ -149,7 +149,10 @@ def _target(url: str | None, header: tuple[str, ...], cookie: tuple[str, ...]) -
             yield _Target(server.base_url, headers, False, flags)
         finally:
             if server.started:
-                _local_server.stop_server(root, pid=server.pid)
+                try:
+                    _local_server.stop_server(root, pid=server.pid)
+                except _local_server.ServerStopError as exc:  # never replaces the result
+                    _local_server.warn_not_stopped(exc)
 
 
 def _http_failure(exc: ChatHTTPError, target: _Target, what: str) -> click.ClickException:

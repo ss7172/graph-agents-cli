@@ -394,6 +394,62 @@ def test_the_recorded_server_is_stopped_when_it_is_still_that_process(tmp_path, 
     assert not ls.pid_file_path(tmp_path).exists()
 
 
+def _refuse_signals(monkeypatch):
+    """What psutil does in a sandbox that lets a command signal only its own processes."""
+    import psutil
+
+    def refused(self):
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "terminate", refused)
+    monkeypatch.setattr(psutil.Process, "kill", refused)
+    monkeypatch.setattr(ls, "_TERM_WAIT", 0.3, raising=False)
+    monkeypatch.setattr(ls, "_KILL_WAIT", 0.3, raising=False)
+
+
+def test_a_refused_signal_is_never_reported_as_stopped(
+    tmp_path, unrelated_process, monkeypatch, capsys
+):
+    """`run --stop-server` printed "Local server stopped." and dropped the record while the
+    server kept its port (Claude Code's sandbox, a server started by an earlier command)."""
+    import psutil
+
+    pid = unrelated_process.pid
+    created = psutil.Process(pid).create_time()
+    _write_pid(tmp_path, pid=pid, port=18867, create_time=created)
+    _refuse_signals(monkeypatch)
+    with pytest.raises(click.ClickException) as excinfo:
+        ls.stop_server(tmp_path)
+    assert isinstance(excinfo.value, ls.ServerStopError)
+    message = excinfo.value.format_message()
+    assert excinfo.value.exit_code == 2
+    assert excinfo.value.left == [pid]
+    assert f"Could not stop the local server (PID {pid}, port 18867)" in message
+    assert "permission denied" in message
+    assert f"`kill {pid}`" in message
+    assert "Local server stopped." not in capsys.readouterr().out
+    assert unrelated_process.poll() is None  # still running
+    assert ls.read_pid_file(tmp_path)["pid"] == pid  # and still recorded
+
+
+def test_a_server_this_run_started_is_reported_when_it_cannot_be_stopped(
+    tmp_path, unrelated_process, monkeypatch
+):
+    import psutil
+
+    pid = unrelated_process.pid
+    ls._STARTED[pid] = psutil.Process(pid).create_time()
+    _write_pid(tmp_path, pid=111)  # another invocation's record: left alone
+    _refuse_signals(monkeypatch)
+    try:
+        with pytest.raises(click.ClickException, match=f"PID {pid}"):
+            ls.stop_server(tmp_path, pid=pid)
+    finally:
+        ls._STARTED.pop(pid, None)
+    assert unrelated_process.poll() is None
+    assert ls.read_pid_file(tmp_path)["pid"] == 111
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
 def test_sigterm_during_the_teardown_still_removes_the_record(started, monkeypatch):
     """The verifier's case: SIGTERM while `run` stops its server after the answer."""
