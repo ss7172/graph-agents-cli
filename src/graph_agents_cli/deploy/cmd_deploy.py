@@ -345,6 +345,13 @@ def _deploy_direct(
             console=console,
         )
         _warn_dsn_without_tls(settings, env, chart_values, secret_plan.data, console=console)
+        if not secret_plan.data:
+            # Nothing to apply (a keyless project: the fake model, a keyless endpoint): like
+            # no env file, the Secret is left as it is, decided before anything is built.
+            _require_secret_to_leave(
+                settings, env, target, chart_values, live, path, dry_run=opts.dry_run
+            )
+            secret_plan = None
     _check_jwt(settings, env, chart_values, keys, dry_run=opts.dry_run, console=console)
     _check_release_idle(settings, target, dry_run=opts.dry_run, console=console)
     before = _live_workload(settings, target)
@@ -360,7 +367,14 @@ def _deploy_direct(
             )
 
     snaps: list[secrets_apply.Snapshot] = []
-    if secret_plan is None:
+    if secret_plan is None and path is not None:
+        console.print(
+            f"  {path} sets none of the allow-listed keys ({', '.join(settings.secret_keys)}); "
+            f"the Secret {settings.secret_name} is left as is.",
+            style="yellow",
+            markup=False,
+        )
+    elif secret_plan is None:
         console.print(
             f"  No env file found (.env.{env} or .env); the Secret {settings.secret_name} is "
             "left as is.",
@@ -735,6 +749,37 @@ def _verify_secret(
         "applied or deployed.\n"
         f"  {fix}, or remove a key from secrets.keys in graph-agents-cli-manifest.yaml if "
         f"{env} does not need it.{why_jwt}{dry}"
+    )
+
+
+def _require_secret_to_leave(
+    settings: DeploySettings,
+    env: str,
+    target: Target,
+    values: dict[str, Any],
+    live: secrets_apply.LiveSecret | None,
+    path: Path,
+    *,
+    dry_run: bool,
+) -> None:
+    """Refuse (exit 1) before anything changes when the Secret is left alone but the pods need it.
+
+    An env file with none of the allow-listed keys leaves the Secret as it is.
+    Outside dev the chart requires the Secret to exist (``secretOptional:
+    false``), so when there is none the pods would never start. ``live`` is
+    ``None`` under ``--dry-run`` when the Secret could not be read.
+    """
+    if _truthy(values.get("secretOptional")) or live is None or live.exists:
+        return
+    name = settings.secret_name
+    dry = "\n  (--dry-run: the real deploy stops here the same way.)" if dry_run else ""
+    raise Refused(
+        f"Secret {name} does not exist in {target.namespace}, and the {env} chart values require "
+        "it (secretOptional: false): the pods would not start.\n"
+        f"  {path} sets none of the allow-listed keys ({', '.join(settings.secret_keys)}), so "
+        "there is nothing to create it from; nothing was built, applied or deployed.\n"
+        f"  Put the keys {env} needs in {path}, or set secretOptional: true in "
+        f"{settings.values_file(env)} if {env} needs no Secret.{dry}"
     )
 
 

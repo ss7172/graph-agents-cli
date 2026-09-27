@@ -213,6 +213,16 @@ environment without an env file exits 3, so your development keys never reach st
 Error: No env file for staging: pass --env-file or create .env.staging (the local .env is never used for staging: it holds your development keys) with the allow-listed keys: OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY
 ```
 
+An env file that sets none of the allow-listed keys (a keyless project: the `fake` model, a
+keyless `openai-compatible` endpoint, no `shared-bearer` key) leaves the Secret as it is, as
+a missing env file does in `dev`. The check runs before anything is built. Outside `dev` the
+chart requires the Secret, so when it does not exist `deploy` exits 1 before building
+(set `secretOptional: true` in that environment's values if it needs no Secret):
+
+```text
+  .env.dev sets none of the allow-listed keys (OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY); the Secret my-agent-app is left as is.
+```
+
 Only `skip` mode reads the env file and applies the Secret. `helm-push` checks the live Secret
 without applying it; `argocd` never touches the cluster.
 

@@ -105,8 +105,12 @@ graph-agents-cli secrets status --env <env> [--context <ctx>] [--strict] [--dry-
 but first checks, read-only, that the Secret it would produce holds every required key: when
 one is missing it exits 1 before anything is built, pushed or changed, naming the keys and the
 env file to add them to. `dev` without an env file leaves the Secret as it is (and still checks
-it). `deploy --dry-run` makes the same read of the live Secret and refuses (exit 1) what the real
-run would; when the cluster cannot be read it says the check could not be completed.
+it). So does an env file that sets none of the allow-listed keys (a keyless project: the `fake`
+model, a keyless `openai-compatible` endpoint, no `shared-bearer` key), decided before anything
+is built; outside dev, where the chart requires the Secret (`secretOptional: false`), a missing
+Secret then exits 1 before the build. `deploy --dry-run` makes the same read of the live Secret
+and refuses (exit 1) what the real run would; when the cluster cannot be read it says the check
+could not be completed.
 
 When the rollout fails and the release is put back where it was (rolled back, failed before a
 new revision, or a first install uninstalled), `deploy` also puts the app Secret (and

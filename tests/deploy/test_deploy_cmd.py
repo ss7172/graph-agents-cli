@@ -338,6 +338,80 @@ def test_missing_env_file_in_dev_leaves_the_secret_alone(project: SimpleNamespac
     assert fake.find("helm upgrade")
 
 
+def _keyless(project: SimpleNamespace, env: str, values: str = "") -> None:
+    """A project that needs no Secret key: the fake model, the custom policy (no API_KEY),
+    the bundled Postgres; its env file sets no allow-listed value (an empty provider key).
+    Dev values make the Secret optional, as the scaffolded values-dev.yaml does."""
+    project.cfg.auth_policy = "custom"
+    project.cfg.create_params["auth_policy"] = "custom"
+    (project.chart / f"values-{env}.yaml").write_text(
+        "env:\n  APP_ENV: dev\n  MODEL_PROVIDER: fake\nsecretOptional: true\n"
+        "postgresql:\n  enabled: true\ngateway:\n  enabled: false\n" + values
+        if env == "dev"
+        else "env:\n  MODEL_PROVIDER: fake\npostgresql:\n  enabled: true\n" + values
+    )
+    (project.root / ".env").unlink()
+    (project.root / f".env.{env}").write_text("OPENAI_API_KEY=\nNOT_ALLOWED=x\n")
+
+
+def test_env_file_without_allow_listed_values_leaves_the_secret_alone(
+    project: SimpleNamespace, fake
+):
+    """A keyless project deploys: nothing to apply is not an error (it exited 3 after the build)."""
+    _keyless(project, "dev")
+    result = invoke("--env", "dev", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert (
+        ".env.dev sets none of the allow-listed keys (OPENAI_API_KEY, JUDGE_API_KEY, "
+        "POSTGRES_DSN, API_KEY, LANGSMITH_API_KEY); the Secret my-agent-app is left as is."
+    ) in result.output
+    assert not fake.any("create secret") and not fake.find(SSA)
+    assert fake.find("docker build") and fake.find("helm upgrade")
+
+
+def test_env_file_without_allow_listed_values_dry_run_plans_the_same(
+    project: SimpleNamespace, fake
+):
+    _keyless(project, "dev")
+    result = invoke("--env", "dev", "--tag", "t", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "the Secret my-agent-app is left as is" in result.output
+    assert not fake.any("create secret") and not fake.find(SSA)
+
+
+def test_env_file_without_allow_listed_values_keeps_an_existing_secret(
+    project: SimpleNamespace, fake
+):
+    _keyless(project, "staging")
+    fake.secrets["my-agent-app"] = {"LANGSMITH_API_KEY": ""}
+    result = invoke("--env", "staging", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "the Secret my-agent-app is left as is" in result.output
+    assert not fake.any("create secret") and fake.find("helm upgrade")
+
+
+def test_env_file_without_allow_listed_values_refuses_when_the_pods_need_a_missing_secret(
+    project: SimpleNamespace, fake
+):
+    """Outside dev the chart requires the Secret: without one the pods never start."""
+    _keyless(project, "staging")
+    result = invoke("--env", "staging", "--tag", "t")
+    assert result.exit_code == 1, result.output
+    assert "Secret my-agent-app does not exist in my-agent-staging" in result.output
+    assert "secretOptional: true" in result.output
+    assert not any(j.startswith(("docker", "kind", "helm")) for j in fake.joined)
+    assert not fake.any("create secret") and not fake.find(SSA)
+
+
+def test_env_file_without_allow_listed_values_needs_no_secret_when_it_is_optional(
+    project: SimpleNamespace, fake
+):
+    _keyless(project, "staging", values="secretOptional: true\n")
+    result = invoke("--env", "staging", "--tag", "t")
+    assert result.exit_code == 0, result.output
+    assert "left as is" in result.output and fake.find("helm upgrade")
+
+
 def test_missing_required_secret_key_refuses_before_helm(project: SimpleNamespace, fake):
     """No env file and no Secret: the pods would crash-loop, so helm never runs (exit 1)."""
     (project.root / ".env").unlink()

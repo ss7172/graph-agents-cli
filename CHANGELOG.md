@@ -65,6 +65,14 @@ migration" with the steps to follow.
   listing is skipped like the skills version check, and `info` says so ("Installed skills:
   not listed (... skips `npx skills list`)"; `--json` adds `installed_skills_skipped` with the
   reason, null when the listing ran).
+- **`deploy` works for a project that needs no Secret key.** An env file that sets none of
+  the allow-listed keys (a keyless project: the `fake` model, a keyless `openai-compatible`
+  endpoint, no `shared-bearer` key) made `deploy` exit 3, "No allow-listed secret values to
+  apply", and only after it had built the image and loaded or pushed it. Such an env file now
+  leaves the Secret as it is, like a missing env file in `dev`, and says so; the decision is
+  made before anything is built. Outside `dev`, where the chart requires the Secret
+  (`secretOptional: false`), a missing Secret stops the deploy (exit 1) before the build.
+  `secrets apply` still exits 3 when there is nothing to apply.
 - **`eval grade` works in a project with another agent directory.** The judge runner
   imported `app.app_utils.model` whatever the project's package was, so in a project created
   with `create --agent-directory <name>` every judge metric (the default dataset's
