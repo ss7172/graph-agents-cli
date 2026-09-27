@@ -146,10 +146,15 @@ def _find_installed_skills() -> dict[str, str]:
 def get_installed_skills() -> list[dict] | None:
     """Return installed graph-agents-cli skills as a list of dicts.
 
-    Returns None if the query fails (no ``npx``, no network, malformed output).
+    Returns None if the query fails (no ``npx``, no network, malformed output),
+    and without running it when :func:`skills_listing_skipped` names a reason:
+    ``npx -y skills@... list`` may download the package, which a disconnected
+    install (``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1``) and CI opt out of.
     """
     import json
 
+    if skills_listing_skipped():
+        return None
     try:
         from graph_agents_cli._runner import run_resolved
 
@@ -179,6 +184,21 @@ def get_installed_skills() -> list[dict] | None:
         return None
 
 
+def skills_listing_skipped() -> str | None:
+    """Why the skills listing (``npx skills list``) is not run, or None when it is.
+
+    The same opt-out as :func:`check_skills_version`: ``GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1``
+    (the disconnected profile) or a CI marker.
+    """
+    if _is_opted_out():
+        return f"{NO_UPDATE_CHECK_ENV}=1"
+    marker = next((var for var in _CI_MARKERS if os.environ.get(var)), None)
+    return f"{marker} is set (CI)" if marker else None
+
+
+_CI_MARKERS = ("CI", "BUILD_ID", "GITHUB_ACTIONS", "GITLAB_CI")
+
+
 def _is_ci() -> bool:
     """Return True when running in a CI/automation environment.
 
@@ -187,7 +207,7 @@ def _is_ci() -> bool:
     only adds noise (and may spawn a doomed ``npx`` subprocess). We skip it when
     a well-known CI marker is present.
     """
-    return any(os.environ.get(var) for var in ("CI", "BUILD_ID", "GITHUB_ACTIONS", "GITLAB_CI"))
+    return any(os.environ.get(var) for var in _CI_MARKERS)
 
 
 def _is_opted_out() -> bool:

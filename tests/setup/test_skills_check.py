@@ -112,6 +112,76 @@ def test_malformed_skill_md_is_ignored(home: Path, no_npx, tmp_path: Path):
     assert _skills_check._find_installed_skills() == {}
 
 
+# ---------------------------------------------------------------------------
+# `info`: the skills listing honours the same opt-out (it ran npx every time)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def npx_recorder(monkeypatch: pytest.MonkeyPatch):
+    """``npx skills list`` answered from memory; every call is recorded."""
+    import json
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    def run_resolved(args, **kwargs):
+        calls.append(list(args))
+        listing = [{"name": "graph-agents-cli-eval", "path": "/x", "scope": "global"}]
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(listing), stderr="")
+
+    monkeypatch.setattr("graph_agents_cli._runner.run_resolved", run_resolved)
+    return calls
+
+
+def _info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *args: str):
+    from click.testing import CliRunner
+
+    from graph_agents_cli.info import cmd_info
+
+    monkeypatch.chdir(tmp_path)  # outside any project
+    return CliRunner().invoke(cmd_info.cmd_info, list(args), catch_exceptions=False)
+
+
+@pytest.mark.parametrize(
+    ("variable", "reason"),
+    [
+        ("GRAPH_AGENTS_CLI_NO_UPDATE_CHECK", "GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1"),
+        ("CI", "CI is set (CI)"),
+    ],
+)
+def test_info_skips_the_skills_listing_under_the_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, npx_recorder, variable, reason
+):
+    """`info` ran `npx -y skills@... list --json` even for a disconnected install."""
+    import json
+
+    monkeypatch.setenv(variable, "1" if variable != "CI" else "true")
+    result = _info(tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert npx_recorder == []
+    assert f"Installed skills:   not listed ({reason} skips `npx skills list`)" in result.output
+
+    result = _info(tmp_path, monkeypatch, "--json")
+    data = json.loads(result.output.strip().splitlines()[-1])
+    assert npx_recorder == []
+    assert data["installed_skills"] is None
+    assert data["installed_skills_skipped"] == reason
+
+
+def test_info_lists_the_skills_without_the_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, npx_recorder
+):
+    import json
+
+    result = _info(tmp_path, monkeypatch)
+    assert npx_recorder == [["npx", "-y", _skills_check.SKILLS_NPX_PACKAGE, "list", "--json"]]
+    assert "Installed skills:   1 (global)" in result.output
+    assert "  - graph-agents-cli-eval" in result.output
+    result = _info(tmp_path, monkeypatch, "--json")
+    assert json.loads(result.output.strip().splitlines()[-1])["installed_skills_skipped"] is None
+
+
 def test_bundle_helpers(tmp_path: Path):
     bundle = tmp_path / "data"
     (bundle / "graph-agents-cli-deploy").mkdir(parents=True)

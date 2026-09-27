@@ -387,7 +387,9 @@ to pass `-y`, and `update` keeps the old pin.
 
 `info` prints the CLI version, its build (`CLI build:` the id `--version` prints, `0.2.0` for
 a release and `0.2.0+g<commit>` for a build between releases, with the full commit; `--json`:
-`cli_build`) and install path plus, inside a project: the version and build that scaffolded it
+`cli_build`), install path and installed skills (from `npx skills list`, which is not run with
+`GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` or in CI: "not listed", `--json`:
+`installed_skills_skipped`) plus, inside a project: the version and build that scaffolded it
 (`Scaffolded with:`, from the manifest's `cli_build`), name, base template,
 agent directory, runtime, model provider and model, checkpointer, deployment target, registry,
 CD mode, auth policy, the API policy file (or none), `process`, the environments with their
@@ -397,7 +399,7 @@ namespaces, and active extensions with their sources and conflicts.
 
 | Variable | Effect |
 |---|---|
-| `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` | disables the GitHub release check and the skills-version check (disconnected profile) |
+| `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` | disables the GitHub release check, the skills-version check and `info`'s skills listing (`npx skills list`; `info` says "not listed") (disconnected profile; CI markers do the same) |
 | `GRAPH_AGENTS_CLI_INSTALL_SPEC` | where `setup`, `update`, the `scaffold upgrade` baseline and generated projects' CI install the CLI from (a mirror, a wheel); `{version}` is replaced by the version needed, a release number, so it cannot name a build between releases (`scaffold upgrade --baseline-ref` does); control characters and whitespace are refused (exit 3), except the spaces of `name @ url` |
 | `GRAPH_AGENTS_CLI_RUN_PORT` | port of the local server `run` and `eval generate` start |
 | `GRAPH_AGENTS_CLI_DEBUG=1` | print the traceback behind a one-line network, file or parse error |

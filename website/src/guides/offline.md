@@ -55,7 +55,7 @@ sets it up, and [`login --profile disconnected`](#check-it) and
       in-cluster collector. No `LANGSMITH_API_KEY`: hosted LangSmith is outside the profile.
       See [Observability](observability.md#tracing).
 - [ ] **No update check.** `export GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1`, or the CLI asks GitHub
-      for a newer release (at most every 12 hours).
+      for a newer release (at most every 12 hours) and `info` runs `npx skills list`.
 - [ ] **The CLI from a mirror.** Set `GRAPH_AGENTS_CLI_INSTALL_SPEC`, with `{version}` where
       the version goes, so `setup`, `update`, the `scaffold upgrade` baseline and new projects'
       CI install from your mirror (see [Upgrading projects](upgrading.md#install-the-baseline-from-a-mirror)).

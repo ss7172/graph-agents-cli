@@ -58,6 +58,13 @@ migration" with the steps to follow.
   command would replace (idle for 30 minutes, or no longer answering) but may not stop: a
   warning names it and the `kill` command, then the command reuses it while it still answers,
   or starts a fresh one beside it.
+- **`info` honours `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` and CI.** It ran `npx -y
+  skills@1.5.9 list --json` every time, which may download the package: a disconnected
+  install waited up to 15 s for it, and in a coding agent's sandbox the blocked download read
+  as "the CLI is blocked". With the variable set (the disconnected profile) or a CI marker, the
+  listing is skipped like the skills version check, and `info` says so ("Installed skills:
+  not listed (... skips `npx skills list`)"; `--json` adds `installed_skills_skipped` with the
+  reason, null when the listing ran).
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

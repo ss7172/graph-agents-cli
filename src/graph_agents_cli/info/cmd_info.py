@@ -33,7 +33,7 @@ from graph_agents_cli._project import (
     find_project_root,
     read_project_config,
 )
-from graph_agents_cli._skills_check import get_installed_skills
+from graph_agents_cli._skills_check import get_installed_skills, skills_listing_skipped
 from graph_agents_cli.extension._loader import ExtensionSet, load_extension_set
 from graph_agents_cli.extension._paths import user_config_root
 
@@ -67,8 +67,11 @@ def _print_extensions(extension_set: ExtensionSet) -> None:
         )
 
 
-def _print_installed_skills(skills: list[dict] | None) -> None:
+def _print_installed_skills(skills: list[dict] | None, skipped: str | None = None) -> None:
     """Print installed skills summary."""
+    if skipped:
+        click.echo(f"Installed skills:   not listed ({skipped} skips `npx skills list`)")
+        return
     if skills is None:
         click.echo("Installed skills:   (could not query)")
         return
@@ -162,8 +165,14 @@ def _print_project(project_root: Path, cfg: ProjectConfig) -> None:
 @click.command()
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON.")
 def cmd_info(as_json: bool) -> None:
-    """Show project configuration, paths, and CLI version."""
+    """Show project configuration, paths, and CLI version.
+
+    The installed skills come from `npx skills list`, which is not run (and
+    reported as not listed) with GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1 or in CI.
+    """
     installed_skills = get_installed_skills()
+    # Why there is no listing: the opt-out, not a failure (None from a failed query too).
+    skills_skipped = skills_listing_skipped() if installed_skills is None else None
     project_root = find_project_root()
     os_info = platform.platform()
     extension_set = load_extension_set(project_root, user_config_root())
@@ -175,6 +184,7 @@ def cmd_info(as_json: bool) -> None:
         "cli_install_path": _CLI_INSTALL_PATH,
         "os_info": os_info,
         "installed_skills": installed_skills,
+        "installed_skills_skipped": skills_skipped,
         "extensions": extension_set.command_rows(),
         "extension_conflicts": extension_set.conflict_rows(),
         "extension_incompatible": extension_set.incompatible_rows(),
@@ -188,7 +198,7 @@ def cmd_info(as_json: bool) -> None:
             click.echo(f"CLI build:          {build.describe()}")
             click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
             click.echo(f"OS info:            {os_info}")
-            _print_installed_skills(installed_skills)
+            _print_installed_skills(installed_skills, skills_skipped)
             _print_extensions(extension_set)
             click.echo()
             click.echo("No agent project found in the current directory or any parent.")
@@ -207,6 +217,6 @@ def cmd_info(as_json: bool) -> None:
     click.echo(f"CLI build:          {build.describe()}")
     click.echo(f"CLI install path:   {_CLI_INSTALL_PATH}")
     click.echo(f"OS info:            {os_info}")
-    _print_installed_skills(installed_skills)
+    _print_installed_skills(installed_skills, skills_skipped)
     _print_project(project_root, cfg)
     _print_extensions(extension_set)
