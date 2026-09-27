@@ -99,6 +99,8 @@ _CREATE_TIME_TOLERANCE = 1.0
 # Servers this process started: pid -> creation time, to recognise them when the
 # pid file no longer names them.
 _STARTED: dict[int, float | None] = {}
+# Their Popen handles: a way to stop them that needs no process listing.
+_HANDLES: dict[int, subprocess.Popen] = {}
 STATE_STARTING = "starting"
 STATE_READY = "ready"
 DEFAULT_IDLE_TIMEOUT = 1800  # 30 minutes
@@ -362,6 +364,7 @@ def _ensure_server_locked(
     pid = proc.pid
     created = _create_time(pid)
     _STARTED[pid] = created
+    _HANDLES[pid] = proc
     try:
         # Recorded before the (long) readiness wait: if this CLI is killed now,
         # `run --stop-server` and the next invocation still find the process.
@@ -381,14 +384,25 @@ def _ensure_server_locked(
         # that already exited was reaped by poll(); terminating it again would
         # only log a spurious "not found" warning.
         with shielded():
-            if proc.poll() is None:
-                _terminate_process(pid, create_time=created, port=port, own_child=True)
-                try:
-                    proc.wait(timeout=5)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
-            _remove_pid_file_if(project_root, pid)
-            _STARTED.pop(pid, None)
+            try:
+                if proc.poll() is None:
+                    _terminate_process(
+                        pid, create_time=created, port=port, own_child=True, proc=proc
+                    )
+                    try:
+                        proc.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                _remove_pid_file_if(project_root, pid)
+            except Exception as cleanup_error:  # never replace the error being raised
+                logging.warning(
+                    "Could not clean up the local server (PID %d) after a failed start: %s",
+                    pid,
+                    cleanup_error,
+                )
+            finally:
+                _STARTED.pop(pid, None)
+                _HANDLES.pop(pid, None)
         raise
     live_checkpointer = str(health.get("checkpointer") or checkpointer)
     write_pid_file(
@@ -437,6 +451,7 @@ def stop_server(project_root: Path, pid: int | None = None) -> bool:
         if pid is not None and (not info or info.get("pid") != pid):
             stopped = _terminate_process(pid, create_time=_STARTED.get(pid))
             _STARTED.pop(pid, None)
+            _HANDLES.pop(pid, None)
         elif not info:
             return False
         else:
@@ -792,28 +807,123 @@ def _is_server_alive(pid: int, port: int, create_time: float | None = None) -> b
         return False
 
 
+def _own_group(pid: int) -> int | None:
+    """``pid``'s process group when ``pid`` leads it, else None (and always on Windows).
+
+    A local server leads its own group (it is started in a new session) and its
+    children (uvicorn under ``uv run``) stay in it, so the group reaches them
+    without listing processes.
+    """
+    if os.name == "nt":
+        return None
+    try:
+        return pid if os.getpgid(pid) == pid else None
+    except OSError:
+        return None
+
+
+def _signal_tree(
+    processes: list[psutil.Process],
+    *,
+    group: int | None,
+    handle: subprocess.Popen | None,
+    kill: bool,
+) -> None:
+    """SIGTERM (``kill``: SIGKILL) to ``processes``, the process ``group`` and the ``handle``."""
+    for process in processes:
+        try:
+            if kill:
+                process.kill()
+            else:
+                process.terminate()
+        except (psutil.Error, OSError):
+            pass
+    if group is not None:
+        import signal
+
+        try:
+            os.killpg(group, signal.SIGKILL if kill else signal.SIGTERM)
+        except OSError:
+            pass
+    if handle is not None and not processes and handle.poll() is None:
+        try:
+            if kill:
+                handle.kill()
+            else:
+                handle.terminate()
+        except OSError:
+            pass
+
+
+def _group_alive(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # it exists, but may not be signalled
+        return True
+    return True
+
+
+def _wait_tree(
+    processes: list[psutil.Process],
+    *,
+    group: int | None,
+    handle: subprocess.Popen | None,
+    timeout: float,
+) -> list[psutil.Process]:
+    """Wait up to ``timeout`` s for the tree to exit; returns the listed processes still alive."""
+    deadline = time.monotonic() + timeout
+    alive = processes
+    if processes:
+        try:
+            _gone, alive = psutil.wait_procs(processes, timeout=timeout)
+        except (psutil.Error, OSError):
+            alive = processes
+    if handle is not None and not processes:
+        try:
+            handle.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    while group is not None and _group_alive(group) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return list(alive)
+
+
 def _terminate_process(
     pid: int,
     *,
     create_time: float | None = None,
     port: int | None = None,
     own_child: bool = False,
+    proc: subprocess.Popen | None = None,
 ) -> bool:
     """Stop the server ``pid`` and its children (SIGTERM, then SIGKILL after 3 s).
 
     Nothing is signalled unless ``pid`` is still that server (see
     :func:`_server_process`): a record can outlive its process, and the PID
     may belong to something else by now. ``own_child``: ``pid`` is a child of
-    this process that was not reaped yet, so its PID cannot have been reused.
+    this process that was not reaped yet, so its PID cannot have been reused;
+    ``proc`` (default: the handle kept when this process started it) is its
+    ``Popen`` handle.
+
+    Listing the server's children can be denied (a sandbox that refuses the
+    process table raises ``PermissionError``, an ``OSError`` that is not a
+    ``psutil.Error``). The server's own process group is signalled then, and
+    the ``Popen`` handle when psutil cannot see the server at all. No OS or
+    psutil error escapes: a teardown must never replace the error that led to it.
     Returns True when it was stopped.
     """
+    handle = proc if proc is not None else _HANDLES.get(pid)
+    if handle is not None and handle.poll() is None:
+        own_child = True
     parent = _server_process(pid, create_time=create_time, port=port)
     if parent is None and own_child:
         try:
             parent = psutil.Process(pid)
-        except psutil.Error:
+        except (psutil.Error, OSError):
             parent = None
-    if parent is None:
+    if parent is None and not (own_child and handle is not None):
         if psutil.pid_exists(pid):
             logging.warning(
                 "The recorded local server (PID %d) is gone and its PID now belongs to "
@@ -821,23 +931,24 @@ def _terminate_process(
                 pid,
             )
         return False
-    try:
-        children = parent.children(recursive=True)
-    except psutil.Error:
-        children = []
-    for process in (*children, parent):
+    processes: list[psutil.Process] = []
+    group: int | None = None
+    if parent is not None:
         try:
-            process.terminate()
-        except psutil.Error:
-            pass
-    _gone, alive = psutil.wait_procs([*children, parent], timeout=3)
-    for process in alive:
-        try:
-            process.kill()
-        except psutil.Error:
-            pass
-    if alive:
-        psutil.wait_procs(alive, timeout=2)
+            processes = [*parent.children(recursive=True), parent]
+        except (psutil.Error, OSError) as exc:
+            logging.debug(
+                "Could not list the local server's children (%s); signalling its group", exc
+            )
+            processes = [parent]
+            group = _own_group(pid)
+    else:
+        group = _own_group(pid)
+    _signal_tree(processes, group=group, handle=handle, kill=False)
+    alive = _wait_tree(processes, group=group, handle=handle, timeout=3)
+    if alive or (group is not None and _group_alive(group)):
+        _signal_tree(alive, group=group, handle=handle, kill=True)
+        _wait_tree(alive, group=group, handle=handle, timeout=2)
     return True
 
 
@@ -854,5 +965,6 @@ def _cleanup(project_root: Path, info: dict) -> bool:
                 pid, create_time=info.get("create_time"), port=info.get("port")
             )
             _STARTED.pop(pid, None)
+            _HANDLES.pop(pid, None)
         _remove_pid_file_if(project_root, pid)
         return stopped

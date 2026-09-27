@@ -471,6 +471,110 @@ def test_read_pid_file_tolerates_garbage(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# a sandbox that denies the process table (Codex): the teardown still stops the tree
+# ---------------------------------------------------------------------------
+
+# A server stand-in: it starts a child of its own (uvicorn under `uv run`), prints the
+# child's PID and waits. Started in a new session like the real one.
+_SERVER_TREE = (
+    "import subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "print(child.pid, flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
+def _start_tree(**kwargs):
+    import subprocess
+
+    return subprocess.Popen(
+        [sys.executable, "-c", _SERVER_TREE],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
+        **kwargs,
+    )
+
+
+def _deny_process_listing(monkeypatch):
+    """What psutil does when the sandbox refuses sysctl(kern.proc.all): PermissionError."""
+    import psutil
+
+    def denied(self, recursive=False):
+        raise PermissionError(1, "Operation not permitted (originated from sysctl() malloc 1/3)")
+
+    monkeypatch.setattr(psutil.Process, "children", denied)
+
+
+def _gone(pid: int, timeout: float = 5.0) -> bool:
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _kill_leftovers(*pids: int) -> None:
+    import os
+    import signal
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_the_tree_is_stopped_when_process_listing_is_denied(monkeypatch):
+    """psutil's children() raised PermissionError (not a psutil.Error): the server leaked."""
+    proc = _start_tree()
+    child = int(proc.stdout.readline())
+    try:
+        _deny_process_listing(monkeypatch)
+        assert ls._terminate_process(proc.pid, own_child=True) is True
+        assert proc.wait(timeout=5) is not None
+        assert _gone(child), "the server's child (uvicorn) survived the teardown"
+    finally:
+        _kill_leftovers(proc.pid, child)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_a_failed_start_raises_its_own_error_when_process_listing_is_denied(
+    monkeypatch, tmp_path: Path
+):
+    """The start-failure cleanup used to raise PermissionError over the real error."""
+    trees = []
+
+    def popen(args, **kwargs):
+        trees.append(_start_tree())
+        return trees[-1]
+
+    monkeypatch.setattr(ls, "popen_resolved_detached", popen)
+    monkeypatch.setattr(ls, "_find_free_port", lambda *a, **k: 18643)
+    monkeypatch.delenv(ls.RUN_PORT_ENV, raising=False)
+    monkeypatch.setattr(ls, "_fetch_health", lambda port, timeout=1.0: None)
+    _deny_process_listing(monkeypatch)
+    try:
+        with pytest.raises(ls.ServerStartError, match="did not become healthy"):
+            ls.ensure_server(tmp_path, "app", runtime="fastapi", startup_timeout=1)
+        (proc,) = trees
+        child = int(proc.stdout.readline())
+        assert proc.poll() is not None
+        assert _gone(child)
+        assert ls.read_pid_file(tmp_path) is None
+    finally:
+        for proc in trees:
+            _kill_leftovers(proc.pid)
+
+
+# ---------------------------------------------------------------------------
 # ports and the provisional pid record
 # ---------------------------------------------------------------------------
 

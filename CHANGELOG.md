@@ -39,6 +39,14 @@ migration" with the steps to follow.
   (adds the pure-Python `socksio`). A proxy setting httpx cannot use (another scheme) is a
   one-line error naming the variable, exit 3, instead of a traceback; `eval generate --url`
   reports it once, before any case runs.
+- **The local server is stopped even where listing processes is denied.** In a sandbox that
+  refuses the process table (Codex's seatbelt denies `kern.proc.all`), psutil raised
+  `PermissionError` while `run`, `eval run` or `eval generate` stopped the server they
+  started: the command ended with `Error: PermissionError: [Errno 1] Operation not
+  permitted` and the server kept its port, orphaned. The teardown now signals the server's
+  own process group (it is started in a new session, and its uvicorn child stays in it) and,
+  for a server this invocation started, its process handle; no error from the teardown
+  replaces the error of a failed start any more.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
