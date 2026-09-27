@@ -92,6 +92,13 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
+      # Helm 4: the chart tests render NOTES with `helm install --dry-run=client`,
+      # which Helm 3 cannot do without a reachable cluster (runners have none).
+      - name: Set up Helm 4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+
       - name: Tool versions
         run: |
           uv --version

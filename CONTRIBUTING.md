@@ -16,8 +16,9 @@ Two rules shape every change:
 ## Development setup
 
 Prerequisites: Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
-The fast test suite needs nothing else. The slow suites also need network access, `helm`
-(the end-to-end and template tests render and lint charts) and `git`; Node.js is used by
+The fast test suite needs nothing else. The slow suites also need network access, Helm 4
+(the end-to-end and template tests render and lint charts, and render install notes with
+`helm install --dry-run=client`, which Helm 3 cannot do without a cluster) and `git`; Node.js is used by
 `setup` for `npx skills`; the deployment paths use `kubectl` and a Docker-compatible CLI.
 
 ```bash
