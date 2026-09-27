@@ -55,7 +55,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
-| api-policy | 4 | 5 | 9 |
+| api-policy | 4 | 6 | 10 |
 | approvals | 7 | 5 | 12 |
 | runtime | 9 | 6 | 15 |
 | a2a | 3 | 5 | 8 |
@@ -63,10 +63,10 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | deploy | 4 | 7 | 11 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 1 | 10 | 11 |
+| cli | 1 | 11 | 12 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **41** | **76** | **117** |
+| **Total** | **41** | **78** | **119** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -690,6 +690,20 @@ Low · api-policy · found in wave 8
   invalid, which `lint` then reports.
 - **Workaround:** Check `api-policy.yaml` for other `openapi:` entries before deleting a spec.
 
+### KI-130: `lint` accepts a tools module that declares no `API_CALLS`
+
+Low · api-policy · found in the skill-optimisation experiment
+
+- **Issue:** The skills and the command reference say every `*.py` under `app/tools/`
+  declares one literal `API_CALLS` that `lint` checks, but the static check reads a module
+  without `API_CALLS` as declaring no calls and passes it; only the runtime tool registry logs
+  a warning.
+- **Impact:** A tool that calls an API without declaring it passes `lint`, so the static
+  check does not list that call. The API client still refuses at runtime any call
+  `api-policy.yaml` does not allow.
+- **Workaround:** Give every tools module an `API_CALLS` (`[]` when it calls no API) and
+  treat the registry's "declares no API_CALLS" warning as an error.
+
 ### KI-049: `approvals` output misleads viewers who cannot see the body or decide
 
 Low · approvals · found in waves 7 and 8
@@ -1168,6 +1182,17 @@ Low · cli · found in wave 8
 - **Impact:** Scripts that branch on the exit code see two codes for one kind of mistake.
 - **Workaround:** Treat any non-zero exit as a refused edit; nothing is written in either
   case.
+
+### KI-131: uv older than 0.9.29 fails inside macOS agent sandboxes
+
+Low · cli · found in the skill-optimisation experiment
+
+- **Issue:** Inside the sandboxes coding agents run commands in on macOS (Claude Code's Bash
+  sandbox, Codex's seatbelt), uv older than 0.9.29 panics ("Tokio executor failed"), so
+  `install`, `lint` (`uv run ruff`) and `eval` fail there. CI and CONTRIBUTING.md pin uv 0.9.2
+  for the template locks. Fixed upstream in uv 0.9.29 (astral-sh/uv#17829).
+- **Impact:** A coding agent in a sandbox cannot run the project's checks with an older uv.
+- **Workaround:** Put uv 0.9.29 or later on the agent's `PATH`; the locks stay valid.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 
