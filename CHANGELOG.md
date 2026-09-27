@@ -65,6 +65,11 @@ migration" with the steps to follow.
   listing is skipped like the skills version check, and `info` says so ("Installed skills:
   not listed (... skips `npx skills list`)"; `--json` adds `installed_skills_skipped` with the
   reason, null when the listing ran).
+- **`eval grade` works in a project with another agent directory.** The judge runner
+  imported `app.app_utils.model` whatever the project's package was, so in a project created
+  with `create --agent-directory <name>` every judge metric (the default dataset's
+  `response_quality` included) failed with exit 3, "the judge model is unreachable or
+  misconfigured". The runner now imports the judge from the manifest's `agent_directory`.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

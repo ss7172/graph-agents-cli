@@ -232,6 +232,29 @@ def test_build_model_uses_env_overrides_and_no_arg_get_judge_model(
     )  # untouched without override
 
 
+def test_build_model_imports_the_projects_agent_directory(
+    runner_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project created with `--agent-directory concierge` has no `app` package."""
+    pkg = types.ModuleType("concierge")
+    app_utils = types.ModuleType("concierge.app_utils")
+    model_mod = types.ModuleType("concierge.app_utils.model")
+    model_mod.get_judge_model = lambda: FakeModel(['{"score": 5}'])
+    monkeypatch.setitem(sys.modules, "concierge", pkg)
+    monkeypatch.setitem(sys.modules, "concierge.app_utils", app_utils)
+    monkeypatch.setitem(sys.modules, "concierge.app_utils.model", model_mod)
+    monkeypatch.chdir(tmp_path)
+
+    assert runner_module.agent_package({"agent_directory": "concierge"}) == "concierge"
+    for bad in (None, "", "../x", "a.b", 3):
+        assert runner_module.agent_package({"agent_directory": bad}) == "app"
+    model = runner_module.build_model(
+        None, None, runner_module.agent_package({"agent_directory": "concierge"})
+    )
+    payload = {"items": [{"id": "a/rq", "kind": "judge", "prompt": "P", "scale": 5}]}
+    assert runner_module.run_items(payload, model)["results"][0]["score"] == 5.0
+
+
 def test_runner_main_end_to_end_under_fake_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,6 +322,7 @@ def test_run_judge_runner_invokes_uv_in_project_and_parses_output(
         input_path = project / args[4]
         output_path = project / args[5]
         payload = json.loads(input_path.read_text(encoding="utf-8"))
+        calls[-1]["payload"] = payload
         results = [
             {"id": i["id"], "score": 4, "reasoning": "r", "error": None} for i in payload["items"]
         ]
@@ -316,6 +340,7 @@ def test_run_judge_runner_invokes_uv_in_project_and_parses_output(
     assert call["args"][:4] == ["uv", "run", "python", ".graph-agents-cli/judge_runner.py"]
     assert call["cwd"] == str(project)
     assert "JUDGE_MODEL_PROVIDER" not in call["env"]
+    assert call["payload"]["agent_directory"] == "app"  # from the manifest
     assert not list((project / ".graph-agents-cli").glob("judge_input_*.json"))
     _judge.run_judge_runner(project, {"judge": {"provider": "openai", "model": "m"}, "items": []})
     assert calls[1]["env"]["JUDGE_MODEL_PROVIDER"] == "openai"

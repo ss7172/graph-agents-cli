@@ -17,14 +17,14 @@
 The CLI never imports LangChain. ``_judge_runner.py`` is copied to
 ``<project>/.graph-agents-cli/judge_runner.py`` and executed with
 ``uv run python .graph-agents-cli/judge_runner.py <input.json> <output.json>``
-from the project root, so it resolves ``app.app_utils.model.get_judge_model()``
+from the project root, so it resolves ``<agent_directory>.app_utils.model.get_judge_model()``
 and ``langchain_core`` from the project's own lock. Prompts are rendered here;
 the runner only invokes the model (or a custom metric callable) and parses
 scores.
 
-Input payload::
+Input payload (``agent_directory`` is added from the manifest)::
 
-    {"judge": {"provider": null, "model": null},
+    {"judge": {"provider": null, "model": null}, "agent_directory": "app",
      "items": [{"id": "greeting/response_quality", "kind": "judge",
                 "case_id": "greeting", "metric": "response_quality",
                 "prompt": "...", "scale": 5},
@@ -50,7 +50,12 @@ from pathlib import Path
 from typing import Any
 
 from graph_agents_cli.eval import _paths
-from graph_agents_cli.eval._common import EvalConfigError, load_json_file, write_json_file
+from graph_agents_cli.eval._common import (
+    EvalConfigError,
+    load_json_file,
+    read_manifest,
+    write_json_file,
+)
 
 RUNNER_SOURCE = "_judge_runner.py"
 RUNNER_STAGED_NAME = "judge_runner.py"
@@ -89,6 +94,12 @@ def run_judge_runner(
     from graph_agents_cli._runner import run_resolved
 
     project_root = Path(project_root)
+    # The runner imports the judge model from the project's agent package, which
+    # `create --agent-directory` names (`app` by default).
+    payload = {
+        **payload,
+        "agent_directory": read_manifest(project_root).get("agent_directory") or "app",
+    }
     script = stage_runner(project_root)
     stamp = _paths.timestamp()
     stage = _paths.stage_dir(project_root)

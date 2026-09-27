@@ -19,8 +19,10 @@ and executed there with ``uv run python .graph-agents-cli/judge_runner.py
 <input.json> <output.json>`` so it runs inside the project's environment.
 Do not edit the staged copy; it is overwritten on every run.
 
-It imports ``app.app_utils.model.get_judge_model()`` (the template contract:
-no arguments, judge chosen from ``JUDGE_MODEL_PROVIDER`` / ``JUDGE_MODEL_NAME``)
+It imports ``<agent_directory>.app_utils.model.get_judge_model()`` (the
+payload's ``agent_directory``, the project's agent package, ``app`` by default;
+the template contract: no arguments, judge chosen from ``JUDGE_MODEL_PROVIDER`` /
+``JUDGE_MODEL_NAME``)
 and ``langchain_core`` lazily; under the ``fake`` provider it returns a
 deterministic score equal to the scale so tests and CI run without keys.
 It never imports graph_agents_cli.
@@ -62,8 +64,18 @@ def is_fake(provider: str | None) -> bool:
     return (provider or "").lower() == FAKE_PROVIDER
 
 
-def build_model(provider: str | None, model: str | None) -> Any:
-    """``app.app_utils.model.get_judge_model()`` from the project.
+# A Python package name: what `create --agent-directory` accepts.
+_PACKAGE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def agent_package(payload: dict[str, Any]) -> str:
+    """The project's agent package (the manifest's ``agent_directory``), ``app`` by default."""
+    name = payload.get("agent_directory")
+    return name if isinstance(name, str) and _PACKAGE.fullmatch(name) else "app"
+
+
+def build_model(provider: str | None, model: str | None, package: str = "app") -> Any:
+    """``<package>.app_utils.model.get_judge_model()`` from the project.
 
     The template resolves the judge from ``JUDGE_MODEL_PROVIDER`` /
     ``JUDGE_MODEL_NAME`` (falling back to ``MODEL_*``) when called, so the
@@ -72,7 +84,7 @@ def build_model(provider: str | None, model: str | None) -> Any:
     """
     if str(Path.cwd()) not in sys.path:
         sys.path.insert(0, str(Path.cwd()))
-    module = importlib.import_module("app.app_utils.model")
+    module = importlib.import_module(f"{package}.app_utils.model")
     if provider:
         os.environ["JUDGE_MODEL_PROVIDER"] = provider
     if model:
@@ -210,7 +222,7 @@ def main(argv: list[str]) -> int:
     model = None
     if needs_model and not fake:
         try:
-            model = build_model(provider, model_name)
+            model = build_model(provider, model_name, agent_package(payload))
         except Exception:
             print("judge runner: could not build the judge model", file=sys.stderr)
             traceback.print_exc()
