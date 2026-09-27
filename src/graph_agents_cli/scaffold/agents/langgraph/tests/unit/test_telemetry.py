@@ -262,3 +262,39 @@ async def test_the_request_middleware_continues_the_callers_trace(
     assert body["out"]["traceparent"].split("-")[1] == TRACE_ID
     # The context is detached after the request: the next one starts on its own.
     assert other["trace_id"] == "0" * 32 and "traceparent" not in other["out"]
+
+
+async def test_a_tool_passes_its_own_span_on_without_a_current_otel_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `/chat` run with no incoming trace: OpenInference does not make its spans current,
+    so the headers must come from the tool's own span, not from the (empty) OTel context."""
+    from langchain_core.tools import tool
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    monkeypatch.setattr(telemetry, "_otlp_active", True)
+    monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    @tool
+    async def ask_peer(question: str) -> str:
+        """Returns the correlation headers an outbound call would carry."""
+        assert not trace.get_current_span().get_span_context().is_valid
+        return json.dumps(telemetry.outbound_trace_headers())
+
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(tracer_provider=provider)
+    try:
+        headers = json.loads(await ask_peer.ainvoke({"question": "q"}))
+    finally:
+        instrumentor.uninstrument()
+    (span,) = [s for s in exporter.get_finished_spans() if s.name == "ask_peer"]
+    _, trace_id, parent_id, _ = headers["traceparent"].split("-")
+    assert trace_id == format(span.context.trace_id, "032x")
+    assert parent_id == format(span.context.span_id, "016x")

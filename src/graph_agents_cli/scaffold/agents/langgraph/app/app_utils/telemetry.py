@@ -502,9 +502,31 @@ def outbound_trace_headers() -> dict[str, str]:
         headers["X-Request-ID"] = request_id
     if _otlp_active:
         carrier: dict[str, str] = {}
-        _trace_context_propagator().inject(carrier)
+        _trace_context_propagator().inject(carrier, context=_current_span_context())
         headers.update({k: v for k, v in carrier.items() if k in TRACE_CONTEXT_HEADERS})
     return headers
+
+
+def _current_span_context() -> Any:
+    """The OTel context to pass on: the span of the LangChain run in progress (a tool's).
+
+    OpenInference does not make its spans current in the OTel context (attaching
+    one from a callback could leak it to later spans), so inside a tool the OTel
+    current span is only what the request itself carried: nothing on a `/chat`
+    call that came without a `traceparent`. OpenInference keeps the run's span,
+    though, and the callee's spans then nest under the tool span that called it.
+    None (the OTel current context) outside a LangChain run.
+    """
+    try:
+        from openinference.instrumentation.langchain import get_current_span
+        from opentelemetry import trace
+
+        span = get_current_span()
+    except Exception:
+        return None
+    if span is None or not span.get_span_context().is_valid:
+        return None
+    return trace.set_span_in_context(span)
 
 
 def attach_trace_context(headers: Iterable[tuple[bytes, bytes]]) -> Any:

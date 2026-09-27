@@ -260,8 +260,8 @@ a tool makes through the policy client (`get_client`) carries:
 
 - `X-Request-ID`: this request's id. An agent built from this template takes a caller's id as
   its own, so its log records carry the same `request_id` as the caller's.
-- Under OTLP tracing, the W3C trace context of the current span (`traceparent`, and
-  `tracestate` when there is one).
+- Under OTLP tracing, the W3C trace context (`traceparent`, and `tracestate` when there is
+  one) of the span of the tool that makes the call, so the callee's spans nest under it.
 
 On the receiving side, a request that carries a `traceparent` continues that trace: its root
 span is a child of the caller's span, so an agent that asks another agent over A2A and the
