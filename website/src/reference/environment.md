@@ -263,7 +263,7 @@ What each limit does to a request is in the [HTTP API](http-api.md#guardrails).
 | `LANGSMITH_ENDPOINT` | LangSmith's default | A self-hosted LangSmith. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Without a LangSmith key, spans go over OTLP/HTTP here. |
 | `OTEL_SERVICE_NAME` | the project name | The OTLP service name. |
-| `PROPAGATE_TRACE_HEADERS` | `true` | Calls of `auth: forward` and `auth: exchange` APIs carry the request's `X-Request-ID` and, under OTLP, its W3C trace context; `auth: bearer` and `auth: none` APIs never receive them. An incoming `traceparent` continues the caller's trace. `false`, `0`, `no` or `off` turns both off. |
+| `PROPAGATE_TRACE_HEADERS` | `true` | Calls of other agents (`protocol: a2a`) and of `auth: forward` and `auth: exchange` APIs carry the request's `X-Request-ID` and, under OTLP, its W3C trace context; other `auth: bearer` and `auth: none` APIs never receive them. An incoming `traceparent` continues the caller's trace. `false`, `0`, `no` or `off` turns both off. |
 
 See [Observability](../guides/observability.md) for what each mode sends where.
 

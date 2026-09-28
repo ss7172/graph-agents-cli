@@ -211,7 +211,7 @@ from {{cookiecutter.agent_directory}}.app_utils.token_exchange import exchange_s
 
 logger = logging.getLogger(__name__)
 
-# Calls of `auth: forward` and `auth: exchange` APIs (another agent's A2A endpoint, say)
+# Calls of another agent (`protocol: a2a`) and of `auth: forward` and `auth: exchange` APIs
 # carry this request's id and trace context, unless PROPAGATE_TRACE_HEADERS=false; other
 # APIs receive neither.
 set_outbound_headers(outbound_trace_headers)

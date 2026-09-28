@@ -58,10 +58,10 @@ it calls waits for.
 Every method the policy allows can be sent (`request()`, or `get`, `head`,
 `post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
 parameters and extra headers. The app adds its correlation headers to every
-call of an `auth: forward` or `auth: exchange` API, and of no other
-(`set_outbound_headers`: the request id and, under OTLP tracing, the W3C trace
-context; `propagates`), unless the tool sets the same header; they differ per request, so an approval
-does not bind them. An API's optional `limits` cap the calls before
+call of another agent (`protocol: a2a`) or of an `auth: forward` or `auth:
+exchange` API, and of no other (`set_outbound_headers`: the request id and,
+under OTLP tracing, the W3C trace context; `propagates`), unless the tool sets
+the same header; they differ per request, so an approval does not bind them. An API's optional `limits` cap the calls before
 they are sent: `max_calls_per_run` counts the calls to that API within one
 agent run (the run id of the LangGraph run, else the request's; calls made
 outside any run share one count), and `rate_per_minute` is a token bucket per
@@ -2244,6 +2244,9 @@ _outbound_headers: Callable[[], Mapping[str, str]] | None = None
 # modes that act for the calling user, `forward` and `exchange` (a token exchanged for the
 # user's, RFC 8693: the owner's decision of 2026-09-28).
 PROPAGATING_AUTH_MODES = frozenset({"forward", "exchange"})
+# The protocols whose APIs receive them whatever their `auth`: `a2a`, another agent (an A2A
+# peer, the owner's decision of 2026-09-27: "only to A2A peers and auth: forward APIs").
+PROPAGATING_PROTOCOLS = frozenset({PROTOCOL_A2A})
 
 
 def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> None:
@@ -2264,14 +2267,20 @@ def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> No
 def propagates(api_settings: Mapping[str, Any]) -> bool:
     """Whether calls to this API carry the request's correlation headers.
 
-    Only the APIs that act for the calling user do (`PROPAGATING_AUTH_MODES`),
-    `auth: forward` and `auth: exchange` ones: they act as another agent does
-    when it is reached with the caller's own credential, or a token exchanged
-    for it, so they are part of the same request. Any other API (`auth: bearer`
-    or `none`) is a third party that never learns this request's id or trace. This is the one place that decides;
-    `PROPAGATE_TRACE_HEADERS=false` turns the headers off for every API.
+    Only the APIs that are part of the same request do: another agent
+    (`protocol: a2a`, `PROPAGATING_PROTOCOLS`), whatever its `auth`, and the
+    APIs that act for the calling user (`PROPAGATING_AUTH_MODES`), `auth:
+    forward` and `auth: exchange` ones, as another agent does when it is
+    reached with the caller's own credential or a token exchanged for it. Any
+    other API (`auth: bearer` or `none` over `http` or `jsonrpc`) is a third
+    party that never learns this request's id or trace. This is the one place
+    that decides; `PROPAGATE_TRACE_HEADERS=false` turns the headers off for
+    every API.
     """
-    return api_settings.get("auth") in PROPAGATING_AUTH_MODES
+    return (
+        api_settings.get("auth") in PROPAGATING_AUTH_MODES
+        or api_protocol(api_settings) in PROPAGATING_PROTOCOLS
+    )
 
 
 def outbound_headers(api_settings: Mapping[str, Any]) -> dict[str, str]:

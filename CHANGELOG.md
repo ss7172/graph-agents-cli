@@ -185,6 +185,16 @@ migration" with the steps to follow.
   --max-response-bytes N|none` set it, and `api limits` edits keep it; `api show` prints it.
   Unset, answers are read whole as in 0.2 (no default cap for existing APIs). Both SHARED
   copies.
+- **Other agents get the request id and trace context, and credentials only over TLS.** A
+  call to an API declared `protocol: a2a` now carries the request's `X-Request-ID` and, under
+  OTLP, its W3C trace context whatever its `auth` (the owner's decision: A2A peers and APIs
+  acting for the user, never other third parties), so a peer reached with `auth: bearer` is
+  correlated too, under `shared-bearer` and `langgraph-server` included (KI-146 narrowed);
+  `auth: bearer` and `auth: none` APIs over `http` or `jsonrpc` still receive nothing. Such an
+  API that carries a credential refuses a plain `http` base URL outside `APP_ENV=dev`, unless
+  the host is loopback, a single-label name or a `.svc` name (`<ENV> must use https outside
+  APP_ENV=dev to carry credentials`); other APIs keep their transport. The docs,
+  `.env.example` and the environment reference name the peers.
 
 - **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:

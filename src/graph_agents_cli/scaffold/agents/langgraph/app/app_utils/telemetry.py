@@ -62,9 +62,9 @@ masking config plus an exporter that strips exception messages, stack traces
 and the span status description) and to the run records the app keeps.
 
 Correlation across services (`PROPAGATE_TRACE_HEADERS`, default true): every
-call of the policy client to an `auth: forward` or `auth: exchange` API
-(another agent, reached with the caller's own credential or a token exchanged
-for it) carries this request's `X-Request-ID` and,
+call of the policy client to another agent (`protocol: a2a`), or to an `auth:
+forward` or `auth: exchange` API (reached with the caller's own credential or a
+token exchanged for it), carries this request's `X-Request-ID` and,
 when spans go over OTLP, the W3C trace context of the current span
 (`outbound_trace_headers`, installed with `api_client.set_outbound_headers`;
 `api_client.propagates` names the APIs), and a call to any other API carries
@@ -483,8 +483,8 @@ PEERS_INBOUND_TRACE_PREFIX = "/a2a/"
 
 def propagate_trace_headers() -> bool:
     """`PROPAGATE_TRACE_HEADERS` (default true): pass the request id and trace context on
-    to `auth: forward` and `auth: exchange` APIs, and continue an incoming trace. false
-    turns both off."""
+    to other agents (`protocol: a2a`) and `auth: forward` and `auth: exchange` APIs, and
+    continue an incoming trace. false turns both off."""
     return (os.environ.get("PROPAGATE_TRACE_HEADERS") or "true").strip().lower() not in _FALSE
 
 
@@ -502,8 +502,8 @@ def outbound_trace_headers() -> dict[str, str]:
     built from this template takes a caller's id as its own), and, when spans are
     exported over OTLP, the W3C trace context of the current span (`traceparent`,
     `tracestate`), so the callee's spans join this trace. The policy client adds
-    them only to calls of `auth: forward` and `auth: exchange` APIs
-    (`api_client.propagates`). Empty
+    them only to calls of other agents (`protocol: a2a`) and of `auth: forward` and
+    `auth: exchange` APIs (`api_client.propagates`). Empty
     under `PROPAGATE_TRACE_HEADERS=false`.
     """
     if not propagate_trace_headers():

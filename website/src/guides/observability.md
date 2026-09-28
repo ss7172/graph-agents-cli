@@ -258,18 +258,19 @@ value of `TRACE_CAPTURE` stops the app at startup.
 ### Across agents and services
 
 A request that crosses agents keeps one request id and, under OTLP, one trace. Every call a
-tool makes through the policy client (`get_client`) to an
-[`auth: forward` or `auth: exchange`](api-policy.md#auth-modes) API carries:
+tool makes through the policy client (`get_client`) to another agent
+([`protocol: a2a`](api-policy.md#other-agents-and-json-rpc-apis-protocol)), or to an
+[`auth: forward` or `auth: exchange`](api-policy.md#auth-modes) API, carries:
 
 - `X-Request-ID`: this request's id. An agent built from this template takes a caller's id as
   its own, so its log records carry the same `request_id` as the caller's.
 - Under OTLP tracing, the W3C trace context (`traceparent`, and `tracestate` when there is
   one) of the span of the tool that makes the call, so the callee's spans nest under it.
 
-Only `auth: forward` and `auth: exchange` APIs receive them. Such an API acts for the calling
-user, as another agent does when it is reached with the caller's own credential or a token
-exchanged for it, so it is part of the same request. An `auth: bearer` or `auth: none` API is a
-third party: it never learns this request's id or trace.
+Only those APIs receive them: another agent, whatever its `auth`, and an API that acts for
+the calling user, as another agent does when it is reached with the caller's own credential or
+a token exchanged for it; both are part of the same request. Any other `auth: bearer` or `auth:
+none` API is a third party: it never learns this request's id or trace.
 
 On the receiving side, a request that carries a `traceparent` continues that trace: its root
 span is a child of the caller's span, so an agent that asks another agent over A2A and the
@@ -281,11 +282,11 @@ runs it causes there show as one trace in Jaeger, Tempo or any other OTLP backen
   the approved call is sent with the headers of the request that resumes it.
 - Only W3C Trace Context is propagated, never baggage. Under LangSmith tracing only the
   request id is passed on, so each agent's run is its own LangSmith trace.
-- `PROPAGATE_TRACE_HEADERS=false` turns both directions off: set it on an agent whose
-  `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or whose callers
-  should not choose its trace ids.
+- `PROPAGATE_TRACE_HEADERS=false` turns both directions off: set it on an agent whose peers
+  or `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or whose
+  callers should not choose its trace ids.
 - `auth: forward` and `auth: exchange` are refused under `langgraph-server`, so under that
-  runtime no API receives these headers.
+  runtime only its peers (`protocol: a2a` with `auth: bearer`) receive these headers.
 
 Token exchange logs one line per exchange sent (`token exchange for orders_agent (audience
 orders): issued (38 ms)`, or `refused (invalid_target)`, or `unavailable (timed out)`) and one

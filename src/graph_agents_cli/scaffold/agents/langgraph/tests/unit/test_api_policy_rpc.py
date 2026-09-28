@@ -45,15 +45,18 @@ from langgraph.types import Command
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     APPROVAL_INTERRUPT,
+    ApiCallError,
     ApiClient,
     ApiPolicy,
     ApiPolicyError,
     BoundApproval,
     call_identity,
     get_client,
+    propagates,
     reset_limits,
     reset_policy_cache,
     set_approval_ledger,
+    set_outbound_headers,
 )
 from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     APPROVED,
@@ -587,3 +590,84 @@ def test_identity_unchanged_for_http_apis() -> None:
             "body": {"reason": "asked"},
         }
     )
+
+
+# --- another agent is part of the same request (trace headers) and gets credentials over TLS ---
+
+TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+
+def test_an_a2a_peer_carries_the_correlation_headers_whatever_its_auth() -> None:
+    """The owner's decision: request ids and trace context go to A2A peers and to the APIs
+    that act for the user, never to other third parties."""
+    assert propagates({"protocol": "a2a", "auth": "bearer"})
+    assert propagates({"protocol": "a2a", "auth": "exchange"})
+    assert not propagates({"protocol": "jsonrpc", "auth": "bearer"})
+    assert not propagates({"protocol": "http", "auth": "none"})
+    assert propagates({"auth": "forward"}) and not propagates({"auth": "bearer"})
+
+
+async def test_the_correlation_headers_reach_the_peer_only(policy: Path) -> None:
+    set_outbound_headers(lambda: {"X-Request-ID": "req-1", "traceparent": TRACEPARENT})
+    try:
+        await _client("orders_agent").post("/a2a/orders", json_body=ASK)
+        peer = SENT[-1]
+        await _client("ledger").post("/rpc", json_body=_request("balance", ["a"]))
+        ledger = SENT[-1]
+        await _client("plain").post("/anything", json_body={"x": 1})
+        plain = SENT[-1]
+    finally:
+        set_outbound_headers(None)
+    assert (peer.headers["x-request-id"], peer.headers["traceparent"]) == ("req-1", TRACEPARENT)
+    for third_party in (ledger, plain):
+        assert "x-request-id" not in third_party.headers
+        assert "traceparent" not in third_party.headers
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://orders.example.com",
+        "http://orders-agent:8080",
+        "http://orders-agent.orders.svc",
+        "http://orders-agent.orders.svc.cluster.local",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://[::1]:8001",
+    ],
+)
+async def test_a_peer_gets_credentials_over_https_or_inside_the_cluster(
+    policy: Path, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("ORDERS_AGENT_URL", url)
+    await _client("orders_agent").post("/a2a/orders", json_body=ASK)
+    assert len(SENT) == 1
+
+
+async def test_plain_http_to_a_peer_outside_dev_is_refused(
+    policy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transport rule (3.6), live now that `protocol: a2a` exists: the peer's credential
+    never crosses a network in the clear outside APP_ENV=dev."""
+    monkeypatch.setenv("ORDERS_AGENT_URL", "http://orders.example.com")
+    with pytest.raises(ApiCallError) as refused:
+        await _client("orders_agent").post("/a2a/orders", json_body=ASK)
+    assert str(refused.value) == (
+        "ORDERS_AGENT_URL must use https outside APP_ENV=dev to carry credentials; nothing was "
+        "sent to API 'orders_agent'."
+    )
+    assert SENT == []
+    monkeypatch.setenv("APP_ENV", "dev")
+    await _client("orders_agent").post("/a2a/orders", json_body=ASK)
+    assert len(SENT) == 1
+
+
+async def test_other_apis_keep_their_transport(
+    policy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-peer APIs are unchanged in 0.3 (a plain JSON-RPC API included)."""
+    monkeypatch.setenv("LEDGER_URL", "http://ledger.example.com")
+    monkeypatch.setenv("PLAIN_URL", "http://plain.example.com")
+    await _client("ledger").post("/rpc", json_body=_request("balance", ["a"]))
+    await _client("plain").post("/anything", json_body={"x": 1})
+    assert len(SENT) == 1  # each _client() starts a new transport

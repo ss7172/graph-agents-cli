@@ -1794,5 +1794,9 @@ Low · docs · found in the A2A multi-agent experiment (fix review); narrowed in
 - **Impact:** A reader can expect correlation across agents that those setups do not provide.
 - **Workaround:** Correlate by time and hashed principal, or use `jwt` (or a custom policy)
   with `auth: exchange` to reach peer agents on the fastapi runtime.
+- **0.3:** An API declared `protocol: a2a` (another agent) receives the headers whatever its
+  `auth`, so a peer reached with `auth: bearer` is correlated under `shared-bearer` and
+  `langgraph-server` too; the observability guide, the environment reference and
+  `.env.example` say which APIs receive them.
 
 <!-- --8<-- [end:entries] -->
