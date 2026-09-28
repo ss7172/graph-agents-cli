@@ -1267,3 +1267,128 @@ async def test_a_relayed_gate_binds_its_relayers(graph, store, tmp_path) -> None
     decided = await _decided(store, record, "approve")
     await _run(graph, "t2", Command(resume={interrupt.id: decision_value(decided, "approve")}))
     assert [r.url.path for r in SENT] == ["/orders/7/cancel"]
+
+
+# --- a decision relayed to another agent: `nested` and `effect` (0.3) -------------------------
+
+
+def _nested(depth: int = 2, expires_at: str = "2099-01-01T00:00:00+00:00") -> dict[str, Any]:
+    """A relayed approval chain `depth` levels deep (billing relays orders' cancel)."""
+    inner: dict[str, Any] = {
+        "agent": "orders",
+        "approval_id": "o1",
+        "call": {
+            "api": "orders_api",
+            "method": "POST",
+            "path": "/orders/7/cancel",
+            "operation_id": "cancelOrder",
+            "query": {"notify": "yes"},
+            "body": {"card": "4111"},
+        },
+        "reason": "cancel_order: asked",
+        "expires_at": expires_at,
+        "nested": None,
+    }
+    for level in range(depth - 1):
+        inner = {
+            "agent": f"hop{level}",
+            "approval_id": f"h{level}",
+            "call": {"api": "orders_agent", "method": "POST", "path": "/a2a/orders", "body": {}},
+            "reason": "relay",
+            "expires_at": expires_at,
+            "nested": inner,
+        }
+    return inner
+
+
+def _relayed_value(nested: dict[str, Any]) -> dict[str, Any]:
+    from {{cookiecutter.agent_directory}}.app_utils.api_client import approval_effect
+
+    return _interrupt_value(
+        api="billing_agent",
+        path="/a2a/billing",
+        nested=nested,
+        effect=approval_effect(nested),
+        rpc_method="SendMessage",
+        a2a_operation="approve",
+    )
+
+
+def test_a_relayed_approval_shows_the_chain_and_the_effect() -> None:
+    record = record_from_interrupt(
+        _relayed_value(_nested()), interrupt_id="i1", thread_id="t1", run_id="r1", requester=ALICE
+    )
+    public = record.public()
+    assert public["effect"]["path"] == "/orders/7/cancel"
+    assert public["effect"]["via"] == ["hop0", "orders"]
+    assert public["nested"]["nested"]["call"]["body"] == {"card": "4111"}
+    # Viewers who do not see the call (read-across roles) do not see the nested calls either.
+    hidden = record.public(include_call=False)
+    assert "body" not in hidden["nested"]["call"]
+    assert "body" not in hidden["nested"]["nested"]["call"]
+    assert "query" not in hidden["nested"]["nested"]["call"]
+    assert "body" not in hidden["effect"] and "query" not in hidden["effect"]
+    assert hidden["effect"]["path"] == "/orders/7/cancel"
+
+
+def test_a_relayed_approval_expires_before_the_one_it_decides() -> None:
+    """Never ask the person to approve what has expired where it happens: at most the
+    downstream approval's expiry less 5 s (the rule's own timeout otherwise)."""
+    now = utcnow()
+    soon = (now + timedelta(seconds=40)).isoformat()
+    record = record_from_interrupt(
+        _relayed_value(_nested(expires_at=soon)),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE,
+        now=now,
+    )
+    assert record.expires_at == now + timedelta(seconds=35)
+    later = record_from_interrupt(
+        _relayed_value(_nested(expires_at=(now + timedelta(hours=1)).isoformat())),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE,
+        now=now,
+    )
+    assert later.expires_at == now + timedelta(seconds=60)  # the rule's timeout_s
+
+
+async def test_decided_records_drop_the_nested_calls_unless_full_capture(
+    store: ApprovalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, _, _ = await store.add(
+        record_from_interrupt(
+            _relayed_value(_nested(depth=3)),
+            interrupt_id="i1",
+            thread_id="t1",
+            run_id="r1",
+            requester=ALICE,
+        )
+    )
+    decided = await store.decide(record.approval_id, APPROVED, "x", None)
+    assert decided is not None
+    level = decided.payload["nested"]
+    for _ in range(3):
+        assert "body" not in level["call"] and "query" not in level["call"]
+        assert level["call"]["path"]  # the rest of the call stays
+        level = level["nested"]
+    assert level is None
+    effect = decided.payload["effect"]
+    assert "body" not in effect and "query" not in effect and effect["path"] == "/orders/7/cancel"
+    assert (await store.get(record.approval_id)).payload == decided.payload
+    monkeypatch.setenv("TRACE_CAPTURE", "full")
+    kept, _, _ = await store.add(
+        record_from_interrupt(
+            _relayed_value(_nested()),
+            interrupt_id="i2",
+            thread_id="t1",
+            run_id="r1",
+            requester=ALICE,
+        )
+    )
+    decided = await store.decide(kept.approval_id, APPROVED, "x", None)
+    assert decided.payload["nested"]["nested"]["call"]["body"] == {"card": "4111"}
+    assert decided.payload["effect"]["body"] == {"card": "4111"}

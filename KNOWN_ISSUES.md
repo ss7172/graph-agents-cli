@@ -65,7 +65,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
 | runtime | 11 | 6 | 17 |
-| a2a | 4 | 11 | 15 |
+| a2a | 2 | 11 | 13 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
@@ -73,7 +73,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 17 | 18 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **94** | **140** |
+| **Total** | **44** | **94** | **138** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -457,33 +457,6 @@ Medium · runtime · found in the A2A multi-agent experiment (fix review; presen
 - **Workaround:** Keep client and ingress timeouts short so such a request fails at the edge.
   libpq connection parameters in `DATABASE_URI`, such as `tcp_user_timeout`, may bound the
   wait (not verified).
-
-### KI-025: A2A tasks waiting for approval do not follow the approval's outcome
-
-Medium · a2a · found in wave 7; extended by the A2A multi-agent experiment
-
-- **Issue:** A task stays `input-required` after its approval expires or is decided over
-  HTTP, until a new message arrives on it. Role-gated calls cannot be completed over A2A at
-  all, since only the requester decides there. A decision sent on the `contextId` alone (no
-  `taskId`) completes a new task and leaves the old one `input-required` too, as does a
-  caller that asks again on the context (it opens a second task). With the Postgres task
-  store such a task is visible from every replica until `A2A_TASK_TTL_S`, and with
-  `A2A_TASK_TTL_S=0` until its thread is deleted.
-- **Impact:** An A2A client never learns the outcome from the task.
-- **Workaround:** Decide over HTTP or with `graph-agents-cli approvals`, and have A2A clients
-  check the approval routes or send a new message.
-
-### KI-026: The A2A approval prompt shows numbers as doubles and its text omits the body
-
-Medium · a2a · found in waves 6 and 7
-
-- **Issue:** The approval in an A2A data part is a protobuf `Struct`, so body numbers show as
-  doubles (`1` reads `1.0`, very large integers are rounded), and the text part lists only
-  the method, the path and the reason.
-- **Impact:** An approver deciding over A2A can approve a displayed value that differs from
-  the request that is bound and sent.
-- **Workaround:** Review exact numeric values over HTTP or with `approvals list`, which show
-  the request as it will be sent. The `1.0` display is documented as a limitation.
 
 ### KI-135: A cross-replica `CancelTask` just after a task starts can report a false cancel
 

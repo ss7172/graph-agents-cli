@@ -45,7 +45,10 @@ and a 403 tells a caller that the id exists.
 
 Deleting a thread (`ThreadStore.delete`, which the owner's DELETE and the
 retention purge both reach) tells the listeners in `DELETE_LISTENERS` (the
-A2A task store drops that conversation's tasks).
+A2A task store drops that conversation's tasks). An approval's outcome (a
+decision, over A2A or HTTP, and the run it resumed; an expiry) is told to the
+listeners in `A2A_TASK_LISTENERS` (`approval_outcome`): the A2A tasks still
+waiting on that approval follow it.
 
 One run per thread (`ThreadLocks`, `ThreadBusy`: HTTP 409 `{"code":
 "thread_busy"}`) lives in `run_locks.py`: in-process locks plus Postgres
@@ -74,17 +77,23 @@ from {{cookiecutter.agent_directory}}.app_utils.run_locks import (
 )
 
 __all__ = [
+    "A2A_TASK_LISTENERS",
     "DELETE_LISTENERS",
+    "OUTCOME_COMPLETED",
+    "OUTCOME_FAILED",
+    "OUTCOME_INPUT_REQUIRED",
     "SCOPES",
     "SCOPE_ALL",
     "SCOPE_OWN",
     "THREAD_BUSY",
+    "ApprovalOutcome",
     "LeaseLost",
     "ThreadBusy",
     "ThreadLease",
     "ThreadLocks",
     "ThreadRecord",
     "ThreadStore",
+    "approval_outcome",
     "check_scope",
     "is_owner",
     "own_view",
@@ -105,6 +114,41 @@ SCOPES = (SCOPE_OWN, SCOPE_ALL)
 # Called with a thread id after the thread's row is deleted (best effort: a
 # failing listener is logged and never fails the delete).
 DELETE_LISTENERS: list[Callable[[str], Awaitable[None]]] = []
+
+
+# The states an A2A task waiting on an approval takes when the approval's outcome is known.
+OUTCOME_COMPLETED = "completed"
+OUTCOME_FAILED = "failed"
+OUTCOME_INPUT_REQUIRED = "input-required"
+
+
+@dataclass(frozen=True)
+class ApprovalOutcome:
+    """What became of an approval: decided (and the run it resumed ended so), or expired.
+
+    The A2A tasks on `thread_id` that still wait on it (`input-required`, their
+    approval request lists `approval_id` or the decision named them in
+    `references`) and belong to its requester (`requester_hash`, the hashed
+    subject, and `requester_actor`, "" for a direct one) take `state`
+    (`completed`, `failed` or `input-required` with the new pending
+    `approvals`) and say `text`. `continued_in` is the A2A task that carried
+    the decision (never itself updated).
+    """
+
+    thread_id: str
+    approval_id: str
+    requester_hash: str
+    requester_actor: str
+    state: str
+    text: str
+    approvals: tuple[dict[str, Any], ...] = ()
+    references: tuple[str, ...] = ()
+    continued_in: str | None = None
+
+
+# Called with an `ApprovalOutcome` (best effort: a failing listener is logged and
+# never fails the decision, the run or the sweep).
+A2A_TASK_LISTENERS: list[Callable[[ApprovalOutcome], Awaitable[None]]] = []
 
 
 @dataclass
@@ -403,6 +447,15 @@ async def thread_deleted(thread_id: str) -> None:
             await listener(thread_id)
         except Exception:
             logger.warning("a thread-delete listener failed", exc_info=True)
+
+
+async def approval_outcome(outcome: ApprovalOutcome) -> None:
+    """Tell every `A2A_TASK_LISTENERS` entry what became of an approval; never raises."""
+    for listener in list(A2A_TASK_LISTENERS):
+        try:
+            await listener(outcome)
+        except Exception:
+            logger.warning("an approval-outcome listener failed", exc_info=True)
 
 
 async def search_server_threads(

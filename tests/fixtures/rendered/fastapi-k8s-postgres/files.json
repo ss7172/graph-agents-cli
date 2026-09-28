@@ -63,6 +63,7 @@
   "tests/integration/approval_graph.py",
   "tests/integration/fake_issuer.py",
   "tests/integration/fake_openai.py",
+  "tests/integration/test_a2a_outcomes.py",
   "tests/integration/test_api_surface.py",
   "tests/integration/test_approvals.py",
   "tests/integration/test_approvals_server.py",

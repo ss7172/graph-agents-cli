@@ -62,19 +62,37 @@ joined into one part.
 
 Approvals: a run that pauses before a gated API call moves the task to
 `input-required`; its status message holds a text part saying what waits
-for approval and a data part `{"type": "approval_request", "approval": {...},
-"approvals": [...]}` (the approvals as `/chat`'s `message.end` has them). The
-client answers with a message on the same task whose data part is
+for approval (each call, its body as JSON up to 2,000 characters, and for a
+relayed decision the call that will happen) and a data part
+`{"type": "approval_request", "approval": {...}, "approvals": [...],
+"approval_json": "..."}` (the approvals as `/chat`'s `message.end` has them;
+a `Struct` holds numbers as doubles, so `approval_json` repeats them as exact
+JSON text). The client answers with a message whose data part is
 `{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`
 (no text needed; an agent relaying the person's decision adds the approval's
-`digest`): the decision goes through the same checks as `POST
-/threads/{thread_id}/approvals/{approval_id}`, the auth policy's
+`digest`), on the same task or on its context alone (a new task, naming the
+waiting one in `referenceTaskIds`): the decision goes through the same checks
+as `POST /threads/{thread_id}/approvals/{approval_id}`, the auth policy's
 `approval.decide` action included (the task's principal is the requester,
 so this works when `requester` is an approver), and the resumed
 run completes the task or pauses it again. A text message while an approval
 is pending, or a decision refused (not an approver, expired, decided
 already), leaves the task `input-required` with the pending approvals, or
-fails it when none is pending any more.
+fails it when none is pending any more. However an approval ends (a decision
+over A2A or HTTP and the run it resumed, or its expiry), the requester's
+`input-required` tasks on that thread that wait on it follow
+(`follow_approval`, an `A2A_TASK_LISTENERS` entry): they take the run's
+outcome and say where it continued. A failed task, and a refused decision,
+carry a data part `{"type": "error", "code": ...}` (`thread_busy`: send the
+message again).
+
+The origin extension (`A2A_ORIGIN_EXTENSION`, declared in the card): an agent
+calling for a user may send the user's own words in the message metadata under
+its URI (`{"origin": {"text", "truncated", "hops"}}`; in a decision it relays,
+`approving` too). For a delegated principal only, they go to the run's private
+credentials (`@origin`), capped at `A2A_ORIGIN_MAX_CHARS`; more `hops` than
+`AUTH_MAX_DELEGATION_DEPTH` fails the task. `RuntimeTaskStore.save` takes them
+out of every message before a task is stored.
 
 The card's description (and its one skill's) is `A2A_DESCRIPTION`, its
 version `AGENT_VERSION`, its name the mount name `A2A_NAME`.
@@ -110,6 +128,7 @@ from a2a.server.tasks import InMemoryTaskStore, TaskStore, TaskUpdater
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentExtension,
     AgentInterface,
     AgentSkill,
     APIKeySecurityScheme,
@@ -150,6 +169,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from {{cookiecutter.agent_directory}}.app_utils import chat as chat_runtime
+from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    A2A_ERROR_PART_TYPE,
+    A2A_ORIGIN_EXTENSION,
+    DEFAULT_A2A_ORIGIN_MAX_CHARS,
+    ORIGIN_KEY,
+    origin_max_chars,
+)
 from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     CODE_APPROVAL_PENDING,
     COMMENT_MAX_CHARS,
@@ -157,12 +183,15 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     DIGEST_MAX_CHARS,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
+    CREDENTIALS_KEY,
     CUSTOM,
     JWT,
+    ORIGIN_CREDENTIAL,
     OWNER_KEY_SEPARATOR,
     Principal,
     authorize_action,
     check_startup,
+    delegation_settings,
     policy_name,
 )
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
@@ -187,8 +216,13 @@ from {{cookiecutter.agent_directory}}.app_utils.db import (
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.middleware import max_message_chars
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
+    A2A_TASK_LISTENERS,
     DELETE_LISTENERS,
+    OUTCOME_COMPLETED,
+    OUTCOME_FAILED,
+    OUTCOME_INPUT_REQUIRED,
     THREAD_BUSY,
+    ApprovalOutcome,
     ThreadBusy,
 )
 
@@ -207,6 +241,12 @@ STREAMING_STATE_KEY = "a2a_streaming"
 # calls (`A2A_FORWARD_ORIGIN`): `auto` sends them only to a peer whose card declares the
 # origin extension, and `off` never does.
 DEFAULT_A2A_FORWARD_ORIGIN = "auto"
+# The card's description of the origin extension (`api_client.A2A_ORIGIN_EXTENSION`).
+ORIGIN_EXTENSION_DESCRIPTION = (
+    "graph-agents-cli origin: an agent calling for a user forwards, in the message metadata "
+    "under this URI, the user's own words (origin: text, truncated, hops), and in a decision "
+    "it relays the approval it is about (approving). Never stored with the task."
+)
 
 
 def card_description() -> str | None:
@@ -526,6 +566,17 @@ class ExpiringTaskStore(TaskStore):
             self._forget(owner, task_id)
         return len(members)
 
+    async def follow(self, outcome: ApprovalOutcome) -> int:
+        """The conversation's tasks waiting on an approval take its outcome (`follows`)."""
+        count = 0
+        for owner, task_id in list(self._by_context.get(context_key(outcome.thread_id), ())):
+            context = self._context_for(owner)
+            task = await self.get(task_id, context)
+            if task is not None and follows(task, owner, outcome):
+                await self.save(followed(task, outcome), context)
+                count += 1
+        return count
+
 
 # A page size no store call reaches: every task of an owner, for `_page` to page them.
 _EVERY_TASK = 2**31 - 1
@@ -841,6 +892,61 @@ class PostgresTaskStore(TaskStore):
             self._written.pop((row["owner"], row["task_id"]), None)
         return len(rows)
 
+    async def follow(self, outcome: ApprovalOutcome) -> int:
+        """The conversation's tasks waiting on an approval take its outcome (`follows`).
+
+        The candidates are the conversation's `input-required` tasks that the
+        decision named or whose approval request lists the approval (a jsonb
+        containment); each is rewritten only while it is still waiting, under
+        its own owner key.
+        """
+        visible, ttl = self._visible()
+        listed = json.dumps(
+            {
+                "status": {
+                    "message": {
+                        "parts": [{"data": {"approvals": [{"approval_id": outcome.approval_id}]}}]
+                    }
+                }
+            }
+        )
+        rows = await self.db.fetchall(
+            f"""
+            SELECT owner, task_id, task FROM {self.table}
+             WHERE thread_id = %s AND state = 'TASK_STATE_INPUT_REQUIRED' AND {visible}
+               AND (task_id = ANY(%s) OR task @> %s::jsonb)
+            """,
+            (
+                _text(context_key(outcome.thread_id)),
+                *ttl,
+                [_text(t) for t in outcome.references],
+                listed,
+            ),
+        )
+        count = 0
+        for row in rows:
+            task = _task_from(row["task"])
+            if not follows(task, str(row["owner"]), outcome):
+                continue
+            new = followed(task, outcome)
+            updated = await self.db.fetchone(
+                f"""
+                UPDATE {self.table}
+                   SET state = %s, status_at = %s, task = %s::jsonb, updated_at = now()
+                 WHERE owner = %s AND task_id = %s AND state = 'TASK_STATE_INPUT_REQUIRED'
+                RETURNING task_id
+                """,
+                (
+                    TaskState.Name(new.status.state),
+                    _status_at(new),
+                    _task_json(new),
+                    row["owner"],
+                    row["task_id"],
+                ),
+            )
+            count += updated is not None
+        return count
+
     async def running_elsewhere(self, task: Task) -> bool:
         """Whether `task`'s run is going on in another process (its thread's live lease is not ours)."""
         if task.status.state not in RUNNING_STATES or not task.context_id:
@@ -959,10 +1065,20 @@ class RuntimeTaskStore(TaskStore):
         return self.postgres() or self.memory
 
     async def save(self, task: Task, context: ServerCallContext) -> None:
-        await self._store().save(task, context)
+        # The one place every task write passes: the words a calling agent forwarded (the
+        # origin extension's metadata) are never stored.
+        await self._store().save(without_extension(task), context)
 
     async def get(self, task_id: str, context: ServerCallContext) -> Task | None:
         return await self._store().get(task_id, context)
+
+    async def follow(self, outcome: ApprovalOutcome) -> int:
+        """The tasks waiting on an approval follow its outcome, in both stores."""
+        count = await self.memory.follow(outcome)
+        store = self.postgres()
+        if store is not None:
+            count += await store.follow(outcome)
+        return count
 
     async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
         return await self._store().list(params, context)
@@ -1000,6 +1116,273 @@ async def forget_context(thread_id: str) -> None:
 
 APPROVAL_REQUEST_TYPE = "approval_request"
 _APPROVAL_ID_MAX_CHARS = 64
+# How much of an approval's body the text of an approval request shows.
+APPROVAL_TEXT_BODY_MAX_CHARS = 2000
+
+
+# ---------------------------------------------------------------------------
+# The origin extension: the user's own words, forwarded by the agent calling for them
+# ---------------------------------------------------------------------------
+
+
+def _extension_data(message: Message | None) -> dict[str, Any] | None:
+    """What a message's metadata holds under the origin extension's URI, or None."""
+    if message is None or not message.HasField("metadata"):
+        return None
+    try:
+        metadata = json_format.MessageToDict(message.metadata)
+    except Exception:
+        return None
+    data = metadata.get(A2A_ORIGIN_EXTENSION)
+    return data if isinstance(data, dict) else None
+
+
+def read_origin(message: Message | None, principal: Principal) -> tuple[dict[str, Any] | None, int]:
+    """The origin a calling agent forwarded (`{text, truncated, hops}`), and its `hops`.
+
+    Read for a delegated principal only (a person's own message is their own
+    words), from `message.metadata[A2A_ORIGIN_EXTENSION]["origin"]`. The text is
+    kept at most `A2A_ORIGIN_MAX_CHARS` long (`truncated` then true); a value of
+    another shape is ignored (no origin: `require_user_mentioned` refuses).
+    `hops` counts the agents the words came through (0 without an origin): the
+    caller fails the task past `AUTH_MAX_DELEGATION_DEPTH`.
+    """
+    if not principal.delegated:
+        return None, 0
+    data = _extension_data(message)
+    origin = data.get(ORIGIN_KEY) if data is not None else None
+    if not isinstance(origin, dict) or not isinstance(origin.get("text"), str):
+        return None, 0
+    hops = origin.get("hops")
+    hops = int(hops) if isinstance(hops, int | float) and not isinstance(hops, bool) else 1
+    try:
+        cap = origin_max_chars()
+    except SettingsError:  # the startup check refuses it; the default bound holds meanwhile
+        cap = DEFAULT_A2A_ORIGIN_MAX_CHARS
+    text = origin["text"]
+    truncated = origin.get("truncated") is True or len(text) > cap
+    if _has_lone_surrogate(text):
+        return None, max(hops, 1)
+    return {"text": text[:cap], "truncated": truncated, "hops": max(hops, 1)}, max(hops, 1)
+
+
+def with_origin(principal: Principal, origin: dict[str, Any]) -> Principal:
+    """`principal` with the forwarded origin in its credentials (private: never persisted)."""
+    attributes = dict(principal.attributes)
+    credentials = attributes.get(CREDENTIALS_KEY)
+    kept = dict(credentials) if isinstance(credentials, dict) else {}
+    kept[ORIGIN_CREDENTIAL] = origin
+    attributes[CREDENTIALS_KEY] = kept
+    return Principal(
+        id=principal.id,
+        roles=list(principal.roles),
+        permissions=set(principal.permissions),
+        attributes=attributes,
+        actor=principal.actor,
+    )
+
+
+def _max_depth() -> int:
+    try:
+        return delegation_settings().max_depth
+    except SettingsError:  # the startup check refuses it; fail closed
+        return 1
+
+
+def without_extension(task: Task) -> Task:
+    """`task` with the origin extension's metadata taken out of every message it holds.
+
+    The user's words a calling agent forwarded (and the `approving` copy of a
+    relayed decision) are never stored: `RuntimeTaskStore.save` passes every
+    task through this. Returns `task` itself when no message holds any.
+    """
+    messages = [task.status.message] if task.status.HasField("message") else []
+    messages.extend(task.history)
+    if not any(
+        m.HasField("metadata") and A2A_ORIGIN_EXTENSION in m.metadata.fields for m in messages
+    ):
+        return task
+    stripped = Task()
+    stripped.CopyFrom(task)
+    held = [stripped.status.message] if stripped.status.HasField("message") else []
+    for message in [*held, *stripped.history]:
+        if message.HasField("metadata") and A2A_ORIGIN_EXTENSION in message.metadata.fields:
+            del message.metadata[A2A_ORIGIN_EXTENSION]
+            if not message.metadata.fields:
+                message.ClearField("metadata")
+    return stripped
+
+
+# ---------------------------------------------------------------------------
+# Status messages: what waits for approval, and why a task failed
+# ---------------------------------------------------------------------------
+
+ERROR_CODE_UNAUTHENTICATED = "unauthenticated"
+ERROR_CODE_INVALID_CONTEXT = "invalid_context_id"
+ERROR_CODE_INVALID_MESSAGE = "invalid_message"
+ERROR_CODE_TOO_DEEP = "delegation_too_deep"
+ERROR_CODE_FORBIDDEN = "forbidden"
+ERROR_CODE_FAILED = "run_failed"
+
+
+def error_part(code: str) -> Part:
+    """The data part a failed (or refused) task carries: `{"type": "error", "code": ...}`.
+
+    A client branches on the code (`thread_busy`: send the message again), never
+    on the text.
+    """
+    data = struct_pb2.Value()
+    json_format.ParseDict({"type": A2A_ERROR_PART_TYPE, "code": code}, data)
+    return Part(data=data)
+
+
+def _json_text(value: Any, limit: int) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _effect_text(effect: Any) -> str | None:
+    """`orders (via billing) will POST /orders/7/cancel (cancelOrder), as reported by orders`."""
+    if not isinstance(effect, dict):
+        return None
+    via = [str(v) for v in effect.get("via") or [] if v]
+    hops = via[:-1] if via and via[-1] == effect.get("agent") else via
+    who = str(effect.get("agent") or "the agent") + (f" (via {', '.join(hops)})" if hops else "")
+    what = f"{effect.get('method')} {effect.get('path')}"
+    if effect.get("operation_id"):
+        what += f" ({effect['operation_id']})"
+    reported = f", as reported by {via[-1]}" if via else ""
+    return f"{who} will {what}{reported}"
+
+
+def approval_parts(
+    approvals: list[Any], note: str | None = None, code: str | None = None
+) -> list[Part]:
+    """The parts of an input-required status message: what waits for approval, as text and data.
+
+    The data part is `{"type": "approval_request", "approval", "approvals",
+    "approval_json"}`: the approvals as `/chat`'s `message.end` has them, and
+    `approval_json`, the same list as exact JSON text (a `Struct` holds every
+    number as a double: `1` reads `1.0`, and large integers round), which an
+    agent relaying the decision reads. The text names each call, its body
+    (at most `APPROVAL_TEXT_BODY_MAX_CHARS` characters of JSON) and, for a
+    relayed decision, the call that will happen (`effect`). `code`: why a
+    decision sent was refused (an error part too).
+    """
+    approvals = [a for a in approvals if isinstance(a, dict)]
+    lines = [note] if note else []
+    for approval in approvals:
+        what = f"{approval.get('method')} {approval.get('path')}"
+        reason = approval.get("reason")
+        lines.append(
+            f"Waiting for approval {approval.get('approval_id')}: {what}"
+            + (f" ({reason})" if reason else "")
+            + f", until {approval.get('expires_at')}."
+        )
+        if approval.get("body") is not None:
+            lines.append(f"  body: {_json_text(approval['body'], APPROVAL_TEXT_BODY_MAX_CHARS)}")
+        effect = _effect_text(approval.get("effect"))
+        if effect:
+            lines.append(f"  effect: {effect}.")
+    lines.append(
+        'Answer with a data part {"approval_id": "...", "decision": "approve"} '
+        '(or "reject"; an optional "comment"; an agent relaying the person\'s decision adds '
+        'the approval\'s "digest").'
+    )
+    data = struct_pb2.Value()
+    json_format.ParseDict(
+        {
+            "type": APPROVAL_REQUEST_TYPE,
+            "approval": approvals[0] if approvals else None,
+            "approvals": approvals,
+            "approval_json": json.dumps(approvals, ensure_ascii=False, default=str),
+        },
+        data,
+    )
+    parts = [Part(text=valid_text("\n".join(lines))), Part(data=data)]
+    if code:
+        parts.append(error_part(code))
+    return parts
+
+
+def waits_on(task: Task, approval_id: str) -> bool:
+    """Whether a task's status message lists `approval_id` in its approval request."""
+    if not task.status.HasField("message"):
+        return False
+    for part in task.status.message.parts:
+        data = _part_data(part)
+        if isinstance(data, dict) and data.get("type") == APPROVAL_REQUEST_TYPE:
+            for approval in data.get("approvals") or []:
+                if isinstance(approval, dict) and approval.get("approval_id") == approval_id:
+                    return True
+    return False
+
+
+def owner_is_requester(owner: str, requester_hash: str, requester_actor: str) -> bool:
+    """Whether the task owner key `owner` is an approval's requester (its hashed subject and
+    its actor, "" for a direct one): the approval's record keeps the subject hashed only."""
+    subject, _, actor = owner.partition(OWNER_KEY_SEPARATOR)
+    return actor == (requester_actor or "") and Principal(id=subject).hashed_id() == (
+        requester_hash
+    )
+
+
+_OUTCOME_STATES = {
+    OUTCOME_COMPLETED: TaskState.TASK_STATE_COMPLETED,
+    OUTCOME_FAILED: TaskState.TASK_STATE_FAILED,
+    OUTCOME_INPUT_REQUIRED: TaskState.TASK_STATE_INPUT_REQUIRED,
+}
+
+
+def follows(task: Task, owner: str, outcome: ApprovalOutcome) -> bool:
+    """Whether a stored task takes an approval's outcome (`ApprovalOutcome`).
+
+    It is `input-required`, it is not the task that carried the decision, it
+    belongs to the approval's requester, and the decision named it
+    (`referenceTaskIds`) or its approval request lists the approval.
+    """
+    return (
+        task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
+        and task.id != outcome.continued_in
+        and owner_is_requester(owner, outcome.requester_hash, outcome.requester_actor)
+        and (task.id in outcome.references or waits_on(task, outcome.approval_id))
+    )
+
+
+def followed(task: Task, outcome: ApprovalOutcome) -> Task:
+    """`task` in the state an approval's outcome gives it (its old status moves to history)."""
+    new = Task()
+    new.CopyFrom(task)
+    if new.status.HasField("message"):
+        new.history.append(new.status.message)
+    state = _OUTCOME_STATES.get(outcome.state, TaskState.TASK_STATE_FAILED)
+    if state == TaskState.TASK_STATE_INPUT_REQUIRED and outcome.approvals:
+        parts = approval_parts(list(outcome.approvals), note=outcome.text)
+    else:
+        parts = [Part(text=valid_text(outcome.text))]
+    new.status.state = state
+    new.status.message.CopyFrom(
+        Message(
+            message_id=uuid.uuid4().hex,
+            role=Role.ROLE_AGENT,
+            task_id=new.id,
+            context_id=new.context_id,
+            parts=parts,
+        )
+    )
+    new.status.timestamp.GetCurrentTime()
+    return new
+
+
+async def follow_approval(outcome: ApprovalOutcome) -> None:
+    """The tasks waiting on an approval follow its outcome (an `A2A_TASK_LISTENERS` entry)."""
+    followed_count = 0
+    for store in list(_STORES):
+        followed_count += await store.follow(outcome)
+    if followed_count:
+        logger.info(
+            "%d A2A task(s) followed an approval's outcome (%s)", followed_count, outcome.state
+        )
 
 
 def decision_problem(data: Any) -> str | None:
@@ -1393,33 +1776,15 @@ def _client_message(exc: Exception) -> str:
 
 
 def approval_request(
-    updater: TaskUpdater, approvals: list[Any], note: str | None = None
+    updater: TaskUpdater, approvals: list[Any], note: str | None = None, code: str | None = None
 ) -> Message:
     """The input-required status message: what waits for approval, as text and as data."""
-    approvals = [a for a in approvals if isinstance(a, dict)]
-    lines = [note] if note else []
-    for approval in approvals:
-        what = f"{approval.get('method')} {approval.get('path')}"
-        reason = approval.get("reason")
-        lines.append(
-            f"Waiting for approval {approval.get('approval_id')}: {what}"
-            + (f" ({reason})" if reason else "")
-            + f", until {approval.get('expires_at')}."
-        )
-    lines.append(
-        'Answer with a data part {"approval_id": "...", "decision": "approve"} '
-        '(or "reject"; an optional "comment").'
-    )
-    data = struct_pb2.Value()
-    json_format.ParseDict(
-        {
-            "type": APPROVAL_REQUEST_TYPE,
-            "approval": approvals[0] if approvals else None,
-            "approvals": approvals,
-        },
-        data,
-    )
-    return updater.new_agent_message([Part(text="\n".join(lines)), Part(data=data)])
+    return updater.new_agent_message(approval_parts(approvals, note=note, code=code))
+
+
+async def _fail(updater: TaskUpdater, text: str, code: str) -> None:
+    """Fail the task with `text` and an error part naming `code` (`error_part`)."""
+    await updater.failed(updater.new_agent_message([Part(text=valid_text(text)), error_part(code)]))
 
 
 class _Reply:
@@ -1483,27 +1848,43 @@ class LangGraphAgentExecutor(AgentExecutor):
         principal = state.get("principal")
         if not isinstance(principal, Principal):
             # Never run as an anonymous principal: the middleware must have authenticated.
-            await updater.failed(updater.new_agent_message([Part(text="Not authenticated.")]))
+            await _fail(updater, "Not authenticated.", ERROR_CODE_UNAUTHENTICATED)
             return
         if task.context_id and not CONTEXT_ID_PATTERN.fullmatch(task.context_id):
-            await updater.failed(
-                updater.new_agent_message(
-                    [Part(text="Invalid contextId: use 1-128 characters from A-Z a-z 0-9 _ . : -")]
-                )
+            await _fail(
+                updater,
+                "Invalid contextId: use 1-128 characters from A-Z a-z 0-9 _ . : -",
+                ERROR_CODE_INVALID_CONTEXT,
             )
             return
+        # An agent calling for a user may forward the user's own words (the origin
+        # extension): kept with this request's credentials only, never stored.
+        origin, hops = read_origin(context.message, principal)
+        depth = _max_depth()
+        if hops > depth:
+            await _fail(
+                updater,
+                f"delegation chain too deep (AUTH_MAX_DELEGATION_DEPTH={depth})",
+                ERROR_CODE_TOO_DEEP,
+            )
+            return
+        if origin is not None:
+            principal = with_origin(principal, origin)
         decision = approval_decision(context.message)
         if decision is None and (not user_input or len(user_input) > max_message_chars()):
             # The request handler refuses these first; this guards any other caller.
-            await updater.failed(
-                updater.new_agent_message([Part(text="The message is empty or too long.")])
-            )
+            await _fail(updater, "The message is empty or too long.", ERROR_CODE_INVALID_MESSAGE)
             return
         req = ChatRequest(message=user_input or "", thread_id=task.context_id or None)
         try:
             thread_id = await RUNTIME.resolve_thread(principal, req)
         except Exception as exc:  # ownership or server errors end the task
-            await updater.failed(updater.new_agent_message([Part(text=_client_message(exc))]))
+            code = (
+                ERROR_CODE_FORBIDDEN
+                if isinstance(exc, HTTPException) and exc.status_code == 403
+                else ERROR_CODE_FAILED
+            )
+            await _fail(updater, _client_message(exc), code)
             return
 
         lease = None
@@ -1523,6 +1904,9 @@ class LangGraphAgentExecutor(AgentExecutor):
             except (ApprovalError, ThreadBusy, HTTPException) as exc:
                 await self._decision_refused(updater, thread_id, exc)
                 return
+            # The tasks that waited on this approval follow the resumed run and point here.
+            resume.continued_in = task.id
+            resume.references = tuple(context.message.reference_task_ids)
             run = RUNTIME.stream(
                 acting,
                 ChatRequest(message="", thread_id=thread_id),
@@ -1556,13 +1940,15 @@ class LangGraphAgentExecutor(AgentExecutor):
                 if data.get("code") == CODE_APPROVAL_PENDING:
                     # A new message while an approval is pending: ask for the decision.
                     await updater.requires_input(
-                        approval_request(updater, data.get("approvals") or [], note=None)
+                        approval_request(
+                            updater, data.get("approvals") or [], code=CODE_APPROVAL_PENDING
+                        )
                     )
                     return
-                await updater.failed(
-                    updater.new_agent_message(
-                        [Part(text=valid_text(f"{data.get('code')}: {data.get('message')}"))]
-                    )
+                await _fail(
+                    updater,
+                    f"{data.get('code')}: {data.get('message')}",
+                    str(data.get("code") or ERROR_CODE_FAILED),
                 )
                 return
             elif event == EVENT_END and data.get("status") == STATUS_AWAITING_APPROVAL:
@@ -1576,21 +1962,30 @@ class LangGraphAgentExecutor(AgentExecutor):
 
     @staticmethod
     async def _decision_refused(updater: TaskUpdater, thread_id: str, exc: Exception) -> None:
-        """A decision that could not be taken: still waiting (input-required) or failed."""
+        """A decision that could not be taken: still waiting (input-required) or failed.
+
+        Either way the status message carries an error part naming why (the
+        approval's error code, `thread_busy`, ...).
+        """
         if isinstance(exc, ApprovalError):
-            note = f"{exc.code}: {exc.detail}"
+            note, code = f"{exc.code}: {exc.detail}", exc.code
         elif isinstance(exc, ThreadBusy):
-            note = f"{THREAD_BUSY}: {exc}"
+            note, code = f"{THREAD_BUSY}: {exc}", THREAD_BUSY
         else:
             note = _client_message(exc)
+            code = (
+                ERROR_CODE_FORBIDDEN
+                if isinstance(exc, HTTPException) and exc.status_code == 403
+                else ERROR_CODE_FAILED
+            )
         try:
             pending = await RUNTIME.pending_approvals(thread_id)
         except Exception:
             pending = []
         if pending:
-            await updater.requires_input(approval_request(updater, pending, note=note))
+            await updater.requires_input(approval_request(updater, pending, note=note, code=code))
         else:
-            await updater.failed(updater.new_agent_message([Part(text=note)]))
+            await _fail(updater, note, code)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # The request handler has already checked that the caller owns the task
@@ -1657,7 +2052,16 @@ def agent_card() -> AgentCard:
         version=os.environ.get("AGENT_VERSION", "0.1.0"),
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
-        capabilities=AgentCapabilities(streaming=True),
+        capabilities=AgentCapabilities(
+            streaming=True,
+            extensions=[
+                AgentExtension(
+                    uri=A2A_ORIGIN_EXTENSION,
+                    description=ORIGIN_EXTENSION_DESCRIPTION,
+                    required=False,
+                )
+            ],
+        ),
         security_schemes=schemes,
         skills=[
             AgentSkill(
@@ -1692,6 +2096,8 @@ def add_a2a_routes(app: FastAPI) -> Any:
     _STORES.append(store)
     if forget_context not in DELETE_LISTENERS:
         DELETE_LISTENERS.append(forget_context)
+    if follow_approval not in A2A_TASK_LISTENERS:
+        A2A_TASK_LISTENERS.append(follow_approval)
     request_handler = PolicyRequestHandler(
         agent_executor=LangGraphAgentExecutor(),
         task_store=store,

@@ -256,6 +256,8 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `decide_with` | How the requester decides: `direct`, or `relayed` by the agents the rule lists. |
 | `decided_via` | The agent that relayed the decision, or null (decided directly). |
 | `digest` | `sha256:<hex>` of the call as shown (api, method, path, operation id, JSON-RPC method and A2A decision, query and body, masked fields masked): a relayed decision must name it. |
+| `nested` | Only for a decision this agent relays to another agent (an A2A message that approves): the other agent's approval it decides, as that agent reported it (`agent`, `approval_id`, `call` with `api`, `method`, `path`, `operation_id`, `query`, `body`, `reason`, `expires_at`, `digest`, `reported_by`, `decide_with`), and in its own `nested` the approval that one relays in turn. Copied from the message the approval binds, so it is exactly what is sent. |
+| `effect` | With `nested`: the call that will actually happen once approved (the innermost `nested` call, the `agent` that makes it, and `via`, the agents between, the called one first), shown first. The approval expires 5 s before the approval it decides, at the latest. Its `query` and `body` (and every `nested` call's) are dropped once decided, as the call's own are. |
 | `created_at`, `expires_at`, `decided_at` | ISO 8601 times. |
 | `comment` | The decider's comment. |
 
@@ -310,7 +312,7 @@ names the URL to call: `APP_URL` when set, else `http://HOST:PORT`, so a deploye
 $ curl -s http://127.0.0.1:8000/a2a/app/.well-known/agent-card.json -H "Authorization: Bearer $API_KEY"
 {"name": "app", "description": "my-agent: a LangGraph agent served over the A2A protocol.",
  "supportedInterfaces": [{"url": "http://127.0.0.1:8000/a2a/app", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
- "version": "0.1.0", "capabilities": {"streaming": true},
+ "version": "0.1.0", "capabilities": {"streaming": true, "extensions": [{"uri": "https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1", ...}]},
  "securitySchemes": {"bearer": {"httpAuthSecurityScheme": {"description": "Shared bearer key (API_KEY).", "scheme": "bearer"}}}, ...}
 ```
 
@@ -354,15 +356,53 @@ Tasks
 
 Approvals
 :   A gated run moves the task to `input-required`, with a data part
-    `{"type": "approval_request", "approval": {...}, "approvals": [...]}`. The client resumes
-    it with a message on the same task whose data part is
+    `{"type": "approval_request", "approval": {...}, "approvals": [...], "approval_json": "..."}`.
+    A `Struct` holds every number as a double (`1` reads `1.0`, a large integer rounds), so
+    `approval_json` repeats the approvals as exact JSON text: read that. The text part names
+    each waiting call, its body (at most 2,000 characters of JSON) and, for a relayed
+    decision, its `effect`. The client decides with a message whose data part is
     `{"approval_id": "...", "decision": "approve" | "reject", "comment": "...", "digest": "..."}`,
-    under the same checks as the HTTP route. A task belongs to its requester, so only the
-    requester decides over A2A; `role:` approvers use the HTTP routes. An agent calling for a
-    user decides only an approval whose rule relays through it (`decide_with: relayed`, its
-    actor in `relayers`, the approval's `digest` named); otherwise its decision leaves the
-    task `input-required` with the note (`approval_direct_only: ...`), and the person decides
-    over HTTP with their own credentials.
+    under the same checks as the HTTP route: on the task (`taskId`), or on its context alone
+    (`contextId`, the task named in `referenceTaskIds`), which runs as a new task. A task
+    belongs to its requester, so only the requester decides over A2A; `role:` approvers use
+    the HTTP routes. An agent calling for a user decides only an approval whose rule relays
+    through it (`decide_with: relayed`, its actor in `relayers`, the approval's `digest`
+    named); otherwise its decision leaves the task `input-required` with the note
+    (`approval_direct_only: ...`), and the person decides over HTTP with their own
+    credentials.
+
+Tasks follow their approval
+:   A task waiting on an approval ends as the approval does, whichever way it is decided:
+    once the resumed run ends, every `input-required` task of the approval's requester on
+    that thread that lists it (or that the decision named in `referenceTaskIds`) takes the
+    run's outcome (`completed`, `failed`, or `input-required` with the approvals it waits on
+    now). Its status says where the run continued: `Continued in task <id>.` (a decision
+    sent on the context), `Approval <id> was approved outside this task; the run continued
+    there.` (over HTTP), `Approval <id> was rejected. ...`, followed by the run's reply; an
+    approval that expires fails it (`Approval <id> expired before anyone decided.`). Another
+    principal's task on the same thread is left as it is. `role:` gates are decided over
+    HTTP, not over A2A (a design choice).
+
+Error parts
+:   A failed task (and a decision refused while approvals still wait) carries a data part
+    `{"type": "error", "code": "..."}`: `thread_busy` (send the message again), `forbidden`,
+    `delegation_too_deep`, the approval codes (`approval_direct_only`,
+    `approval_digest_mismatch`, `approval_expired`, ...), `approval_pending` (a message
+    sent while an approval waits), or the run's error code. Branch on the code, not the text.
+
+The origin extension
+:   The card lists `https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1` in
+    `capabilities.extensions` (optional). An agent calling for a user (a delegated
+    principal) may put the user's own words in the message metadata under that URI:
+    `{"origin": {"text": "...", "truncated": false, "hops": 1}}` (and, in a decision it
+    relays, `approving`: the approval it decides). They reach this agent's run with the
+    request's private credentials, where `require_user_mentioned` checks record ids against
+    them and the model's note quotes them. They are read for delegated principals only (a
+    person's own message is their words), capped at `A2A_ORIGIN_MAX_CHARS`, never stored with
+    the task (every task is saved without them) and never traced. `hops` over
+    `AUTH_MAX_DELEGATION_DEPTH` fails the task: `delegation chain too deep`. This agent trusts
+    the calling agent's code to relay the words faithfully: it guards against an injected
+    model, not a compromised agent.
 
 A 1.0 call and its answer (trimmed):
 

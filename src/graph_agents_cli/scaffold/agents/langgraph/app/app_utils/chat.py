@@ -171,13 +171,18 @@ from {{cookiecutter.agent_directory}}.app_utils.limits import (
 from {{cookiecutter.agent_directory}}.app_utils.model import model_label
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
+    OUTCOME_COMPLETED,
+    OUTCOME_FAILED,
+    OUTCOME_INPUT_REQUIRED,
     THREAD_BUSY,
+    ApprovalOutcome,
     LeaseLost,
     ThreadBusy,
     ThreadLease,
     ThreadLocks,
     ThreadRecord,
     ThreadStore,
+    approval_outcome,
     assert_access,
     assert_owner,
     is_owner,
@@ -262,6 +267,8 @@ OPEN_CALL_SENT_UNSAVED = (
     "The call was approved and sent, but the run stopped before its result was saved."
 )
 # The resume value a paused call gets for its approval's state (see `decide`).
+# How much of a resumed run's reply the A2A tasks that waited on its approval say.
+OUTCOME_REPLY_MAX_CHARS = 2000
 RESUME_AS = {
     PENDING: DECISION_PENDING,
     APPROVED: DECISION_APPROVE,
@@ -431,11 +438,19 @@ class _RunState:
 
 @dataclass
 class Resume:
-    """A paused run to resume (`ChatRuntime.decide`): the resume value per interrupt id."""
+    """A paused run to resume (`ChatRuntime.decide`): the resume value per interrupt id.
+
+    `continued_in` is the A2A task that carries the decision (the executor sets
+    it), and `references` the tasks its message named (`referenceTaskIds`): the
+    tasks still waiting on the approval follow the resumed run's outcome
+    (`ApprovalOutcome`), pointing at that task.
+    """
 
     values: dict[str, Any]
     approval: ApprovalRecord
     decision: str
+    continued_in: str | None = None
+    references: tuple[str, ...] = ()
 
 
 class ApprovalPending(Exception):
@@ -1209,7 +1224,72 @@ class ChatRuntime:
         if expired:
             metrics.observe_approvals("expired", len(expired))
             logger.info("%d pending approvals expired", len(expired))
+            await self._approvals_expired(expired)
         return expired
+
+    async def _approvals_expired(self, records: list[ApprovalRecord]) -> None:
+        """The A2A tasks waiting on these (now expired) approvals fail (`ApprovalOutcome`)."""
+        for record in records:
+            await approval_outcome(
+                ApprovalOutcome(
+                    thread_id=record.thread_id,
+                    approval_id=record.approval_id,
+                    requester_hash=record.requester_hash,
+                    requester_actor=record.requester_actor,
+                    state=OUTCOME_FAILED,
+                    text=f"Approval {record.approval_id} expired before anyone decided.",
+                )
+            )
+
+    async def _resumed_outcome(
+        self,
+        thread_id: str,
+        resume: Resume,
+        status: str,
+        paused: list[ApprovalRecord],
+        reply: str,
+    ) -> None:
+        """The A2A tasks waiting on the decided approval follow the run it resumed (KI-025).
+
+        They end as the run did (`completed`, `failed`, or `input-required` with
+        the approvals it paused for again), saying where it continued: in the
+        A2A task that carried the decision, or outside any task (the HTTP
+        route), with the run's reply.
+        """
+        record = resume.approval
+        if status == STATUS_AWAITING_APPROVAL:
+            state = OUTCOME_INPUT_REQUIRED
+        elif status in (STATUS_OK, STATUS_STEP_LIMIT):
+            state = OUTCOME_COMPLETED
+        else:
+            state = OUTCOME_FAILED
+        verdict = "approved" if resume.decision == APPROVE else "rejected"
+        if resume.continued_in:
+            text = f"Continued in task {resume.continued_in}."
+            if verdict == "rejected":
+                text = f"Approval {record.approval_id} was rejected. {text}"
+        else:
+            text = (
+                f"Approval {record.approval_id} was {verdict} outside this task; the run "
+                "continued there."
+            )
+        if state == OUTCOME_FAILED:
+            text += f" The run ended with status {status}."
+        if reply.strip():
+            text += "\n\n" + reply.strip()[:OUTCOME_REPLY_MAX_CHARS]
+        await approval_outcome(
+            ApprovalOutcome(
+                thread_id=thread_id,
+                approval_id=record.approval_id,
+                requester_hash=record.requester_hash,
+                requester_actor=record.requester_actor,
+                state=state,
+                text=text,
+                approvals=tuple(r.public() for r in paused),
+                references=resume.references,
+                continued_in=resume.continued_in,
+            )
+        )
 
     async def reconcile_runs(self, grace_s: float | None = None) -> list[str]:
         """Write run records that failed earlier, then mark runs of dead processes `interrupted`."""
@@ -1564,8 +1644,10 @@ class ChatRuntime:
                 paused = await self._paused_interrupts(thread_id, headers)
                 if record.interrupt_id not in paused:
                     # The thread went on without this approval (nothing waits for it).
-                    if await self.approvals.expire(approval_id) is not None:
+                    gone = await self.approvals.expire(approval_id)
+                    if gone is not None:
                         metrics.observe_approvals("expired")
+                        await self._approvals_expired([gone])
                     raise ApprovalError(
                         409,
                         CODE_NOT_PENDING,
@@ -1900,6 +1982,8 @@ class ChatRuntime:
         final_text: str | None = None
         pump: _Pump | None = None
         paused: list[ApprovalRecord] = []
+        # A resumed run's reply, for the A2A tasks that waited on its approval.
+        reply: list[str] = []
         metrics.ACTIVE_RUNS.inc()
         try:
             start: dict[str, Any] = {"thread_id": thread_id, "run_id": run_id}
@@ -1931,6 +2015,8 @@ class ChatRuntime:
                     raise payload
                 mode, data = payload
                 for event in map_stream_item(mode, data, state):
+                    if resume is not None and event[0] == EVENT_DELTA:
+                        reply.append(str(event[1].get("text") or ""))
                     yield event
             if state.interrupts:
                 # The graph paused. A gated API call's interrupt waits for a
@@ -2003,6 +2089,10 @@ class ChatRuntime:
             # Shielded: the record and the lock release complete even when the
             # consumer is cancelled again while waiting.
             await asyncio.shield(finish)
+        if resume is not None:
+            await self._resumed_outcome(
+                thread_id, resume, status, paused, "".join(reply) + (final_text or "")
+            )
         if error_event is not None:
             yield EVENT_ERROR, error_event
             return
@@ -2140,7 +2230,7 @@ class ChatRuntime:
         """
         if self.approvals is None or (self.db is not None and not self.db.health.up):
             return
-        expired = 0
+        expired: list[ApprovalRecord] = []
         try:
             async with asyncio.timeout(FINISH_STEP_TIMEOUT_S):
                 pending = await self.approvals.pending_for_thread(thread_id)
@@ -2151,16 +2241,18 @@ class ChatRuntime:
                     if (run_id is not None and item.run_id == run_id) or (
                         item.interrupt_id not in waiting
                     ):
-                        if await self.approvals.expire(item.approval_id) is not None:
-                            expired += 1
+                        gone = await self.approvals.expire(item.approval_id)
+                        if gone is not None:
+                            expired.append(gone)
         except Exception as exc:
             logger.warning(
                 "could not expire the approvals of a stopped run (%s); they expire on time",
                 type(exc).__name__,
             )
         if expired:
-            metrics.observe_approvals("expired", expired)
-            logger.info("expired %d approval(s) the thread no longer waits for", expired)
+            metrics.observe_approvals("expired", len(expired))
+            logger.info("expired %d approval(s) the thread no longer waits for", len(expired))
+            await self._approvals_expired(expired)
 
     def _repairs_after(self, status: str, error: BaseException | None, lease: ThreadLease) -> bool:
         """Whether a stopped run should answer the tool calls it left open.

@@ -48,9 +48,12 @@ id, `call_hash`, and in `payload` the query and JSON body as the approver sees
 them, with the fields the tool named in `redact=` masked),
 the approvers, the status (`pending`, `approved`, `rejected`, `expired`), the
 decider's hashed id, the decision time and comment, when the approval was
-used, and when it expires (`approval.timeout_s` after it was requested). Once
-decided or expired the query and body are dropped from the record unless
-`TRACE_CAPTURE=full`. A pending approval past its expiry is expired (=
+used, and when it expires (`approval.timeout_s` after it was requested). A
+decision relayed to another agent also keeps, in `payload`, the approval it
+decides there (`nested`) and the call that will then happen (`effect`), and
+expires 5 s before that approval at the latest. Once
+decided or expired the query and body (and those of every nested call and of
+the effect) are dropped from the record unless `TRACE_CAPTURE=full`. A pending approval past its expiry is expired (=
 rejected): the runtime's sweep marks it every `SWEEP_INTERVAL_S` seconds and
 every read treats it so. Deleting a thread deletes its approvals.
 
@@ -118,6 +121,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     DEFAULT_APPROVAL_TIMEOUT_S,
     MAX_APPROVAL_TIMEOUT_S,
     MIN_APPROVAL_TIMEOUT_S,
+    NESTED_MAX_DEPTH,
     REQUESTER_APPROVER,
     ROLE_APPROVER_PREFIX,
     RPC_METHOD_KEY,
@@ -167,6 +171,14 @@ MEMORY_APPROVALS_CAP = 10_000
 COMMENT_MAX_CHARS = 1000
 # Payload keys dropped once an approval is decided or expired (unless TRACE_CAPTURE=full).
 CALL_CONTENT_KEYS = ("query", "body")
+# A decision relayed to another agent: the approval it decides there (`nested`, recursive:
+# its `call`, and the approval that one relays in turn) and the call that will then happen
+# (`effect`). Their query and body go with the call's once decided.
+NESTED_KEY = "nested"
+EFFECT_KEY = "effect"
+# The relayed approval must still be open downstream when the person decides here: this
+# approval expires this long before it at the latest.
+NESTED_EXPIRY_MARGIN_S = 5
 # What a call to a JSON-RPC API was, read from its body (`api_client.derive_rpc`): kept in
 # the payload (only for such calls), part of which call the approval is bound to, and of the
 # approver's view.
@@ -308,6 +320,13 @@ class ApprovalRecord:
                 if key in self.payload:
                     out[key] = self.payload[key]
         out.update(self.rpc())
+        for key in (EFFECT_KEY, NESTED_KEY):
+            if isinstance(self.payload.get(key), dict):
+                out[key] = (
+                    self.payload[key]
+                    if include_call
+                    else without_nested_call({key: self.payload[key]})[key]
+                )
         out.update(
             {
                 "tool": self.payload.get("tool"),
@@ -347,6 +366,43 @@ def approval_view(record: ApprovalRecord) -> dict[str, Any]:
     }
 
 
+def _nested_expiry(nested: Any) -> datetime | None:
+    """The earliest `expires_at` of a relayed approval chain (`nested`), or None."""
+    earliest: datetime | None = None
+    level, depth = nested, 0
+    while isinstance(level, Mapping) and depth < NESTED_MAX_DEPTH:
+        try:
+            expiry = _as_datetime(level.get("expires_at"))
+        except (TypeError, ValueError):
+            expiry = None
+        if expiry is not None and (earliest is None or expiry < earliest):
+            earliest = expiry
+        level, depth = level.get(NESTED_KEY), depth + 1
+    return earliest
+
+
+def without_nested_call(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """`payload` with the query and body of its relayed approvals' calls, at every level
+    (`nested.call`, `nested.nested.call`, ...), and of its `effect`, taken out."""
+
+    def strip(level: Any, depth: int) -> Any:
+        if not isinstance(level, Mapping) or depth >= NESTED_MAX_DEPTH:
+            return level
+        out = dict(level)
+        if isinstance(out.get("call"), Mapping):
+            out["call"] = {k: v for k, v in out["call"].items() if k not in CALL_CONTENT_KEYS}
+        if NESTED_KEY in out:
+            out[NESTED_KEY] = strip(out[NESTED_KEY], depth + 1)
+        return out
+
+    out = dict(payload)
+    if isinstance(out.get(NESTED_KEY), Mapping):
+        out[NESTED_KEY] = strip(out[NESTED_KEY], 0)
+    if isinstance(out.get(EFFECT_KEY), Mapping):
+        out[EFFECT_KEY] = {k: v for k, v in out[EFFECT_KEY].items() if k not in CALL_CONTENT_KEYS}
+    return out
+
+
 def approval_digest(view: Mapping[str, Any]) -> str:
     """`sha256:<hex>` of the approver's view of a call (canonical JSON): what a relayed
     decision names, so a decision taken on another view is refused."""
@@ -384,6 +440,14 @@ def record_from_interrupt(
         "reason": value.get("reason"),
     }
     payload.update({key: value[key] for key in RPC_KEYS if isinstance(value.get(key), str)})
+    payload.update(
+        {key: value[key] for key in (NESTED_KEY, EFFECT_KEY) if isinstance(value.get(key), dict)}
+    )
+    expires_at = now + timedelta(seconds=timeout)
+    downstream = _nested_expiry(payload.get(NESTED_KEY))
+    if downstream is not None:
+        # Never ask the person to approve what has expired where it happens.
+        expires_at = min(expires_at, downstream - timedelta(seconds=NESTED_EXPIRY_MARGIN_S))
     record = ApprovalRecord(
         approval_id=uuid.uuid4().hex,
         thread_id=thread_id,
@@ -405,7 +469,7 @@ def record_from_interrupt(
         approvers=approvers,
         payload=payload,
         created_at=now,
-        expires_at=now + timedelta(seconds=timeout),
+        expires_at=expires_at,
         decide_with=str(decide_with),
         relayers=[str(r) for r in relayers or [] if isinstance(r, str)],
     )
@@ -606,7 +670,7 @@ def resume_principal(record: ApprovalRecord, owner: ThreadOwner, decider: Princi
 def _without_call(payload: Mapping[str, Any]) -> dict[str, Any]:
     if capture_full():
         return dict(payload)
-    return {k: v for k, v in payload.items() if k not in CALL_CONTENT_KEYS}
+    return without_nested_call({k: v for k, v in payload.items() if k not in CALL_CONTENT_KEYS})
 
 
 _COLUMNS = (
@@ -615,8 +679,23 @@ _COLUMNS = (
     "status, decided_by, decided_at, comment, used_at, created_at, expires_at, requester_actor, "
     "decide_with, relayers, decided_via, display_digest"
 )
+
+
+def _cleared_payload() -> str:
+    """The SQL of the payload with the call cleared, unless the first parameter is true
+    (TRACE_CAPTURE=full): its query and body, those of the relayed approvals' calls at
+    every level (as `without_nested_call`), and those of its `effect`."""
+    paths = ["'{effect,query}'", "'{effect,body}'"]
+    for depth in range(1, NESTED_MAX_DEPTH + 1):
+        prefix = ",".join([NESTED_KEY] * depth)
+        # A text[] literal such as '{nested,call,body}' (built without doubled braces).
+        paths += ["'{" + prefix + ",call," + key + "}'" for key in CALL_CONTENT_KEYS]
+    cleared = " ".join(f"#- {path}" for path in paths)
+    return f"CASE WHEN %s THEN payload ELSE (payload - 'query' - 'body') {cleared} END"
+
+
 # Clears the call from the payload unless the first parameter is true (TRACE_CAPTURE=full).
-_CLEARED_PAYLOAD = "CASE WHEN %s THEN payload ELSE payload - 'query' - 'body' END"
+_CLEARED_PAYLOAD = _cleared_payload()
 
 
 def _record_from_row(row: Mapping[str, Any]) -> ApprovalRecord:

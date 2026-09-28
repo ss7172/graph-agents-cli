@@ -275,6 +275,7 @@ See [Observability](../guides/observability.md) for what each mode sends where.
 | `A2A_NAME` | the agent directory (`app`) | Mount name: the card at `/a2a/<name>/.well-known/agent-card.json`, JSON-RPC at `/a2a/<name>`. |
 | `A2A_DESCRIPTION` | a generic description | What the card (and its chat skill) says the agent does. |
 | `A2A_TASK_TTL_S` | `3600` | Seconds a task is kept after its last update; `0` keeps a task until its thread is deleted (in process memory, until restart). |
+| `A2A_ORIGIN_MAX_CHARS` | `4000` | The most of the user's own words an agent forwards to the agents it calls, and reads from one calling it (the origin extension). |
 
 See [HTTP API](http-api.md#a2a).
 

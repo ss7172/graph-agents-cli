@@ -44,6 +44,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    A2A_ORIGIN_EXTENSION,
     APPROVAL_INTERRUPT,
     ApiCallError,
     ApiClient,
@@ -333,22 +334,25 @@ ALICE = Principal(id="alice", roles=["user"], attributes={"tenant": "t1"})
 # The relay tool reads the peer's task before it decides (as the A2A client will).
 READ_FIRST: list[bool] = []
 PEER_SENT: list[dict[str, Any]] = []
+# The peer's approval the decision is about, as the A2A client copies it into the message.
+APPROVING: list[dict[str, Any]] = []
 
 
 def _decide(decision: str) -> dict[str, Any]:
     """The decision message, built the same on every run (the approval binds its body)."""
+    message: dict[str, Any] = {
+        "messageId": f"m-{decision}-a1",
+        "role": "ROLE_USER",
+        "contextId": "ctx-1",
+        "parts": [{"data": {"approval_id": "a1", "decision": decision}}],
+    }
+    if APPROVING:
+        message["metadata"] = {A2A_ORIGIN_EXTENSION: {"approving": APPROVING[0]}}
     return {
         "jsonrpc": "2.0",
         "id": f"{decision}-a1",
         "method": "SendMessage",
-        "params": {
-            "message": {
-                "messageId": f"m-{decision}-a1",
-                "role": "ROLE_USER",
-                "contextId": "ctx-1",
-                "parts": [{"data": {"approval_id": "a1", "decision": decision}}],
-            }
-        },
+        "params": {"message": message},
     }
 
 
@@ -413,6 +417,7 @@ def relay(policy: Path, store: ApprovalStore) -> Iterator[Any]:
 
     READ_FIRST.clear()
     PEER_SENT.clear()
+    APPROVING.clear()
     set_approval_ledger(store)
     yield create_agent(
         model=get_model(),
@@ -482,6 +487,95 @@ async def test_the_approval_names_the_request_it_holds(relay: Any, store: Approv
     value = decision_value(record, "approve")
     assert (value["rpc_method"], value["a2a_operation"]) == ("SendMessage", "approve")
     assert _sent() == []
+
+
+def _orders_approval(**overrides: Any) -> dict[str, Any]:
+    """The orders agent's pending approval as its A2A task reports it (exact values)."""
+    approving = {
+        "agent": "orders",
+        "approval_id": "de2e",
+        "call": {
+            "api": "orders_api",
+            "method": "POST",
+            "path": "/orders/ORD-1002/cancel",
+            "operation_id": "cancelOrder",
+            "query": {},
+            "body": {"reason": "customer asked", "amount": 1, "big": 12345678901234567890},
+        },
+        "reason": "cancel_order: the customer asked",
+        "expires_at": "2099-01-01T00:00:00+00:00",
+        "digest": "sha256:" + "a" * 64,
+        "reported_by": "orders",
+        "decide_with": "relayed",
+        "nested": None,
+        "unknown": "dropped",
+    }
+    approving.update(overrides)
+    return approving
+
+
+async def test_a_relayed_approval_shows_what_it_decides_and_what_will_happen(
+    relay: Any, store: ApprovalStore
+) -> None:
+    """The approve message names the peer's approval (`approving`, copied from the peer):
+    the person's approval shows it as `nested`, exact values kept, and the call that then
+    happens as `effect` (orders' cancel, via orders)."""
+    APPROVING.append(_orders_approval())
+    interrupt, record = await _pause(relay, store)
+    nested = interrupt.value["nested"]
+    assert nested["call"]["body"] == {
+        "reason": "customer asked",
+        "amount": 1,
+        "big": 12345678901234567890,
+    }
+    assert "unknown" not in nested and nested["nested"] is None
+    effect = interrupt.value["effect"]
+    assert (effect["agent"], effect["via"], effect["method"], effect["path"]) == (
+        "orders",
+        ["orders"],
+        "POST",
+        "/orders/ORD-1002/cancel",
+    )
+    public = record.public()
+    assert public["nested"] == nested and public["effect"] == effect
+    # Bound like the rest of the body: the digest the person approves covers it.
+    assert record.display_digest == approval_digest(approval_view(record))
+    assert _sent() == []
+
+
+async def test_a_two_hop_relay_shows_the_innermost_call_and_the_agents_between(
+    relay: Any, store: ApprovalStore
+) -> None:
+    inner = _orders_approval()
+    APPROVING.append(
+        _orders_approval(
+            agent="billing",
+            approval_id="b1",
+            call={"api": "orders_agent", "method": "POST", "path": "/a2a/orders"},
+            reported_by="billing",
+            nested=inner,
+        )
+    )
+    interrupt, _record = await _pause(relay, store)
+    effect = interrupt.value["effect"]
+    assert (effect["agent"], effect["via"], effect["path"]) == (
+        "orders",
+        ["billing", "orders"],
+        "/orders/ORD-1002/cancel",
+    )
+    assert interrupt.value["nested"]["nested"]["approval_id"] == "de2e"
+
+
+async def test_a_rejection_naming_the_approval_is_sent_without_waiting(policy: Path) -> None:
+    """Only an approve message waits for the person: a rejection that carries the approval
+    it is about goes out at once (rejecting is always safe)."""
+    APPROVING[:] = [_orders_approval()]
+    try:
+        await _client("orders_agent").post("/a2a/orders", json_body=_decide("reject"))
+    finally:
+        APPROVING.clear()
+    [sent] = SENT
+    assert json.loads(sent.content)["params"]["message"]["parts"][0]["data"]["decision"] == "reject"
 
 
 async def test_get_task_on_resume_does_not_consume_the_approve_decision(

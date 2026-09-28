@@ -211,6 +211,34 @@ migration" with the steps to follow.
   bad value, or either setting for another provider, stops startup. `.env.example` and, for
   OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
   runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
+- **The A2A server speaks to agents calling for a user.** An agent's card declares the
+  graph-agents-cli origin extension (`https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1`,
+  optional): an agent calling for a user may put the user's own words in the message metadata
+  under that URI (`origin`: `text`, `truncated`, `hops`), and for a delegated caller only they
+  reach the run's private credentials (`@origin`, where `require_user_mentioned` and the
+  model's note read them), capped at `A2A_ORIGIN_MAX_CHARS` (4000). They are never stored:
+  every task is saved without them. More `hops` than `AUTH_MAX_DELEGATION_DEPTH` fails the
+  task (`delegation chain too deep`). A task waiting for approval carries `approval_json`, the
+  approvals as exact JSON text, and its text shows each call's body (up to 2,000 characters)
+  (KI-026). A failed task, or a refused decision, carries a data part
+  `{"type": "error", "code": ...}` (`thread_busy`, `approval_direct_only`, ...). A decision may
+  be sent on the context alone, naming the waiting task in `referenceTaskIds`.
+- **A2A tasks follow their approval's outcome** (KI-025). However an approval ends (a decision
+  over A2A, on the task or on its context; one taken over HTTP, the person at this agent
+  included; or its expiry), the requester's `input-required` tasks on that thread that wait on
+  it take the resumed run's outcome (`completed`, `failed`, or `input-required` with the new
+  approvals) and say where it continued (`Continued in task <id>.`, `... was approved outside
+  this task; the run continued there.`, `... expired before anyone decided.`), with the run's
+  reply. Both task stores; another principal's task on the thread is left alone. `role:` gates
+  are decided over HTTP, not A2A: documented as a design choice.
+- **A relayed decision shows what it decides and what will happen.** An approval of an A2A
+  message that approves another agent's approval carries `nested` (that approval, as the
+  message sends it: its call, reason, expiry, digest, and the approval it relays in turn) and
+  `effect` (the call that will actually happen, the agent that makes it and the agents `via`
+  which), in `/chat`, `GET /approvals`, the thread's approvals and the A2A approval request.
+  It expires 5 s before the approval it decides at the latest, and the nested calls' and the
+  effect's query and body are dropped on decision with the call's own (unless
+  `TRACE_CAPTURE=full`).
 
 ### Changed
 

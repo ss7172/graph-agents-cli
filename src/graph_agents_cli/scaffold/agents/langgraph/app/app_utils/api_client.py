@@ -88,7 +88,10 @@ exact request (`canonical_call`: API, method, URL with the rendered path,
 query, JSON body, operation id and the tool's own headers), hashes it
 (`call_hash`) and calls LangGraph's `interrupt()` with the approval payload
 (the call, with the fields named in `redact=` masked, the tool and the model's
-stated purpose, the approvers). The chat runtime records the approval and ends
+stated purpose, the approvers; for an A2A message that approves one of another
+agent's approvals, that approval as the message carries it, `nested`, and the
+call that will then happen, `effect`: `relayed_approval`, `approval_effect`).
+The chat runtime records the approval and ends
 the stream awaiting a decision (see `approvals.py`). When the run resumes, the
 tool runs again from its start and this client rebuilds the request: it is sent
 only when the decision approves exactly this request (the same hash) and the
@@ -2269,6 +2272,113 @@ PURPOSE_MAX_CHARS = 500
 COMMENT_MAX_CHARS = 300
 _UNPRINTABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# The graph-agents-cli A2A extension. In a message's metadata under this URI, a calling agent
+# puts `origin` (the user's own words it forwards: `text`, `truncated`, `hops`) and, in a
+# decision it relays, `approving` (the called agent's approval it is about, read from that
+# agent). An agent card that lists it in `capabilities.extensions` reads `origin`.
+A2A_ORIGIN_EXTENSION = "https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1"
+ORIGIN_KEY = "origin"
+APPROVING_KEY = "approving"
+# The `type` of the data part an agent's failed (or refused) A2A task carries, with its `code`.
+A2A_ERROR_PART_TYPE = "error"
+# `A2A_ORIGIN_MAX_CHARS`: at most this much of the user's words is forwarded (and read).
+DEFAULT_A2A_ORIGIN_MAX_CHARS = 4000
+
+
+def origin_max_chars() -> int:
+    """`A2A_ORIGIN_MAX_CHARS` (default 4000, at least 1); `SettingsError` otherwise."""
+    from .limits import SettingsError
+
+    raw = (os.environ.get("A2A_ORIGIN_MAX_CHARS") or "").strip()
+    if not raw:
+        return DEFAULT_A2A_ORIGIN_MAX_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SettingsError(f"A2A_ORIGIN_MAX_CHARS={raw!r} is not a whole number.") from None
+    if value < 1:
+        raise SettingsError(f"A2A_ORIGIN_MAX_CHARS={value} must be at least 1.")
+    return value
+
+
+# How deep a relayed approval may nest (`AUTH_MAX_DELEGATION_DEPTH` allows at most 8 agents).
+NESTED_MAX_DEPTH = 8
+# The keys of a relayed approval (`nested`) and of the call it holds; any other is dropped.
+NESTED_KEYS = (
+    "agent",
+    "approval_id",
+    "decide_with",
+    "digest",
+    "reason",
+    "expires_at",
+    "reported_by",
+)
+NESTED_CALL_KEYS = (
+    "api",
+    "method",
+    "path",
+    "operation_id",
+    "rpc_method",
+    "a2a_operation",
+    "query",
+    "body",
+)
+
+
+def relayed_approval(body: Any, depth: int = 0) -> dict[str, Any] | None:
+    """The approval a relayed A2A decision is about (`nested`), from the body it sends, or None.
+
+    Read from `params.message.metadata[A2A_ORIGIN_EXTENSION]["approving"]` of the
+    JSON-RPC request (the approve message the relay tool builds from the called
+    agent's own record of its approval), so the person approves exactly what is
+    sent: the body is bound by the call hash. Only the known keys are kept, and
+    a chain deeper than `NESTED_MAX_DEPTH` stops there.
+    """
+    if depth == 0:
+        params = body.get("params") if isinstance(body, Mapping) else None
+        message = params.get("message") if isinstance(params, Mapping) else None
+        metadata = message.get("metadata") if isinstance(message, Mapping) else None
+        extension = metadata.get(A2A_ORIGIN_EXTENSION) if isinstance(metadata, Mapping) else None
+        body = extension.get(APPROVING_KEY) if isinstance(extension, Mapping) else None
+    if not isinstance(body, Mapping) or depth >= NESTED_MAX_DEPTH:
+        return None
+    nested: dict[str, Any] = {key: body.get(key) for key in NESTED_KEYS}
+    call = body.get("call")
+    nested["call"] = (
+        {key: call[key] for key in NESTED_CALL_KEYS if key in call}
+        if isinstance(call, Mapping)
+        else None
+    )
+    nested["nested"] = relayed_approval(body.get("nested"), depth + 1)
+    return nested
+
+
+def approval_effect(nested: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The call that will actually happen when a relayed approval is approved (`effect`).
+
+    The innermost `nested` level's call, the agent that makes it, and `via`: the
+    agents the decision passes through to get there, the called one first (a
+    single hop: just that agent).
+    """
+    if not isinstance(nested, Mapping):
+        return None
+    via: list[Any] = []
+    level: Mapping[str, Any] = nested
+    while True:
+        via.append(level.get("agent"))
+        inner = level.get("nested")
+        if not isinstance(inner, Mapping) or len(via) >= NESTED_MAX_DEPTH:
+            break
+        level = inner
+    call = level.get("call") if isinstance(level.get("call"), Mapping) else {}
+    effect: dict[str, Any] = {"agent": level.get("agent"), "via": via}
+    for key in NESTED_CALL_KEYS:
+        if key in call:
+            effect[key] = call[key]
+    effect["reason"] = level.get("reason")
+    effect["expires_at"] = level.get("expires_at")
+    return effect
+
 
 class BoundApproval(NamedTuple):
     """An approval the ledger recorded for a tool call: the call it was asked for and its state."""
@@ -3578,6 +3688,13 @@ class ApiClient:
         ):
             if value is not None:
                 payload[key] = value
+        if prepared.rpc.a2a_operation == A2A_APPROVE:
+            # A decision relayed to another agent: the person sees the approval it decides
+            # there (`nested`) and the call that will then happen (`effect`), as sent.
+            nested = relayed_approval(json_body)
+            if nested is not None:
+                payload["nested"] = redact_fields(nested, names)
+                payload["effect"] = approval_effect(payload["nested"])
         outside_run = refuse(
             f"needs human approval ({', '.join(approvers)}) before it is sent, which "
             "is possible only inside an agent run: refused"

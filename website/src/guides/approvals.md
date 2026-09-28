@@ -341,8 +341,10 @@ its server: under `langgraph-server`, or `fastapi` with the postgres checkpointe
 ## A2A
 
 A gated run moves the A2A task to `input-required`. Its status message carries a text part
-saying what waits and a data part holding the approval. The client resumes the task with a
-message on the same task carrying the data part:
+saying what waits (each call and its body) and a data part holding the approvals, with
+`approval_json`, the same approvals as exact JSON text (the data part's numbers are doubles:
+read `approval_json`). The client decides with a message carrying the data part, on the
+task, or on its context alone (naming the task in `referenceTaskIds`):
 
 ```json
 {"approval_id": "edff2f4bb1854662af94f3b6ac872910", "decision": "approve", "comment": "ok"}
@@ -350,8 +352,11 @@ message on the same task carrying the data part:
 
 The decision goes through the same checks as the HTTP route, the auth policy's
 `approval.decide` action included. A task belongs to its principal, so only the requester
-decides over A2A; `role:` approvers use the HTTP routes or `graph-agents-cli approvals`.
-`run --mode a2a` prints a gated call and how to resume the task, but does not prompt.
+decides over A2A; `role:` approvers use the HTTP routes or `graph-agents-cli approvals` (a
+design choice). However the approval is decided (over A2A, over HTTP, or it expires), the
+tasks waiting on it follow: they end as the resumed run did, saying where it continued
+(see [HTTP API](../reference/http-api.md#a2a)). `run --mode a2a` prints a gated call and how
+to resume the task, but does not prompt.
 
 ## Agents calling agents
 
@@ -395,6 +400,24 @@ agent that presented the request is recorded with each approval it pauses for
 The approval object carries `decide_with` (so a caller knows at once whether a relay can
 work) and `digest`; a direct decider may send the digest too, and it is checked when sent.
 
+### What the person sees when their agent relays a decision
+
+An agent that relays a decision to another agent (an A2A message that approves one of that
+agent's approvals, which its policy must gate) sends it through its own gate, so the person
+approves it at that agent first. The approval
+they see there holds two more fields, taken from the other agent's own record of what it
+waits for (not from the model), and bound with the message like the rest of its body:
+
+- `nested`: the other agent's approval (its call, reason, expiry and digest), and in its own
+  `nested` the approval that one relays in turn, for a chain of agents;
+- `effect`: the call that will actually happen, shown first, for example "orders (via
+  billing) will POST /orders/ORD-1002/cancel (cancelOrder)".
+
+The approval expires 5 s before the one it decides, at the latest, so the person is never
+asked about something that has already expired downstream. Once decided, the query and body
+of every nested call and of the effect are dropped with the call's own (unless
+`TRACE_CAPTURE=full`).
+
 ## Approvals in eval
 
 An eval case says how a person would decide each gate it reaches, and checks the outcome:
@@ -428,12 +451,10 @@ left pending. See [Evaluation](evaluation.md#cases-that-reach-an-approval-gate).
     - A project whose runtime predates approval rules refuses every call once the policy holds
       a list of rules: upgrade the project first
       ([KI-007](../reference/known-issues.md#ki-007-a-list-of-approval-rules-makes-a-runtime-that-predates-them-refuse-every-call)).
-    - A2A: a task does not follow an approval decided over HTTP
-      ([KI-025](../reference/known-issues.md#ki-025-a2a-tasks-waiting-for-approval-do-not-follow-the-approvals-outcome)).
-      Under `CHECKPOINTER=memory` a restart drops the tasks waiting for approval (with the
-      paused runs); under Postgres they are kept, and a decision on one works on any replica.
-      Its approval prompt shows body numbers as doubles (`1` reads `1.0`)
-      ([KI-026](../reference/known-issues.md#ki-026-the-a2a-approval-prompt-shows-numbers-as-doubles-and-its-text-omits-the-body)).
+    - A2A: under `CHECKPOINTER=memory` a restart drops the tasks waiting for approval (with
+      the paused runs); under Postgres they are kept, and a decision on one works on any
+      replica. The approval request's data part shows body numbers as doubles (`1` reads
+      `1.0`): read its `approval_json`, which holds the exact values.
     - CLI output: `approvals list` prints "body: (none)" when the server withholds the body
       from you ([KI-049](../reference/known-issues.md#ki-049-approvals-output-misleads-viewers-who-cannot-see-the-body-or-decide));
       `approvals list --json` is not valid JSON when it starts a temporary server
