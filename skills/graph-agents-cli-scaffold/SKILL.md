@@ -122,7 +122,6 @@ graph-agents-cli create <project-name> \
   --deployment-target kubernetes --checkpointer postgres \
   --registry ghcr.io/my-org --cd argocd \
   --auth-policy shared-bearer \
-  --agent-guidance-filename CLAUDE.md \
   -y
 ```
 
@@ -132,8 +131,11 @@ graph-agents-cli create <project-name> \
   release name and the namespace prefix (`<name>-dev`, `<name>-staging`, `<name>-prod`).
 - Do NOT `mkdir` the project directory first; `create` creates it (a pre-existing directory
   triggers enhance semantics).
-- `--agent-guidance-filename` defaults to `AGENTS.md` (read by Codex and most coding agents);
-  pass `CLAUDE.md` (Claude Code) or `GEMINI.md` (Gemini CLI, Antigravity) when that agent is in use.
+- `--agent-guidance-filename` defaults to `AGENTS.md` (read by Codex and most coding agents).
+  Pass `CLAUDE.md` (Claude Code) or `GEMINI.md` (Gemini CLI, Antigravity) only when the user says
+  the team uses that agent alone. The coding agent running `create` is not the team's choice, so
+  do not pick the file after yourself. When nobody names an agent, omit the flag and say in your
+  report that the guidance file stayed `AGENTS.md`.
 - `create` copies the runtime's bundled lock (`uv-fastapi.lock` or `uv-langgraph-server.lock`)
   to `uv.lock`; it installs nothing. Run `graph-agents-cli install` (`uv sync` from that lock)
   before `run`, `eval` or the project's tests.
@@ -165,6 +167,10 @@ graph-agents-cli create <project-name> \
   `shared-bearer`, an `API_KEY`. Under `jwt`, after `install`,
   `export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub <user>)"` gives local
   runs a token (a dev key in `.env`, `APP_ENV=dev` only).
+- After `create`, read `create_params` in `graph-agents-cli-manifest.yaml` and check every choice
+  the spec stated. Omit `--model` when the spec says "default model". `create` installs nothing
+  and creates no git repository, so run `install` or `git init` only when asked. In the report,
+  list the defaults you kept and any stub left to implement.
 
 ### Enhance an existing project
 
@@ -183,7 +189,14 @@ project kept). When the agent code is not in `app/`, pass `--agent-directory <di
 instead. When the merge changes
 the manifest (for example `enhance --cd argocd`), `graph-agents-cli-manifest.yaml` is rewritten in
 block style and its comments are dropped; app files stay byte-identical. **Always ask before
-choosing the CD mode or auth policy.**
+choosing the CD mode or auth policy.** A value the task states is the user's answer. When the user
+cannot be asked, keep what `create_params` records (or the default on `create`) and report it.
+
+Before enhancing, read `create_params` in `graph-agents-cli-manifest.yaml` so you pass only the
+flags that change. Afterwards, confirm three things: the new `create_params` values; for a
+kubernetes project, the registry in `.github/agent.env` (`IMAGE_REPOSITORY`) and in the chart's
+`values.yaml` (`image.repository`); and that the agent code and eval data are listed under
+"Skipping (your code and config)". Then run `graph-agents-cli lint`.
 
 `--runtime` and `--model-provider` changes are reconciled everywhere they matter, so the result
 matches a fresh `create` for the affected files: it prints "Recomputed for the new settings"
@@ -334,7 +347,7 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 
 1. Phase 0: purpose, API operations and the access the user chooses for them (here
    `listIncidents`, `getIncident` and `acknowledgeIncident`), provider.
-2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype --agent-guidance-filename CLAUDE.md -y`
+2. `graph-agents-cli create incident-helper --model-provider anthropic --prototype -y`
 3. `graph-agents-cli api add incidents --base-url-env INCIDENTS_API_BASE_URL --auth bearer --token-env INCIDENTS_API_TOKEN --access custom --methods GET,POST`,
    then `api allow incidents listIncidents`, `api allow incidents getIncident`,
    `api allow incidents acknowledgeIncident` (without a spec, add each one's

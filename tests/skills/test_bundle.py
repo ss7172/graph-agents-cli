@@ -21,6 +21,8 @@
 - every ``references/<file>.md`` a SKILL.md mentions exists, and every reference
   file is mentioned;
 - Google Cloud product names appear only under a "Migration note" heading;
+- the rules the SkillOpt experiment added to the workflow and scaffold skills
+  (reviewed and approved text) are still there;
 - ``skills/`` and ``src/graph_agents_cli/skills/data/`` are byte-identical.
 
 No network, no cluster, no model key.
@@ -180,6 +182,64 @@ def test_workflow_skill_defers_to_a_declared_process() -> None:
     assert re.search(r"^## Process deference", text, re.MULTILINE)
     for rule in ("3-strikes", "NEVER change the model", "human approval", "code preservation"):
         assert rule.lower() in text.lower(), f"workflow skill lost the rule {rule!r}"
+
+
+def _flat_text(skill: str) -> str:
+    """A SKILL.md with its line breaks and indentation folded into single spaces."""
+    return " ".join((SKILLS_DIR / skill / "SKILL.md").read_text(encoding="utf-8").split())
+
+
+# The rules the SkillOpt experiment found (tools/skillopt, round 2), as reviewed and
+# approved: a coding agent stops at an unapproved spec when nobody can approve it, keeps
+# the default guidance file unless the team names one agent, and so on.
+WORKFLOW_RULES = (
+    "**What counts as approval.** Only the user explicitly approving the spec, in the "
+    "conversation.",
+    "a request to build the agent, however direct;",
+    "an instruction to proceed on your own, to decide for yourself or to do what is safe "
+    "while nobody can answer your questions: in that session the safe choice is to stop at "
+    "the spec.",
+    "When the spec is not approved and nobody can approve it, the safe action is to stop "
+    "before `create`, `scaffold enhance`, or any agent code.",
+    "End your answer with each open decision as an explicit question.",
+    "fix the agent, not the eval: do not edit `tests/eval/`",
+    "unless the user asked for the change the eval checks",
+    "a module without `TOOLS` (or with it renamed) contributes no tools, and nothing warns "
+    "about it.",
+    "If a test fails in code your change did not touch, show that it is unrelated before you "
+    "move on.",
+)
+SCAFFOLD_RULES = (
+    "Pass `CLAUDE.md` (Claude Code) or `GEMINI.md` (Gemini CLI, Antigravity) only when the "
+    "user says the team uses that agent alone.",
+    "When nobody names an agent, omit the flag and say in your report that the guidance file "
+    "stayed `AGENTS.md`.",
+    "After `create`, read `create_params` in `graph-agents-cli-manifest.yaml` and check every "
+    "choice the spec stated.",
+    "A value the task states is the user's answer.",
+    "Before enhancing, read `create_params` in `graph-agents-cli-manifest.yaml` so you pass "
+    "only the flags that change.",
+)
+
+
+@pytest.mark.parametrize("rule", WORKFLOW_RULES)
+def test_workflow_skill_keeps_the_approved_skillopt_rules(rule: str) -> None:
+    assert rule in _flat_text("graph-agents-cli-workflow")
+
+
+def test_workflow_skill_does_not_claim_tools_must_be_a_literal() -> None:
+    """Only `API_CALLS` must be a literal (lint reads it with `ast.literal_eval`)."""
+    assert "literal `TOOLS`" not in _flat_text("graph-agents-cli-workflow")
+
+
+@pytest.mark.parametrize("rule", SCAFFOLD_RULES)
+def test_scaffold_skill_keeps_the_approved_skillopt_rules(rule: str) -> None:
+    assert rule in _flat_text("graph-agents-cli-scaffold")
+
+
+def test_scaffold_examples_keep_the_default_guidance_file() -> None:
+    """No example picks a guidance file for a user who named no coding agent."""
+    assert "--agent-guidance-filename CLAUDE.md" not in _flat_text("graph-agents-cli-scaffold")
 
 
 def test_readme_lists_every_skill() -> None:

@@ -116,6 +116,26 @@ it; it is your primary source of truth. Otherwise:
 process, until that process's approvals exist). Do not assume, research, or fill in the blanks on
 your own; the user's intent drives everything.
 
+**What counts as approval.** Only the user explicitly approving the spec, in the conversation.
+None of these is approval:
+
+- a request to build the agent, however direct;
+- a spec file whose status says draft, or that still lists open questions;
+- defaults you chose yourself, even safe ones, even if you recorded them in the spec as
+  assumptions;
+- an instruction to proceed on your own, to decide for yourself or to do what is safe while
+  nobody can answer your questions: in that session the safe choice is to stop at the spec.
+
+When the spec is not approved and nobody can approve it, the safe action is to stop before
+`create`, `scaffold enhance`, or any agent code. Do these instead:
+
+1. Write or update a draft `.graph-agents-cli-spec.md` and leave it marked unapproved.
+2. End your answer with each open decision as an explicit question. Give the options and your
+   recommendation. Typical open decisions: which API operations and what access, which
+   credential, who calls the agent and how they authenticate, the model provider (data egress),
+   and the runtime, CD mode and registry.
+3. Ask the user to approve the spec.
+
 **Scale the ceremony to complexity:** a trivial agent (single tool, fixed persona) needs a couple
 of questions, a 2-3 sentence spec, and one approval; a complex agent (multi-step graph, external API
 access, per-user identity and roles, safety-critical) gets the full treatment in `references/brainstorming.md`.
@@ -245,7 +265,15 @@ the expect checks, the judge metrics, the gate rule, and the exit codes.
 2. `graph-agents-cli eval run` (chains `generate` and `grade`). For debugging use `eval generate`
    then `eval grade` on the traces file.
 3. Discuss results with the user; paste the per-status counts and the exit code.
-4. Fix issues; iterate on the core cases first, then add edge cases.
+4. Fix issues; iterate on the core cases first, then add edge cases. When an eval that passed
+   before breaks, fix the agent, not the eval: do not edit `tests/eval/` (datasets,
+   expectations, `min_pass_rate` thresholds) to reach exit 0, unless the user asked for the
+   change the eval checks (for example, a renamed tool or argument). Map each failed check to
+   code:
+   - `tool_calls` with no actual calls: the tool is not registered. `app/tools/__init__.py`
+     collects the `TOOLS` list of every module under `app/tools/`; a module without `TOOLS` (or
+     with it renamed) contributes no tools, and nothing warns about it.
+   - `contains` fails while the tool is called: look at the tool's return text or the prompt.
 5. Repeat until `eval run` exits 0. The exit code is the gate; a passing run has no `failed`,
    `error`, or `missing` case and every quality metric meets its `min_pass_rate`.
 
@@ -361,6 +389,11 @@ graph = create_agent(
 
 **Stop-the-line rule:** if a change breaks something that worked, fix the regression before
 continuing feature work.
+
+If a test fails in code your change did not touch, show that it is unrelated before you move on.
+Grep the failing test for the identifiers you changed, then rerun that test alone. Report it as
+pre-existing, with that evidence and the failure output. Do not edit unrelated code or tests to
+make the failure go away.
 
 - **Environment variables:** `.env`, `.env.<env>`, and the manifest are essential configuration;
   never remove or rewrite entries unless the user asks. Never commit `.env` files. Secrets reach

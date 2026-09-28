@@ -172,7 +172,7 @@ timing, not prompts or tool data. See [Observability](../guides/observability.md
 | Rule | What it means for you |
 |---|---|
 | Process deference | A `process:` your project declares wins over the skill's own gates |
-| Spec before code | Nothing is scaffolded or written until you approve the spec |
+| Spec before code | Nothing is scaffolded or written until you approve the spec. A request to build, or an instruction to proceed on its own, is not approval: with nobody to ask, the agent stops at a draft spec and ends with its open questions |
 | Code preservation | The agent changes only the lines your request targets |
 | Never change the model | `MODEL_PROVIDER` and `MODEL_NAME` stay as chosen unless you ask; they are also an egress decision |
 | Human approval before deploy | No deploy, and no merge of a production pull request, without you |

@@ -26,6 +26,22 @@ migration" with the steps to follow.
   site's pages: each limitation now sits on the page of the feature it concerns, the
   comparison on [Compared with google-agents-cli](website/src/reference/comparison.md). The
   tests that ran README examples now run the same examples from the site's guides.
+- **The workflow and scaffold skills carry rules found by the SkillOpt experiment.**
+  [SkillOpt](https://github.com/microsoft/SkillOpt) optimised the skills against a benchmark
+  of graph-agents-cli tasks carried out by Claude Code sessions. Its proposals were reviewed
+  by hand (wording taken from the benchmark generalised, one claim corrected, a misplaced
+  rule moved) and measured again before they were adopted. The workflow skill now says what
+  counts as approval of the spec: a request to build, a draft spec, defaults the agent chose
+  or an instruction to proceed on its own is not one. With nobody to approve, the agent stops
+  before `create` at a draft spec (in 9 of 9 sessions of the benchmark's spec-gate tasks,
+  against 1 to 3 of 6 with the old text) and ends its answer with the open decisions as
+  questions. It also says to fix the agent, not the eval, when an eval that passed breaks
+  (unless the user asked for the change the eval checks), maps failed checks to code, and
+  says how to show that a failing test is unrelated to a change. The scaffold skill keeps
+  the default `AGENTS.md` guidance file unless the user says the team uses one coding agent
+  (8 of 8 sessions, against 4 of 8), its examples no longer pass
+  `--agent-guidance-filename CLAUDE.md`, and it has the agent read `create_params` before
+  `scaffold enhance` and after `create`.
 
 ### Fixed
 
