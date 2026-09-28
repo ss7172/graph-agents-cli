@@ -238,7 +238,9 @@ migration" with the steps to follow.
   which), in `/chat`, `GET /approvals`, the thread's approvals and the A2A approval request.
   It expires 5 s before the approval it decides at the latest, and the nested calls' and the
   effect's query and body are dropped on decision with the call's own (unless
-  `TRACE_CAPTURE=full`).
+  `TRACE_CAPTURE=full`). `approvals list` and `run` print the effect first ("orders (via
+  billing) will POST /orders/ORD-1002/cancel (cancelOrder), as reported by orders", its body,
+  and a `via` line per agent), terminal-safe like the rest of the approval.
 - **An A2A client in the template: `app_utils/a2a_client.py`** (B3; replaces the
   experiment's hand-written peers client). `peer_tools(PEERS)` gives the model
   `ask_agent(agent, request)` (its description lists the peers and what each does) and, for

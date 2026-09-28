@@ -90,6 +90,48 @@ def test_lines_show_the_whole_call():
     assert no_body is not None and "  body:        (none)" in no_body.lines()
 
 
+def test_a_relayed_decision_shows_what_will_happen_first():
+    approval = Approval.from_payload(
+        {
+            "approval_id": "c1",
+            "api": "billing_agent",
+            "method": "POST",
+            "path": "/a2a/billing",
+            "a2a_operation": "approve",
+            "body": {"jsonrpc": "2.0"},
+            "approvers": ["requester"],
+            "effect": {
+                "agent": "orders",
+                "via": ["billing", "orders"],
+                "method": "POST",
+                "path": "/orders/ORD-1002/cancel",
+                "operation_id": "cancelOrder",
+                "body": {"reason": "asked\x1b[2J"},
+                "expires_at": "2026-09-28T12:00:00Z",
+            },
+            "nested": {
+                "agent": "billing",
+                "approval_id": "b1",
+                "decide_with": "relayed",
+                "nested": {"agent": "orders", "approval_id": "o1", "decide_with": "relayed"},
+            },
+        }
+    )
+    assert approval is not None
+    lines = approval.lines()
+    assert lines[0] == (
+        "  effect:      orders (via billing) will POST /orders/ORD-1002/cancel (cancelOrder), "
+        "as reported by orders"
+    )
+    text = "\n".join(lines)
+    assert "\x1b" not in text and "\\u001b" in text  # the body is shown terminal-safe
+    assert "  via:         billing approval b1 (decided there: relayed)" in text
+    assert "  via:         orders approval o1 (decided there: relayed)" in text
+    assert text.index("effect:") < text.index("call:        POST /a2a/billing")
+    plain = Approval.from_payload({"approval_id": "a1", "method": "GET", "path": "/x"})
+    assert plain is not None and plain.effect_lines() == []
+
+
 def test_decide_commands_quote_ids_and_carry_flags():
     approval = Approval.from_payload({"approval_id": "$(rm -rf ~)", "approvers": ["role:ops"]})
     assert approval is not None

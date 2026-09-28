@@ -21,7 +21,10 @@ before sending a gated call. The chat API then ends the run's stream with
 ``path``, ``query``, ``body``, ``operation_id``, ``reason``, ``approvers``,
 ``expires_at``). ``GET /threads/{thread_id}/approvals`` lists a thread's
 approvals and ``POST /threads/{thread_id}/approvals/{approval_id}`` decides
-one. ``run``, ``approvals`` and ``eval generate`` share this module.
+one. ``run``, ``approvals`` and ``eval generate`` share this module. A decision
+this agent relays to another agent carries ``effect`` (the call that will
+actually happen there) and ``nested`` (the approvals it passes through): they
+are printed first.
 
 Everything in an approval except its id came, one way or another, from the
 model (the path's ids, the body, the stated reason), and the model may have
@@ -199,9 +202,46 @@ class Approval:
             details.append(f"operation {safe_text(self.operation_id)}")
         return f"{call} ({', '.join(details)})" if details else call
 
+    def effect_lines(self) -> list[str]:
+        """What a relayed decision will do (``effect``) and through which approvals (``nested``).
+
+        ``orders (via billing) will POST /orders/ORD-1002/cancel (cancelOrder), as reported
+        by orders``, its body, and one ``via`` line per agent; empty for any other approval.
+        """
+        effect = self.raw.get("effect")
+        if not isinstance(effect, Mapping):
+            return []
+        via = [str(v) for v in effect.get("via") or [] if v]
+        agent = str(effect.get("agent") or "?")
+        hops = via[:-1] if via and via[-1] == agent else via
+        who = safe_text(agent) + (f" (via {', '.join(safe_text(h) for h in hops)})" if hops else "")
+        what = f"{safe_text(effect.get('method') or '?')} {safe_text(effect.get('path') or '?')}"
+        if effect.get("operation_id"):
+            what += f" ({safe_text(effect['operation_id'])})"
+        reported = f", as reported by {safe_text(via[-1])}" if via else ""
+        lines = [f"  effect:      {who} will {what}{reported}"]
+        for key in ("query", "body"):
+            if effect.get(key) not in (None, {}, [], ""):
+                shown = json_lines(effect[key])
+                lines.append(f"    {key + ':':<11}{shown[0]}")
+                lines.extend(f"               {line}" for line in shown[1:])
+        if effect.get("expires_at"):
+            lines.append(
+                f"    expires:   {safe_text(effect['expires_at'])} (at {safe_text(agent)})"
+            )
+        level, depth = self.raw.get("nested"), 0
+        while isinstance(level, Mapping) and depth < 8:
+            decided = safe_text(level.get("decide_with") or "?")
+            lines.append(
+                f"  via:         {safe_text(level.get('agent') or '?')} approval "
+                f"{safe_text(level.get('approval_id') or '?')} (decided there: {decided})"
+            )
+            level, depth = level.get("nested"), depth + 1
+        return lines
+
     def lines(self) -> list[str]:
-        """The approval in full, as the human deciding it must see it."""
-        lines = [f"  call:        {self.call_line()}"]
+        """The approval in full, as the human deciding it must see it (what it will do first)."""
+        lines = [*self.effect_lines(), f"  call:        {self.call_line()}"]
         if self.query not in (None, {}, [], ""):
             query = json_lines(self.query)
             lines.append(f"  query:       {query[0]}")

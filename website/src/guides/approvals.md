@@ -414,6 +414,8 @@ waits for (not from the model), and bound with the message like the rest of its 
 - `effect`: the call that will actually happen, shown first, for example "orders (via
   billing) will POST /orders/ORD-1002/cancel (cancelOrder)".
 
+`graph-agents-cli approvals list` and `run` print the effect first (its body, and each agent
+it passes through, with how that agent's gate is decided), then the message this agent sends.
 The approval expires 5 s before the one it decides, at the latest, so the person is never
 asked about something that has already expired downstream. Once decided, the query and body
 of every nested call and of the effect are dropped with the call's own (unless

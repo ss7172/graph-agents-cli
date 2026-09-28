@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``graph-agents-cli api``: declare and change a project's outbound API access policy."""
+"""``graph-agents-cli peer``: the other agents a project asks, over A2A (its peers)."""

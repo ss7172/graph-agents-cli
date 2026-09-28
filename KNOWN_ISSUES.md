@@ -65,15 +65,15 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
 | runtime | 11 | 6 | 17 |
-| a2a | 2 | 11 | 13 |
+| a2a | 2 | 12 | 14 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 1 | 17 | 18 |
+| cli | 1 | 18 | 19 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **44** | **94** | **138** |
+| **Total** | **44** | **96** | **140** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -1091,6 +1091,19 @@ Low · a2a · found in the A2A multi-agent experiment (fix review)
 - **Workaround:** Poll with a timeout and send the message again after it; roll out the
   upgrade while no A2A tasks are in flight.
 
+### KI-150: A relayed approval whose peer answers `thread_busy` must be approved again
+
+Low · a2a · found in v0.3 P4
+
+- **Issue:** The A2A client's `approve_agent_action` sends the person's decision to the other
+  agent once, under the approval the person gave here, which is used when it is sent. If
+  that agent answers the decision `thread_busy` (a run of that conversation was still in
+  progress there), the decision is not sent again: a retry would be a second use of the
+  approval. The tool reports the refusal; the other agent's approval still waits.
+- **Impact:** A rare race asks the person to approve twice.
+- **Workaround:** Ask the agent to relay the approval again (`approve_agent_action`); the
+  person approves once more.
+
 ### KI-065: Every eval case runs as one identity
 
 Low · eval · found in wave 4
@@ -1505,6 +1518,17 @@ Low · cli · found in the skill-optimisation experiment
 - **Impact:** A contributor installing from a worktree can test an earlier build unknowingly.
 - **Workaround:** Add `--refresh-package graph-agents-cli` (or `--reinstall`) to the install,
   and check the commit that `graph-agents-cli --version` names.
+
+### KI-151: A peer named apart from its API keeps its name only through `tools/a2a_peers.py`
+
+Low · cli · found in v0.3 P4
+
+- **Issue:** `peer add NAME --api-name API` records NAME in the generated
+  `tools/a2a_peers.py`, since `api-policy.yaml` has no key for it; `peer sync`,
+  `list`, `show` and `remove` read it back from there. If that file is deleted, a
+  regenerated module names the peer after its API (without `_agent`, else the API's name).
+- **Impact:** The model then asks that peer under another name; `lint` passes.
+- **Workaround:** Keep the generated module, or use the default API name (`<NAME>_agent`).
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 

@@ -350,7 +350,9 @@ graph-agents-cli peer add orders \
 - **`<agent_dir>/tools/a2a_peers.py`**, regenerated: `PEERS` (each peer's API, whether it
   relays approvals, its description), `API_CALLS` (exactly the calls the policy allows) and
   `TOOLS = peer_tools(PEERS)`. It is data only and generated from the policy; the name the
-  model picks a peer by is recorded there. Do not edit it: put your own peer behaviour in
+  model picks a peer by is recorded there (keep the file:
+  [KI-151](../reference/known-issues.md#ki-151-a-peer-named-apart-from-its-api-keeps-its-name-only-through-toolsa2a_peerspy)).
+  Do not edit it: put your own peer behaviour in
   another tool module that uses `A2APeerClient`.
 
 It then prints what it cannot set, including the settings on the peer:
@@ -443,7 +445,8 @@ minted just before sending), the limits and the response cap apply to every byte
   exchange's own messages, and a peer that is down.
 
 A relayed approval is decided once: if the peer answers the decision with `thread_busy`, the
-person approves again (the approval is used when the decision is sent).
+person approves again (the approval is used when the decision is sent;
+[KI-150](../reference/known-issues.md#ki-150-a-relayed-approval-whose-peer-answers-thread_busy-must-be-approved-again)).
 
 ## Per-user authorization for writes
 

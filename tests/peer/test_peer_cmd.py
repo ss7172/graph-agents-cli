@@ -514,3 +514,19 @@ def test_a_peer_keeps_its_name_whatever_its_api_is_called(jwt_project: Path) -> 
     ok("peer", "remove", "orders")
     assert not (jwt_project / "api-policy.yaml").exists()
     assert not (jwt_project / "front_desk" / "tools" / "a2a_peers.py").exists()
+
+
+def test_allow_actorless_prints_what_the_peer_must_set(jwt_project: Path) -> None:
+    """An issuer whose exchanged tokens name no actor: the opt-in, and on the peer
+    AUTH_JWT_DIRECT_CLIENTS and client:<id> (the owner's decision of 2026-09-28)."""
+    result = ok("peer", "add", "shipping", "--allow-actorless", "--description", "Shipping.")
+    api = _policy(jwt_project)["apis"]["shipping_agent"]
+    assert api["exchange"] == {"audience": "shipping", "allow_actorless": True}
+    out = " ".join(result.output.split())
+    assert (
+        "on shipping (required: this agent sends tokens that name no actor, "
+        "exchange.allow_actorless): AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with>, "
+        "and client:concierge in AUTH_ALLOWED_ACTORS"
+    ) in out
+    assert "--decide-with relayed --relayers client:concierge" in out
+    assert cli("peer", "add", "billing", "--auth", "bearer", "--allow-actorless").exit_code == 2
