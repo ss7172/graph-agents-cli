@@ -69,21 +69,31 @@ from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._api_policy import (
+    _RPC_METHOD_RE,
+    A2A_APPROVE,
+    A2A_MESSAGE_METHODS,
+    A2A_OPERATIONS,
     ANY_METHOD,
     CALLS_NAME,
+    DESCRIPTION_KEY,
     HTTP_METHODS,
     LEGACY_CALLS_NAME,
     POLICY_FILENAME,
+    PROTOCOL_A2A,
+    RPC_PROTOCOLS,
     ApiPolicyFileError,
     ApprovalGate,
     ApprovalRuleConflict,
     ExampleCall,
+    api_protocol,
     approval_notes,
     auth_policy_findings,
+    canonical_rpc_method,
     denial_match,
     describe_gate,
     forward_runtime_problem,
     gated,
+    label_problem,
     load_policy_document,
     operation_matches,
     path_matches,
@@ -94,7 +104,9 @@ from graph_agents_cli._api_policy import (
 from graph_agents_cli._output import Console, print_table
 
 TOOLS_SUBDIR = "tools"
-_CALL_KEYS = ("api", "method", "operation_id", "path")
+_CALL_KEYS = ("api", "method", "operation_id", "path", "rpc_method", "a2a_operation")
+# More peers than this make the model's roster of agents long (lint warns).
+MAX_PEERS = 40
 
 STATUS_ALLOWED = "allowed"
 STATUS_DENIED = "denied"
@@ -112,12 +124,19 @@ class DeclaredCall:
     api: str = ""
     operation_id: str | None = None
     path: str | None = None
+    # A call to a JSON-RPC API (protocol: jsonrpc|a2a): the JSON-RPC method it sends and,
+    # for an A2A message that decides a pending approval, approve or reject.
+    rpc_method: str | None = None
+    a2a_operation: str | None = None
 
     @property
     def operation(self) -> str:
         if self.operation_id and self.path:
-            return f"{self.operation_id} {self.path}"
-        return self.operation_id or self.path or "-"
+            text = f"{self.operation_id} {self.path}"
+        else:
+            text = self.operation_id or self.path or "-"
+        rpc = " ".join(part for part in (self.rpc_method, self.a2a_operation) if part)
+        return f"{text} ({rpc})" if rpc else text
 
 
 @dataclass(frozen=True)
@@ -229,6 +248,20 @@ def _entry_problem(entry: Any) -> str | None:
         problem = path_template_problem(path)
         if problem:
             return f"path {problem}"
+    rpc_method, a2a_operation = entry.get("rpc_method"), entry.get("a2a_operation")
+    if rpc_method is not None:
+        if not (isinstance(rpc_method, str) and _RPC_METHOD_RE.fullmatch(rpc_method)):
+            return (
+                "has an rpc_method that is not a JSON-RPC method name (a letter, then up to 63 "
+                "letters, digits, '_', '/' or '.')"
+            )
+        if method.upper() != "POST":
+            return f"has an rpc_method on a {method.upper()} (a JSON-RPC request is a POST)"
+    if a2a_operation is not None:
+        if a2a_operation not in A2A_OPERATIONS:
+            return "has an a2a_operation other than approve or reject"
+        if rpc_method is None:
+            return "has an a2a_operation without rpc_method (SendMessage or SendStreamingMessage)"
     return None
 
 
@@ -376,6 +409,8 @@ def read_api_calls(
                     method=str(entry["method"]).upper(),
                     operation_id=entry.get("operation_id") or None,
                     path=entry.get("path") or None,
+                    rpc_method=entry.get("rpc_method") or None,
+                    a2a_operation=entry.get("a2a_operation") or None,
                 )
             )
     for line in _unread_changes(tree, declaration):
@@ -576,6 +611,10 @@ def check_call(
             f"API {call.api!r} is not declared in {policy_file} (declared: {declared})",
             add_hint(call.api),
         )
+    rpc_refusal = _rpc_refusal(call, api)
+    if rpc_refusal is not None:
+        return rpc_refusal
+    rpc = _declared_rpc(call, api)
     spec = (specs or {}).get(call.api)
     by_id, pairs = _index_openapi(spec) if spec is not None else ({}, set())
     path = call.path
@@ -583,7 +622,7 @@ def check_call(
         # The client always sends a path: judge the one the spec gives the operation,
         # so path denials apply to a call declared by operation_id alone.
         path = by_id[call.operation_id][0]
-    reason = refusal_reason(api, call.method, call.operation_id, path)
+    reason = refusal_reason(api, call.method, call.operation_id, path, **rpc)
     mismatch = _spec_mismatch(call, by_id, pairs) if spec is not None else None
     # A declared operation_id the spec does not give this call: fix the declaration first.
     id_mismatch = mismatch is not None and call.operation_id is not None
@@ -598,10 +637,18 @@ def check_call(
         )
     # Only now, with the call allowed: approval never widens access.
     try:
-        gate = gated(api, call.method, call.operation_id, path)
+        gate = gated(api, call.method, call.operation_id, path, **rpc)
     except ApprovalRuleConflict as exc:
         # The runtime refuses it too: it could be either rule's call (fail closed).
         return CheckResult(call, STATUS_DENIED, str(exc), conflict_hint(call, exc))
+    if rpc["a2a_operation"] == A2A_APPROVE and gate is None:
+        # The validator refuses such a policy, and the client such a message.
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            "a message that approves must wait for an approval or be denied",
+            f"{API_COMMAND} approval {call.api} --a2a-operations approve --approvers requester",
+        )
     if mismatch is not None:
         return CheckResult(
             call,
@@ -619,6 +666,64 @@ def check_call(
         )
         return CheckResult(call, STATUS_ALLOWED, f"spec: {call.method} {spec_path}", gate=gate)
     return CheckResult(call, STATUS_ALLOWED, "", gate=gate)
+
+
+def _declared_rpc(call: DeclaredCall, api: Mapping[str, Any]) -> dict[str, str | None]:
+    """The declared JSON-RPC method (an A2A 0.3 name read as its 1.0 name) and decision."""
+    method = call.rpc_method
+    if method is not None:
+        method = canonical_rpc_method(api_protocol(api), method)
+    return {"rpc_method": method, "a2a_operation": call.a2a_operation}
+
+
+def _rpc_refusal(call: DeclaredCall, api: Mapping[str, Any]) -> CheckResult | None:
+    """A declared call whose JSON-RPC keys do not fit its API's `protocol`, or None.
+
+    `rpc_method` and `a2a_operation` go with JSON-RPC APIs only; every POST to one
+    declares its `rpc_method` (the client reads it from the body, so lint must know it);
+    `a2a_operation` goes with an A2A message; and an `operation_id` naming an entry for
+    another request is refused, as the client refuses it (`label_problem`).
+    """
+    protocol = api_protocol(api)
+    rpc = _declared_rpc(call, api)
+    fix = f"in the call's {CALLS_NAME} entry"
+    if protocol not in RPC_PROTOCOLS:
+        if call.rpc_method is not None or call.a2a_operation is not None:
+            return CheckResult(
+                call,
+                STATUS_DENIED,
+                f"rpc_method and a2a_operation are for JSON-RPC APIs; {call.api} is protocol "
+                f"{protocol}",
+                f"remove rpc_method and a2a_operation {fix}, or set the API's protocol",
+            )
+        return None
+    if call.method == "POST" and call.rpc_method is None:
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            f"a POST to a protocol {protocol} API sends a JSON-RPC request: declare its "
+            "rpc_method (the client reads it from the body and judges the call by it)",
+            f'add "rpc_method": "<the JSON-RPC method>" {fix}',
+        )
+    if call.a2a_operation is not None and (
+        protocol != PROTOCOL_A2A or rpc["rpc_method"] not in A2A_MESSAGE_METHODS
+    ):
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            "a2a_operation is for an A2A message (protocol a2a, rpc_method SendMessage or "
+            "SendStreamingMessage)",
+            f"remove a2a_operation {fix}",
+        )
+    mislabelled = label_problem(api, call.operation_id, rpc["rpc_method"], rpc["a2a_operation"])
+    if mislabelled:
+        return CheckResult(
+            call,
+            STATUS_DENIED,
+            mislabelled,
+            f"name the operation_id of the entry for this request {fix}, or none",
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -640,8 +745,12 @@ def _allow_args(call: DeclaredCall) -> str:
     """``api allow`` arguments for an entry that covers exactly the declared call.
 
     The method is always pinned, and the path whenever the call names one, so
-    the entry never allows the label on another method or path.
+    the entry never allows the label on another method or path. A JSON-RPC call
+    pins its ``rpc_method`` too.
     """
+    if call.rpc_method and call.path:
+        label = f"{call.operation_id} " if call.operation_id else ""
+        return f"{label}--method {call.method} --path {call.path} --rpc-method {call.rpc_method}"
     if call.operation_id and call.path:
         return f"{call.operation_id} --method {call.method} --path {call.path}"
     if call.operation_id:
@@ -683,8 +792,9 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
     if call.method not in allowed:
         methods = ",".join(m for m in HTTP_METHODS if m in {*allowed, call.method})
         steps.append(f"{API_COMMAND} access {call.api} custom --methods {methods}")
+    rpc = _declared_rpc(call, api)
     for entry in api.get("denied_operations") or []:
-        unnamed = denial_match(entry, call.method, call.operation_id, path)
+        unnamed = denial_match(entry, call.method, call.operation_id, path, **rpc)
         if unnamed == "operation_id":
             return (
                 f"name the operation: add operation_id to the call and to {CALLS_NAME} "
@@ -696,11 +806,16 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
                 "refuses declared calls that name none; the client always sends one)"
             )
         if unnamed is not None:
-            revoke = (
-                f"--method {call.method} --path {entry['path']}"
-                if entry.get("operationId") is None and entry.get("path") is not None
-                else str(entry.get("operationId"))
-            )
+            if entry.get("rpc_method") is not None or entry.get("a2a_operation") is not None:
+                revoke = " ".join(
+                    f"--{key.replace('_', '-')} {entry[key]}"
+                    for key in ("rpc_method", "a2a_operation")
+                    if entry.get(key) is not None
+                )
+            elif entry.get("operationId") is None and entry.get("path") is not None:
+                revoke = f"--method {call.method} --path {entry['path']}"
+            else:
+                revoke = str(entry.get("operationId"))
             step = (
                 f"{API_COMMAND} revoke {call.api} {revoke} --from denied (lifts a deliberate "
                 "denial: make sure it should go)"
@@ -709,7 +824,7 @@ def refusal_hint(call: DeclaredCall, api: Mapping[str, Any], path: str | None) -
                 steps.append(step)
     allowed_operations = api.get("allowed_operations")
     if allowed_operations is not None and not any(
-        operation_matches(entry, call.method, call.operation_id, path)
+        operation_matches(entry, call.method, call.operation_id, path, **rpc)
         for entry in allowed_operations
     ):
         if call.operation_id or call.path:
@@ -918,6 +1033,7 @@ def build_report(
             for error in errors:
                 report.invalid_policy(policy_file, error)
             report.notes.extend(notes)
+        report.notes.extend(peer_notes(document))
         for name, api in document["apis"].items():
             report.notes.extend(approval_notes(name, api))
             openapi_ref = api.get("openapi")
@@ -952,6 +1068,32 @@ def build_report(
     if not calls and not problems:
         report.notes.append(f"no {CALLS_NAME} declarations under {agent_dir}/{TOOLS_SUBDIR}/")
     return report
+
+
+def peer_notes(document: Mapping[str, Any]) -> list[str]:
+    """Warnings about the policy's A2A peers (`protocol: a2a` APIs).
+
+    A peer without a `description`: the model picks an agent by what it is told the
+    agent does. More than `MAX_PEERS` peers: the roster of agents the model reads grows
+    long (about 1.5k tokens at 20 peers of 300 characters).
+    """
+    peers = [
+        str(name)
+        for name, api in (document.get("apis") or {}).items()
+        if api_protocol(api) == PROTOCOL_A2A
+    ]
+    notes = [
+        f"warning: A2A peer {name} has no {DESCRIPTION_KEY}: the model chooses an agent by "
+        f"what it does (set apis.{name}.{DESCRIPTION_KEY}, 1-300 characters)"
+        for name in peers
+        if not document["apis"][name].get(DESCRIPTION_KEY)
+    ]
+    if len(peers) > MAX_PEERS:
+        notes.append(
+            f"warning: {len(peers)} A2A peers (more than {MAX_PEERS}): the roster of agents the "
+            "model reads grows long; split the work across fewer agents"
+        )
+    return notes
 
 
 # `A2A_DELEGATED_MENTIONS=request` turns off the template's check of a record id against the

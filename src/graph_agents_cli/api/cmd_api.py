@@ -42,6 +42,10 @@ from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._api_policy import (
+    A2A_APPROVE,
+    A2A_KEY,
+    A2A_OPERATION_KEY,
+    A2A_OPERATIONS,
     ALLOW_ACTORLESS_KEY,
     ANY_METHOD,
     APPROVAL_KEY,
@@ -51,14 +55,23 @@ from graph_agents_cli._api_policy import (
     DEFAULT_APPROVAL_TIMEOUT_S,
     DEFAULT_FORWARD_HEADER,
     DEFAULT_TIMEOUTS_MS,
+    DESCRIPTION_KEY,
+    DESCRIPTION_MAX_CHARS,
     EXCHANGE_KEY,
     HEADER_AUTH_MODES,
     HTTP_METHODS,
     MAX_APPROVAL_TIMEOUT_S,
     MIN_APPROVAL_TIMEOUT_S,
     POLICY_FILENAME,
+    PROTOCOL_A2A,
+    PROTOCOL_HTTP,
+    PROTOCOL_KEY,
+    PROTOCOLS,
     REQUESTER_APPROVER,
     ROLE_APPROVER_PREFIX,
+    RPC_METHOD_KEY,
+    RPC_PROTOCOLS,
+    api_protocol,
     approval_notes,
     approval_rule_label,
     approval_rules,
@@ -128,6 +141,11 @@ def api_group() -> None:
     are sent (requester confirmation, or role:<name> approvers for a second
     person's review; --add-rule gives other calls of the API other
     approvers); approval never widens access.
+
+    A JSON-RPC API (`add --protocol jsonrpc`), or another agent over A2A
+    (`--protocol a2a --a2a-path /a2a/<name>`), is judged by the request each
+    POST sends, read from its body: allow, deny and gate it by --rpc-method,
+    and an agent's approve decisions by --a2a-operation(s) approve.
 
     \b
     Exit codes:
@@ -244,6 +262,9 @@ def _validate(project: _Project, document: dict[str, Any]) -> None:
 # The order of an API's keys in the schema: a key an edit adds goes after the
 # last key before it in this order, so files stay laid out the same way.
 _API_KEY_ORDER = (
+    DESCRIPTION_KEY,
+    PROTOCOL_KEY,
+    A2A_KEY,
     "base_url_env",
     "auth",
     "token_env",
@@ -555,6 +576,31 @@ def _openapi_reference(
     ),
 )
 @click.option(
+    "--protocol",
+    "protocol",
+    type=click.Choice(list(PROTOCOLS)),
+    default=None,
+    help=(
+        "http (the default), jsonrpc (a JSON-RPC 2.0 API) or a2a (another agent over A2A 1.0 "
+        "JSON-RPC, with --a2a-path): jsonrpc and a2a judge each POST by the JSON-RPC request "
+        "it sends, read from its body."
+    ),
+)
+@click.option(
+    "--a2a-path",
+    "a2a_path",
+    default=None,
+    metavar="PATH",
+    help="--protocol a2a (required): the agent's A2A endpoint, a literal path such as /a2a/orders.",
+)
+@click.option(
+    "--description",
+    "description",
+    default=None,
+    metavar="TEXT",
+    help=f"What the API is for (1-{DESCRIPTION_MAX_CHARS} characters).",
+)
+@click.option(
     "--access",
     "access",
     type=click.Choice(list(ch.ACCESS_CHOICES)),
@@ -611,6 +657,9 @@ def cmd_add(
     scope: str | None,
     resource: str | None,
     allow_actorless: bool,
+    protocol: str | None,
+    a2a_path: str | None,
+    description: str | None,
     access: str,
     methods: str | None,
     openapi: Path | None,
@@ -620,8 +669,26 @@ def cmd_add(
     read_timeout_ms: int | None,
     dry_run: bool,
 ) -> None:
-    """Declare an API with an explicit access choice (creates api-policy.yaml when absent)."""
+    """Declare an API with an explicit access choice (creates api-policy.yaml when absent).
+
+    With --protocol a2a (another agent), every message that approves one of that agent's
+    pending approvals is denied (denied_operations: a2a_operation: approve) when POST is
+    allowed: an agent never decides a person's approvals on its own. To relay the person's
+    decision instead, gate it (api approval NAME --a2a-operations approve --approvers
+    requester), then lift the denial (api revoke NAME --a2a-operation approve --from denied).
+    """
     allowed_methods = ch.access_methods(access, ch.parse_methods(methods))
+    if protocol == PROTOCOL_A2A and not a2a_path:
+        raise click.UsageError(
+            "--protocol a2a needs --a2a-path (the agent's A2A endpoint, such as /a2a/orders)"
+        )
+    if protocol != PROTOCOL_A2A and a2a_path:
+        raise click.UsageError("--a2a-path goes with --protocol a2a only")
+    if protocol == PROTOCOL_A2A and auth == "none":
+        raise click.UsageError(
+            "--protocol a2a needs a credential: --auth bearer, forward or exchange (an agent's "
+            "A2A endpoint authenticates its callers)"
+        )
     if auth == "bearer" and not token_env:
         raise click.UsageError("--auth bearer needs --token-env (the variable holding the token)")
     if auth != "bearer" and token_env:
@@ -646,7 +713,14 @@ def cmd_add(
             "`allow`, `deny`, `revoke` or `limits`"
         )
     plan = Plan(project.root)
-    api: dict[str, Any] = {"base_url_env": base_url_env, "auth": auth}
+    api: dict[str, Any] = {}
+    if description is not None:
+        api[DESCRIPTION_KEY] = description
+    if protocol not in (None, PROTOCOL_HTTP):
+        api[PROTOCOL_KEY] = protocol
+    if a2a_path:
+        api[A2A_KEY] = {"path": a2a_path}
+    api.update({"base_url_env": base_url_env, "auth": auth})
     if token_env:
         api["token_env"] = token_env
     if forward_header:
@@ -663,6 +737,10 @@ def cmd_add(
             exchange[ALLOW_ACTORLESS_KEY] = True
         api[EXCHANGE_KEY] = exchange
     api["allowed_methods"] = allowed_methods
+    holds_approve = protocol == PROTOCOL_A2A and "POST" in ch.effective_methods(allowed_methods)
+    if holds_approve:
+        # Fail closed: this agent must not decide the other agent's approvals on its own.
+        api[ch.DENIED] = [{A2A_OPERATION_KEY: A2A_APPROVE}]
     if openapi is not None:
         api["openapi"], _spec = _openapi_reference(project, plan, name, openapi)
     if connect_timeout_ms or read_timeout_ms:
@@ -700,6 +778,18 @@ def cmd_add(
     values_add(plan, project.config, document, name)
     values_exchange_add(plan, project.config, document, name)
     _add_todos(plan, project.config, name, api, first_exchange=not _exchanges(project.document))
+    notes = [
+        f"{name} allows {ch.describe_methods(allowed_methods)}, every operation.",
+        *matrix_notes,
+    ]
+    if holds_approve:
+        notes.append(
+            f"messages to {name} that approve one of its pending approvals are denied "
+            "(denied_operations: a2a_operation: approve): this agent never decides them on its "
+            "own. To relay the person's decision instead, gate them, then lift the denial: "
+            f"graph-agents-cli api approval {name} --a2a-operations approve --approvers "
+            f"requester; graph-agents-cli api revoke {name} --a2a-operation approve --from denied"
+        )
     _finish(
         project,
         plan,
@@ -708,10 +798,7 @@ def cmd_add(
         before=project.document,
         after=document,
         widens=True,
-        notes=[
-            f"{name} allows {ch.describe_methods(allowed_methods)}, every operation.",
-            *matrix_notes,
-        ],
+        notes=notes,
     )
 
 
@@ -729,6 +816,11 @@ def _add_todos(
     first_exchange: bool = True,
 ) -> None:
     variable = api["base_url_env"]
+    if api_protocol(api) in RPC_PROTOCOLS:
+        plan.left_for_you.append(
+            f'declare each POST to {name} in API_CALLS with its "rpc_method" (the JSON-RPC '
+            "method it sends: the client reads it from the body and judges the call by it)"
+        )
     where = "in .env (local runs)"
     if config.deployment_target == "kubernetes":
         where += (
@@ -917,6 +1009,16 @@ def _entry_for(
 @click.option(
     "--methods", "methods", default=None, help="Limit the entry to these methods (e.g. GET,PUT)."
 )
+@click.option(
+    "--rpc-method",
+    "rpc_method",
+    default=None,
+    metavar="M",
+    help=(
+        "A JSON-RPC API (protocol jsonrpc or a2a): the JSON-RPC method of the request, with "
+        "--method POST --path P (OPERATION_ID optional); A2A 1.0 names under a2a."
+    ),
+)
 @_dry_run_option
 def cmd_allow(
     name: str,
@@ -924,6 +1026,7 @@ def cmd_allow(
     method: str | None,
     path: str | None,
     methods: str | None,
+    rpc_method: str | None,
     dry_run: bool,
 ) -> None:
     """Allow one operation (an allowed_operations entry, by OPERATION_ID and/or --method/--path).
@@ -932,9 +1035,15 @@ def cmd_allow(
     the method (--methods, or --method with --path) and, without an OpenAPI
     spec, the path, so the entry allows exactly the declared call. With the
     API's openapi spec recorded, OPERATION_ID must exist there and its
-    method and path are filled in.
+    method and path are filled in. On a JSON-RPC API, --rpc-method M --method
+    POST --path P allows the requests with that JSON-RPC method (read from the
+    body) at that endpoint.
     """
-    ref = ch.OperationRef.from_options(operation_id, method, path, combine=True)
+    if rpc_method is not None and methods:
+        raise click.UsageError("--rpc-method takes --method POST --path P, not --methods")
+    ref = ch.OperationRef.from_options(
+        operation_id, method, path, combine=True, rpc_method=rpc_method, endpoint=True
+    )
     extra = ch.parse_methods(methods)
     project = _load_project()
     api = project.api(name)
@@ -977,7 +1086,14 @@ def cmd_allow(
         refused = {
             m
             for m in entry_methods
-            if denial_match(denial, m, entry.get("operationId"), entry.get("path")) == ""
+            if denial_match(
+                denial,
+                m,
+                entry.get("operationId"),
+                entry.get("path"),
+                rpc_method=entry.get(RPC_METHOD_KEY),
+            )
+            == ""
         }
         if refused:
             denied_for |= refused
@@ -985,7 +1101,7 @@ def cmd_allow(
                 f"denied_operations entry {ch.describe_entry(denial)} still refuses it "
                 "(denials win)"
             )
-    if entry.get("path") is None:
+    if entry.get("path") is None and not ref.rpc:
         # An allow by label alone: the tool chooses the label, the entry does not say where.
         pinned = "no path" if entry.get("methods") else "no path and no method"
         notes.append(
@@ -1007,12 +1123,43 @@ def cmd_allow(
     )
 
 
+def _rpc_options(function: Callable[..., Any]) -> Callable[..., Any]:
+    """deny / revoke: ``--rpc-method M`` and ``--a2a-operation approve|reject``."""
+    function = click.option(
+        "--a2a-operation",
+        "a2a_operation",
+        type=click.Choice(list(A2A_OPERATIONS)),
+        default=None,
+        help=(
+            "protocol a2a: the messages that approve (or reject) a pending approval of the "
+            "agent behind the API, whatever their path, label or spelling."
+        ),
+    )(function)
+    return click.option(
+        "--rpc-method",
+        "rpc_method",
+        default=None,
+        metavar="M",
+        help=(
+            "A JSON-RPC API (protocol jsonrpc or a2a): the requests with this JSON-RPC method "
+            "(read from the body; letter case ignored), whatever their path or label."
+        ),
+    )(function)
+
+
 @api_group.command("deny")
 @click.argument("name")
 @_entry_options
+@_rpc_options
 @_dry_run_option
 def cmd_deny(
-    name: str, operation_id: str | None, method: str | None, path: str | None, dry_run: bool
+    name: str,
+    operation_id: str | None,
+    method: str | None,
+    path: str | None,
+    rpc_method: str | None,
+    a2a_operation: str | None,
+    dry_run: bool,
 ) -> None:
     """Deny one operation (a denied_operations entry, by OPERATION_ID and/or --method/--path).
 
@@ -1020,9 +1167,19 @@ def cmd_deny(
     whatever operation id the call names. A denial by OPERATION_ID alone
     knows only that label: with the API's openapi spec recorded, the id's
     method and path are filled in; without one, give --method M --path P
-    too so the denial holds whatever a call is labelled.
+    too so the denial holds whatever a call is labelled. On a JSON-RPC API,
+    --rpc-method M refuses every request with that method, and
+    --a2a-operation approve every message that approves a pending approval
+    of the agent behind the API (read from the body, whatever the label).
     """
-    ref = ch.OperationRef.from_options(operation_id, method, path, combine=True)
+    ref = ch.OperationRef.from_options(
+        operation_id,
+        method,
+        path,
+        combine=True,
+        rpc_method=rpc_method,
+        a2a_operation=a2a_operation,
+    )
     project = _load_project()
     api = project.api(name)
     entry, warnings = _entry_for(project, api, ref, [])
@@ -1042,7 +1199,7 @@ def cmd_deny(
     plan = Plan(project.root)
     plan.set_text(POLICY_FILENAME, project.text, editor.text)
     notes = list(warnings)
-    if entry.get("operationId") is not None and entry.get("path") is None:
+    if entry.get("operationId") is not None and entry.get("path") is None and not ref.rpc:
         notes.append(
             "a denial by operationId alone knows only that label: it refuses the calls that "
             "name it, and also refuses every call that names no operation_id (fail closed), "
@@ -1065,6 +1222,7 @@ def cmd_deny(
 @api_group.command("revoke")
 @click.argument("name")
 @_operation_options
+@_rpc_options
 @click.option(
     "--from",
     "from_list",
@@ -1078,11 +1236,24 @@ def cmd_revoke(
     operation_id: str | None,
     method: str | None,
     path: str | None,
+    rpc_method: str | None,
+    a2a_operation: str | None,
     from_list: str | None,
     dry_run: bool,
 ) -> None:
-    """Remove the allowed or denied entries naming an operation (OPERATION_ID or --method/--path)."""
-    ref = ch.OperationRef.from_options(operation_id, method, path)
+    """Remove the allowed or denied entries naming an operation (OPERATION_ID or --method/--path).
+
+    On a JSON-RPC API, --rpc-method M and/or --a2a-operation approve|reject name
+    the entries that pin them (with OPERATION_ID, the one also naming it).
+    """
+    if (rpc_method is not None or a2a_operation is not None) and (method or path):
+        raise click.UsageError(
+            "--rpc-method and --a2a-operation name entries by what they pin: give no --method "
+            "or --path with them"
+        )
+    ref = ch.OperationRef.from_options(
+        operation_id, method, path, rpc_method=rpc_method, a2a_operation=a2a_operation
+    )
     project = _load_project()
     api = project.api(name)
     keys = {"allowed": ch.ALLOWED, "denied": ch.DENIED}
@@ -1263,6 +1434,30 @@ def _parse_relayers(value: str) -> list[str]:
                 "commas or control characters)"
             )
     return list(dict.fromkeys(items))
+
+
+def _parse_a2a_operations(value: str) -> list[str]:
+    """``approve, reject`` -> ``["approve", "reject"]`` (repeats dropped, order kept)."""
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise click.UsageError("--a2a-operations needs approve and/or reject (or none)")
+    for item in items:
+        if item not in A2A_OPERATIONS:
+            raise click.UsageError(f"--a2a-operations: {item!r} is not approve or reject")
+    return list(dict.fromkeys(items))
+
+
+def _a2a_gate_entries(current: list[Any], operations: list[str]) -> list[dict[str, Any]]:
+    """``required_for.operations`` entries for the A2A decisions ``operations``: the rule's own
+    entry for each, kept as written, else ``{a2a_operation: <it>}``."""
+    entries = []
+    for operation in operations:
+        existing = next(
+            (e for e in current if isinstance(e, dict) and e.get(A2A_OPERATION_KEY) == operation),
+            None,
+        )
+        entries.append(dict(existing) if existing is not None else {A2A_OPERATION_KEY: operation})
+    return entries
 
 
 def _parse_operation_ids(value: str) -> list[str]:
@@ -1539,6 +1734,7 @@ def _add_rule_command(
     operations: str | None,
     approvers: list[str],
     timeout_s: int | None,
+    a2a_operations: str | None = None,
 ) -> str:
     """The ``api approval --add-rule`` command that gates the given calls for ``approvers``."""
     parts = ["graph-agents-cli", "api", "approval", name, "--add-rule"]
@@ -1546,6 +1742,8 @@ def _add_rule_command(
         parts += ["--methods", methods]
     if operations is not None and operations.strip().lower() != "none":
         parts += ["--operations", operations]
+    if a2a_operations is not None and a2a_operations.strip().lower() != "none":
+        parts += ["--a2a-operations", a2a_operations]
     parts += ["--approvers", ",".join(approvers)]
     if timeout_s is not None:
         parts += ["--timeout-s", str(timeout_s)]
@@ -1620,6 +1818,16 @@ def _edit_rule(
     help=(
         "Gate these operations by operationId (the API's openapi spec pins their method and "
         "path); none clears it."
+    ),
+)
+@click.option(
+    "--a2a-operations",
+    "a2a_operations",
+    default=None,
+    metavar="approve[,reject]|none",
+    help=(
+        "protocol a2a: gate the messages that approve (or reject) a pending approval of the "
+        "agent behind the API, whatever their path, label or spelling; none clears it."
     ),
 )
 @click.option(
@@ -1698,6 +1906,7 @@ def cmd_approval(
     name: str,
     methods: str | None,
     operations: str | None,
+    a2a_operations: str | None,
     approvers: str | None,
     timeout_s: int | None,
     decide_with: str | None,
@@ -1720,6 +1929,8 @@ def cmd_approval(
     Each option given replaces that part of the rule and keeps the rest:
       --methods POST,DELETE        every call with those methods
       --operations cancelOrder     calls to those operations
+      --a2a-operations approve     (protocol a2a) messages that approve one
+                                   of the called agent's pending approvals
       --approvers requester        who decides (required for a new rule)
       --timeout-s 900              how long a pending approval waits
       --decide-with relayed --relayers concierge
@@ -1737,7 +1948,7 @@ def cmd_approval(
     later rule that also covers it does not apply to it (lint and api show
     name the rule each declared call waits for).
     """
-    changing = (methods, operations, approvers, timeout_s, decide_with, relayers)
+    changing = (methods, operations, a2a_operations, approvers, timeout_s, decide_with, relayers)
     if add_rule and rule_index is not None:
         raise click.UsageError(
             "--add-rule adds a new rule and --rule N changes an existing one: give one of them"
@@ -1748,8 +1959,8 @@ def cmd_approval(
         raise click.UsageError("--remove takes no other option (but --rule N)")
     if not remove and all(option is None for option in changing):
         raise click.UsageError(
-            "give --methods and/or --operations, --approvers, --timeout-s, --decide-with, "
-            "--relayers, or --remove"
+            "give --methods, --operations and/or --a2a-operations, --approvers, --timeout-s, "
+            "--decide-with, --relayers, or --remove"
         )
     new_methods = None
     if methods is not None and methods.strip().lower() != "none":
@@ -1757,6 +1968,9 @@ def cmd_approval(
     operation_ids = None
     if operations is not None and operations.strip().lower() != "none":
         operation_ids = _parse_operation_ids(operations)
+    a2a_list = None
+    if a2a_operations is not None and a2a_operations.strip().lower() != "none":
+        a2a_list = _parse_a2a_operations(a2a_operations)
     approver_list = _parse_approvers(approvers) if approvers is not None else None
     relayer_list = _parse_relayers(relayers) if relayers is not None else None
     if relayer_list is not None and decide_with == DECIDE_DIRECT:
@@ -1766,9 +1980,10 @@ def cmd_approval(
     if add_rule:
         if approver_list is None:
             raise click.UsageError("--add-rule needs --approvers (requester and/or role:<name>)")
-        if new_methods is None and operation_ids is None:
+        if new_methods is None and operation_ids is None and a2a_list is None:
             raise click.UsageError(
-                "--add-rule needs --methods and/or --operations (the calls the new rule gates)"
+                "--add-rule needs --methods, --operations and/or --a2a-operations (the calls the "
+                "new rule gates)"
             )
 
     project = _load_project()
@@ -1818,22 +2033,31 @@ def cmd_approval(
                 required_for.pop("methods", None)
             else:
                 required_for["methods"] = new_methods
+        # --operations sets the rule's other entries and --a2a-operations its entries for
+        # A2A decisions; each keeps the other's.
+        current = list(required_for.get("operations") or [])
+        decisions = [e for e in current if isinstance(e, dict) and A2A_OPERATION_KEY in e]
+        others = [e for e in current if not (isinstance(e, dict) and A2A_OPERATION_KEY in e)]
         if operations is not None:
             if operation_ids is None:
-                required_for.pop("operations", None)
+                others = []
             else:
-                entries, entry_notes = _gate_entries(
-                    project, api, operation_ids, list(required_for.get("operations") or [])
-                )
-                required_for["operations"] = entries
+                others, entry_notes = _gate_entries(project, api, operation_ids, others)
                 notes.extend(entry_notes)
+        if a2a_operations is not None:
+            decisions = [] if a2a_list is None else _a2a_gate_entries(decisions, a2a_list)
+        if operations is not None or a2a_operations is not None:
+            if others or decisions:
+                required_for["operations"] = [*others, *decisions]
+            else:
+                required_for.pop("operations", None)
         required_for = {k: required_for[k] for k in ("methods", "operations") if k in required_for}
         what = "approval block" if label == APPROVAL_KEY else f"approval rule {label}"
         if not required_for:
             raise ch.ApiCommandError(
-                f"the {what} of {name} would gate nothing (it needs --methods and/or "
-                f"--operations); remove it with `graph-agents-cli api approval {name}{rule_flag} "
-                "--remove`"
+                f"the {what} of {name} would gate nothing (it needs --methods, --operations "
+                f"and/or --a2a-operations); remove it with `graph-agents-cli api approval "
+                f"{name}{rule_flag} --remove`"
             )
         if approver_list is None and old_rule is None:
             raise click.UsageError(
@@ -1950,7 +2174,9 @@ def cmd_approval(
                 f"this gives the {what} other approvers and drops calls it gated: to keep those "
                 f"with {', '.join(before['approvers'])} and gate the calls you named for "
                 f"{', '.join(approver_list)}, add a rule instead: "
-                + _add_rule_command(name, methods, operations, approver_list, timeout_s)
+                + _add_rule_command(
+                    name, methods, operations, approver_list, timeout_s, a2a_operations
+                )
             )
     effects = _call_effects(project, project.document, document, name)
     if any(line.startswith("approvers change (new") for line in effects):
@@ -2008,6 +2234,10 @@ def _effective(name: str, api: dict[str, Any]) -> dict[str, Any]:
     timeouts.update(api.get("timeouts_ms") or {})
     return {
         "name": name,
+        "description": api.get(DESCRIPTION_KEY),
+        # http, jsonrpc or a2a; a2a: {path} for an agent's A2A endpoint.
+        "protocol": api_protocol(api),
+        A2A_KEY: dict(api[A2A_KEY]) if A2A_KEY in api else None,
         "base_url_env": api["base_url_env"],
         "auth": api["auth"],
         "token_env": api.get("token_env"),
@@ -2075,6 +2305,9 @@ def cmd_show(name: str | None, as_json: bool) -> None:
                     "method": r.call.method,
                     "operation_id": r.call.operation_id,
                     "path": r.call.path,
+                    # A call to a JSON-RPC API: its JSON-RPC method and A2A decision.
+                    "rpc_method": r.call.rpc_method,
+                    "a2a_operation": r.call.a2a_operation,
                     "status": r.status,
                     "reason": r.reason,
                     "hint": r.hint or None,
@@ -2126,7 +2359,25 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
             f" (a token the issuer mints for audience {exchange['audience']}{extra}, in exchange "
             f"for the caller's, sent in {api['forward_header']}; RFC 8693{actorless})"
         )
-    rows = [
+    rows = []
+    if api["description"]:
+        rows.append(("description", api["description"]))
+    if api["protocol"] == PROTOCOL_A2A:
+        rows.append(
+            (
+                "protocol",
+                f"a2a (another agent, endpoint {api[A2A_KEY]['path']}): each POST is judged by "
+                "the JSON-RPC request it sends, and a message that approves by a2a_operation",
+            )
+        )
+    elif api["protocol"] != PROTOCOL_HTTP:
+        rows.append(
+            (
+                "protocol",
+                f"{api['protocol']}: each POST is judged by the JSON-RPC request it sends",
+            )
+        )
+    rows += [
         ("base URL", f"from {api['base_url_env']}"),
         ("auth", auth),
         ("methods", ch.describe_methods(api["allowed_methods"])),

@@ -31,8 +31,12 @@ import click
 import yaml
 
 from graph_agents_cli._api_policy import (
+    _RPC_METHOD_RE,
+    A2A_OPERATION_KEY,
+    A2A_OPERATIONS,
     ANY_METHOD,
     HTTP_METHODS,
+    RPC_METHOD_KEY,
     normalize_path,
     path_matches,
     path_template_problem,
@@ -122,11 +126,20 @@ def describe_methods(methods: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class OperationRef:
-    """How a command names an operation: an operationId, a method and a path, or all three."""
+    """How a command names an operation: an operationId, a method and a path, or all three;
+    on a JSON-RPC API also the JSON-RPC method (``rpc_method``) and what an A2A message
+    decides (``a2a_operation``)."""
 
     operation_id: str | None = None
     method: str | None = None
     path: str | None = None
+    rpc_method: str | None = None
+    a2a_operation: str | None = None
+
+    @property
+    def rpc(self) -> bool:
+        """Whether it names a JSON-RPC request (``rpc_method`` or ``a2a_operation``)."""
+        return self.rpc_method is not None or self.a2a_operation is not None
 
     @classmethod
     def from_options(
@@ -136,13 +149,21 @@ class OperationRef:
         path: str | None,
         *,
         combine: bool = False,
+        rpc_method: str | None = None,
+        a2a_operation: str | None = None,
+        endpoint: bool = False,
     ) -> OperationRef:
-        """Read OPERATION_ID / ``--method`` / ``--path``.
+        """Read OPERATION_ID / ``--method`` / ``--path`` (and ``--rpc-method`` /
+        ``--a2a-operation``).
 
         With ``combine`` (``allow``, ``deny``) OPERATION_ID may come with
         ``--method M --path P``, the endpoint it names: the entry then pins all
-        three.
+        three. With ``--rpc-method`` or ``--a2a-operation`` the other options are
+        optional (``--method`` and ``--path`` together, and ``--method`` POST);
+        ``endpoint`` (``allow``) requires them, so an allow names its endpoint.
         """
+        if rpc_method is not None or a2a_operation is not None:
+            return cls._rpc(operation_id, method, path, rpc_method, a2a_operation, endpoint)
         if operation_id and (method or path) and not combine:
             raise click.UsageError(
                 "name the operation by OPERATION_ID or by --method/--path, not both"
@@ -168,14 +189,61 @@ class OperationRef:
             raise click.UsageError(f"--path {path}: {problem}")
         return cls(operation_id=operation_id or None, method=method, path=path)
 
+    @classmethod
+    def _rpc(
+        cls,
+        operation_id: str | None,
+        method: str | None,
+        path: str | None,
+        rpc_method: str | None,
+        a2a_operation: str | None,
+        endpoint: bool,
+    ) -> OperationRef:
+        if operation_id and any(c.isspace() for c in operation_id):
+            raise click.UsageError("OPERATION_ID must not contain whitespace")
+        if rpc_method is not None and not _RPC_METHOD_RE.fullmatch(rpc_method):
+            raise click.UsageError(
+                f"--rpc-method {rpc_method!r}: a JSON-RPC method name is a letter, then up to 63 "
+                "letters, digits, '_', '/' or '.'"
+            )
+        if a2a_operation is not None and a2a_operation not in A2A_OPERATIONS:
+            raise click.UsageError("--a2a-operation takes approve or reject")
+        if bool(method) != bool(path) or (endpoint and not (method and path)):
+            raise click.UsageError(
+                "give both --method POST and --path P (the JSON-RPC endpoint)"
+                + ("" if endpoint else ", or neither")
+            )
+        if method is not None:
+            method = method.strip().upper()
+            if method != "POST":
+                raise click.UsageError(
+                    f"--method {method}: a JSON-RPC request is a POST (GET and HEAD carry no "
+                    "rpc_method)"
+                )
+            problem = path_template_problem(path)
+            if problem:
+                raise click.UsageError(f"--path {path}: {problem}")
+        return cls(
+            operation_id=operation_id or None,
+            method=method,
+            path=path,
+            rpc_method=rpc_method,
+            a2a_operation=a2a_operation,
+        )
+
     def describe(self) -> str:
         endpoint = f"{self.method} {self.path}" if self.path else ""
-        return " ".join(part for part in (self.operation_id, endpoint) if part)
+        rpc = [f"{k} {v}" for k, v in self._rpc_fields() if v]
+        return " ".join(part for part in (self.operation_id, endpoint, *rpc) if part)
 
     def args(self) -> str:
         """The command-line form (for suggestions)."""
         endpoint = f"--method {self.method} --path {self.path}" if self.path else ""
-        return " ".join(part for part in (self.operation_id, endpoint) if part)
+        rpc = [f"--{k.replace('_', '-')} {v}" for k, v in self._rpc_fields() if v]
+        return " ".join(part for part in (self.operation_id, endpoint, *rpc) if part)
+
+    def _rpc_fields(self) -> tuple[tuple[str, str | None], ...]:
+        return ((RPC_METHOD_KEY, self.rpc_method), (A2A_OPERATION_KEY, self.a2a_operation))
 
 
 def spec_operations(spec: Mapping[str, Any]) -> list[tuple[str, str, str | None]]:
@@ -203,6 +271,20 @@ def build_entry(
     if ANY_METHOD in methods:
         raise click.UsageError('an operation entry lists its methods; "*" is not allowed there')
     wanted = [m for m in HTTP_METHODS if m in {*methods, *([ref.method] if ref.method else [])}]
+    if ref.rpc:
+        # A JSON-RPC request (0.3): judged by what its body is, not by an OpenAPI spec.
+        entry = {
+            key: value
+            for key, value in (
+                ("operationId", ref.operation_id),
+                ("path", ref.path),
+                ("methods", wanted or None),
+                (RPC_METHOD_KEY, ref.rpc_method),
+                (A2A_OPERATION_KEY, ref.a2a_operation),
+            )
+            if value is not None
+        }
+        return entry, warnings
     if ref.operation_id:
         entry: dict[str, Any] = {"operationId": ref.operation_id}
         if spec is not None:
@@ -247,6 +329,8 @@ def _normalized(entry: Mapping[str, Any]) -> tuple[Any, ...]:
         entry.get("operationId"),
         normalize_path(str(path)) if path is not None else None,
         tuple(sorted(str(m).upper() for m in entry.get("methods") or [])),
+        entry.get(RPC_METHOD_KEY),
+        entry.get(A2A_OPERATION_KEY),
     )
 
 
@@ -262,13 +346,24 @@ def describe_entry(entry: Mapping[str, Any]) -> str:
     parts.append(",".join(str(m).upper() for m in methods) if methods else "any method")
     if entry.get("path") is not None:
         parts.append(str(entry["path"]))
+    for key in (RPC_METHOD_KEY, A2A_OPERATION_KEY):
+        if entry.get(key) is not None:
+            parts.append(f"{key}={entry[key]}")
     return " ".join(parts)
 
 
 def matching_indexes(entries: Sequence[Mapping[str, Any]], ref: OperationRef) -> list[int]:
-    """The entries ``ref`` names: by operationId, or by path covering the method."""
+    """The entries ``ref`` names: by operationId, or by path covering the method; with
+    ``rpc_method`` or ``a2a_operation``, the entries pinning those (and its operationId)."""
     found = []
     for index, entry in enumerate(entries):
+        if ref.rpc:
+            if all(
+                value is None or entry.get(key) == value
+                for key, value in ((*ref._rpc_fields(), ("operationId", ref.operation_id)))
+            ):
+                found.append(index)
+            continue
         if ref.operation_id is not None:
             if entry.get("operationId") == ref.operation_id:
                 found.append(index)

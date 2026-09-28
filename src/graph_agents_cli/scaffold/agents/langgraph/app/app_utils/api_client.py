@@ -123,8 +123,10 @@ decision resumed, once (`_bound_approvals`). Keep the agent's middleware
 (`tool_call_scope`), which names the tool call.
 
 Every tool module declares `API_CALLS`, a module-level list of
-`{"api", "method", "operation_id", "path"}` dicts naming each call it makes;
-`graph-agents-cli lint` checks those declarations against the same rules.
+`{"api", "method", "operation_id", "path"}` dicts naming each call it makes
+(plus `rpc_method`, and `a2a_operation` for a message that decides, on a
+JSON-RPC API); `graph-agents-cli lint` checks those declarations against the
+same rules.
 """
 
 from __future__ import annotations

@@ -298,7 +298,28 @@ apis:
 - **Labels cannot hide a request.** A tool's `operation_id` naming an entry for another method
   or decision is refused.
 
-The complete rules, and every message, are in
+Write it with the `api` commands:
+
+```bash
+graph-agents-cli api add orders_agent --protocol a2a --a2a-path /a2a/orders \
+  --description "Orders agent: reads the caller's orders; cancels one after approval." \
+  --base-url-env ORDERS_AGENT_URL --auth exchange --audience orders \
+  --access custom --methods GET,POST
+# add denies approve decisions (denied_operations: [{a2a_operation: approve}]): fail closed.
+# To relay the person's decision instead, gate them, then lift the denial:
+graph-agents-cli api approval orders_agent --a2a-operations approve --approvers requester
+graph-agents-cli api revoke orders_agent --a2a-operation approve --from denied
+# Only these JSON-RPC methods, at the agent's endpoint:
+graph-agents-cli api allow orders_agent --rpc-method SendMessage --method POST --path /a2a/orders
+graph-agents-cli api allow orders_agent --rpc-method GetTask --method POST --path /a2a/orders
+# Or refuse one outright, whatever its path or label:
+graph-agents-cli api deny orders_agent --rpc-method CancelTask
+```
+
+Each POST to such an API is declared in `API_CALLS` with its `rpc_method` (and a message that
+decides, with its `a2a_operation`), so `lint` judges it as the client will. `lint` also warns
+about a peer without a `description` and about more than 40 peers. The complete rules, and
+every message, are in
 [the schema reference](../reference/api-policy-schema.md#json-rpc-apis-protocol).
 
 ## Per-user authorization for writes

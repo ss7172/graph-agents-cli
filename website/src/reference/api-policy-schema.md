@@ -417,6 +417,24 @@ API_CALLS = [
 | `method` | yes | One of the HTTP methods above. |
 | `operation_id` | this and/or `path` | The label the tool passes to the client. |
 | `path` | this and/or `operation_id` | A path template, as in the policy. |
+| `rpc_method` | every POST to a `protocol: jsonrpc` or `a2a` API | The JSON-RPC method the request sends (an A2A 0.3 name is read as its 1.0 name). Refused on an `http` API and on GET or HEAD. |
+| `a2a_operation` | a message that decides | `approve` or `reject`: an A2A message (`rpc_method` `SendMessage` or `SendStreamingMessage`) that decides a pending approval of the agent behind the API. |
+
+A peer's calls, for example:
+
+```python
+API_CALLS = [
+    {"api": "orders_agent", "method": "POST", "rpc_method": "SendMessage", "path": "/a2a/orders"},
+    {
+        "api": "orders_agent",
+        "method": "POST",
+        "rpc_method": "SendMessage",
+        "a2a_operation": "approve",
+        "path": "/a2a/orders",
+    },
+    {"api": "orders_agent", "method": "POST", "rpc_method": "GetTask", "path": "/a2a/orders"},
+]
+```
 
 `graph-agents-cli lint` (and `lint --policy-only`, `api check`) reads every `*.py` under the
 agent's `tools/` directory, subpackages included, without importing it, and checks:
@@ -427,7 +445,13 @@ agent's `tools/` directory, subpackages included, without importing it, and chec
   a call declared by `operation_id` alone is judged with the spec's path;
 - that `API_CALLS` is not changed anywhere else (`+=`, `.append()`, a conditional
   assignment), which lint could not read;
-- which declared calls wait for whose approval, and by which rule.
+- on a JSON-RPC API, that every POST declares its `rpc_method`, that `rpc_method` and
+  `a2a_operation` appear only where they fit, that an `operation_id` names the request
+  declared, and that a message that approves is gated (the client reads all of it from the
+  body; lint judges the declaration the same way);
+- which declared calls wait for whose approval, and by which rule;
+- warnings: an A2A peer without a `description` (the model chooses an agent by it), and more
+  than 40 peers.
 
 A refused call is printed with the `graph-agents-cli api` command that would allow exactly
 that call. An invalid policy is a configuration error (exit 3), not a refused call (exit 1):

@@ -1129,7 +1129,7 @@ def test_approval_switching_methods_for_operations_and_removing(project: Path) -
 @pytest.mark.parametrize(
     ("args", "code", "message"),
     [
-        ([], 2, "give --methods and/or --operations"),
+        ([], 2, "give --methods, --operations and/or --a2a-operations"),
         (["--remove", "--methods", "POST"], 2, "--remove takes no other option"),
         (["--methods", "POST"], 2, "--approvers is required for a new approval block"),
         (["--methods", "POST", "--approvers", "admin"], 2, "'admin' is not an approver"),
@@ -1539,7 +1539,11 @@ def test_add_rule_to_a_one_line_block_and_to_none(project: Path) -> None:
         (["--add-rule", "--remove"], 2, "--remove and --add-rule"),
         (["--rule", "0", "--remove", "--methods", "POST"], 2, "--remove takes no other option"),
         (["--add-rule", "--methods", "POST"], 2, "--add-rule needs --approvers"),
-        (["--add-rule", "--approvers", "requester"], 2, "--add-rule needs --methods and/or"),
+        (
+            ["--add-rule", "--approvers", "requester"],
+            2,
+            "--add-rule needs --methods, --operations and/or",
+        ),
         (["--add-rule", "--timeout-s", "60", "--approvers", "x"], 2, "'x' is not an approver"),
         (["--rule", "-1", "--approvers", "requester"], 2, "-1 is not in the range x>=0"),
         (["--rule", "1", "--approvers", "requester"], 3, "--rule takes 0 to 0"),

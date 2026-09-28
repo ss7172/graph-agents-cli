@@ -153,6 +153,21 @@ migration" with the steps to follow.
   peers applies: outside `APP_ENV=dev` a credential goes to such an API over https only,
   unless the host is loopback, a single-label or a `.svc` name. Both SHARED copies; every
   message is in the schema reference.
+- **`lint` and `api` for JSON-RPC APIs and A2A peers.** `API_CALLS` entries take `rpc_method`
+  and `a2a_operation`: every POST to a `protocol: jsonrpc|a2a` API declares its `rpc_method`
+  (an A2A 0.3 name is read as its 1.0 name), and lint judges the declaration as the client
+  judges the body, refusing the keys on an `http` API or a GET, an `operation_id` that names
+  another request, and a message that approves with nothing holding it; a refused JSON-RPC call
+  gets its `api allow ... --rpc-method M` hint. `lint` warns about an A2A peer without a
+  `description` and about more than 40 peers. New flags: `api add --protocol
+  http|jsonrpc|a2a --a2a-path P --description T` (an `a2a` API that allows POST is written with
+  `denied_operations: [{a2a_operation: approve}]`, fail closed, and the note says how to gate
+  the person's decision instead; `--auth none` is refused), `api allow NAME [OPID] --rpc-method
+  M --method POST --path P`, `api deny NAME --rpc-method M` / `--a2a-operation approve|reject`,
+  `api revoke` with the same two, and `api approval NAME --a2a-operations approve[,reject]|none`
+  (which keeps the rule's `--operations` entries, and the other way round). `api show` prints
+  the description and the protocol, and `--json` adds `description`, `protocol` and `a2a` per
+  API and `rpc_method` and `a2a_operation` per declared call.
 
 - **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:
