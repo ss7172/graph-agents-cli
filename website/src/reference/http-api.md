@@ -245,6 +245,7 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `approval_id`, `thread_id`, `run_id` | Which approval, on which thread, paused by which run. |
 | `status` | `pending`, `approved`, `rejected` or `expired`. |
 | `api`, `method`, `path`, `operation_id` | The call: the full path with ids filled in. |
+| `rpc_method`, `a2a_operation` | Only for a call to a JSON-RPC API (`protocol: jsonrpc\|a2a`): the request's JSON-RPC method and, for an A2A message, whether it `approve`s or `reject`s one of the other agent's approvals, read from the body. |
 | `query`, `body` | The call's query and JSON body, the fields the tool named in `redact=` masked. Shown to the owner and the deciders while the approval is pending (to read-across roles only under `TRACE_CAPTURE=full`); dropped once it is decided unless `TRACE_CAPTURE=full`. |
 | `tool`, `reason` | The tool that made the call and the reason the model gave. |
 | `approvers` | `requester` and/or `role:<name>` entries of the rule that gated the call. |
@@ -252,7 +253,7 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `requester_actor` | The agent the requester's run acted through (a delegated request), or null. |
 | `decide_with` | How the requester decides: `direct`, or `relayed` by the agents the rule lists. |
 | `decided_via` | The agent that relayed the decision, or null (decided directly). |
-| `digest` | `sha256:<hex>` of the call as shown (api, method, path, operation id, query and body, masked fields masked): a relayed decision must name it. |
+| `digest` | `sha256:<hex>` of the call as shown (api, method, path, operation id, JSON-RPC method and A2A decision, query and body, masked fields masked): a relayed decision must name it. |
 | `created_at`, `expires_at`, `decided_at` | ISO 8601 times. |
 | `comment` | The decider's comment. |
 

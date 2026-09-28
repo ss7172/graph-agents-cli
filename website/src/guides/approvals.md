@@ -265,6 +265,14 @@ An approval covers exactly the call shown, and it is spent once.
 :   A policy that changed while the call waited (a new image, or a typo that un-gates it)
     cannot turn a decision into a send.
 
+**Which call it is**
+:   A decision belongs to the call with the paused call's API, method and path. On a
+    JSON-RPC API (`protocol: jsonrpc|a2a`), where every call is a POST to one endpoint, also
+    the request the body is: its JSON-RPC method and A2A decision, read from the body. So a
+    tool that relays a person's decision to another agent can read the task first on resume
+    without that read taking the decision, and after a rejection it can still send the
+    message that tells the other agent (the rejection stops only the approve message).
+
 **Rejected or expired**
 :   Never sent, whatever the policy now says about gating it. The tool gets a "not approved"
     error that the model relays.

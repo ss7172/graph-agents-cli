@@ -98,8 +98,11 @@ call runs again on resume, so keep other side effects after it.
 
 A decision is bound to the call it was taken for, not to the policy of the
 moment: when the resumed tool rebuilds a request to the same API, method and
-path as the paused call, the decision applies whatever the policy now says
-about gating it (`_decision_waiting`). A rejected or expired call is never
+path as the paused call (and, on a JSON-RPC API, the same JSON-RPC method and
+A2A decision, so a read sent first on resume does not take an approve
+message's decision, and a message that rejects is not stopped by the
+rejection it reports), the decision applies whatever the policy now says
+about gating it (`_decision_waiting`, `call_identity`). A rejected or expired call is never
 sent, even when the policy no longer gates it (a new image while the call
 waited, or a typo that un-gates it); a call whose approval is still pending
 pauses again for that same approval. An approved call is sent only when the
@@ -2173,6 +2176,10 @@ class BoundApproval(NamedTuple):
     status: str
     # Whether its approved call was sent (an approval is used once).
     used: bool
+    # A call to a JSON-RPC API: the request its body was (`derive_rpc`), part of which
+    # call it is (`call_identity`). None for other calls.
+    rpc_method: str | None = None
+    a2a_operation: str | None = None
 
 
 class ApprovalLedger(Protocol):
@@ -2290,37 +2297,61 @@ class ToolCallScope:
     # How many of the task's resume values this tool call took (`interrupt()` calls).
     resumes_taken: int = 0
     # The calls (`call_identity`) a decision stopped in this tool call.
-    stopped: set[tuple[str, str, str]] = field(default_factory=set)
+    stopped: set[tuple[str, ...]] = field(default_factory=set)
 
 
 _TOOL_CALL: ContextVar[ToolCallScope | None] = ContextVar("api_tool_call", default=None)
 # The same, for a tool run without the middleware's scope (in its own context).
 _GATED_SENT: ContextVar[bool] = ContextVar("api_gated_sent", default=False)
 _RESUMES_TAKEN: ContextVar[int] = ContextVar("api_resumes_taken", default=0)
-_STOPPED: ContextVar[frozenset[tuple[str, str, str]]] = ContextVar(
+_STOPPED: ContextVar[frozenset[tuple[str, ...]]] = ContextVar(
     "api_stopped_calls", default=frozenset()
 )
 
 
-def call_identity(api: str, method: str, path: str) -> tuple[str, str, str]:
+def call_identity(
+    api: str,
+    method: str,
+    path: str,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
+) -> tuple[str, ...]:
     """Which call a decision is bound to: the API, the method and the path sent.
 
     The path is compared normalised and ignoring letter case, as a gate
     compares it, so a rebuilt request that differs only in spelling is the
     same call (a body or query that changed is caught by the call hash).
+
+    A call to a JSON-RPC API (`protocol: jsonrpc|a2a`) is also known by the
+    request its body is (`derive_rpc`): its JSON-RPC method and A2A decision.
+    Every call to such an API shares one method and path, so without them a
+    `GetTask` the resumed tool sends first would take the decision an approve
+    message waits for, and a call a rejection stopped would stop the `reject`
+    message that tells the other agent. A call to an `http` API keeps the
+    three fields: its label is the tool's, not the request's.
     """
-    return (str(api), str(method).upper(), normalize_path(str(path)).casefold())
+    identity: tuple[str, ...] = (
+        str(api),
+        str(method).upper(),
+        normalize_path(str(path)).casefold(),
+    )
+    if rpc_method is None and a2a_operation is None:
+        return identity
+    return (*identity, str(rpc_method or ""), str(a2a_operation or ""))
 
 
 def _is_decision(value: Any) -> bool:
     return isinstance(value, Mapping) and value.get("type") == APPROVAL_DECISION
 
 
-def _decision_identity(decision: Mapping[str, Any]) -> tuple[str, str, str] | None:
+def _decision_identity(decision: Mapping[str, Any]) -> tuple[str, ...] | None:
     api, method, path = decision.get("api"), decision.get("method"), decision.get("path")
     if not (isinstance(api, str) and isinstance(method, str) and isinstance(path, str)):
         return None
-    return call_identity(api, method, path)
+    rpc_method, a2a_operation = decision.get(RPC_METHOD_KEY), decision.get(A2A_OPERATION_KEY)
+    if not all(value is None or isinstance(value, str) for value in (rpc_method, a2a_operation)):
+        return None
+    return call_identity(api, method, path, rpc_method, a2a_operation)
 
 
 # Where LangGraph keeps a task's resume values in the run config (its interrupt()
@@ -2399,12 +2430,12 @@ def _took_resume() -> None:
         _RESUMES_TAKEN.set(_RESUMES_TAKEN.get() + 1)
 
 
-def _stopped_calls() -> frozenset[tuple[str, str, str]] | set[tuple[str, str, str]]:
+def _stopped_calls() -> frozenset[tuple[str, ...]] | set[tuple[str, ...]]:
     scope = _TOOL_CALL.get()
     return scope.stopped if scope is not None else _STOPPED.get()
 
 
-def _stop_call(identity: tuple[str, str, str]) -> None:
+def _stop_call(identity: tuple[str, ...]) -> None:
     scope = _TOOL_CALL.get()
     if scope is not None:
         scope.stopped.add(identity)
@@ -2412,12 +2443,13 @@ def _stop_call(identity: tuple[str, str, str]) -> None:
         _STOPPED.set(_STOPPED.get() | {identity})
 
 
-def _decision_waiting(identity: tuple[str, str, str]) -> Mapping[str, Any] | None:
+def _decision_waiting(identity: tuple[str, ...]) -> Mapping[str, Any] | None:
     """The decision the resumed run brought for this call, when the next resume value is one.
 
     A request the tool rebuilds on resume is the paused call when it has the
-    paused call's API, method and path (`call_identity`); the decision then
-    applies to it whatever the policy now says about gating it.
+    paused call's API, method and path, and on a JSON-RPC API its JSON-RPC
+    method and A2A decision (`call_identity`); the decision then applies to
+    it whatever the policy now says about gating it.
     """
     waiting = _next_resume_value(_resumes_taken())
     if _is_decision(waiting) and _decision_identity(waiting) == identity:
@@ -3196,7 +3228,7 @@ class ApiClient:
         (no ledger, outside a tool call and a task): empty. A ledger that
         cannot answer refuses the call.
         """
-        identity = call_identity(self.name, method, prepared.wire_path)
+        identity = self._identity(method, prepared)
         if identity in _stopped_calls() or _decision_waiting(identity) is not None:
             return []  # `_await_approval` refuses it, or applies its decision
         ledger = _ledger
@@ -3218,7 +3250,21 @@ class ApiClient:
                 "was sent.",
                 reason="approvals unreadable",
             ) from exc
-        return [b for b in found if call_identity(b.api, b.method, b.path) == identity]
+        return [
+            b
+            for b in found
+            if call_identity(b.api, b.method, b.path, b.rpc_method, b.a2a_operation) == identity
+        ]
+
+    def _identity(self, method: str, prepared: PreparedRequest) -> tuple[str, ...]:
+        """Which call this is, for the decisions bound to calls (`call_identity`)."""
+        return call_identity(
+            self.name,
+            method,
+            prepared.wire_path,
+            prepared.rpc.rpc_method,
+            prepared.rpc.a2a_operation,
+        )
 
     def _await_approval(
         self,
@@ -3245,7 +3291,7 @@ class ApiClient:
         no decision waits for it is refused, gated or not: it is sent only
         through its own decision, once.
         """
-        identity = call_identity(self.name, method, prepared.wire_path)
+        identity = self._identity(method, prepared)
         what = operation_id or label
         gate = prepared.gate
         if identity in _stopped_calls():
@@ -3329,6 +3375,13 @@ class ApiClient:
             "rule": rule,
             "call_hash": digest,
         }
+        # A JSON-RPC call: the request its body is, which is part of which call it is.
+        for key, value in (
+            (RPC_METHOD_KEY, prepared.rpc.rpc_method),
+            (A2A_OPERATION_KEY, prepared.rpc.a2a_operation),
+        ):
+            if value is not None:
+                payload[key] = value
         outside_run = refuse(
             f"needs human approval ({', '.join(approvers)}) before it is sent, which "
             "is possible only inside an agent run: refused"

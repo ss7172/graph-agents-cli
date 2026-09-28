@@ -168,6 +168,15 @@ migration" with the steps to follow.
   (which keeps the rule's `--operations` entries, and the other way round). `api show` prints
   the description and the protocol, and `--json` adds `description`, `protocol` and `a2a` per
   API and `rpc_method` and `a2a_operation` per declared call.
+- **A decision is bound to the JSON-RPC request it was taken for.** On a `protocol:
+  jsonrpc|a2a` API every call is a POST to one endpoint, so API, method and path could not
+  tell a relay's calls apart: the read a resumed tool sends first would have taken the
+  decision its approve message waits for, and a rejection would have stopped the `reject`
+  message that tells the other agent. The call's identity now includes its JSON-RPC method and
+  A2A decision (read from the body) for such APIs, in the interrupt, the approval record (its
+  payload), the decision and the ledger's bound approvals; the approval object and its
+  `digest` include them. Calls to `http` APIs keep their three-field identity, and their
+  records, decisions and digests are unchanged.
 
 - **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:

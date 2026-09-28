@@ -109,6 +109,7 @@ from pathlib import Path
 from typing import Any
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    A2A_OPERATION_KEY,
     APPROVAL_DECISION,
     APPROVAL_INTERRUPT,
     DECIDE_DIRECT,
@@ -119,6 +120,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     MIN_APPROVAL_TIMEOUT_S,
     REQUESTER_APPROVER,
     ROLE_APPROVER_PREFIX,
+    RPC_METHOD_KEY,
     BoundApproval,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
@@ -165,6 +167,10 @@ MEMORY_APPROVALS_CAP = 10_000
 COMMENT_MAX_CHARS = 1000
 # Payload keys dropped once an approval is decided or expired (unless TRACE_CAPTURE=full).
 CALL_CONTENT_KEYS = ("query", "body")
+# What a call to a JSON-RPC API was, read from its body (`api_client.derive_rpc`): kept in
+# the payload (only for such calls), part of which call the approval is bound to, and of the
+# approver's view.
+RPC_KEYS = (RPC_METHOD_KEY, A2A_OPERATION_KEY)
 
 # Where `langgraph dev` keeps its threads (relative to the directory it runs in),
 # and the file the app keeps their approvals in there.
@@ -266,6 +272,12 @@ class ApprovalRecord:
     # What the approver was shown, hashed (`approval_digest`): a relayed decision names it.
     display_digest: str | None = None
 
+    def rpc(self) -> dict[str, str]:
+        """What a call to a JSON-RPC API was (`rpc_method`, `a2a_operation`); empty otherwise."""
+        return {
+            key: self.payload[key] for key in RPC_KEYS if isinstance(self.payload.get(key), str)
+        }
+
     def effective_status(self, now: datetime | None = None) -> str:
         """The status, with a pending approval past its expiry read as `expired`."""
         if self.status == PENDING and self.expires_at <= (now or utcnow()):
@@ -295,6 +307,7 @@ class ApprovalRecord:
             for key in CALL_CONTENT_KEYS:
                 if key in self.payload:
                     out[key] = self.payload[key]
+        out.update(self.rpc())
         out.update(
             {
                 "tool": self.payload.get("tool"),
@@ -318,16 +331,17 @@ class ApprovalRecord:
 def approval_view(record: ApprovalRecord) -> dict[str, Any]:
     """The call as the approver sees it while the approval is pending (masked fields masked).
 
-    `rpc_method` and `a2a_operation` are None until the policy derives them from
-    JSON-RPC bodies.
+    `rpc_method` and `a2a_operation` are what a call to a JSON-RPC API was, read
+    from its body; None for any other call.
     """
+    rpc = record.rpc()
     return {
         "api": record.api,
         "method": record.method,
         "path": record.path,
         "operation_id": record.operation_id,
-        "rpc_method": None,
-        "a2a_operation": None,
+        "rpc_method": rpc.get(RPC_METHOD_KEY),
+        "a2a_operation": rpc.get(A2A_OPERATION_KEY),
         "query": record.payload.get("query"),
         "body": record.payload.get("body"),
     }
@@ -369,6 +383,7 @@ def record_from_interrupt(
         "tool": value.get("tool"),
         "reason": value.get("reason"),
     }
+    payload.update({key: value[key] for key in RPC_KEYS if isinstance(value.get(key), str)})
     record = ApprovalRecord(
         approval_id=uuid.uuid4().hex,
         thread_id=thread_id,
@@ -402,9 +417,10 @@ def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
     """The resume value for the interrupt of `record`: `approve`, `reject` or `expired`,
     or `pending` for a call whose approval still waits (another one was decided).
 
-    It names the call it was taken for (API, method, path): the client applies
-    it to that call whatever the policy says about gating it by then, so a
-    rejected or expired call is never sent and a pending one pauses again.
+    It names the call it was taken for (API, method, path, and for a JSON-RPC
+    call its `rpc_method` and `a2a_operation`): the client applies it to that
+    call whatever the policy says about gating it by then, so a rejected or
+    expired call is never sent and a pending one pauses again.
     `approvers` (and how they decide: `decide_with`, `relayers`) are the ones
     the approval was asked of: the client refuses an approval whose approvers,
     or how they decide, differ from what the policy's gate names when the call
@@ -422,6 +438,7 @@ def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
         "decide_with": record.decide_with,
         "relayers": list(record.relayers),
         "comment": record.comment,
+        **record.rpc(),
     }
 
 
@@ -1088,6 +1105,8 @@ class ApprovalStore:
                 path=r.path,
                 status=r.effective_status(now),
                 used=r.used_at is not None,
+                rpc_method=r.rpc().get(RPC_METHOD_KEY),
+                a2a_operation=r.rpc().get(A2A_OPERATION_KEY),
             )
             for r in records
         ]

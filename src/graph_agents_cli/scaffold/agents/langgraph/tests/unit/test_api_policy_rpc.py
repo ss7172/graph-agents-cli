@@ -24,22 +24,49 @@ block in graph-agents-cli's own suite.)
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Iterator
+import os
+import uuid
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+os.environ.setdefault("MODEL_PROVIDER", "fake")
 
 import httpx
 import pytest
+from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    APPROVAL_INTERRUPT,
     ApiClient,
     ApiPolicy,
     ApiPolicyError,
+    BoundApproval,
+    call_identity,
     get_client,
     reset_limits,
     reset_policy_cache,
+    set_approval_ledger,
 )
+from {{cookiecutter.agent_directory}}.app_utils.approvals import (
+    APPROVED,
+    REJECTED,
+    ApprovalRecord,
+    ApprovalStore,
+    approval_digest,
+    approval_view,
+    decision_value,
+    record_from_interrupt,
+)
+from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.db import Database
 
 POLICY = """
 apis:
@@ -290,3 +317,273 @@ async def test_an_http_api_sends_what_it_did_before(policy: Path) -> None:
     await client.post("/anything", json_body=[APPROVE, {"not": "json-rpc"}])
     await client.post("/anything", operation_id="getTask", json_body=APPROVE)
     assert len(SENT) == 2
+
+
+# --- which call a decision is bound to (call_identity) ---------------------------------------
+#
+# Every call to an A2A peer is a POST to one endpoint, so API, method and path cannot tell a
+# relay's calls apart: the read it sends first on resume would take the decision its approve
+# message waits for, and a rejection would stop the message that tells the peer. The request
+# each body is (its JSON-RPC method and A2A decision) is part of which call it is.
+
+ALICE = Principal(id="alice", roles=["user"], attributes={"tenant": "t1"})
+# The relay tool reads the peer's task before it decides (as the A2A client will).
+READ_FIRST: list[bool] = []
+PEER_SENT: list[dict[str, Any]] = []
+
+
+def _decide(decision: str) -> dict[str, Any]:
+    """The decision message, built the same on every run (the approval binds its body)."""
+    return {
+        "jsonrpc": "2.0",
+        "id": f"{decision}-a1",
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "messageId": f"m-{decision}-a1",
+                "role": "ROLE_USER",
+                "contextId": "ctx-1",
+                "parts": [{"data": {"approval_id": "a1", "decision": decision}}],
+            }
+        },
+    }
+
+
+def _peer_upstream(request: httpx.Request) -> httpx.Response:
+    PEER_SENT.append(json.loads(request.content))
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": "1", "result": {}})
+
+
+@tool
+async def relay_approval(task_id: str, runtime: ToolRuntime[Any]) -> str:
+    """Relay the person's approval to the orders agent, or tell it they rejected it."""
+    client = get_client("orders_agent", transport=httpx.MockTransport(_peer_upstream))
+    if READ_FIRST:
+        await client.post("/a2a/orders", json_body=_request("GetTask", {"id": task_id}))
+    try:
+        await client.post("/a2a/orders", json_body=_decide("approve"))
+    except ApiPolicyError as exc:
+        if "rejected" not in str(exc):
+            raise
+        await client.post("/a2a/orders", json_body=_decide("reject"))
+        return "The person did not approve it; the orders agent was told."
+    return "Approved and sent to the orders agent."
+
+
+ADMIN_DSN = os.environ.get("TEST_POSTGRES_DSN", "")
+
+
+@pytest.fixture(params=["memory", "file", "postgres"])
+async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[ApprovalStore]:
+    """The ledger in memory, kept in a file (`langgraph dev`), and on Postgres when
+    `TEST_POSTGRES_DSN` is set (a fresh database)."""
+    if request.param == "memory":
+        yield ApprovalStore(Database("memory"))
+        return
+    if request.param == "file":
+        kept = ApprovalStore(Database("memory"), path=tmp_path / ".langgraph_api" / "a.json")
+        assert await kept.load() == 0
+        yield kept
+        return
+    if not ADMIN_DSN:
+        pytest.skip("TEST_POSTGRES_DSN is not set")
+    import psycopg
+
+    name = f"gac_test_{uuid.uuid4().hex[:12]}"
+    async with await psycopg.AsyncConnection.connect(ADMIN_DSN, autocommit=True) as admin:
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    db = Database("postgres", urlsplit(ADMIN_DSN)._replace(path=f"/{name}").geturl())
+    await db.open()
+    try:
+        yield ApprovalStore(db)
+    finally:
+        await db.close()
+        async with await psycopg.AsyncConnection.connect(ADMIN_DSN, autocommit=True) as admin:
+            await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+@pytest.fixture
+def relay(policy: Path, store: ApprovalStore) -> Iterator[Any]:
+    """An agent with the relay tool, the fake model and the ledger `store`."""
+    from {{cookiecutter.agent_directory}} import agent
+    from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+
+    READ_FIRST.clear()
+    PEER_SENT.clear()
+    set_approval_ledger(store)
+    yield create_agent(
+        model=get_model(),
+        tools=[relay_approval],
+        system_prompt=agent.SYSTEM_PROMPT,
+        middleware=agent.middleware(),
+        context_schema=agent.AgentContext,
+        checkpointer=InMemorySaver(),
+    )
+    set_approval_ledger(None)
+
+
+async def _run(graph: Any, thread: str, graph_input: Any) -> list[Any]:
+    config = {"configurable": {"thread_id": thread}}
+    async for _ in graph.astream(graph_input, config, stream_mode="updates"):
+        pass
+    return list((await graph.aget_state(config)).interrupts)
+
+
+async def _pause(graph: Any, store: ApprovalStore) -> tuple[Any, ApprovalRecord]:
+    interrupts = await _run(graph, "t1", {"messages": [("user", "Relay the approval for t1")]})
+    assert len(interrupts) == 1
+    record, _, _ = await store.add(
+        record_from_interrupt(
+            interrupts[0].value,
+            interrupt_id=interrupts[0].id,
+            thread_id="t1",
+            run_id="r",
+            requester=ALICE,
+        )
+    )
+    return interrupts[0], record
+
+
+async def _tool_result(graph: Any) -> str:
+    state = await graph.aget_state({"configurable": {"thread_id": "t1"}})
+    return next(m.content for m in reversed(state.values["messages"]) if m.type == "tool")
+
+
+def _sent() -> list[str]:
+    """What reached the peer: each request's method, and its decision if any."""
+    return [
+        " ".join(
+            [body["method"]]
+            + [
+                p["data"]["decision"]
+                for p in (body.get("params") or {}).get("message", {}).get("parts", [])
+                if "data" in p
+            ]
+        )
+        for body in PEER_SENT
+    ]
+
+
+async def test_the_approval_names_the_request_it_holds(relay: Any, store: ApprovalStore) -> None:
+    interrupt, record = await _pause(relay, store)
+    assert interrupt.value["type"] == APPROVAL_INTERRUPT
+    assert (interrupt.value["rpc_method"], interrupt.value["a2a_operation"]) == (
+        "SendMessage",
+        "approve",
+    )
+    public = record.public()
+    assert (public["rpc_method"], public["a2a_operation"]) == ("SendMessage", "approve")
+    view = approval_view(record)
+    assert (view["rpc_method"], view["a2a_operation"]) == ("SendMessage", "approve")
+    assert record.display_digest == approval_digest(view)
+    value = decision_value(record, "approve")
+    assert (value["rpc_method"], value["a2a_operation"]) == ("SendMessage", "approve")
+    assert _sent() == []
+
+
+async def test_get_task_on_resume_does_not_consume_the_approve_decision(
+    relay: Any, store: ApprovalStore
+) -> None:
+    """The resumed tool reads the task first: that read is its own call, and the approve
+    message it then rebuilds takes the decision and is sent once."""
+    READ_FIRST.append(True)
+    interrupt, record = await _pause(relay, store)
+    assert _sent() == ["GetTask"]
+    decided = await store.decide(record.approval_id, APPROVED, "alice", None)
+    await _run(relay, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert _sent() == ["GetTask", "GetTask", "SendMessage approve"]
+    assert "Approved and sent" in await _tool_result(relay)
+    assert (await store.get(record.approval_id)).used_at is not None
+
+
+async def test_reject_is_sent_after_a_rejection(relay: Any, store: ApprovalStore) -> None:
+    """The rejection stops the approve message, not the message that tells the peer."""
+    interrupt, record = await _pause(relay, store)
+    decided = await store.decide(record.approval_id, REJECTED, "alice", "not this one")
+    await _run(relay, "t1", Command(resume={interrupt.id: decision_value(decided, "reject")}))
+    assert _sent() == ["SendMessage reject"]
+    assert "the orders agent was told" in await _tool_result(relay)
+
+
+async def test_bound_approvals_filter_by_operation(relay: Any, store: ApprovalStore) -> None:
+    """A tool call run again without a decision (a thread continued without input): the
+    ledger's approval holds the approve message only; the read goes out again."""
+    READ_FIRST.append(True)
+    _, record = await _pause(relay, store)
+    [bound] = await store.bound_approvals(tool_call=(record.message_id, record.tool_call_id))
+    assert (bound.rpc_method, bound.a2a_operation) == ("SendMessage", "approve")
+    await _run(relay, "t1", None)
+    assert _sent() == ["GetTask", "GetTask"]
+    assert "was resumed without an approval decision" in await _tool_result(relay)
+
+
+async def test_a_kept_approval_still_names_its_request(tmp_path: Path) -> None:
+    """The ledger kept in a file (`langgraph dev`) reads the request back after a restart."""
+    path = tmp_path / ".langgraph_api" / "a.json"
+    value = {
+        "type": APPROVAL_INTERRUPT,
+        "api": "orders_agent",
+        "method": "POST",
+        "path": "/a2a/orders",
+        "body": _decide("approve"),
+        "tool_call_id": "c1",
+        "message_id": "m1",
+        "approvers": ["requester"],
+        "call_hash": "h",
+        "rpc_method": "SendMessage",
+        "a2a_operation": "approve",
+    }
+    first = ApprovalStore(Database("memory"), path=path)
+    await first.load()
+    record, _, _ = await first.add(
+        record_from_interrupt(value, interrupt_id="i1", thread_id="t1", run_id="r", requester=ALICE)
+    )
+    again = ApprovalStore(Database("memory"), path=path)
+    assert await again.load() == 1
+    [bound] = await again.bound_approvals(tool_call=("m1", "c1"))
+    assert (bound.rpc_method, bound.a2a_operation) == ("SendMessage", "approve")
+    assert (await again.get(record.approval_id)).display_digest == record.display_digest
+
+
+def test_identity_unchanged_for_http_apis() -> None:
+    """Three fields for a call to an `http` API, as in 0.2: nothing new in its record."""
+    assert call_identity("shop", "post", "/Orders/7/") == ("shop", "POST", "/orders/7")
+    assert call_identity("shop", "POST", "/orders/7", None, None) == ("shop", "POST", "/orders/7")
+    assert call_identity(*BoundApproval("shop", "POST", "/orders/7", "pending", False)[:3]) == (
+        "shop",
+        "POST",
+        "/orders/7",
+    )
+    read = call_identity("peer", "POST", "/a2a/x", "GetTask")
+    approve = call_identity("peer", "POST", "/a2a/x", "SendMessage", "approve")
+    reject = call_identity("peer", "POST", "/a2a/x", "SendMessage", "reject")
+    assert len({read, approve, reject, call_identity("peer", "POST", "/a2a/x")}) == 4
+    value = {
+        "type": APPROVAL_INTERRUPT,
+        "api": "shop",
+        "method": "POST",
+        "path": "/orders/7/cancel",
+        "body": {"reason": "asked"},
+        "approvers": ["requester"],
+        "call_hash": "h",
+    }
+    record = record_from_interrupt(
+        value, interrupt_id="i1", thread_id="t1", run_id="r", requester=ALICE
+    )
+    for shown in (record.payload, record.public(), decision_value(record, "approve")):
+        assert "rpc_method" not in shown and "a2a_operation" not in shown
+    view = approval_view(record)
+    assert (view["rpc_method"], view["a2a_operation"]) == (None, None)
+    # The digest of an http approval is what 0.3's first builds computed.
+    assert record.display_digest == approval_digest(
+        {
+            "api": "shop",
+            "method": "POST",
+            "path": "/orders/7/cancel",
+            "operation_id": None,
+            "rpc_method": None,
+            "a2a_operation": None,
+            "query": {},
+            "body": {"reason": "asked"},
+        }
+    )
