@@ -132,6 +132,28 @@ def test_a_relayed_decision_shows_what_will_happen_first():
     assert plain is not None and plain.effect_lines() == []
 
 
+def test_a_relayed_effect_is_shown_terminal_safe():
+    """The effect is what another agent reported: its method and path are escaped too."""
+    approval = Approval.from_payload(
+        {
+            "approval_id": "c1",
+            "method": "POST",
+            "path": "/a2a/orders",
+            "effect": {
+                "agent": "orders",
+                "via": ["orders"],
+                "method": "POST\x1b[2J",
+                "path": "/orders/1/cancel\u202e\n",
+            },
+        }
+    )
+    assert approval is not None
+    [line] = approval.effect_lines()
+    assert line == (
+        "  effect:      orders will POST\\x1b[2J /orders/1/cancel\\u202e\\x0a, as reported by orders"
+    )
+
+
 def test_decide_commands_quote_ids_and_carry_flags():
     approval = Approval.from_payload({"approval_id": "$(rm -rf ~)", "approvers": ["role:ops"]})
     assert approval is not None

@@ -354,6 +354,23 @@ async def test_the_users_words_reach_the_run_and_are_never_stored(orders: dict[s
         assert A2A_ORIGIN_EXTENSION not in stored
 
 
+async def test_the_users_words_are_capped_at_a2a_origin_max_chars(
+    orders: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever the calling agent sends, the run gets at most A2A_ORIGIN_MAX_CHARS of it."""
+    monkeypatch.setenv("A2A_ORIGIN_MAX_CHARS", "12")
+    origin = {"text": "please echo the origin, it is ORD-7", "truncated": False, "hops": 1}
+    sent = await _rpc(
+        orders["concierge"],
+        "SendMessage",
+        _message({"text": "Echo the origin"}, metadata={A2A_ORIGIN_EXTENSION: {"origin": origin}}),
+    )
+    task = sent["result"]["task"]
+    reply = "".join(p["text"] for a in task["artifacts"] for p in a["parts"])
+    seen = json.loads(reply.split("ORIGIN=", 1)[1].rstrip(".").split("\n")[0])
+    assert seen == {"text": "please echo ", "truncated": True, "hops": 1}
+
+
 async def test_a_persons_own_metadata_is_not_read_as_forwarded_words(
     orders: dict[str, Any],
 ) -> None:

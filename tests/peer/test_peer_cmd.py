@@ -456,13 +456,13 @@ def test_list_and_show_print_urls_never_secrets(jwt_project: Path) -> None:
 
 
 def _card_transport(
-    status: int = 200, url: str = "http://orders:8080/a2a/orders"
+    status: int = 200, url: str = "http://orders:8080/a2a/orders", name: str = "orders"
 ) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["A2A-Version"] == "1.0"
         assert "authorization" not in request.headers
         card = {
-            "name": "orders",
+            "name": name,
             "supportedInterfaces": [
                 {"url": url, "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
             ],
@@ -484,6 +484,10 @@ def test_check_reads_the_card_and_its_endpoint() -> None:
         transport=_card_transport(url="http://pod:8000/a2a/orders"),
     )
     assert not good and "foreign endpoint" in lines[-1]
+    good, lines = check_card(
+        "http://orders:8080", "/a2a/orders", transport=_card_transport(name="billing")
+    )
+    assert not good and lines[-1] == "the card is agent 'billing', not 'orders'"
 
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
@@ -514,6 +518,15 @@ def test_a_peer_keeps_its_name_whatever_its_api_is_called(jwt_project: Path) -> 
     ok("peer", "remove", "orders")
     assert not (jwt_project / "api-policy.yaml").exists()
     assert not (jwt_project / "front_desk" / "tools" / "a2a_peers.py").exists()
+
+
+def test_a_name_the_module_records_must_be_a_peer_name(jwt_project: Path) -> None:
+    """The peer names read back from the generated module (KI-151) are checked like the
+    names `peer add` takes: a module holding another name gives none for that API."""
+    ok("peer", "add", "orders")
+    text = _module(jwt_project)
+    assert gen.names_in(text) == {"orders_agent": "orders"}
+    assert gen.names_in(text.replace('"orders": {', '"../Orders Desk": {')) == {}
 
 
 def test_allow_actorless_prints_what_the_peer_must_set(jwt_project: Path) -> None:

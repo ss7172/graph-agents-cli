@@ -45,6 +45,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -73,6 +74,7 @@ from fake_issuer import FakeIssuer
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
+from {{cookiecutter.agent_directory}}.app_utils import a2a as a2a_module
 from {{cookiecutter.agent_directory}}.app_utils import token_exchange
 from {{cookiecutter.agent_directory}}.app_utils.a2a_client import (
     context_id_for,
@@ -137,6 +139,8 @@ PEERS = {
     }
 }
 
+# What orders' cancel sends: an integer a double cannot hold, which the person must see exactly.
+CANCEL_BODY = {"reason": "the customer asked", "amount": 12345678901234567}
 # What the backend received.
 SENT: list[httpx.Request] = []
 # When it holds True, orders cancels only an order the user's own words name.
@@ -159,7 +163,7 @@ async def cancel_order(order_id: int, runtime: ToolRuntime[Any]) -> str:
         "/orders/{order_id}/cancel",
         operation_id="cancelOrder",
         path_params={"order_id": order_id},
-        json_body={"reason": "the customer asked"},
+        json_body=CANCEL_BODY,
     )
     return json.dumps(data)
 
@@ -341,6 +345,9 @@ async def test_the_concierge_relays_the_persons_approval(relayed: dict[str, Any]
         "/orders/1/cancel",
     )
     assert approval["nested"]["decide_with"] == "relayed" and SENT == []
+    # Exactly what orders will send (read from its approval_json, not the protobuf Struct,
+    # whose numbers are doubles).
+    assert effect["body"] == CANCEL_BODY and approval["nested"]["call"]["body"] == CANCEL_BODY
     # She approves: the decision reaches orders once, and the order is cancelled once.
     r = await agents["http"].post(
         f"/threads/{thread}/approvals/{approval['approval_id']}",
@@ -409,7 +416,7 @@ async def test_the_run_alice_approves_checks_the_words_she_asked_with(
 
 
 async def test_when_orders_lost_the_task_the_relay_reads_its_ledger_and_sends_once(
-    relayed: dict[str, Any],
+    relayed: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """orders loses the task between the relay and alice's decision (A2A_TASK_TTL_S is far
     shorter than an approval may wait): the resumed relay reads what orders waits on from
@@ -417,17 +424,27 @@ async def test_when_orders_lost_the_task_the_relay_reads_its_ledger_and_sends_on
     database's time zone (America/New_York here), so the decision is the one alice approved
     and the order is cancelled once."""
     agents = relayed
-    if agents["database"] != "postgres":
-        pytest.skip("the tasks are in process memory")
-    import psycopg
-
     thread, task_id = await _ask(agents, "needs_user_approval")
     paused = _end(await _chat(agents, f"approve_agent_action for {task_id}", thread))
     assert paused["status"] == "awaiting_approval", paused
-    async with await psycopg.AsyncConnection.connect(os.environ["POSTGRES_DSN"]) as conn:
-        cursor = await conn.execute("DELETE FROM a2a_tasks WHERE task_id = %s", (task_id,))
-        assert cursor.rowcount == 1
-        await conn.commit()
+    if agents["database"] == "postgres":
+        import psycopg
+
+        async with await psycopg.AsyncConnection.connect(os.environ["POSTGRES_DSN"]) as conn:
+            cursor = await conn.execute("DELETE FROM a2a_tasks WHERE task_id = %s", (task_id,))
+            assert cursor.rowcount == 1
+            await conn.commit()
+    else:
+        # The tasks in process memory: past A2A_TASK_TTL_S, as if the hour went by.
+        for store in a2a_module._STORES:
+            later = time.monotonic() + store.memory.ttl_s + 1
+            monkeypatch.setattr(store.memory, "_clock", lambda later=later: later)
+    gone = await agents["http"].post(  # alice's own token reads her agents' tasks
+        A2A_PATH,
+        json={"jsonrpc": "2.0", "id": "1", "method": "GetTask", "params": {"id": task_id}},
+        headers={"Authorization": f"Bearer {agents['at_orders']}", "A2A-Version": "1.0"},
+    )
+    assert gone.json()["error"]["code"] == -32001, gone.text
     r = await agents["http"].post(
         f"/threads/{thread}/approvals/{paused['approval']['approval_id']}",
         json={"decision": "approve"},
