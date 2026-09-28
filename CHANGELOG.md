@@ -95,7 +95,11 @@ migration" with the steps to follow.
   to this agent itself, is refused before anything is sent. New metrics:
   `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`, `refused`, `unavailable`,
   `circuit_open`) and `agent_token_exchange_duration_seconds{api}`; one log line per exchange
-  sent and a warning when the breaker opens, never a token. `jwt` now also keeps the token's
+  sent and a warning when the breaker opens, never a token. The first exchanged token that
+  names no actor (no `act` claim, or the one `AUTH_JWT_ACTOR_CLAIM` names; some issuers,
+  Keycloak among them, add none) logs a warning: the called agent reads such tokens as the user's
+  own, and could let this agent decide the user's approvals, until it sets
+  `AUTH_JWT_DIRECT_CLIENTS` (KI-149). `jwt` now also keeps the token's
   `exp` for this (`keep_subject_token` takes `exp`). The authentication guide has a Keycloak
   recipe. Existing projects get the runtime from `scaffold upgrade` (a new
   `app_utils/token_exchange.py`; `api_client.py`, `auth.py`, `metrics.py`, `telemetry.py`,
@@ -111,7 +115,9 @@ migration" with the steps to follow.
   manifest's `secrets.keys`, `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID` to
   `.env.example` (the secret commented out) and to the chart's `values.yaml` (a placeholder URL
   and the project's name), and lists what is left: the issuer's permission to exchange for the
-  audience, and the callee's `AUTH_JWT_AUDIENCE` and `AUTH_ALLOWED_ACTORS`. `api remove` takes
+  audience, and the callee's `AUTH_JWT_AUDIENCE` and `AUTH_ALLOWED_ACTORS`, plus, for an issuer
+  whose exchanged tokens carry no `act`, its `AUTH_JWT_DIRECT_CLIENTS` and this agent as
+  `client:<id>` in `AUTH_ALLOWED_ACTORS`. `api remove` takes
   them away with the last exchange API, and `create --api-policy` with an exchange API renders
   the same. `api show` names the audience, scope and resource. The schema accepts
   `forward_header` with `exchange` as well as `forward` (both SHARED copies; the messages name

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -58,6 +59,7 @@ from {{cookiecutter.agent_directory}}.app_utils.token_exchange import (
     exchange_settings,
     exchanger,
     loop_problem,
+    names_no_actor,
     reset_token_exchange,
     startup_problems,
 )
@@ -540,6 +542,127 @@ async def test_no_token_in_logs(
         assert secret not in text
     rendered = metrics.render()[0].decode()
     assert SUBJECT not in rendered and issued not in rendered
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _jwt(claims: Any) -> str:
+    """A JWS-shaped token with these claims; the exchanger never verifies it (the callee does)."""
+    header = _b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    return f"{header}.{_b64(json.dumps(claims).encode())}.{_b64(b'signature')}"
+
+
+def _issue(endpoint: FakeTokenEndpoint, token: str) -> None:
+    endpoint.answers.append(
+        httpx.Response(200, json={"access_token": token, "token_type": "Bearer", "expires_in": 300})
+    )
+
+
+NO_ACTOR = "names no actor"
+
+
+def _no_actor_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if NO_ACTOR in r.getMessage()]
+
+
+async def test_an_issued_token_that_names_no_actor_is_warned_once(
+    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An issuer whose exchanged tokens carry no `act` (Keycloak's standard token exchange): the
+    called agent reads them as the user's own, and could let this agent decide the user's
+    approvals, unless it sets AUTH_JWT_DIRECT_CLIENTS. Say so once; never log the token."""
+    caplog.set_level(logging.DEBUG)
+    actless = _jwt({"sub": "alice", "aud": "orders", "azp": CLIENT_ID})
+    _issue(endpoint, actless)
+    assert await _token(subject="alice") == actless
+    [record] = _no_actor_warnings(caplog)
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert "the token the issuer minted for orders_agent (audience orders)" in message
+    assert "(no act claim)" in message
+    assert "AUTH_JWT_DIRECT_CLIENTS" in message and f"client:{CLIENT_ID}" in message
+    logged = caplog.text + "".join(str(r.__dict__) for r in caplog.records)
+    assert actless not in logged and actless.split(".")[1] not in logged
+    # Once per process: more such tokens, for other users and APIs, add no warning.
+    _issue(endpoint, _jwt({"sub": "bob", "aud": "orders", "azp": CLIENT_ID}))
+    _issue(endpoint, _jwt({"sub": "bob", "aud": "billing"}))
+    await _token(subject="bob")
+    await _token("billing_agent", subject="bob", audience="billing")
+    assert endpoint.calls == 3
+    assert _no_actor_warnings(caplog) == [record]
+
+
+@pytest.mark.parametrize(
+    ("token", "claim"),
+    [
+        (_jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}), None),  # the issuer names the agent
+        (_jwt({"sub": "alice", "act": None}), None),  # present: the callee refuses it (401)
+        (_jwt({"sub": "alice", "ext": {"actor": {"sub": CLIENT_ID}}}), "ext.actor"),
+        ("opaque-token", None),  # not a JWT: not judged
+        ("h.p.s.i.t", None),  # encrypted (JWE): not judged
+        ("h..s", None),
+        ("h.***.s", None),  # not base64url
+        (f"h.{_b64(b'not json')}.s", None),
+        (f"h.{_b64(bytes([0x80, 0x81]))}.s", None),  # not UTF-8
+        (f"h.{_b64(b'[1, 2]')}.s", None),  # not an object
+        (f"h.{_b64(b'[' * 12_000)}.s", None),  # nested too deep to read: not judged
+    ],
+)
+async def test_no_warning_for_a_token_that_names_its_actor_or_cannot_be_read(
+    endpoint: FakeTokenEndpoint,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    token: str,
+    claim: str | None,
+) -> None:
+    if claim is not None:
+        monkeypatch.setenv("AUTH_JWT_ACTOR_CLAIM", claim)
+    else:
+        monkeypatch.delenv("AUTH_JWT_ACTOR_CLAIM", raising=False)
+    caplog.set_level(logging.DEBUG)
+    _issue(endpoint, token)
+    assert await _token() == token  # looking at the token never fails the call
+    assert _no_actor_warnings(caplog) == []
+
+
+async def test_a_failure_while_looking_at_the_token_never_fails_the_call(
+    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(token: str, claim: str = "act") -> bool:
+        raise RuntimeError("a bug while reading the claims")
+
+    monkeypatch.setattr(token_exchange, "names_no_actor", broken)
+    caplog.set_level(logging.WARNING)
+    actless = _jwt({"sub": "alice", "aud": "orders"})
+    _issue(endpoint, actless)
+    assert await _token() == actless
+    assert _no_actor_warnings(caplog) == []
+
+
+def test_names_no_actor() -> None:
+    assert names_no_actor(_jwt({"sub": "alice", "azp": "concierge"})) is True
+    assert names_no_actor(_jwt({"sub": "alice", "act": {"sub": "concierge"}})) is False
+    # AUTH_JWT_ACTOR_CLAIM's claim, a dotted path, read as jwt reads it.
+    assert names_no_actor(_jwt({"act": {"sub": "concierge"}}), "ext.actor") is True
+    assert names_no_actor(_jwt({"ext": {"actor": {"sub": "c"}}}), "ext.actor") is False
+    assert names_no_actor(_jwt({"ext.actor": {"sub": "c"}}), "ext.actor") is False
+    assert names_no_actor(_jwt({"ext": "flat"}), "ext.actor") is True
+    deep = f"h.{_b64(b'[' * 12_000)}.s"  # nested past the JSON reader's recursion limit
+    for unreadable in ("opaque", "h.p.s.i.t", "h..s", "h.***.s", f"h.{_b64(b'[1]')}.s", deep):
+        assert names_no_actor(unreadable) is False
+
+
+async def test_the_no_actor_warning_reads_the_configured_actor_claim(
+    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTH_JWT_ACTOR_CLAIM", "ext.actor")
+    caplog.set_level(logging.WARNING)
+    _issue(endpoint, _jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}))
+    await _token()
+    [record] = _no_actor_warnings(caplog)
+    assert "(no ext.actor claim)" in record.getMessage()
 
 
 def test_settings_repr_hides_the_secret(monkeypatch: pytest.MonkeyPatch) -> None:

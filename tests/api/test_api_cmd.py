@@ -1738,12 +1738,21 @@ def test_add_exchange_writes_the_block_the_secret_and_the_settings(project: Path
     assert "AUTH_ALLOWED_ACTORS includes this agent's client id" in flat
     assert "let this agent's client exchange users' tokens for audience orders" in flat
     assert "TOKEN_EXCHANGE_CLIENT_SECRET in .env" in flat
+    # An issuer whose exchanged tokens name no actor (act): the callee must list the sign-in
+    # clients, or it reads this agent as the person, and names this agent client:<id>.
+    assert "if the issuer's exchanged tokens carry no act claim" in flat
+    assert "also on the agent behind orders_agent: set AUTH_JWT_DIRECT_CLIENTS=" in flat
+    assert "in AUTH_ALLOWED_ACTORS as client:<its client id>" in flat
 
-    # A second exchange API adds nothing more of the shared settings.
-    ok(
+    # A second exchange API adds nothing more of the shared settings, but the callee's
+    # settings are listed for it too.
+    second = ok(
         *("api", "add", "billing_agent", "--base-url-env", "BILLING_AGENT_URL"),
         *("--auth", "exchange", "--audience", "billing", "--access", "read-only"),
     )
+    second_flat = " ".join(second.output.split())
+    assert "also on the agent behind billing_agent: set AUTH_JWT_DIRECT_CLIENTS=" in second_flat
+    assert "set TOKEN_EXCHANGE_URL" not in second_flat
     assert (project / ".env.example").read_text().count("TOKEN_EXCHANGE_URL=") == 1
     keys = manifest(project)["secrets"]["keys"]
     assert keys.count("TOKEN_EXCHANGE_CLIENT_SECRET") == 1

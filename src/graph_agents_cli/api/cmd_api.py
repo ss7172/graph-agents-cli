@@ -764,6 +764,14 @@ def _add_todos(
             f"on the agent behind {name}: AUTH_JWT_AUDIENCE includes {audience}, and "
             "AUTH_ALLOWED_ACTORS includes this agent's client id"
         )
+        plan.left_for_you.append(
+            "if the issuer's exchanged tokens carry no act claim (some issuers, Keycloak among "
+            f"them, add none; decode one to see), also on the agent behind {name}: set "
+            "AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with>, and list this agent "
+            "in AUTH_ALLOWED_ACTORS as client:<its client id>; without it, that agent reads "
+            "this agent's calls as the person's own, and this agent could decide the "
+            "person's approvals there"
+        )
 
 
 @api_group.command("remove")

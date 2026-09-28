@@ -61,7 +61,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
-| auth | 3 | 2 | 5 |
+| auth | 4 | 2 | 6 |
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
 | runtime | 11 | 6 | 17 |
@@ -73,7 +73,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 17 | 18 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **45** | **94** | **139** |
+| **Total** | **46** | **94** | **140** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -122,6 +122,26 @@ Medium · auth · found in wave 2
   that data to other users wherever the native routes are reachable.
 - **Workaround:** Namespace every per-user store item by principal, and keep the store routes
   off the public route. Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
+
+### KI-149: With an issuer whose exchanged tokens name no actor, a called agent reads the calling agent as the user
+
+Medium · auth · found in v0.3 (identity propagation)
+
+- **Issue:** `jwt` tells a token another agent presents for a user by its `act` claim. Some
+  identity providers put none in exchanged tokens, only `azp` (Keycloak's standard token
+  exchange did not add one when this was written). While `AUTH_JWT_DIRECT_CLIENTS` is unset,
+  the default, such a token reads as the user's own: `AUTH_ALLOWED_ACTORS`, the delegated-role
+  filter and the rule that a delegated request never decides an approval do not apply to it.
+- **Impact:** An agent that calls another for a user with `auth: exchange` can, at the called
+  agent, decide that user's `requester` approvals with no person involved, and list the
+  user's own threads there. A fail-closed default (the calling agent refusing such tokens, or
+  the called agent requiring `AUTH_JWT_DIRECT_CLIENTS`) is not decided yet.
+- **Workaround:** On every called agent, set `AUTH_JWT_DIRECT_CLIENTS` to the clients people
+  sign in with, and list each calling agent in `AUTH_ALLOWED_ACTORS` as `client:<its client
+  id>` (see the [Keycloak recipe](website/src/guides/authentication.md#token-exchange-with-keycloak)).
+  `api add --auth exchange` lists these settings, and the calling agent logs a warning the
+  first time its issuer mints it a token that names no actor. Decode one exchanged token to
+  see which kind your issuer mints.
 
 ### KI-004: An allow or deny entry by `operationId` alone pins only the tool's label
 

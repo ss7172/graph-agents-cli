@@ -197,6 +197,15 @@ which `api add` adds to `secrets.keys` (see
 [authentication guide](authentication.md#token-exchange-with-keycloak) walks through setting
 up an issuer.
 
+The agent you call tells this one from the user by the exchanged token's `act` claim, and
+lists this agent in its `AUTH_ALLOWED_ACTORS`. Some identity providers put no `act` in
+exchanged tokens, only `azp` (Keycloak's standard token exchange did not add one when this was
+written): the called agent must then also set `AUTH_JWT_DIRECT_CLIENTS` to the clients people
+sign in with, and list this agent as `client:<its client id>`. Without it, the called agent
+reads this agent's calls as the person's own, and would let this agent decide the person's
+approvals there. `api add` lists these settings, and the agent logs a warning the first time
+the provider mints it a token that names no actor.
+
 How the exchange behaves:
 
 - **After every check, never before.** The token is asked for just before the call is sent:

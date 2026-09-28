@@ -282,7 +282,9 @@ Then one rule set applies to every policy, right after `authenticate`:
 
 A bad value stops startup. With `jwt`, `AUTH_ALLOWED_ACTORS` set and `AUTH_JWT_DIRECT_CLIENTS`
 empty, startup logs that delegation is recognised only by the actor claim: if your issuer's
-exchanged tokens carry none, list your sign-in clients in `AUTH_JWT_DIRECT_CLIENTS`.
+exchanged tokens carry none, list your sign-in clients in `AUTH_JWT_DIRECT_CLIENTS`. An agent
+that calls others with [`auth: exchange`](#calling-another-agent-for-the-user) logs a warning
+the first time the issuer mints it a token with no actor claim.
 
 What a delegated principal reaches:
 
@@ -361,7 +363,9 @@ defaults change between releases: check each step against your release's documen
     - It carries only `azp: concierge` (Keycloak's standard token exchange did not add `act`
       when this was written; decode one to see): set `AUTH_JWT_DIRECT_CLIENTS=web` (the
       clients people sign in with) and `AUTH_ALLOWED_ACTORS=client:concierge`. Without it,
-      orders would read the concierge's token as the person's own.
+      orders would read the concierge's token as the person's own, and would let the
+      concierge decide the person's approvals there. The concierge logs a warning the first
+      time Keycloak mints it a token with no `act`.
 5. **Check the exchange by hand**, with a person's token for the concierge in `$USER_TOKEN`:
 
     ```bash

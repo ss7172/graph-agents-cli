@@ -58,6 +58,12 @@ Behaviour:
   probes the issuer, and its outcome closes or reopens it. During an issuer
   outage a process waits at most one deadline per window, on calls to
   exchange APIs only.
+* The first issued token that is a JWT naming no actor (no `act` claim, or
+  the claim `AUTH_JWT_ACTOR_CLAIM` names) logs one warning: the called agent
+  reads such a token as the user's own unless it sets
+  `AUTH_JWT_DIRECT_CLIENTS`, so it could let this agent decide the user's
+  approvals. The claims are read unverified, for this warning only (the
+  called agent verifies the token); an opaque token is not looked at.
 * Metrics: `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`,
   `refused`, `unavailable`, `circuit_open`) and
   `agent_token_exchange_duration_seconds{api}`; one log line per exchange
@@ -119,6 +125,9 @@ RESPONSE_MAX_BYTES = 65_536
 ACCESS_TOKEN_MAX_CHARS = 16_384
 # Consecutive issuer failures that open a token URL's circuit breaker.
 BREAKER_THRESHOLD = 3
+# The RFC 8693 claim naming the agent that presents a token, unless
+# `AUTH_JWT_ACTOR_CLAIM` names another (`auth.DEFAULT_JWT_ACTOR_CLAIM`).
+ACTOR_CLAIM = "act"
 
 ISSUED = "issued"
 CACHED = "cached"
@@ -471,6 +480,8 @@ class TokenExchanger:
         self._refusals: OrderedDict[tuple[str, ...], tuple[str, float]] = OrderedDict()
         self._inflight: dict[tuple[str, ...], asyncio.Task[str]] = {}
         self._breakers: dict[str, _Breaker] = {}
+        # Whether the warning for an issued token that names no actor was logged.
+        self._warned_no_actor = False
 
     def clear(self) -> None:
         """Forget every token, refusal and breaker (tests)."""
@@ -478,6 +489,7 @@ class TokenExchanger:
             self._tokens.clear()
             self._refusals.clear()
             self._breakers.clear()
+            self._warned_no_actor = False
 
     def cached(self) -> int:
         """How many exchanged tokens are kept."""
@@ -698,7 +710,40 @@ class TokenExchanger:
         self._keep(key, token, expires_in, subject_expires_at, settings)
         self._log(api, audience, "issued", started)
         _observe(api, ISSUED, time.perf_counter() - started)
+        self._check_actor(api, audience, token, settings)
         return token
+
+    def _check_actor(self, api: str, audience: str, token: str, settings: ExchangeSettings) -> None:
+        """Warn once per process when the issuer's tokens name no actor.
+
+        The agent behind the API then reads this agent's calls as the user's own
+        (it could let this agent decide the user's approvals) unless it sets
+        `AUTH_JWT_DIRECT_CLIENTS`; only the issuer or the called agent can fix it.
+        """
+        if self._warned_no_actor:
+            return
+        claim = (os.environ.get("AUTH_JWT_ACTOR_CLAIM") or "").strip() or ACTOR_CLAIM
+        try:
+            unnamed = names_no_actor(token, claim)
+        except Exception:  # never fail a call that got its token over a look at it
+            return
+        if not unnamed:
+            return
+        with self._lock:
+            if self._warned_no_actor:
+                return
+            self._warned_no_actor = True
+        logger.warning(
+            "token exchange: the token the issuer minted for %s (audience %s) names no actor "
+            "(no %s claim), so the agent behind it reads this agent's calls as the user's own "
+            "and may let this agent decide the user's approvals there, unless it sets "
+            "AUTH_JWT_DIRECT_CLIENTS to the clients people sign in with (and lists client:%s "
+            "in AUTH_ALLOWED_ACTORS); or have the issuer name this agent in act",
+            api,
+            audience,
+            claim,
+            settings.client_id,
+        )
 
     def _keep(
         self,
@@ -810,6 +855,33 @@ def _issued(body: bytes) -> tuple[str, int]:
     if not isinstance(expires_in, int) or isinstance(expires_in, bool) or expires_in <= 0:
         raise _Unavailable("unusable issuer response: expires_in")
     return token, expires_in
+
+
+def names_no_actor(token: str, claim: str = ACTOR_CLAIM) -> bool:
+    """Whether `token` is a JWT whose claims hold no `claim` (a dotted path, as `jwt` reads it).
+
+    The claims are read without verifying the token (the agent it is sent to
+    does): only to tell whether the issuer names the agent presenting it. A
+    token that is not a signed JWT (opaque, or encrypted) is not judged: False.
+    """
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return False
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload)
+    except (ValueError, RecursionError):  # not base64url, UTF-8 or JSON; nested too deep
+        return False
+    if not isinstance(claims, dict):
+        return False
+    if claim in claims:
+        return False
+    node: Any = claims
+    for part in claim.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return True
+        node = node[part]
+    return False
 
 
 _exchanger = TokenExchanger()
