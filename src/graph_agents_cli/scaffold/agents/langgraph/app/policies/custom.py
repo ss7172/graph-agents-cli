@@ -33,7 +33,18 @@ Implement `CustomPolicy` so that, on every request:
     and the store under langgraph-server). Role names must not contain commas.
   - `permissions`: usually `set(ACTIONS)`; `authorize` decides per action.
   - `attributes`: optional, for example `tenant`. Secrets go only under
-    `attributes["credentials"][<api name>]` (see below).
+    `attributes["credentials"][<api name>]` (see below). Keys starting with
+    `@` belong to the framework.
+  - `actor`: None when the caller is the user. When the credential shows that
+    another agent presents it for the user, `Actor(id=<that agent>)` (with
+    `chain`, the agents before it). A policy through which other agents
+    forward users' credentials must set it, or this agent treats the calling
+    agent as the person. `app_utils.auth.actor_from_claims` reads an RFC 8693
+    `act` claim as the `jwt` policy does.
+  Ids (`id`, the actor's) are 1-256 characters without control characters;
+  anything else fails the request with 500 (a bug in the policy).
+  `finalize_principal` then applies `AUTH_ALLOWED_ACTORS`,
+  `AUTH_DELEGATED_ROLES` and `AUTH_MAX_DELEGATION_DEPTH` to every policy.
   A missing or invalid credential raises `HTTPException(401)` with a
   `WWW-Authenticate` header; a server-side problem (the issuer cannot be
   reached) raises `HTTPException(503)`. Never put the credential itself in an

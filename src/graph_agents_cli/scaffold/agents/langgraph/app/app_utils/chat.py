@@ -26,7 +26,8 @@ Both runtimes apply the same rules:
 
 * Thread ownership (one principal per thread): through the `threads` table
   under fastapi, and through the thread metadata `{principal_id, tenant}` under
-  langgraph-server. The SDK loopback client runs under the server's `/noauth`
+  langgraph-server (plus `actor` for a thread an agent started for its user:
+  the user owns it too, that agent only its own, see `threads.is_owner`). The SDK loopback client runs under the server's `/noauth`
   root path, so the server's own `@auth.on` filters never see these calls; the
   check has to live here.
 * One run per thread: a second run while one is in progress gets
@@ -124,10 +125,10 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     SWEEP_INTERVAL_S,
     ApprovalRecord,
     ApprovalStore,
+    decide_refusal,
     decision_value,
     dev_ledger_path,
     is_approval_interrupt,
-    may_decide,
     may_view,
     record_from_interrupt,
     resume_principal,
@@ -177,6 +178,7 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
     assert_access,
     assert_owner,
     is_owner,
+    owner_metadata_filter,
     reads_across,
     thread_deleted,
 )
@@ -650,6 +652,10 @@ def trace_metadata(
         "run_id": run_id,
         "principal_hash": principal.hashed_id(),
     }
+    if principal.actor is not None:
+        # The agent presenting the request (a client name, not personal data).
+        meta["actor"] = principal.actor.id
+        meta["actor_chain"] = ",".join(principal.actor.chain)
     if client_metadata and capture_full():
         meta["client_metadata"] = dict(client_metadata)
     return meta
@@ -1467,11 +1473,10 @@ class ChatRuntime:
             raise HTTPException(status_code=404, detail="Unknown thread.")
         with database_errors():
             records = await self.approvals.for_thread(thread_id)
-        owner = thread.principal_id
-        visible = [r for r in records if may_view(principal, owner, r.approvers)]
+        visible = [r for r in records if may_view(principal, thread, r.approvers)]
         if not visible and not (is_owner(principal, thread) or reads_across(principal)):
             raise HTTPException(status_code=403, detail="This thread belongs to another principal.")
-        return [r.public(include_call=sees_call(principal, owner, r.approvers)) for r in visible]
+        return [r.public(include_call=sees_call(principal, thread, r.approvers)) for r in visible]
 
     async def visible_approvals(
         self, principal: Principal, *, status: str | None, limit: int, offset: int
@@ -1485,9 +1490,10 @@ class ChatRuntime:
                 principal, status=status, limit=limit, offset=offset
             )
         # The requester and the deciders see the call; read-across roles only
-        # under TRACE_CAPTURE=full (as `sees_call`).
+        # under TRACE_CAPTURE=full (as `sees_call`). The store lists a delegated
+        # principal's own approvals only, and its roles never decide.
         own = principal.hashed_id()
-        roles = {f"role:{r}" for r in principal.roles}
+        roles = set() if principal.delegated else {f"role:{r}" for r in principal.roles}
         return [
             r.public(
                 include_call=r.requester_hash == own
@@ -1532,10 +1538,9 @@ class ChatRuntime:
             thread = await self._thread_record(thread_id, headers)
         if thread is None:
             raise ApprovalError(404, "approval_not_found", "Unknown approval.")
-        if not may_decide(principal, thread.principal_id, record.approvers):
-            raise ApprovalError(
-                403, "not_an_approver", "You may not decide this approval (see its approvers)."
-            )
+        refusal = decide_refusal(principal, thread, record.approvers)
+        if refusal is not None:
+            raise ApprovalError(403, *refusal)
         self._check_decidable(record)
         lease = await self.acquire_thread(thread_id)
         try:
@@ -1587,7 +1592,7 @@ class ChatRuntime:
             verdict,
             extra={"thread_id": thread_id, "approval_id": approval_id},
         )
-        acting = resume_principal(decided, thread.principal_id, principal)
+        acting = resume_principal(decided, thread, principal)
         return lease, Resume(values=values, approval=decided, decision=decision), acting
 
     @staticmethod
@@ -1827,7 +1832,10 @@ class ChatRuntime:
                 await lease.release()
                 raise
         run_id = str(uuid.uuid4())
-        bind_log_context(run_id=run_id, thread_id=thread_id, principal_hash=principal.hashed_id())
+        actor = principal.actor.id if principal.actor is not None else None
+        bind_log_context(
+            run_id=run_id, thread_id=thread_id, principal_hash=principal.hashed_id(), actor=actor
+        )
         record = RunRecord(
             run_id=run_id,
             thread_id=thread_id,
@@ -1835,6 +1843,7 @@ class ChatRuntime:
             model=model_label(),
             status=STATUS_OK,
             metadata=dict(req.metadata) or None,
+            actor=actor,
         )
         try:
             if self.runs is not None:
@@ -2435,6 +2444,7 @@ class ChatRuntime:
             metadata=dict(req.metadata) or None,
             payload=payload,
             created_at=record.created_at,
+            actor=record.actor,
         )
         if self.db is not None and not self.db.health.up:
             # Known down: do not hold the reply up; the maintenance loop writes it.
@@ -2499,6 +2509,8 @@ class ChatRuntime:
             else thread_id,
             principal_id=str(meta.get("principal_id") or ""),
             tenant=meta.get("tenant"),
+            # No `actor` (a direct thread, or one created before 0.3): no agent's thread.
+            actor=str(meta.get("actor") or ""),
         )
 
     async def _server_thread_record(self, client: Any, thread_id: str) -> ThreadRecord | None:
@@ -2524,6 +2536,9 @@ class ChatRuntime:
             "principal_id": principal.id,
             "tenant": principal.public_attributes().get("tenant"),
         }
+        if principal.actor is not None:
+            # The agent that starts the thread for its user (see `threads.is_owner`).
+            metadata["actor"] = principal.actor.id
         if req.thread_id:
             record = await self._server_thread_record(client, req.thread_id)
             if record is not None:
@@ -2644,7 +2659,7 @@ class ChatRuntime:
         client = self._sdk_client(forward_headers)
         filters: dict[str, Any] = {}
         if not reads_across(principal):
-            filters["metadata"] = {"principal_id": principal.id}
+            filters["metadata"] = owner_metadata_filter(principal)
         try:
             threads = await client.threads.search(
                 limit=limit, offset=offset, sort_by="updated_at", sort_order="desc", **filters

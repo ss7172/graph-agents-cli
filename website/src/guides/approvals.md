@@ -242,6 +242,9 @@ A rejected call reaches the model as a tool error:
 - `role:<name>` is any **other** principal holding that role.
 - Anyone else gets 403.
 
+An agent acting for a user is never an approver: see
+[Agents calling agents](#agents-calling-agents).
+
 The decision is recorded with the decider's hashed id and the comment. The resumed run acts as
 the requester, and its stream (the tool result and everything the run does after it) goes to
 whoever decided: a `role:` approver sees that much of the requester's conversation. Name as
@@ -339,6 +342,28 @@ The decision goes through the same checks as the HTTP route, the auth policy's
 `approval.decide` action included. A task belongs to its principal, so only the requester
 decides over A2A; `role:` approvers use the HTTP routes or `graph-agents-cli approvals`.
 `run --mode a2a` prints a gated call and how to resume the task, but does not prompt.
+
+## Agents calling agents
+
+When another agent calls this one for a user (a *delegated* request, see
+[Authentication](authentication.md#agents-calling-agents)), the run acts for that user and the
+agent that presented the request is recorded with each approval it pauses for
+(`requester_actor`, shown in the approval object). The rules:
+
+- **The person decides.** The user, calling this agent directly with their own credentials,
+  is the requester of every approval on the threads their agents started: they see them
+  (`GET /threads/{thread_id}/approvals`, `GET /approvals`) and decide them when `requester` is
+  listed.
+- **The agent never decides.** A decision a delegated principal sends (over HTTP or A2A) is
+  refused with 403 `approval_direct_only`: "This approval must be decided by the person at
+  this agent (decide_with: direct), not relayed by agent <agent>." Over A2A the task stays
+  `input-required` with that note. An agent sees only the approvals of threads it started
+  itself; another agent acting for the same user gets 403 `not_an_approver`.
+- **Roles do not travel.** A delegated principal's roles never make it a `role:` approver or a
+  read-across reader.
+- **The resumed run acts as the requester.** When the person decides, the run continues as
+  their direct principal; when a `role:` approver decides, it continues as the requester
+  rebuilt from the approval, its agent included, with no credentials.
 
 ## Approvals in eval
 

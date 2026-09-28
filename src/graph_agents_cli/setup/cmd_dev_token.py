@@ -18,7 +18,9 @@
 provider. It keeps an RSA key pair under ``.graph-agents-cli/dev-jwt/`` (git
 ignored; the private key is mode 0600), puts the public key and a dev issuer
 and audience in ``.env`` (only where ``.env`` leaves them blank), and prints a
-token signed with the private key for the principal and roles asked for.
+token signed with the private key for the principal and roles asked for (and, with
+``--act``, the agents presenting it for that principal: the RFC 8693 ``act``
+claim, to try agents calling agents locally).
 ``run`` and ``eval`` send it as the bearer when it is in
 ``GRAPH_AGENTS_CLI_API_KEY``, which keeps it out of argv and shell history.
 
@@ -165,6 +167,15 @@ def _set_claim(claims: dict[str, Any], path: str, value: Any) -> None:
     node[leaf] = value
 
 
+def actor_claim(actors: list[str]) -> dict[str, Any] | None:
+    """The RFC 8693 ``act`` claim for ``actors`` (current actor first): each earlier actor
+    nested in the ``act`` of the one after it. None without actors."""
+    claim: dict[str, Any] | None = None
+    for actor in reversed(actors):
+        claim = {"sub": actor} if claim is None else {"sub": actor, "act": claim}
+    return claim
+
+
 def build_claims(
     *,
     sub: str,
@@ -175,8 +186,15 @@ def build_claims(
     principal_claim: str = "sub",
     roles_claim: str = "roles",
     now: int | None = None,
+    actors: list[str] | None = None,
+    azp: str | None = None,
+    actor_claim_name: str = "act",
 ) -> dict[str, Any]:
-    """The token's claims: principal and roles where the server reads them, plus iss/aud/exp."""
+    """The token's claims: principal and roles where the server reads them, plus iss/aud/exp.
+
+    ``actors`` (current first) become the ``act`` claim (``actor_claim_name``,
+    ``AUTH_JWT_ACTOR_CLAIM``) and ``azp`` the authorized party.
+    """
     issued = int(time.time()) if now is None else now
     claims: dict[str, Any] = {
         "iss": issuer,
@@ -188,6 +206,11 @@ def build_claims(
     }
     _set_claim(claims, principal_claim or "sub", sub)
     _set_claim(claims, roles_claim or "roles", roles)
+    act = actor_claim(actors or [])
+    if act is not None:
+        _set_claim(claims, actor_claim_name or "act", act)
+    if azp:
+        claims["azp"] = azp
     return claims
 
 
@@ -323,7 +346,23 @@ def auth_group() -> None:
     show_default=True,
     help="Lifetime: seconds, or a number with s, m, h or d (at most 7d).",
 )
-def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
+@click.option(
+    "--act",
+    "actors",
+    multiple=True,
+    metavar="ID",
+    help=(
+        "An agent presenting the token for --sub (the RFC 8693 act claim); repeat for a chain, "
+        "the current agent first. The server refuses it unless AUTH_ALLOWED_ACTORS lists it."
+    ),
+)
+@click.option(
+    "--azp",
+    default=None,
+    metavar="ID",
+    help="The token's authorized party (client id), as AUTH_JWT_DIRECT_CLIENTS reads it.",
+)
+def cmd_dev_token(sub: str, roles: str, ttl: str, actors: tuple[str, ...], azp: str | None) -> None:
     """Mint a JWT for local runs of a jwt project (APP_ENV=dev only).
 
     Prints the token alone on stdout, so it can go straight into the variable
@@ -334,6 +373,11 @@ def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
       export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token --sub alice --roles user)"
       graph-agents-cli run "hello"
       graph-agents-cli eval run
+
+    \b
+    An agent calling another agent for a user presents a token naming both:
+      graph-agents-cli auth dev-token --sub alice --act concierge
+    (--act billing --act concierge: billing, called by concierge, for alice).
 
     \b
     The first call creates a dev RSA key pair in .graph-agents-cli/dev-jwt/
@@ -357,6 +401,16 @@ def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
     if not sub:
         raise click.BadParameter("--sub must not be empty")
     role_list = _csv(roles)
+    actor_list = [a.strip() for a in actors]
+    for actor in actor_list:
+        if not actor or len(actor) > 256 or any(c.isspace() or ord(c) < 32 for c in actor):
+            raise click.BadParameter(
+                f"{actor[:40]!r}: an agent id of 1-256 characters without whitespace",
+                param_hint="--act",
+            )
+    if azp is not None and (not azp.strip() or any(c.isspace() for c in azp.strip())):
+        raise click.BadParameter("a client id without whitespace", param_hint="--azp")
+    azp = azp.strip() if azp is not None else None
 
     root = find_project_root(Path.cwd())
     if root is None:
@@ -388,6 +442,10 @@ def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
         ttl_s=ttl_s,
         principal_claim=env.get("AUTH_JWT_PRINCIPAL_CLAIM").strip() or "sub",
         roles_claim=env.get("AUTH_JWT_ROLES_CLAIM").strip() or "roles",
+        actors=actor_list,
+        azp=azp,
+        # Where the server reads the actor (AUTH_JWT_ACTOR_CLAIM, `act` when unset or empty).
+        actor_claim_name=env.get("AUTH_JWT_ACTOR_CLAIM").strip() or "act",
     )
     signed = _sign(root, key_path, claims)
     public_pem = signed["public_key"]
@@ -414,11 +472,19 @@ def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
 
     err = click.get_text_stream("stderr")
     roles_text = ", ".join(role_list) if role_list else "none"
+    via = f", presented by {' <- '.join(actor_list)}" if actor_list else ""
     click.echo(
-        f"Dev token for {sub} (roles: {roles_text}), valid {ttl.strip()}, accepted only by a "
-        "server with this project's dev key.",
+        f"Dev token for {sub} (roles: {roles_text}{via}), valid {ttl.strip()}, accepted only by "
+        "a server with this project's dev key.",
         file=err,
     )
+    actor_claim_off = "AUTH_JWT_ACTOR_CLAIM" in env.values and not env.has("AUTH_JWT_ACTOR_CLAIM")
+    if actor_list and actor_claim_off:
+        click.echo(
+            "AUTH_JWT_ACTOR_CLAIM is empty in .env: the server reads this token as the user's "
+            "own, not as an agent's.",
+            file=err,
+        )
     if written:
         click.echo(
             f"Wrote {', '.join(written)} to {env_file} (the private key stays in "
@@ -434,6 +500,8 @@ def cmd_dev_token(sub: str, roles: str, ttl: str) -> None:
                 file=err,
             )
     role_flag = f" --roles {shlex.quote(','.join(role_list))}" if role_list else ""
+    role_flag += "".join(f" --act {shlex.quote(a)}" for a in actor_list)
+    role_flag += f" --azp {shlex.quote(azp)}" if azp else ""
     command = f"graph-agents-cli auth dev-token --sub {shlex.quote(sub)}{role_flag}"
     click.echo(
         "Keep the token out of argv and shell history: put it in the variable run and eval send,\n"

@@ -66,16 +66,19 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     ApprovalRecord,
     ApprovalStore,
     LedgerUnavailable,
+    decide_refusal,
     decision_value,
     dev_ledger_path,
     may_decide,
     may_view,
     record_from_interrupt,
     resume_principal,
+    sees_call,
     utcnow,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
+from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadRecord
 
 ALICE = Principal(
     id="alice", roles=["user"], attributes={"tenant": "t1", "credentials": {"x": "s"}}
@@ -992,3 +995,110 @@ async def test_outside_an_agent_run_a_gated_call_is_refused(graph) -> None:
 def test_the_decision_type_is_what_the_client_expects() -> None:
     assert decision_value(_record(), "approve")["type"] == APPROVAL_DECISION
     assert utcnow().tzinfo is not None
+
+
+# --- agents acting for a user (0.3): who sees and decides ------------------------------------
+
+CONCIERGE_ACTOR = Actor(id="concierge", chain=("concierge",))
+ALICE_VIA_CONCIERGE = Principal(
+    id="alice",
+    attributes={"tenant": "t1", "@actor": CONCIERGE_ACTOR.public()},
+    actor=CONCIERGE_ACTOR,
+)
+ALICE_VIA_BILLING = Principal(id="alice", actor=Actor(id="billing", chain=("billing",)))
+CONCIERGE_THREAD = ThreadRecord(thread_id="t1", principal_id="alice", actor="concierge")
+DIRECT_THREAD = ThreadRecord(thread_id="t1", principal_id="alice")
+
+
+def test_delegated_cannot_decide_direct_gate() -> None:
+    # The person decides, whichever agent started the thread; the agent never does.
+    for approvers in (["requester"], ["requester", "role:ops"]):
+        assert may_decide(Principal(id="alice"), CONCIERGE_THREAD, approvers)
+        assert decide_refusal(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, approvers) == (
+            "approval_direct_only",
+            "This approval must be decided by the person at this agent (decide_with: direct), "
+            "not relayed by agent concierge.",
+        )
+    # Another agent of the same user, or of another user, learns only that it is no approver.
+    for stranger, thread in (
+        (ALICE_VIA_BILLING, CONCIERGE_THREAD),
+        (ALICE_VIA_CONCIERGE, DIRECT_THREAD),
+        (Principal(id="bob", actor=CONCIERGE_ACTOR), CONCIERGE_THREAD),
+    ):
+        refusal = decide_refusal(stranger, thread, ["requester"])
+        assert refusal is not None and refusal[0] == "not_an_approver"
+    # A delegated principal's roles never make it a role approver.
+    ops_agent = Principal(id="carol", roles=["ops"], actor=CONCIERGE_ACTOR)
+    assert not may_decide(ops_agent, CONCIERGE_THREAD, ["role:ops"])
+    assert may_decide(Principal(id="carol", roles=["ops"]), CONCIERGE_THREAD, ["role:ops"])
+
+
+def test_who_may_see_an_agents_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_READ_ACROSS_ROLES", "auditor")
+    approvers = ["requester"]
+    assert may_view(Principal(id="alice"), CONCIERGE_THREAD, approvers)  # the person
+    assert may_view(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, approvers)  # the agent that started it
+    assert sees_call(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, approvers)
+    assert not may_view(ALICE_VIA_BILLING, CONCIERGE_THREAD, approvers)
+    assert not sees_call(ALICE_VIA_BILLING, CONCIERGE_THREAD, approvers)
+    auditor_agent = Principal(id="ann", roles=["auditor"], actor=CONCIERGE_ACTOR)
+    assert not may_view(auditor_agent, CONCIERGE_THREAD, approvers)
+    assert may_view(Principal(id="ann", roles=["auditor"]), CONCIERGE_THREAD, approvers)
+
+
+def test_the_requester_actor_is_recorded() -> None:
+    record = record_from_interrupt(
+        _interrupt_value(),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE_VIA_CONCIERGE,
+    )
+    assert record.requester_actor == "concierge"
+    assert record.requester_hash == Principal(id="alice").hashed_id()
+    assert record.requester_context["attributes"]["@actor"]["id"] == "concierge"
+    assert record.public()["requester_actor"] == "concierge"
+    assert _record().public()["requester_actor"] is None
+
+
+def test_the_resumed_run_keeps_the_requesters_actor() -> None:
+    record = record_from_interrupt(
+        _interrupt_value(),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE_VIA_CONCIERGE,
+    )
+    # A role approver's decision: the requester rebuilt, actor included, no credentials.
+    carol = Principal(id="carol", roles=["ops"], attributes={"credentials": {"x": "c"}})
+    acting = resume_principal(record, CONCIERGE_THREAD, carol)
+    assert acting.id == "alice" and acting.actor == CONCIERGE_ACTOR
+    assert "credentials" not in acting.attributes
+    # The person deciding at this agent: their own principal of this request.
+    alice = Principal(id="alice", attributes={"credentials": {"x": "alice's"}})
+    assert resume_principal(record, CONCIERGE_THREAD, alice) is alice
+    # The same owner key: the principal of this request.
+    assert resume_principal(record, CONCIERGE_THREAD, ALICE_VIA_CONCIERGE) is ALICE_VIA_CONCIERGE
+
+
+async def test_listing_follows_the_owner_key(store: ApprovalStore) -> None:
+    by_agent = record_from_interrupt(
+        _interrupt_value(),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE_VIA_CONCIERGE,
+    )
+    by_person, _, _ = await store.add(_record(interrupt_id="i2", thread_id="t2"))
+    await store.add(by_agent)
+    everything = {by_agent.approval_id, by_person.approval_id}
+    assert {r.approval_id for r in await store.visible(ALICE)} == everything
+    assert [r.approval_id for r in await store.visible(ALICE_VIA_CONCIERGE)] == [
+        by_agent.approval_id
+    ]
+    assert await store.visible(ALICE_VIA_BILLING) == []
+    # A delegated principal's roles list nothing a role of theirs could decide.
+    ops_agent = Principal(id="carol", roles=["ops"], actor=CONCIERGE_ACTOR)
+    assert await store.visible(ops_agent) == []
+    reloaded = await store.get(by_agent.approval_id)
+    assert reloaded is not None and reloaded.requester_actor == "concierge"

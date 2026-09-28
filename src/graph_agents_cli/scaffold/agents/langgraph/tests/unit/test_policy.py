@@ -26,19 +26,25 @@ from starlette.requests import Request
 from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     ACTIONS,
+    Actor,
     JwtPolicy,
     Principal,
     SharedBearerPolicy,
+    actor_from_claims,
     admin_roles,
     authenticate_and_authorize,
     check_startup,
+    delegation_settings,
     dev_mode,
+    finalize_principal,
     get_policy,
+    keep_subject_token,
     policy_name,
     read_across_roles,
     require,
     reset_policy_cache,
 )
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.policies import build_policy
 from {{cookiecutter.agent_directory}}.policies.custom import NOT_IMPLEMENTED, CustomPolicy
 
@@ -268,4 +274,105 @@ async def test_not_implemented_error_from_a_policy_maps_to_503(
     assert exc.value.status_code == 503 and "pending" in str(exc.value.detail)
     with pytest.raises(HTTPException) as exc:
         await authenticate_and_authorize(_request(), "card.read")
+    assert exc.value.status_code == 503
+
+
+# --- finalize_principal: one rule set for every policy (0.3) --------------------------------
+
+
+class _FixedPolicy:
+    """A custom policy that returns one principal, as a project's own policy would."""
+
+    def __init__(self, principal: Principal) -> None:
+        self.principal = principal
+
+    async def authenticate(self, request: Request) -> Principal:
+        return self.principal
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        return None
+
+
+async def test_shared_bearer_principals_pass_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_POLICY", "shared-bearer")
+    monkeypatch.setenv("API_KEY", "k")
+    reset_policy_cache()
+    try:
+        principal = await require("chat.send")(_request({"Authorization": "Bearer k"}))
+    finally:
+        reset_policy_cache()
+    assert (principal.id, principal.roles, principal.actor) == ("shared", ["shared"], None)
+    assert principal.owner_key() == "shared" and "@actor" not in principal.attributes
+
+
+@pytest.mark.parametrize("bad_id", ["", "a\x00b", "tab\there", "x" * 257])
+async def test_a_custom_policys_invalid_ids_are_refused_as_its_bug(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, bad_id: str
+) -> None:
+    monkeypatch.setenv("AUTH_POLICY", "custom")
+    for principal in (
+        Principal(id=bad_id),
+        Principal(id="alice", actor=Actor(id=bad_id)),
+        Principal(id="alice", actor=Actor(id="concierge", chain=("concierge", bad_id))),
+    ):
+        monkeypatch.setattr(auth_module, "get_policy", lambda p=principal: _FixedPolicy(p))
+        with pytest.raises(HTTPException) as exc:
+            await authenticate_and_authorize(_request(), "a2a.invoke")
+        assert exc.value.status_code == 500
+    assert "a bug in the policy" in caplog.text
+
+
+async def test_a_custom_policy_marks_delegation_with_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTH_POLICY", "custom")
+    delegated = Principal(
+        id="alice", roles=["support"], actor=Actor(id="concierge"), permissions=set(ACTIONS)
+    )
+    monkeypatch.setattr(auth_module, "get_policy", lambda: _FixedPolicy(delegated))
+    with pytest.raises(HTTPException) as exc:
+        await require("chat.send")(_request())
+    assert exc.value.status_code == 403
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+    principal = await require("chat.send")(_request())
+    assert principal.actor == Actor(id="concierge", chain=("concierge",))
+    assert principal.roles == [] and principal.owner_key() == "alice\x1fconcierge"
+    # A chain that does not start with the actor is a bug in the policy.
+    broken = Principal(id="alice", actor=Actor(id="concierge", chain=("billing",)))
+    monkeypatch.setattr(auth_module, "get_policy", lambda: _FixedPolicy(broken))
+    with pytest.raises(HTTPException) as exc:
+        await require("chat.send")(_request())
+    assert exc.value.status_code == 500
+
+
+def test_the_jwt_helpers_are_exported_for_custom_policies() -> None:
+    actor = actor_from_claims({"sub": "alice", "act": {"sub": "concierge"}})
+    assert actor == Actor(id="concierge", chain=("concierge",), client=None)
+    principal = keep_subject_token(Principal(id="alice"), "tok", ["a", "b"])
+    assert principal.attributes["credentials"] == {
+        "@subject_token": "tok",
+        "@subject_aud": ("a", "b"),
+    }
+    assert principal.public_attributes() == {}
+
+
+def test_delegation_settings_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = delegation_settings({})
+    assert (defaults.max_depth, defaults.allowed_actors, defaults.delegated_roles) == (
+        3,
+        frozenset(),
+        frozenset(),
+    )
+    assert not defaults.allows("concierge")
+    assert delegation_settings({"AUTH_ALLOWED_ACTORS": "*"}).allows("anyone")
+    for env in (
+        {"AUTH_MAX_DELEGATION_DEPTH": "0"},
+        {"AUTH_MAX_DELEGATION_DEPTH": "9"},
+        {"AUTH_MAX_DELEGATION_DEPTH": "three"},
+        {"AUTH_ALLOWED_ACTORS": "concierge, bad\x01id"},
+    ):
+        with pytest.raises(SettingsError):
+            delegation_settings(env)
+    # A bad value reached at request time (the startup check refuses it) fails closed.
+    monkeypatch.setenv("AUTH_MAX_DELEGATION_DEPTH", "99")
+    with pytest.raises(HTTPException) as exc:
+        finalize_principal(Principal(id="alice"))
     assert exc.value.status_code == 503

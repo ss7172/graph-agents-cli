@@ -18,8 +18,36 @@ migration" with the steps to follow.
   repository variable `PUBLISH_DOCS` is `true`: the site is at
   <https://ss7172.github.io/graph-agents-cli/>. Preview it with
   `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
+- **Agents calling agents: the caller's identity.** A request another agent presents for a
+  user is now told apart from the user's own. `Principal.id` stays the user (the subject);
+  the new `Principal.actor` names the agent presenting the request (its id, the chain of
+  agents before it, and its client). `jwt` reads the RFC 8693 `act` claim
+  (`AUTH_JWT_ACTOR_CLAIM`, nested `act` for earlier agents), the client from `azp`/`client_id`
+  (`AUTH_JWT_CLIENT_CLAIM`), and with `AUTH_JWT_DIRECT_CLIENTS` treats a token with no `act`
+  from any other client as that client's; a `custom` policy sets `actor` itself
+  (`actor_from_claims` and `keep_subject_token` are exported for it). Every policy then goes
+  through one rule set (`finalize_principal`): valid ids, at most `AUTH_MAX_DELEGATION_DEPTH`
+  agents (default 3; else 401), only the agents `AUTH_ALLOWED_ACTORS` lists (default none;
+  else 403), and only the roles `AUTH_DELEGATED_ROLES` lends. Threads, A2A tasks and approvals
+  are owned by the subject and the actor: an agent reaches only what it started for that
+  user, while the user owns everything done for them. A delegated principal's roles never read
+  across, administer or decide as a `role:` approver, and it never decides an approval (403
+  `approval_direct_only`: the person decides with their own credentials). The actor reaches
+  tools in `attributes["@actor"]`, is recorded with each approval (`requester_actor`), and is
+  logged (`actor`), kept in run records and named in trace metadata. `auth dev-token` mints
+  such tokens locally (`--act`, repeatable, and `--azp`). The database gains
+  `threads.actor`, `runs.actor` and `approvals.requester_actor` at startup (`ADD COLUMN IF NOT
+  EXISTS`); existing rows are direct, and every 0.2 principal is direct, so 0.2 behaviour is
+  unchanged for them.
 
 ### Changed
+
+- **`jwt` reads the `act` claim.** A token carrying it is an agent's for the user, refused
+  (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=` (empty) to
+  read every token as the user's own, as 0.2 did. A `custom` policy that returns an invalid id
+  (empty, over 256 characters, or with control characters) now fails the request with 500 and
+  logs the bug. A custom policy through which other agents forward users' credentials must set
+  `Principal.actor` (`policies/` is not upgraded): see the upgrading guide.
 
 - **The README is a short entry point** with absolute links (it is also the PyPI page). Its
   former sections, including "Known limitations" and "Where it is behind", moved to the

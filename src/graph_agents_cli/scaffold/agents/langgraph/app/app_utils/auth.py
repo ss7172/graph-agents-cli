@@ -48,6 +48,21 @@ but `/ok`; this app's own `/metrics` (optionally behind `METRICS_TOKEN`) is
 served in their place. A custom image must set the same flag.
 
 The retired name `product-session` is still read as `custom`, with a warning.
+
+Agents calling agents (delegation). A request may come from another agent
+acting for a user: a `jwt` token carrying the RFC 8693 `act` claim, or a
+principal a `custom` policy marks with `Principal.actor`. The principal's `id`
+stays the subject (the user); `actor` names the agent presenting the request.
+`finalize_principal` runs right after every policy's `authenticate` and applies
+one rule set to all of them: it validates the ids, refuses a chain deeper than
+`AUTH_MAX_DELEGATION_DEPTH` (401) and an agent `AUTH_ALLOWED_ACTORS` does not
+list (403; none is listed by default), keeps only the roles
+`AUTH_DELEGATED_ROLES` lends to agents, and publishes the actor in
+`attributes["@actor"]` (a policy's own `@actor` is never trusted). Ownership
+is by owner key (`Principal.owner_key`): a direct principal owns everything
+done for its subject, a delegated one only what was created under its exact
+subject and actor. Privileged role checks (read-across, admin, role approvers)
+ignore delegated principals.
 """
 
 from __future__ import annotations
@@ -67,6 +82,8 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
+
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +119,33 @@ CREDENTIALS_KEY = "credentials"
 # Optional secret key of `Principal.hashed_id()` (HMAC-SHA256); unset = plain sha256.
 PRINCIPAL_HASH_SALT_ENV = "PRINCIPAL_HASH_SALT"
 
+# Attribute keys starting with `@` belong to the framework (API names, the keys of
+# `credentials`, never start with one). `@actor` is public (persisted with an
+# approval's requester, passed in LangGraph Server run context); the `@` keys under
+# `credentials` are private, like every credential.
+ACTOR_ATTRIBUTE = "@actor"
+SUBJECT_TOKEN_CREDENTIAL = "@subject_token"
+SUBJECT_AUD_CREDENTIAL = "@subject_aud"
+ORIGIN_CREDENTIAL = "@origin"
+# Between the subject and the actor in an owner key: the unit separator, which no
+# valid id holds (ids have no control characters).
+OWNER_KEY_SEPARATOR = "\x1f"
+# `AUTH_MAX_DELEGATION_DEPTH`: how many agents may stand between the user and this one.
+DEFAULT_MAX_DELEGATION_DEPTH = 3
+MIN_DELEGATION_DEPTH = 1
+MAX_DELEGATION_DEPTH = 8
+# `AUTH_ALLOWED_ACTORS=*` allows any agent (the issuer's audience policy alone decides).
+ANY_ACTOR = "*"
+# The actor of a jwt token with no `act` whose client `AUTH_JWT_DIRECT_CLIENTS` does not
+# list: `client:<azp>` (`client:?` when the token names no client).
+CLIENT_ACTOR_PREFIX = "client:"
+UNKNOWN_CLIENT = "?"
+# The RFC 8693 claim that nests earlier actors inside an actor.
+NESTED_ACTOR_CLAIM = "act"
+DEFAULT_JWT_CLIENT_CLAIM = "azp"
+# Read when the client claim is absent (RFC 9068 access tokens).
+FALLBACK_JWT_CLIENT_CLAIM = "client_id"
+
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -125,9 +169,62 @@ def read_across_roles() -> set[str]:
     return set(_csv(os.environ.get("AUTH_READ_ACROSS_ROLES")))
 
 
+@dataclass(frozen=True)
+class Actor:
+    """The agent presenting a delegated request. Public: persisted and shown, never secret.
+
+    `id` is the current actor (the outermost `act.sub` of a jwt token,
+    `client:<azp>`, or what a custom policy names); `chain` is every actor,
+    current first (earlier agents follow); `client` the token's authorized
+    party (`azp`/`client_id`) when it names one.
+    """
+
+    id: str
+    chain: tuple[str, ...] = ()
+    client: str | None = None
+
+    def public(self) -> dict[str, Any]:
+        """The actor as `attributes["@actor"]` holds it."""
+        return {"id": self.id, "chain": list(self.chain or (self.id,)), "client": self.client}
+
+    @classmethod
+    def from_public(cls, value: Any) -> Actor | None:
+        """An actor from its `public()` form (a persisted requester's), or None when it is not one."""
+        if not isinstance(value, Mapping):
+            return None
+        actor_id = value.get("id")
+        if not _valid_id(actor_id):
+            return None
+        raw = value.get("chain")
+        chain = (
+            tuple(str(a) for a in raw if _valid_id(a))
+            if isinstance(raw, list | tuple)
+            else (actor_id,)
+        )
+        client = value.get("client")
+        return cls(
+            id=actor_id,
+            chain=chain or (actor_id,),
+            client=client if isinstance(client, str) else None,
+        )
+
+
+def owner_key_of(subject: str, actor: str | None) -> str:
+    """The owner key of a record kept as two columns: the subject, or subject and actor.
+
+    Byte-identical to the subject for a direct owner (no actor, or an empty one),
+    so every row written before 0.3 keeps its owner.
+    """
+    return subject if not actor else f"{subject}{OWNER_KEY_SEPARATOR}{actor}"
+
+
 @dataclass
 class Principal:
     """Who is calling. `id` is what traces and run records use, hashed.
+
+    `id` is always the subject: the user a request acts for (or a service
+    acting for itself). `actor` is the agent presenting a delegated request on
+    the subject's behalf, None for a direct one (the subject itself calls).
 
     `attributes` may hold secrets only under `credentials` (api name ->
     credential string). Anything persisted, logged, traced or passed into
@@ -139,6 +236,17 @@ class Principal:
     permissions: set[str] = field(default_factory=set)
     # Out of repr: `credentials` holds secrets, and a repr ends up in logs and tracebacks.
     attributes: dict[str, Any] = field(default_factory=dict, repr=False)
+    actor: Actor | None = None
+
+    @property
+    def delegated(self) -> bool:
+        """Whether an agent presents this request for the subject (see `actor`)."""
+        return self.actor is not None
+
+    def owner_key(self) -> str:
+        """What owns the threads and tasks this principal creates: the subject, or the
+        subject and the actor (`owner_key_of`). Equal to `id` for a direct principal."""
+        return owner_key_of(self.id, self.actor.id if self.actor is not None else None)
 
     def hashed_id(self) -> str:
         """The id hashed, first 16 hex characters: what logs, traces and run records carry.
@@ -158,6 +266,195 @@ class Principal:
     def public_attributes(self) -> dict[str, Any]:
         """`attributes` without `credentials`: safe to persist, log or trace."""
         return {k: v for k, v in self.attributes.items() if k != CREDENTIALS_KEY}
+
+
+def _valid_id(value: Any) -> bool:
+    """A principal or actor id: 1-`PRINCIPAL_ID_MAX_CHARS` characters, no control characters."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= PRINCIPAL_ID_MAX_CHARS
+        and not _CONTROL_CHARS.search(value)
+    )
+
+
+def keep_subject_token(principal: Principal, token: str, aud: Any = None) -> Principal:
+    """Keep the verified inbound bearer and its audience in the principal's private credentials.
+
+    Under `credentials["@subject_token"]` and `credentials["@subject_aud"]` (a
+    tuple): the token an API that acts with the user's own identity is called
+    with (`auth: exchange` exchanges it, `auth: forward` with `forward_audience`
+    forwards it). `jwt` keeps it only when the loaded api-policy has such an API
+    (`subject_token_needed`); a custom policy calls this itself. Credentials are
+    never persisted, logged or traced (`public_attributes()` drops them).
+    """
+    if isinstance(aud, str):
+        audience: tuple[str, ...] = (aud,)
+    elif isinstance(aud, list | tuple):
+        audience = tuple(str(a) for a in aud if isinstance(a, str))
+    else:
+        audience = ()
+    credentials = principal.attributes.get(CREDENTIALS_KEY)
+    kept = dict(credentials) if isinstance(credentials, Mapping) else {}
+    kept[SUBJECT_TOKEN_CREDENTIAL] = token
+    kept[SUBJECT_AUD_CREDENTIAL] = audience
+    principal.attributes[CREDENTIALS_KEY] = kept
+    return principal
+
+
+def subject_token_needed() -> bool:
+    """Whether the loaded api-policy has an API that acts with the caller's own token.
+
+    That is an `auth: exchange` API, or an `auth: forward` one with
+    `forward_audience`. Without one (and without a readable policy) no
+    subject token is kept.
+    """
+    try:
+        from {{cookiecutter.agent_directory}}.app_utils.api_client import load_policy
+
+        apis = load_policy().apis
+    except Exception:
+        return False
+    return any(api.get("auth") == "exchange" or "forward_audience" in api for api in apis.values())
+
+
+# ---------------------------------------------------------------------------
+# Delegation: one rule set for every policy (`finalize_principal`)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DelegationSettings:
+    """`AUTH_MAX_DELEGATION_DEPTH`, `AUTH_ALLOWED_ACTORS` and `AUTH_DELEGATED_ROLES`."""
+
+    max_depth: int = DEFAULT_MAX_DELEGATION_DEPTH
+    # The agents that may present a request for a user; `*` in it allows any.
+    allowed_actors: frozenset[str] = field(default_factory=lambda: DEFAULT_ALLOWED_ACTORS)
+    # The roles a delegated principal keeps (the rest are dropped).
+    delegated_roles: frozenset[str] = frozenset()
+
+    def allows(self, actor_id: str) -> bool:
+        return ANY_ACTOR in self.allowed_actors or actor_id in self.allowed_actors
+
+
+def delegation_settings(env: Mapping[str, str] | None = None) -> DelegationSettings:
+    """The delegation settings, validated; `SettingsError` names a bad one (a startup error)."""
+    env = os.environ if env is None else env
+    raw_depth = (env.get("AUTH_MAX_DELEGATION_DEPTH") or "").strip()
+    depth = DEFAULT_MAX_DELEGATION_DEPTH
+    if raw_depth:
+        try:
+            depth = int(raw_depth)
+        except ValueError:
+            raise SettingsError(
+                f"AUTH_MAX_DELEGATION_DEPTH={raw_depth!r} is not a whole number."
+            ) from None
+        if not MIN_DELEGATION_DEPTH <= depth <= MAX_DELEGATION_DEPTH:
+            raise SettingsError(
+                f"AUTH_MAX_DELEGATION_DEPTH={depth} must be from {MIN_DELEGATION_DEPTH} to "
+                f"{MAX_DELEGATION_DEPTH}."
+            )
+    actors = _csv(env.get("AUTH_ALLOWED_ACTORS"))
+    for actor in actors:
+        if actor != ANY_ACTOR and (not _valid_id(actor) or any(c.isspace() for c in actor)):
+            raise SettingsError(
+                f"AUTH_ALLOWED_ACTORS: {actor[:40]!r} is not an agent id (1-256 characters, no "
+                "whitespace or control characters), or * for any agent."
+            )
+    roles = _csv(env.get("AUTH_DELEGATED_ROLES"))
+    for role in roles:
+        if not _valid_id(role):
+            raise SettingsError(f"AUTH_DELEGATED_ROLES: {role[:40]!r} is not a role name.")
+    return DelegationSettings(
+        max_depth=depth,
+        allowed_actors=frozenset(actors) or DEFAULT_ALLOWED_ACTORS,
+        delegated_roles=frozenset(roles),
+    )
+
+
+def _principal_problem(principal: Principal) -> str | None:
+    """Which id of a principal is invalid (`principal` or `actor`), or None."""
+    if not _valid_id(principal.id):
+        return "principal"
+    actor = principal.actor
+    if actor is None:
+        return None
+    if not _valid_id(actor.id) or not isinstance(actor.chain, tuple):
+        return "actor"
+    if actor.chain and (actor.chain[0] != actor.id or not all(_valid_id(a) for a in actor.chain)):
+        return "actor"
+    if actor.client is not None and not _valid_id(actor.client):
+        return "actor"
+    return None
+
+
+def finalize_principal(principal: Principal) -> Principal:
+    """Apply the delegation rules to what a policy's `authenticate` returned (every policy).
+
+    In this order: the ids are valid (1-256 characters, no control
+    characters; a `jwt` token that breaks this is refused with 401, a custom
+    policy's principal with 500, logged as a bug in the policy); a delegated
+    principal's actor chain is at most `AUTH_MAX_DELEGATION_DEPTH` long (401)
+    and its actor is listed in `AUTH_ALLOWED_ACTORS` (403); it keeps only the
+    roles `AUTH_DELEGATED_ROLES` lends to agents; and its actor is published
+    in `attributes["@actor"]`. A direct principal is returned as it came,
+    without any `@actor` a policy put there (only this function sets it).
+    """
+    try:
+        settings = delegation_settings()
+    except SettingsError as exc:
+        # The startup check refuses to start with this; fail closed if it is reached anyway.
+        logger.error("delegation settings are invalid: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="The server's delegation settings are invalid."
+        ) from None
+    problem = _principal_problem(principal)
+    if problem is not None:
+        name = policy_name()
+        if name == JWT:
+            raise _invalid_token(f"invalid {problem} claim")
+        logger.error(
+            "AUTH_POLICY=%s returned a principal with an invalid %s id (1-%d characters, no "
+            "control characters): a bug in the policy; the request is refused",
+            name,
+            problem,
+            PRINCIPAL_ID_MAX_CHARS,
+        )
+        raise HTTPException(status_code=500, detail="The auth policy returned an invalid caller.")
+    attributes = {k: v for k, v in principal.attributes.items() if k != ACTOR_ATTRIBUTE}
+    actor = principal.actor
+    if actor is None:
+        if ACTOR_ATTRIBUTE not in principal.attributes:
+            return principal
+        return Principal(
+            id=principal.id,
+            roles=list(principal.roles),
+            permissions=set(principal.permissions),
+            attributes=attributes,
+        )
+    chain = actor.chain or (actor.id,)
+    if len(chain) > settings.max_depth:
+        raise _invalid_token("delegation too deep")
+    if not settings.allows(actor.id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Delegated caller {actor.id} is not allowed here (AUTH_ALLOWED_ACTORS).",
+        )
+    actor = Actor(id=actor.id, chain=chain, client=actor.client)
+    attributes[ACTOR_ATTRIBUTE] = actor.public()
+    return Principal(
+        id=principal.id,
+        roles=[r for r in principal.roles if r in settings.delegated_roles],
+        permissions=set(principal.permissions),
+        attributes=attributes,
+        actor=actor,
+    )
+
+
+def actor_of_attributes(attributes: Any) -> Actor | None:
+    """The actor a principal's (public) attributes carry under `@actor`, or None (direct)."""
+    if not isinstance(attributes, Mapping):
+        return None
+    return Actor.from_public(attributes.get(ACTOR_ATTRIBUTE))
 
 
 @runtime_checkable
@@ -348,6 +645,12 @@ class JwtSettings:
     audience: tuple[str, ...] = ()
     principal_claim: str = "sub"
     roles_claim: str = "roles"
+    # Delegation (RFC 8693): the actor claim ("" = not read, the 0.2 behaviour), the
+    # client claim, and the clients of human sign-in (empty = every token without an
+    # actor claim is direct).
+    actor_claim: str = DEFAULT_JWT_ACTOR_CLAIM
+    client_claim: str = DEFAULT_JWT_CLIENT_CLAIM
+    direct_clients: frozenset[str] = frozenset()
     leeway_s: int = DEFAULT_LEEWAY_S
     jwks_cache_s: int = DEFAULT_JWKS_CACHE_S
     problems: list[str] = field(default_factory=list)
@@ -467,6 +770,20 @@ class JwtSettings:
         ):
             if not claim or any(not part for part in claim.split(".")):
                 problems.append(f"{name} must be a claim name or a dotted path, got {claim!r}")
+
+        # AUTH_JWT_ACTOR_CLAIM set to nothing turns delegation off (0.2); unset is `act`.
+        raw_actor = env.get("AUTH_JWT_ACTOR_CLAIM")
+        s.actor_claim = DEFAULT_JWT_ACTOR_CLAIM if raw_actor is None else raw_actor.strip()
+        s.client_claim = (env.get("AUTH_JWT_CLIENT_CLAIM") or DEFAULT_JWT_CLIENT_CLAIM).strip()
+        for name, claim in (
+            ("AUTH_JWT_ACTOR_CLAIM", s.actor_claim),
+            ("AUTH_JWT_CLIENT_CLAIM", s.client_claim),
+        ):
+            if claim and any(not part for part in claim.split(".")):
+                problems.append(f"{name} must be a claim name or a dotted path, got {claim!r}")
+        if not s.client_claim:
+            problems.append("AUTH_JWT_CLIENT_CLAIM must be a claim name or a dotted path")
+        s.direct_clients = frozenset(_csv(env.get("AUTH_JWT_DIRECT_CLIENTS")))
 
         s.leeway_s = _int_setting(env, "AUTH_JWT_LEEWAY_S", DEFAULT_LEEWAY_S, 0, 600, problems)
         s.jwks_cache_s = _int_setting(
@@ -661,6 +978,83 @@ def _claim(claims: Mapping[str, Any], path: str) -> Any:
     return current
 
 
+_ABSENT = object()
+
+
+def _claim_or_absent(claims: Mapping[str, Any], path: str) -> Any:
+    """As `_claim`, but `_ABSENT` for a claim the token does not have (a null one is present)."""
+    if path in claims:
+        return claims[path]
+    current: Any = claims
+    for part in path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return _ABSENT
+        current = current[part]
+    return current
+
+
+def _actor_chain(value: Any) -> tuple[str, ...]:
+    """The actors of an RFC 8693 `act` claim, current first; 401 for a malformed one.
+
+    Each level is a mapping with a string `sub`, and may nest the earlier actor
+    under `act`. A chain longer than `MAX_DELEGATION_DEPTH` is refused while it
+    is walked.
+    """
+    chain: list[str] = []
+    node = value
+    while True:
+        if not isinstance(node, Mapping):
+            raise _invalid_token("invalid actor claim")
+        sub = node.get("sub")
+        if not _valid_id(sub):
+            raise _invalid_token("invalid actor claim")
+        chain.append(sub)
+        if len(chain) > MAX_DELEGATION_DEPTH:
+            raise _invalid_token("invalid actor claim")
+        if NESTED_ACTOR_CLAIM not in node:
+            return tuple(chain)
+        node = node[NESTED_ACTOR_CLAIM]
+
+
+def actor_from_claims(
+    claims: Mapping[str, Any],
+    *,
+    actor_claim: str = DEFAULT_JWT_ACTOR_CLAIM,
+    client_claim: str = DEFAULT_JWT_CLIENT_CLAIM,
+    direct_clients: frozenset[str] | set[str] = frozenset(),
+    subject: str | None = None,
+) -> Actor | None:
+    """The actor of a verified token's claims (None: a direct request), as `jwt` reads it.
+
+    * `actor_claim` present (RFC 8693 `act`, default): delegated. It must be a
+      mapping with a string `sub`, each nested `act` likewise; anything else
+      is refused (401 `invalid actor claim`), never read as a direct request.
+    * absent: direct, unless `direct_clients` is set and the token's client
+      (`client_claim`, default `azp`, else `client_id`) is not in it: then an
+      agent presents it, as `client:<client>` (`client:?` without one). A
+      token whose `subject` is its own client (a service's own token) is direct.
+    * `actor_claim` empty: direct (the 0.2 reading).
+
+    `may_act`, `scope` and other claims are not read. For custom policies that
+    verify tokens themselves; `finalize_principal` checks the rest.
+    """
+    raw_client = _claim(claims, client_claim) if client_claim else None
+    if raw_client is None:
+        raw_client = claims.get(FALLBACK_JWT_CLIENT_CLAIM)
+    client = raw_client if _valid_id(raw_client) else None
+    if actor_claim:
+        value = _claim_or_absent(claims, actor_claim)
+        if value is not _ABSENT:
+            chain = _actor_chain(value)
+            return Actor(id=chain[0], chain=chain, client=client)
+    if not direct_clients or client in direct_clients:
+        return None
+    if subject is not None and client is not None and subject == client:
+        return None
+    actor_id = f"{CLIENT_ACTOR_PREFIX}{client or UNKNOWN_CLIENT}"
+    return Actor(id=actor_id, chain=(actor_id,), client=client)
+
+
 def _roles_from_claim(value: Any) -> list[str]:
     """A list of strings, or one space/comma separated string -> distinct role names."""
     if isinstance(value, str):
@@ -719,7 +1113,9 @@ class JwtPolicy:
 
     The principal id is the `AUTH_JWT_PRINCIPAL_CLAIM` claim (default `sub`)
     and the roles come from `AUTH_JWT_ROLES_CLAIM` (default `roles`; a
-    dotted path, a list or a space/comma separated string). Every action is
+    dotted path, a list or a space/comma separated string). The actor, for a
+    token an agent presents for the user, is read from the RFC 8693 actor
+    claim (`AUTH_JWT_ACTOR_CLAIM`, default `act`; see `actor_from_claims`). Every action is
     allowed to an authenticated principal; conversation ownership is enforced
     per thread (`app_utils.threads`, the LangGraph Server owner filters).
     Nothing from the token is logged or put in an error message.
@@ -737,6 +1133,12 @@ class JwtPolicy:
                 "it is fixed.",
                 "; ".join(s.problems),
             )
+        elif s.actor_claim and _csv(os.environ.get("AUTH_ALLOWED_ACTORS")) and not s.direct_clients:
+            logger.warning(
+                "AUTH_POLICY=jwt: delegation is recognised only by the %s claim; if your "
+                "issuer's exchanged tokens carry none, set AUTH_JWT_DIRECT_CLIENTS",
+                s.actor_claim,
+            )
 
     def startup_problems(self) -> list[str]:
         return list(self.settings.problems)
@@ -744,8 +1146,13 @@ class JwtPolicy:
     async def authenticate(self, request: Request) -> Principal:
         if self.settings.problems:
             raise HTTPException(status_code=503, detail=JWT_NOT_CONFIGURED)
-        claims = await self.verify(_bearer_token(request))
-        return self.principal_from_claims(claims)
+        token = _bearer_token(request)
+        claims = await self.verify(token)
+        principal = self.principal_from_claims(claims)
+        if subject_token_needed():
+            # An API acts with the user's own token (exchanged, or forwarded to its audience).
+            keep_subject_token(principal, token, claims.get("aud"))
+        return principal
 
     async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
         if action not in ACTIONS:
@@ -871,6 +1278,13 @@ class JwtPolicy:
             id=principal_id,
             roles=_roles_from_claim(_claim(claims, s.roles_claim)),
             permissions=set(ACTIONS),
+            actor=actor_from_claims(
+                claims,
+                actor_claim=s.actor_claim,
+                client_claim=s.client_claim,
+                direct_clients=s.direct_clients,
+                subject=principal_id,
+            ),
         )
 
 
@@ -953,7 +1367,7 @@ def require(action: str) -> Callable[[Request], Awaitable[Principal]]:
     async def dependency(request: Request) -> Principal:
         policy = get_policy()
         try:
-            principal = await policy.authenticate(request)
+            principal = finalize_principal(await policy.authenticate(request))
             await policy.authorize(principal, action, request.path_params.get("thread_id"))
         except (HTTPException, NotImplementedError) as exc:
             raise _as_http_exception(exc) from exc
@@ -985,7 +1399,7 @@ async def authenticate_and_authorize(
     """Same check as `require`, for code paths outside FastAPI's dependency system."""
     policy = get_policy()
     try:
-        principal = await policy.authenticate(request)
+        principal = finalize_principal(await policy.authenticate(request))
         await policy.authorize(principal, action, resource)
     except (HTTPException, NotImplementedError) as exc:
         raise _as_http_exception(exc) from exc
@@ -997,6 +1411,9 @@ async def authenticate_and_authorize(
 # ---------------------------------------------------------------------------
 
 ROLE_PERMISSION_PREFIX = "role:"
+# The delegated caller's actor, carried beside the roles in the server's user
+# permissions (`actor:<id>`; none for a direct caller).
+ACTOR_PERMISSION_PREFIX = "actor:"
 
 # Where `build_sdk_auth` leaves the policy's 401 challenge (`WWW-Authenticate`)
 # in the request's ASGI state: LangGraph Server drops the headers of an auth
@@ -1064,6 +1481,12 @@ def build_sdk_auth() -> Any:
       `AUTH_READ_ACROSS_ROLES` relaxes only the read and search filters
       (read-across roles may *read* others' threads, never change them), and
       an update can never change a thread's `principal_id` or `tenant`.
+      A delegated caller (an agent acting for the user: `actor:<id>` in its
+      permissions) also stamps `actor` and is filtered to the threads of its
+      own subject and actor; the filters are containment filters, so the
+      subject's own (direct) filter matches the threads its agents started
+      for it. Nobody stamps, adopts or strips an actor by sending metadata,
+      and a delegated caller's roles never read across or administer.
       A copy (`POST /threads/{id}/copy`) is a write: it creates a thread that
       keeps the source's metadata, owner included, so its source must be the
       caller's own thread whatever the caller's roles. A thread that recorded
@@ -1108,13 +1531,23 @@ def build_sdk_auth() -> Any:
     check_startup()
     auth = Auth()
 
-    def _roles_of(ctx: Any) -> set[str]:
+    def _permissions_of(ctx: Any) -> list[str]:
         perms = getattr(ctx.user, "permissions", None) or getattr(ctx, "permissions", None) or []
+        return [str(p) for p in perms]
+
+    def _roles_of(ctx: Any) -> set[str]:
         return {
-            str(p)[len(ROLE_PERMISSION_PREFIX) :]
-            for p in perms
-            if str(p).startswith(ROLE_PERMISSION_PREFIX)
+            p[len(ROLE_PERMISSION_PREFIX) :]
+            for p in _permissions_of(ctx)
+            if p.startswith(ROLE_PERMISSION_PREFIX)
         }
+
+    def _actor_of(ctx: Any) -> str | None:
+        """The delegated caller's actor (its `actor:` permission), None for a direct caller."""
+        for p in _permissions_of(ctx):
+            if p.startswith(ACTOR_PERMISSION_PREFIX):
+                return p[len(ACTOR_PERMISSION_PREFIX) :]
+        return None
 
     def _is_studio(ctx: Any) -> bool:
         # The Studio user exists only under `langgraph dev` (or LangSmith-hosted
@@ -1122,7 +1555,8 @@ def build_sdk_auth() -> Any:
         return isinstance(ctx.user, Auth.types.StudioUser) and dev_mode()
 
     def _reads_across(ctx: Any) -> bool:
-        return bool(_roles_of(ctx) & read_across_roles())
+        # A delegated caller's roles never read across (whatever AUTH_DELEGATED_ROLES lends).
+        return _actor_of(ctx) is None and bool(_roles_of(ctx) & read_across_roles())
 
     def _owner_filter(ctx: Any) -> dict[str, Any] | None:
         """Read filter: none for a read-across role, else the caller's own threads.
@@ -1132,14 +1566,31 @@ def build_sdk_auth() -> Any:
         """
         if _reads_across(ctx) and not _THREAD_COPY.get():
             return None  # no filter: may read across principals
-        return {"principal_id": ctx.user.identity}
+        return _strict_owner_filter(ctx)
 
     def _strict_owner_filter(ctx: Any) -> dict[str, Any]:
-        """Write filter: always the caller's own threads (read-across is read-only)."""
-        return {"principal_id": ctx.user.identity}
+        """Write filter: always the caller's own threads (read-across is read-only).
+
+        A delegated caller's also name its actor: it reaches only the threads
+        started under its own subject and actor. A thread without `actor`
+        (a direct one, or one created before 0.3) never matches that filter.
+        """
+        actor = _actor_of(ctx)
+        if actor is None:
+            return {"principal_id": ctx.user.identity}
+        return {"principal_id": ctx.user.identity, "actor": actor}
+
+    def _stamp_actor(ctx: Any, metadata: dict[str, Any]) -> None:
+        """The caller's actor in metadata the app stamps: set for a delegated caller,
+        removed for a direct one (no caller chooses it)."""
+        actor = _actor_of(ctx)
+        if actor is None:
+            metadata.pop("actor", None)
+        else:
+            metadata["actor"] = actor
 
     def _require_admin(ctx: Any) -> bool:
-        if _is_studio(ctx) or _roles_of(ctx) & admin_roles():
+        if _is_studio(ctx) or (_actor_of(ctx) is None and _roles_of(ctx) & admin_roles()):
             return True
         raise Auth.exceptions.HTTPException(
             status_code=403,
@@ -1160,7 +1611,7 @@ def build_sdk_auth() -> Any:
         _THREAD_COPY.set(_is_thread_copy(request))
         policy = get_policy()
         try:
-            principal = await policy.authenticate(request)
+            principal = finalize_principal(await policy.authenticate(request))
         except HTTPException as exc:
             if exc.status_code == 401:
                 _stash_challenge(request, exc.headers)
@@ -1169,9 +1620,12 @@ def build_sdk_auth() -> Any:
             ) from exc
         except NotImplementedError as exc:
             raise Auth.exceptions.HTTPException(status_code=503, detail=str(exc)) from exc
-        permissions = sorted(principal.permissions) + [
-            f"{ROLE_PERMISSION_PREFIX}{r}" for r in principal.roles
-        ]
+        # A policy's own `actor:` permission is never trusted: only the actor it set does.
+        permissions = sorted(
+            p for p in principal.permissions if not str(p).startswith(ACTOR_PERMISSION_PREFIX)
+        ) + [f"{ROLE_PERMISSION_PREFIX}{r}" for r in principal.roles]
+        if principal.actor is not None:
+            permissions.append(f"{ACTOR_PERMISSION_PREFIX}{principal.actor.id}")
         return {
             "identity": principal.id,
             "display_name": principal.id,
@@ -1207,7 +1661,8 @@ def build_sdk_auth() -> Any:
         metadata = _metadata_of(value)
         metadata["principal_id"] = ctx.user.identity
         metadata["tenant"] = None
-        return {"principal_id": ctx.user.identity}
+        _stamp_actor(ctx, metadata)
+        return _strict_owner_filter(ctx)
 
     @auth.on.threads.read
     async def on_threads_read(ctx: Any, value: Any) -> dict[str, Any] | None:
@@ -1235,9 +1690,11 @@ def build_sdk_auth() -> Any:
         metadata = value.get("metadata") if isinstance(value, dict) else None
         if isinstance(metadata, dict):
             # Ownership is not transferable: an owner cannot hand a thread
-            # (and its content) to another principal or tenant.
+            # (and its content) to another principal, tenant or actor, and a
+            # direct owner cannot strip the actor its agent's thread has.
             metadata["principal_id"] = ctx.user.identity
             metadata.pop("tenant", None)
+            _stamp_actor(ctx, metadata)
         return _strict_owner_filter(ctx)
 
     @auth.on.threads.delete
@@ -1295,6 +1752,7 @@ def build_sdk_auth() -> Any:
             # raw id there with the hashed one.
             metadata["principal_id"] = Principal(id=str(ctx.user.identity)).hashed_id()
         metadata["tenant"] = None
+        _stamp_actor(ctx, metadata)
         return _strict_owner_filter(ctx)
 
     # -- assistants, crons, store: read for everyone, change for admins --------

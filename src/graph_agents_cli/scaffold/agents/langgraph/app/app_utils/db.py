@@ -33,8 +33,9 @@ marks such records `interrupted` once the run's lease on its thread has
 expired (see `run_locks.py`), at startup and every minute.
 
 Records always hold the `metadata` capture set plus the caller's (capped)
-`/chat` metadata, and hold request/response content only under
-`TRACE_CAPTURE=full`. The schema is created with `CREATE ... IF NOT EXISTS` /
+`/chat` metadata (and, for a run an agent made for its user, that agent's
+id, `actor`: a client name, not personal data), and hold request/response
+content only under `TRACE_CAPTURE=full`. The schema is created with `CREATE ... IF NOT EXISTS` /
 `ADD COLUMN IF NOT EXISTS` under a Postgres advisory lock, so replicas
 starting together do not race and an existing database is upgraded in place
 (indexes added to existing `threads` and `runs` tables are built concurrently,
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS {runs} (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS metadata JSONB;
+ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS actor TEXT;
 CREATE INDEX IF NOT EXISTS {runs}_thread_id_idx ON {runs} (thread_id);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS {runs}_running_idx ON {runs} (created_at)
     WHERE status = 'running';
@@ -118,7 +120,8 @@ CREATE SEQUENCE IF NOT EXISTS {locks}_token_seq;
 # call, masked fields masked); `requester_context` the requester's roles and
 # public attributes, which a run resumed by another principal acts with;
 # `message_id` and `tool_call_id` name the tool call that asked, which the API
-# client looks up (with `interrupt_id`) when that tool call runs again.
+# client looks up (with `interrupt_id`) when that tool call runs again;
+# `requester_actor` the agent the requester's run acted through ('' for none).
 APPROVALS_DDL = """
 CREATE TABLE IF NOT EXISTS {approvals} (
     approval_id       TEXT PRIMARY KEY,
@@ -145,6 +148,7 @@ CREATE TABLE IF NOT EXISTS {approvals} (
     expires_at        TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS message_id TEXT;
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS requester_actor TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS {approvals}_thread_id_idx ON {approvals} (thread_id);
 CREATE INDEX IF NOT EXISTS {approvals}_tool_call_idx ON {approvals} (message_id, tool_call_id);
 CREATE INDEX IF NOT EXISTS {approvals}_interrupt_idx ON {approvals} (interrupt_id);
@@ -188,8 +192,10 @@ CREATE TABLE IF NOT EXISTS threads (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE threads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE threads ADD COLUMN IF NOT EXISTS actor TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS threads_principal_id_idx ON threads (principal_id);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS threads_updated_at_idx ON threads (updated_at);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS threads_principal_actor_idx ON threads (principal_id, actor);
 """
 
 
@@ -229,6 +235,8 @@ class RunRecord:
     metadata: dict[str, Any] | None = None
     payload: dict[str, Any] | None = None
     created_at: str = field(default_factory=utcnow_iso)
+    # The agent that ran it for the principal (a delegated request's actor), else None.
+    actor: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -407,8 +415,8 @@ class RunStore:
         await self.db.execute(
             f"""
             INSERT INTO {self.table} (run_id, thread_id, principal_hash, model, status,
-                metadata, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                metadata, created_at, actor)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT (run_id) DO NOTHING
             """,
             (
@@ -419,6 +427,7 @@ class RunStore:
                 run.status,
                 _json(run.metadata),
                 run.created_at,
+                run.actor,
             ),
         )
 
@@ -461,8 +470,9 @@ class RunStore:
         await self.db.execute(
             f"""
             INSERT INTO {self.table} (run_id, thread_id, principal_hash, model, status,
-                input_tokens, output_tokens, latency_ms, error_type, metadata, payload, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                input_tokens, output_tokens, latency_ms, error_type, metadata, payload, created_at,
+                actor)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
             ON CONFLICT (run_id) DO UPDATE SET
                 status = EXCLUDED.status, input_tokens = EXCLUDED.input_tokens,
                 output_tokens = EXCLUDED.output_tokens, latency_ms = EXCLUDED.latency_ms,
@@ -482,6 +492,7 @@ class RunStore:
                 _json(run.metadata),
                 _json(run.payload),
                 run.created_at,
+                run.actor,
             ),
         )
 
@@ -558,4 +569,5 @@ def _run_from_row(row: dict[str, Any]) -> RunRecord:
         metadata=_decode(row.get("metadata")),
         payload=_decode(row.get("payload")),
         created_at=created.isoformat() if isinstance(created, datetime) else str(created),
+        actor=row.get("actor"),
     )

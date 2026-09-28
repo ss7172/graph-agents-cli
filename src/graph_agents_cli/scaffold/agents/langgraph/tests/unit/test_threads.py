@@ -16,13 +16,15 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage
 
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.chat import serialize_message
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
@@ -161,3 +163,101 @@ async def test_the_fence_admits_only_held_threads() -> None:
         locks.fence("t1")
     with pytest.raises(LeaseLost):
         lease.check()
+
+
+# --- threads an agent started for its user (0.3) ------------------------------------------
+
+ALICE = Principal(id="a", roles=["viewer"])
+CONCIERGE = Principal(id="a", actor=Actor(id="concierge", chain=("concierge",)))
+BILLING = Principal(id="a", actor=Actor(id="billing", chain=("billing",)))
+BOBS_CONCIERGE = Principal(id="b", actor=Actor(id="concierge", chain=("concierge",)))
+
+
+async def test_the_subject_owns_the_threads_its_agents_start(store: ThreadStore) -> None:
+    record = await store.create("t-agent", CONCIERGE)
+    assert record.actor == "concierge" and record.principal_id == "a"
+    # The person reads, continues and deletes it.
+    assert is_owner(ALICE, record) and can_access(ALICE, record)
+    assert (await store.ensure("t-agent", ALICE)).actor == "concierge"
+    assert [r.thread_id for r in await store.list_for(ALICE)] == ["t-agent"]
+
+
+async def test_an_agent_reaches_only_its_own_threads_for_the_user(store: ThreadStore) -> None:
+    concierge_thread = await store.create("t-concierge", CONCIERGE)
+    direct_thread = await store.create("t-direct", ALICE)
+    assert is_owner(CONCIERGE, concierge_thread)
+    for stranger in (BILLING, BOBS_CONCIERGE):
+        assert not can_access(stranger, concierge_thread)
+        for check in (assert_access, assert_owner):
+            with pytest.raises(HTTPException) as exc:
+                check(stranger, concierge_thread)
+            assert exc.value.status_code == 403
+            assert exc.value.detail == "This thread belongs to another principal."
+        with pytest.raises(HTTPException):
+            await store.ensure("t-concierge", stranger)
+    # A direct thread (one a person started, or one from before 0.3) is no agent's.
+    assert not is_owner(CONCIERGE, direct_thread)
+    with pytest.raises(HTTPException):
+        await store.ensure("t-direct", CONCIERGE)
+    assert [r.thread_id for r in await store.list_for(CONCIERGE)] == ["t-concierge"]
+    assert await store.list_for(BILLING) == []
+
+
+async def test_a_delegated_principals_roles_never_read_across(store: ThreadStore) -> None:
+    record = await store.create("t1", OWNER)
+    agent = Principal(id="c", roles=["auditor"], actor=Actor(id="concierge"))
+    assert not can_access(agent, record)
+    assert await store.list_for(agent) == []
+
+
+def test_a_record_without_an_actor_reads_as_direct() -> None:
+    from {{cookiecutter.agent_directory}}.app_utils.threads import _record_from_row
+
+    legacy = _record_from_row({"thread_id": "t", "principal_id": "a", "tenant": None})
+    assert legacy.actor == "" and is_owner(ALICE, legacy) and not is_owner(CONCIERGE, legacy)
+
+
+# Every place the template builds a `Principal`: (file, function, whether it passes `actor`).
+# A site that rebuilds a principal without its actor turns an agent into the person it acts
+# for, so a new site fails this test until it is reviewed and added here.
+REVIEWED_PRINCIPAL_SITES = sorted(
+    [
+        ("app_utils/approvals.py", "resume_principal", True),  # the requester's @actor
+        ("app_utils/auth.py", "authenticate", False),  # shared-bearer: one direct principal
+        ("app_utils/auth.py", "finalize_principal", False),  # direct: only @actor removed
+        ("app_utils/auth.py", "finalize_principal", True),
+        ("app_utils/auth.py", "on_threads_create_run", False),  # hashes the subject only
+        ("app_utils/auth.py", "principal_from_claims", True),  # jwt: act / azp
+        ("app_utils/threads.py", "owner_hash", False),  # hashes the subject only
+        ("app_utils/threads.py", "own_view", True),
+    ]
+)
+
+
+def _principal_sites(root: Path) -> list[tuple[str, str, bool]]:
+    sites: set[tuple[str, str, bool]] = set()
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Each call's innermost function: `ast.walk` reaches an outer function first.
+        innermost: dict[int, tuple[str, ast.Call]] = {}
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for node in ast.walk(function):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "Principal"
+                ):
+                    innermost[id(node)] = (function.name, node)
+        for name, node in innermost.values():
+            has_actor = any(k.arg == "actor" for k in node.keywords)
+            sites.add((path.relative_to(root).as_posix(), name, has_actor))
+    return sorted(sites)
+
+
+def test_no_principal_reconstruction_drops_actor() -> None:
+    from {{cookiecutter.agent_directory}} import agent
+
+    root = Path(agent.__file__).parent
+    assert _principal_sites(root) == sorted(set(REVIEWED_PRINCIPAL_SITES))

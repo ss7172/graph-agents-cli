@@ -20,7 +20,9 @@ An unknown or misconfigured policy fails closed at startup.
 
 Threads and A2A tasks belong to the principal that created them. Roles in
 `AUTH_READ_ACROSS_ROLES` may read other principals' threads, never continue or delete them.
-See [Authentication](authentication.md).
+An agent calling for a user (a delegated request) is refused until `AUTH_ALLOWED_ACTORS` lists
+it, reaches only the work it started for that user, holds none of the user's roles and never
+decides an approval. See [Authentication](authentication.md).
 
 ### Outbound calls are allow-listed
 
@@ -127,6 +129,10 @@ Work through it for staging first, then prod. Each item links to the page that e
       only for trusted callers. [Authentication](authentication.md)
 - [ ] Set `AUTH_READ_ACROSS_ROLES` and `AUTH_ADMIN_ROLES` deliberately; both are empty by
       default. [Authentication](authentication.md)
+- [ ] If other agents call this one for users, list them in `AUTH_ALLOWED_ACTORS` (empty
+      refuses them all) and lend roles through `AUTH_DELEGATED_ROLES` only where a tool needs
+      one. Under `shared-bearer` any holder of `API_KEY`, another agent included, decides
+      requester gates. [Agents calling agents](authentication.md#agents-calling-agents)
 
 **Tools and outbound calls**
 

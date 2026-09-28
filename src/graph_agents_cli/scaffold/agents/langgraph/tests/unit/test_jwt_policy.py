@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     ACTIONS,
     DEFAULT_ALLOWED_ACTORS,
@@ -47,8 +48,11 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import (
     JwksUnavailable,
     JwtPolicy,
     JwtSettings,
+    Principal,
+    actor_from_claims,
     build_sdk_auth,
     check_startup,
+    finalize_principal,
     get_policy,
     require,
     reset_policy_cache,
@@ -798,3 +802,185 @@ def test_the_delegation_defaults_on_record() -> None:
     `AUTH_ALLOWED_ACTORS` lists it."""
     assert DEFAULT_JWT_ACTOR_CLAIM == "act"
     assert DEFAULT_ALLOWED_ACTORS == frozenset()
+
+
+# --- delegation (0.3): an agent presenting a user's token ---------------------------------
+
+
+def _delegated(token: str) -> Any:
+    return JwtPolicy(_settings()).authenticate(_request(token))
+
+
+async def test_act_chain_is_read_current_actor_first() -> None:
+    act = {"sub": "billing", "act": {"sub": "concierge"}}
+    principal = await _delegated(_token(RSA_A, act=act, azp="billing"))
+    assert principal.id == "user-1"  # the subject, unchanged
+    assert principal.actor is not None and principal.delegated
+    assert (principal.actor.id, principal.actor.chain) == ("billing", ("billing", "concierge"))
+    assert principal.actor.client == "billing"
+    assert principal.owner_key() == "user-1\x1fbilling"
+    assert principal.hashed_id() == Principal(id="user-1").hashed_id()  # subject-only
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        None,  # present but null
+        "concierge",
+        {},
+        {"sub": 7},
+        {"sub": ""},
+        {"sub": "con\x00cierge"},
+        {"sub": "x" * 257},
+        {"sub": "a", "act": "b"},
+        {"sub": "a", "act": None},
+    ],
+)
+async def test_a_malformed_actor_claim_is_refused_never_read_as_direct(act: Any) -> None:
+    claims = _claims()
+    claims["act"] = act
+    token = jwt.encode(claims, RSA_A, algorithm="RS256", headers={"kid": "a"})
+    await _reject(JwtPolicy(_settings()), token, "invalid actor claim")
+
+
+async def test_an_actor_chain_longer_than_eight_is_refused_while_walking() -> None:
+    act: dict[str, Any] = {"sub": "a0"}
+    for index in range(1, 9):
+        act = {"sub": f"a{index}", "act": act}
+    await _reject(JwtPolicy(_settings()), _token(RSA_A, act=act), "invalid actor claim")
+
+
+def test_direct_clients_make_unlisted_clients_agents() -> None:
+    direct = frozenset({"web"})
+
+    def actor(**claims: Any) -> Any:
+        return actor_from_claims(claims, direct_clients=direct, subject=claims.get("sub"))
+
+    assert actor(sub="alice", azp="web") is None
+    assert actor(sub="alice", azp="concierge").id == "client:concierge"
+    assert actor(sub="alice", client_id="cli").id == "client:cli"  # RFC 9068 client_id
+    assert actor(sub="alice").id == "client:?"
+    assert actor(sub="concierge", azp="concierge") is None  # a service's own token
+    assert actor_from_claims({"sub": "alice", "azp": "concierge"}) is None  # none listed
+    okta = actor_from_claims({"cid": "bot"}, client_claim="cid", direct_clients=direct)
+    assert okta is not None and okta.id == "client:bot" and okta.client == "bot"
+
+
+async def test_direct_clients_from_the_environment() -> None:
+    policy = JwtPolicy(_settings(AUTH_JWT_DIRECT_CLIENTS="web, mobile"))
+    assert (await policy.authenticate(_request(_token(RSA_A, azp="web")))).actor is None
+    agent = await policy.authenticate(_request(_token(RSA_A, azp="concierge")))
+    assert agent.actor is not None and agent.actor.id == "client:concierge"
+
+
+async def test_an_empty_actor_claim_setting_restores_the_02_reading() -> None:
+    policy = JwtPolicy(_settings(AUTH_JWT_ACTOR_CLAIM=""))
+    principal = await policy.authenticate(_request(_token(RSA_A, act={"sub": "concierge"})))
+    assert principal.actor is None and principal.roles == ["viewer", "support"]
+    other = JwtPolicy(_settings(AUTH_JWT_ACTOR_CLAIM="ext.actor"))
+    nested = await other.authenticate(_request(_token(RSA_A, ext={"actor": {"sub": "bot"}})))
+    assert nested.actor is not None and nested.actor.id == "bot"
+
+
+def test_actor_settings_are_checked() -> None:
+    assert _settings().actor_claim == DEFAULT_JWT_ACTOR_CLAIM
+    assert "AUTH_JWT_ACTOR_CLAIM" in " ".join(_settings(AUTH_JWT_ACTOR_CLAIM="a..b").problems)
+    assert "AUTH_JWT_CLIENT_CLAIM" in " ".join(_settings(AUTH_JWT_CLIENT_CLAIM=" ").problems)
+
+
+async def test_the_delegated_principal_keeps_only_lent_roles(jwt_env) -> None:
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+    token = _token(RSA_A, act={"sub": "concierge"}, roles=["viewer", "support", "ops"])
+    principal = await require("chat.send")(_request(token))
+    assert principal.actor is not None and principal.roles == []
+    jwt_env.setenv("AUTH_DELEGATED_ROLES", "support")
+    principal = await require("chat.send")(_request(token))
+    assert principal.roles == ["support"]
+    direct = await require("chat.send")(_request(_token(RSA_A, roles=["viewer", "ops"])))
+    assert direct.roles == ["viewer", "ops"] and direct.actor is None
+
+
+async def test_a_delegated_caller_is_refused_until_it_is_listed(jwt_env) -> None:
+    token = _token(RSA_A, act={"sub": "concierge"})
+    with pytest.raises(HTTPException) as exc:
+        await require("chat.send")(_request(token))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == (
+        "Delegated caller concierge is not allowed here (AUTH_ALLOWED_ACTORS)."
+    )
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "billing, concierge")
+    assert (await require("chat.send")(_request(token))).actor.id == "concierge"
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "*")
+    other = _token(RSA_A, act={"sub": "anyone"})
+    assert (await require("chat.send")(_request(other))).actor.id == "anyone"
+
+
+async def test_a_chain_deeper_than_the_setting_is_refused(jwt_env) -> None:
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "*")
+    act = {"sub": "d", "act": {"sub": "c", "act": {"sub": "b", "act": {"sub": "a"}}}}
+    with pytest.raises(HTTPException) as exc:
+        await require("chat.send")(_request(_token(RSA_A, act=act)))
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid bearer token: delegation too deep."
+    jwt_env.setenv("AUTH_MAX_DELEGATION_DEPTH", "4")
+    principal = await require("chat.send")(_request(_token(RSA_A, act=act)))
+    assert principal.actor is not None and principal.actor.chain == ("d", "c", "b", "a")
+
+
+async def test_the_actor_is_published_and_a_policy_supplied_one_is_not_trusted(jwt_env) -> None:
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+    principal = await require("chat.send")(_request(_token(RSA_A, act={"sub": "concierge"})))
+    assert principal.attributes["@actor"] == {
+        "id": "concierge",
+        "chain": ["concierge"],
+        "client": None,
+    }
+    assert principal.public_attributes()["@actor"]["id"] == "concierge"
+    forged = Principal(id="alice", attributes={"@actor": {"id": "billing"}, "tenant": "t"})
+    assert finalize_principal(forged).attributes == {"tenant": "t"}
+
+
+async def test_the_subject_token_is_kept_only_when_an_api_acts_with_it(
+    jwt_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = _token(RSA_A)
+    principal = await require("chat.send")(_request(token))
+    assert "credentials" not in principal.attributes
+    monkeypatch.setattr(auth_module, "subject_token_needed", lambda: True)
+    principal = await require("chat.send")(_request(token))
+    credentials = principal.attributes["credentials"]
+    assert credentials == {"@subject_token": token, "@subject_aud": (AUDIENCE,)}
+    assert "credentials" not in principal.public_attributes()
+    assert token not in repr(principal)
+
+
+def test_without_a_policy_no_subject_token_is_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_POLICY_PATH", "/nonexistent/api-policy.yaml")
+    assert auth_module.subject_token_needed() is False
+
+
+def test_a_warning_when_only_the_act_claim_can_show_delegation(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+    with caplog.at_level(logging.WARNING):
+        JwtPolicy(_settings())
+    assert "set AUTH_JWT_DIRECT_CLIENTS" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        JwtPolicy(_settings(AUTH_JWT_DIRECT_CLIENTS="web"))
+    assert "AUTH_JWT_DIRECT_CLIENTS" not in caplog.text
+
+
+async def test_langgraph_server_auth_carries_the_actor(jwt_env) -> None:
+    jwt_env.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+    jwt_env.setenv("AUTH_DELEGATED_ROLES", "ops")
+    auth = build_sdk_auth()
+    authenticate = auth._authenticate_handler
+    token = _token(RSA_A, act={"sub": "concierge"}, roles="admin ops")
+    user = await authenticate(request=_request(token))
+    assert user["identity"] == "user-1"
+    assert "actor:concierge" in user["permissions"] and "role:ops" in user["permissions"]
+    assert "role:admin" not in user["permissions"]
+    direct = await authenticate(request=_request(_token(RSA_A)))
+    assert not [p for p in direct["permissions"] if p.startswith("actor:")]

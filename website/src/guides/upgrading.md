@@ -234,6 +234,26 @@ For 0.2.0 there are three:
 
 </div>
 
+### 0.2 to the next release (unreleased)
+
+The development branch adds agents calling agents
+([Authentication](authentication.md#agents-calling-agents)). What changes for an existing
+project after `scaffold upgrade`:
+
+- **Database.** At startup, `ADD COLUMN IF NOT EXISTS` adds `threads.actor`, `runs.actor` and
+  `approvals.requester_actor` (in `agent_*` tables under `langgraph-server`); no row is
+  rewritten, and existing rows read as direct.
+- **`jwt` reads the `act` claim.** A token carrying one is an agent's for the user, and is
+  refused (403) until `AUTH_ALLOWED_ACTORS` lists that agent. Set `AUTH_JWT_ACTOR_CLAIM=`
+  (empty) to read every token as the user's own, as 0.2 did. Every other principal, and every
+  existing thread, task and approval, is direct and behaves as before.
+- **Custom policies** (`policies/**` is never upgraded): a policy through which another agent
+  forwards users' credentials must set `Principal.actor`, or this agent treats the calling
+  agent as the person. A policy that returns an id over 256 characters or with control
+  characters now fails the request with 500.
+- **Downgrading** is not guarded: under 0.2 the threads agents started for a user are
+  reachable by the user's subject alone.
+
 ### Upgrade a running deployment
 
 Old pods (0.1.0 has no run lock across replicas; pre-release 0.2.0 builds used a session

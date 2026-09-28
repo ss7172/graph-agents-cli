@@ -437,3 +437,101 @@ async def test_the_auth_error_middleware_leaves_other_errors_alone() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://server") as client:
             with pytest.raises((RuntimeError, Auth.exceptions.HTTPException)):
                 await client.get("/threads")
+
+
+# --- agents calling for a user (0.3): the `actor:` permission -------------------------------
+
+
+def _agent(identity: str, actor: str, *roles: str) -> Any:
+    user = _user(identity, *roles)
+    user.permissions.append(f"actor:{actor}")
+    return user
+
+
+async def test_a_delegated_callers_filters_name_its_actor(auth: Any) -> None:
+    concierge = _agent("alice", "concierge")
+    both = {"principal_id": "alice", "actor": "concierge"}
+    for action in ("read", "search", "update", "delete", "create_run"):
+        assert await _dispatch(auth, concierge, "threads", action) == both
+    # The person's own (direct) filter is a containment filter: it matches the threads its
+    # agents started for it too, while an agent's never matches a thread without `actor`
+    # (a direct one, or one created before 0.3).
+    for action in ("read", "search", "update", "delete", "create_run"):
+        assert await _dispatch(auth, _user("alice"), "threads", action) == {"principal_id": "alice"}
+
+
+async def test_threads_are_stamped_with_the_actor_and_nobody_chooses_it(auth: Any) -> None:
+    created: dict[str, Any] = {"metadata": {"actor": "billing", "topic": "x"}}
+    await _dispatch(auth, _agent("alice", "concierge"), "threads", "create", created)
+    assert created["metadata"] == {
+        "actor": "concierge",
+        "topic": "x",
+        "principal_id": "alice",
+        "tenant": None,
+    }
+    # A direct caller cannot create a thread that looks like an agent's.
+    forged: dict[str, Any] = {"metadata": {"actor": "concierge"}}
+    await _dispatch(auth, _user("alice"), "threads", "create", forged)
+    assert forged["metadata"] == {"principal_id": "alice", "tenant": None}
+    run: dict[str, Any] = {"metadata": {"actor": "billing"}}
+    await _dispatch(auth, _agent("alice", "concierge"), "threads", "create_run", run)
+    assert run["metadata"]["actor"] == "concierge"
+    direct_run: dict[str, Any] = {"metadata": {"actor": "concierge"}}
+    await _dispatch(auth, _user("alice"), "threads", "create_run", direct_run)
+    assert "actor" not in direct_run["metadata"]
+
+
+async def test_an_update_cannot_adopt_or_strip_an_actor(auth: Any) -> None:
+    # The person (direct) updating its agent's thread: the thread keeps its actor (the
+    # server merges the update's metadata, and the update carries none).
+    by_person: dict[str, Any] = {"thread_id": "t1", "metadata": {"actor": "", "topic": "y"}}
+    await _dispatch(auth, _user("alice"), "threads", "update", by_person)
+    assert by_person["metadata"] == {"principal_id": "alice", "topic": "y"}
+    # An agent cannot move a thread to another agent.
+    by_agent: dict[str, Any] = {"thread_id": "t1", "metadata": {"actor": "billing"}}
+    result = await _dispatch(auth, _agent("alice", "concierge"), "threads", "update", by_agent)
+    assert result == {"principal_id": "alice", "actor": "concierge"}
+    assert by_agent["metadata"] == {"principal_id": "alice", "actor": "concierge"}
+
+
+async def test_a_delegated_callers_roles_never_read_across_or_administer(auth: Any) -> None:
+    agent = _agent("alice", "concierge", "support", "admin")
+    for action in ("read", "search"):
+        assert await _dispatch(auth, agent, "threads", action) == {
+            "principal_id": "alice",
+            "actor": "concierge",
+        }
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await _dispatch(auth, agent, "assistants", "update")
+    assert exc.value.status_code == 403
+
+
+async def test_the_authenticate_handler_publishes_only_the_policys_actor(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
+    from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS, Actor
+
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "concierge")
+
+    class _Delegating:
+        principal = Principal(
+            id="alice",
+            permissions={*ACTIONS, "actor:billing"},  # a policy's own actor: permission
+            actor=Actor(id="concierge"),
+        )
+
+        async def authenticate(self, request: Any) -> Principal:
+            return self.principal
+
+        async def authorize(self, *args: Any) -> None:
+            return None
+
+    monkeypatch.setattr(auth_module, "get_policy", lambda: _Delegating())
+    user = await auth._authenticate_handler(request=_http("GET", "/threads"))
+    assert user["identity"] == "alice"
+    assert [p for p in user["permissions"] if p.startswith("actor:")] == ["actor:concierge"]
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "")
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await auth._authenticate_handler(request=_http("GET", "/threads"))
+    assert exc.value.status_code == 403

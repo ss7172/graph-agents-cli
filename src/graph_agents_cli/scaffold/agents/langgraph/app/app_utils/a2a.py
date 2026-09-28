@@ -25,9 +25,10 @@ resulting security scheme.
 
 A2A tasks belong to the principal that created them: the call context's user
 is the authenticated principal, and the task store keys every task by that
-principal's id, so ListTasks, GetTask, CancelTask and SubscribeToTask only
-ever see the caller's own tasks (another principal's task id reads as "not
-found"). Where the chat runtime has a Postgres database (`CHECKPOINTER=postgres`,
+principal's owner key (its id; for an agent calling for a user, the user's id
+and the agent's, `Principal.owner_key`), so ListTasks, GetTask, CancelTask
+and SubscribeToTask only ever see the caller's own tasks (another principal's
+task id, or another agent's for the same user, reads as "not found"). Where the chat runtime has a Postgres database (`CHECKPOINTER=postgres`,
 or a Postgres `DATABASE_URI` under langgraph-server) the tasks are kept there
 (`PostgresTaskStore`): every replica sees them and they survive restarts and
 rollouts, so `GetTask`, `ListTasks`, `CancelTask` and a message naming a
@@ -252,7 +253,13 @@ def task_ttl_s() -> int:
 
 
 class PrincipalUser(User):
-    """The authenticated principal as an A2A user: its id is the task owner."""
+    """The authenticated principal as an A2A user: its owner key is the task owner.
+
+    The key is the principal's id for a direct caller, and its subject and
+    actor for an agent calling for a user (`Principal.owner_key`): an agent's
+    tasks are its own, and another agent acting for the same user never sees
+    them. Direct callers' keys are their ids, as before 0.3.
+    """
 
     def __init__(self, principal_id: str) -> None:
         self._principal_id = principal_id
@@ -296,7 +303,7 @@ class PolicyContextBuilder(DefaultServerCallContextBuilder):
         if not isinstance(principal, Principal) or not principal.id:
             # The middleware authenticates every A2A request before it gets here.
             raise PermissionError("A2A request without an authenticated principal")
-        return PrincipalUser(principal.id)
+        return PrincipalUser(principal.owner_key())
 
 
 def context_key(context_id: str) -> str:

@@ -104,6 +104,8 @@ LOG_CONTEXT: dict[str, ContextVar[str | None]] = {
     "run_id": ContextVar("run_id", default=None),
     "thread_id": ContextVar("thread_id", default=None),
     "principal_hash": ContextVar("principal_hash", default=None),
+    # The agent presenting a delegated request (a client name, not personal data).
+    "actor": ContextVar("actor", default=None),
 }
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -118,7 +120,7 @@ _STANDARD_ATTRS = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) 
 
 
 def bind_log_context(**values: str | None) -> None:
-    """Set correlation ids (`request_id`, `run_id`, `thread_id`, `principal_hash`)."""
+    """Set correlation ids (`request_id`, `run_id`, `thread_id`, `principal_hash`, `actor`)."""
     for name, value in values.items():
         LOG_CONTEXT[name].set(value)
 

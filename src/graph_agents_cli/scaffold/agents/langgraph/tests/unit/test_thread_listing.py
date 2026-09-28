@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import POSTGRES
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
@@ -179,3 +179,77 @@ async def test_postgres_listing_scopes_and_delete_listeners(pg_store: ThreadStor
     finally:
         DELETE_LISTENERS.remove(listener)
     assert told == ["t-alice"] and await pg_store.get("t-alice") is None
+
+
+# --- threads an agent started for its user (0.3) ------------------------------------------
+
+AGENT = Principal(id="alice@example.com", actor=Actor(id="concierge", chain=("concierge",)))
+OTHER_AGENT = Principal(id="alice@example.com", actor=Actor(id="billing", chain=("billing",)))
+
+
+async def test_listing_follows_the_owner_key(store: ThreadStore) -> None:
+    await store.create("t-direct", OWNER)
+    await store.create("t-concierge", AGENT)
+    await store.create("t-billing", OTHER_AGENT)
+    assert {r.thread_id for r in await store.list_for(OWNER)} == {
+        "t-direct",
+        "t-concierge",
+        "t-billing",
+    }
+    assert [r.thread_id for r in await store.list_for(AGENT)] == ["t-concierge"]
+    assert [r.thread_id for r in await store.list_for(own_view(OTHER_AGENT))] == ["t-billing"]
+    assert own_view(AGENT).actor == AGENT.actor
+    # The rows keep their v0.2 shape: the owner (hashed subject), never the actor.
+    row = (await store.list_for(AGENT))[0].public()
+    assert set(row) == {"thread_id", "owner", "created_at", "updated_at"}
+
+
+async def test_server_listing_of_an_agent_filters_by_its_actor() -> None:
+    client = _Client([])
+    await search_server_threads(client, AGENT, scope=SCOPE_OWN, limit=5, offset=0)
+    assert client.threads.searches[-1]["metadata"] == {
+        "principal_id": "alice@example.com",
+        "actor": "concierge",
+    }
+    await search_server_threads(client, OWNER, scope=SCOPE_OWN, limit=5, offset=0)
+    assert client.threads.searches[-1]["metadata"] == {"principal_id": "alice@example.com"}
+
+
+async def test_postgres_listing_follows_the_owner_key(pg_store: ThreadStore) -> None:
+    await pg_store.create("t-direct", OWNER)
+    await pg_store.create("t-concierge", AGENT)
+    await pg_store.create("t-billing", OTHER_AGENT)
+    assert {r.thread_id for r in await pg_store.list_for(OWNER)} == {
+        "t-direct",
+        "t-concierge",
+        "t-billing",
+    }
+    assert [r.thread_id for r in await pg_store.list_for(AGENT)] == ["t-concierge"]
+    stored = await pg_store.get("t-concierge")
+    assert stored is not None and stored.actor == "concierge"
+    assert (await pg_store.ensure("t-concierge", OWNER)).actor == "concierge"
+    with pytest.raises(HTTPException) as exc:
+        await pg_store.ensure("t-concierge", OTHER_AGENT)
+    assert exc.value.status_code == 403
+
+
+async def test_a_02_threads_table_is_upgraded_in_place(pg_store: ThreadStore) -> None:
+    """A v0.2 table (no `actor` column) gains it at startup; its rows read as direct."""
+    db = pg_store.db
+    await db.execute("DROP TABLE threads")
+    await db.execute(
+        "CREATE TABLE threads (thread_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, "
+        "tenant TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+        "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+    )
+    await db.execute(
+        "INSERT INTO threads (thread_id, principal_id) VALUES (%s, %s)",
+        ("t-old", OWNER.id),
+    )
+    await db.setup()
+    legacy = await pg_store.get("t-old")
+    assert legacy is not None and legacy.actor == ""
+    assert [r.thread_id for r in await pg_store.list_for(OWNER)] == ["t-old"]
+    assert await pg_store.list_for(AGENT) == []
+    with pytest.raises(HTTPException):
+        await pg_store.ensure("t-old", AGENT)

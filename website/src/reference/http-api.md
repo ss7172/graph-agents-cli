@@ -212,7 +212,10 @@ expiring. See [Observability](../guides/observability.md) for the metrics they f
     Each row is `{thread_id, owner, created_at, updated_at}`, `owner` being the hashed
     principal id. `scope=all` lists every principal's threads, for a role in
     `AUTH_READ_ACROSS_ROLES` only (403 otherwise); the default `scope=own` lists only the
-    caller's, read-across roles included.
+    caller's, read-across roles included. A user's own threads include those an agent started
+    for them; an agent calling for a user (a delegated request, see
+    [Authentication](../guides/authentication.md#agents-calling-agents)) lists, reads,
+    continues and deletes only the threads it started for that user.
 
 `GET /threads/{thread_id}/messages`
 :   The thread's messages in order, for its owner or a read-across role: `{id, role,
@@ -246,6 +249,7 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `tool`, `reason` | The tool that made the call and the reason the model gave. |
 | `approvers` | `requester` and/or `role:<name>` entries of the rule that gated the call. |
 | `requester`, `decided_by` | Hashed principal ids. |
+| `requester_actor` | The agent the requester's run acted through (a delegated request), or null. |
 | `created_at`, `expires_at`, `decided_at` | ISO 8601 times. |
 | `comment` | The decider's comment. |
 
@@ -268,6 +272,7 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | Status | `code` | When |
 |---|---|---|
 | `403` | `not_an_approver` | The caller is not one of the approvers (a requester decides their own call only when `requester` is listed). |
+| `403` | `approval_direct_only` | An agent (a delegated request) tried to decide: the person decides, with their own credentials. |
 | `404` | `approval_not_found` | No such approval on this thread. |
 | `409` | `approval_not_pending` | Decided already (the body names its `status`). |
 | `409` | `thread_busy` | Another run holds the thread. |
@@ -323,7 +328,9 @@ Errors
 
 Tasks
 :   A task belongs to the principal that created it: another principal's task id reads as
-    not found. Under `CHECKPOINTER=postgres` (and under `langgraph-server` with a Postgres
+    not found. For an agent calling for a user, the owner is the user and the agent together,
+    so another agent acting for the same user (or the user calling directly) cannot read,
+    list, continue or cancel it. Under `CHECKPOINTER=postgres` (and under `langgraph-server` with a Postgres
     `DATABASE_URI`) tasks are kept in the database, in table `a2a_tasks` (`agent_a2a_tasks`):
     every replica sees them and they survive restarts and rollouts, so `GetTask`, `ListTasks`
     and a decision naming a `taskId` work whichever pod they reach. Under
@@ -340,7 +347,9 @@ Approvals
     it with a message on the same task whose data part is
     `{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`, under the same
     checks as the HTTP route. A task belongs to its requester, so only the requester decides
-    over A2A; `role:` approvers use the HTTP routes.
+    over A2A; `role:` approvers use the HTTP routes. An agent calling for a user never
+    decides: its decision leaves the task `input-required` with the note
+    `approval_direct_only: ...`, and the person decides over HTTP with their own credentials.
 
 A 1.0 call and its answer (trimmed):
 

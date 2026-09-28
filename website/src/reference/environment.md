@@ -184,9 +184,12 @@ The database behaviour (keepalives, `/ready`, schema setup) is in
 | `API_KEY` | | `shared-bearer`: the key clients send as `Authorization: Bearer <API_KEY>` (a secret). Unset answers 503, never "no auth". |
 | `AUTH_READ_ACROSS_ROLES` | empty | Comma list of roles that may read, never continue or delete, other principals' threads (and list their approvals). |
 | `AUTH_ADMIN_ROLES` | empty (nobody) | `langgraph-server`: roles that may manage assistants, crons and the store. |
+| `AUTH_ALLOWED_ACTORS` | empty (no agent) | Comma list of the agents that may call this one for a user (`*`: any); any other delegated request gets 403. See [Agents calling agents](../guides/authentication.md#agents-calling-agents). |
+| `AUTH_DELEGATED_ROLES` | empty | The roles a delegated request keeps; it never reads across, administers or decides as a `role:` approver whatever it keeps. |
+| `AUTH_MAX_DELEGATION_DEPTH` | `3` | How many agents may stand between the user and this one (1-8); a longer chain gets 401. |
 | `AUTH_FORWARD_HEADERS` | `authorization,cookie` | `langgraph-server` with `LANGGRAPH_SERVER_URL`: the request headers passed on to the server's auth handler; empty forwards nothing. |
 | `PRINCIPAL_HASH_SALT` | | When set (a secret), principal ids in logs, traces and run records are HMAC-SHA256 with it instead of a plain hash. Keep it stable. |
-| `AUTH_JWT_*` | | The `jwt` policy: `AUTH_JWT_JWKS_URL`, `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, `AUTH_JWT_ALGORITHMS`, `AUTH_JWT_ALLOW_HS`, `AUTH_JWT_SECRET`, `AUTH_JWT_PRINCIPAL_CLAIM`, `AUTH_JWT_ROLES_CLAIM`, `AUTH_JWT_LEEWAY_S`, `AUTH_JWT_JWKS_CACHE_S`, `AUTH_JWT_JWKS_ALLOW_HTTP`. Defaults and rules: [Authentication](../guides/authentication.md). |
+| `AUTH_JWT_*` | | The `jwt` policy: `AUTH_JWT_JWKS_URL`, `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_JWT_AUDIENCE`, `AUTH_JWT_ALGORITHMS`, `AUTH_JWT_ALLOW_HS`, `AUTH_JWT_SECRET`, `AUTH_JWT_PRINCIPAL_CLAIM`, `AUTH_JWT_ROLES_CLAIM`, `AUTH_JWT_LEEWAY_S`, `AUTH_JWT_JWKS_CACHE_S`, `AUTH_JWT_JWKS_ALLOW_HTTP`, `AUTH_JWT_ACTOR_CLAIM` (`act`; empty reads every token as the user's own), `AUTH_JWT_CLIENT_CLAIM` (`azp`), `AUTH_JWT_DIRECT_CLIENTS`. Defaults and rules: [Authentication](../guides/authentication.md). |
 
 ### Outbound APIs
 

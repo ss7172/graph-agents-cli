@@ -118,13 +118,17 @@ and in the chart values per environment; only `AUTH_JWT_SECRET` is a secret.
 | `AUTH_JWT_LEEWAY_S` | Clock skew allowed for `exp`, `nbf` and `iat` (0-600). Default `60` |
 | `AUTH_JWT_JWKS_CACHE_S` | How long fetched keys are cached, in seconds (1-86400). Default `300` |
 | `AUTH_JWT_JWKS_ALLOW_HTTP` | Allow a plain-http JWKS URL outside dev (a trusted in-cluster issuer only). Default `false` |
+| `AUTH_JWT_ACTOR_CLAIM` | The RFC 8693 actor claim (dotted path allowed): a token carrying it is the user's, presented by that agent. Set it empty to read every token as the user's own (0.2). Default `act` |
+| `AUTH_JWT_CLIENT_CLAIM` | The client (authorized party) claim; `client_id` is read when it is absent (RFC 9068). Okta: `cid`. Default `azp` |
+| `AUTH_JWT_DIRECT_CLIENTS` | Comma list of the clients people sign in with. When set, a token with no actor claim from any other client is that client presenting the user's token (actor `client:<client>`). Default empty |
 
 ### Responses
 
 | Request | Answer |
 |---|---|
 | No token | 401 `Missing bearer token.` |
-| An invalid token: expired, not yet valid, wrong audience or issuer, bad signature, algorithm not allowed, unknown key, malformed, over 16384 characters, no principal claim | 401 `Invalid bearer token: <reason>.` with an RFC 6750 challenge: `WWW-Authenticate: Bearer error="invalid_token", error_description="<reason>"` |
+| An invalid token: expired, not yet valid, wrong audience or issuer, bad signature, algorithm not allowed, unknown key, malformed, over 16384 characters, no principal claim, a malformed actor claim (`invalid actor claim`), too many agents in it (`delegation too deep`) | 401 `Invalid bearer token: <reason>.` with an RFC 6750 challenge: `WWW-Authenticate: Bearer error="invalid_token", error_description="<reason>"` |
+| A token an agent presents, from an agent `AUTH_ALLOWED_ACTORS` does not list | 403 `Delegated caller <agent> is not allowed here (AUTH_ALLOWED_ACTORS).` |
 | A misconfigured policy, or no usable keys | 503 (the details are in the server log) |
 
 Nothing from the token is logged.
@@ -153,7 +157,9 @@ it out of argv and your shell history. Tokens last 12 hours by default (`--ttl`,
 Restart a kept local server (`graph-agents-cli run --stop-server`) after the first call.
 
 Mint one token per test user to try thread ownership, roles and approvals: a token for
-`--sub bob --roles ops` decides the calls a `role:ops` gate holds.
+`--sub bob --roles ops` decides the calls a `role:ops` gate holds. `--act concierge` mints the
+token the agent `concierge` presents for the user (repeat `--act` for a chain, the current
+agent first; `--azp` sets the client): see [Agents calling agents](#agents-calling-agents).
 
 `auth dev-token` refuses (exit 3) unless the project's policy is `jwt`, `APP_ENV` is exactly
 `dev`, and `.env` names no JWKS URL and no other public key:
@@ -211,6 +217,12 @@ Rules for the implementation:
 - Thread ownership is enforced outside the policy; `authorize` decides actions (the `ACTIONS`
   of `app_utils.auth`: `chat.send`, `thread.read`, `thread.list`, `thread.delete`,
   `run.read`, `a2a.invoke`, `card.read`, `approval.read`, `approval.decide`).
+- When the credential shows that an agent presents it for a user, set
+  `Principal(id=<user>, actor=Actor(id=<agent>))`. A custom policy that lets another agent
+  forward users' credentials must set `actor`, or this agent treats the calling agent as the
+  person (see [Agents calling agents](#agents-calling-agents)). Ids are checked after
+  `authenticate`: 1-256 characters without control characters, or the request fails with 500
+  and the policy bug is logged.
 
 A credential that tools must forward to an [`auth: forward` API](api-policy.md#auth-modes) goes in
 `attributes["credentials"][<api name>]`: the only attribute that may hold a secret.
@@ -236,6 +248,58 @@ Under `langgraph-server`, the native API is also held to the approval rules: a n
 cannot resume a paused run (decide through the [approval routes](approvals.md)), a run without
 input or from a checkpoint is refused on a thread that has approvals or waits on a gated call,
 and a thread that has approvals is not copied.
+
+## Agents calling agents
+
+A request can come from another agent acting for a user: agent A received the user's request
+and calls this agent for them. The **subject** (`Principal.id`) is still the user; the
+**actor** (`Principal.actor`) is the agent presenting the request. A principal with an actor is
+*delegated*; one without is *direct*.
+
+How a policy knows:
+
+- `jwt` reads the RFC 8693 actor claim (`act`, `AUTH_JWT_ACTOR_CLAIM`): the outermost
+  `act.sub` is the current agent, and nested `act` values are the agents before it. A malformed
+  `act` (not a mapping with a string `sub`, at any level) is refused with 401; it is never read
+  as the user's own token. With `AUTH_JWT_DIRECT_CLIENTS` set, a token with no `act` from a
+  client not listed there is that client presenting the user's token (`client:<azp>`); a
+  service's own token (its subject is its client) stays direct.
+- `custom` sets `actor` itself. `app_utils.auth` exports `actor_from_claims` (the `jwt`
+  reading, for a policy that verifies tokens itself) and `keep_subject_token`.
+- `shared-bearer` has one principal, `shared`, and no actor: any holder of `API_KEY`, another
+  agent included, can decide requester gates. Use `jwt` or `custom` when agents call this one.
+
+Then one rule set applies to every policy, right after `authenticate`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_ALLOWED_ACTORS` | empty (no agent) | Comma list of the agents that may call this one for a user, or `*` for any (the issuer's audience policy alone then decides). Any other delegated request gets 403. |
+| `AUTH_DELEGATED_ROLES` | empty (none) | The roles a delegated request keeps: an agent acting for a user holds none of the user's roles unless listed here. |
+| `AUTH_MAX_DELEGATION_DEPTH` | `3` | How many agents may stand between the user and this one (1-8); a longer chain gets 401. |
+
+A bad value stops startup. With `jwt`, `AUTH_ALLOWED_ACTORS` set and `AUTH_JWT_DIRECT_CLIENTS`
+empty, startup logs that delegation is recognised only by the actor claim: if your issuer's
+exchanged tokens carry none, list your sign-in clients in `AUTH_JWT_DIRECT_CLIENTS`.
+
+What a delegated principal reaches:
+
+- **Its own work only.** Threads, A2A tasks and approvals belong to the subject *and* the
+  actor. An agent sees and continues only what it started for that user; another agent acting
+  for the same user gets the usual answers for something that is not theirs (403 `This thread
+  belongs to another principal.`, A2A -32001 task not found).
+- **The person owns everything done for them.** The user, calling directly, reads, continues
+  and deletes the threads their agents started, and decides their approvals. (A2A tasks stay
+  with the principal that created them.)
+- **No privileged roles.** A delegated principal's roles never read across
+  (`AUTH_READ_ACROSS_ROLES`), administer (`AUTH_ADMIN_ROLES`) or decide as a `role:` approver,
+  whatever `AUTH_DELEGATED_ROLES` lends; a lent role is visible to tools only.
+- **It never decides an approval.** The person decides a gated call with their own
+  credentials; see [Human approval](approvals.md#agents-calling-agents).
+
+The actor is published in the principal's public attributes (`attributes["@actor"]`, the
+agent's id, chain and client), so it reaches tools under both runtimes and is recorded with an
+approval's requester. Logs carry it as `actor` (a client name, not personal data), and run
+records and trace metadata name it too.
 
 ## Clients and credentials
 
@@ -266,7 +330,8 @@ Error: Agent request failed (HTTP 401):
 !!! info "Limits of the built-in policies"
 
     - `jwt` accepts one issuer and maps no tenant or scope claims to permissions: every
-      authenticated principal may use every action, and ownership is per thread. The JWKS URL
+      authenticated principal may use every action, and ownership is per thread (and per
+      agent, for a delegated request). The JWKS URL
       must answer without redirects; for a PEM certificate only its public key is used. Use a
       `custom` policy or a gateway for more
       ([KI-042](../reference/known-issues.md#ki-042-jwt-one-issuer-and-no-claim-to-permission-mapping)).

@@ -58,6 +58,17 @@ Who sees an approval (`may_view`): the thread's owner, a principal who may
 decide it, and roles in `AUTH_READ_ACROSS_ROLES` (listing only; they see the
 query and body only under `TRACE_CAPTURE=full`).
 
+Agents calling agents: a thread's owner is its subject and, for a thread an
+agent started for its user, that agent (`threads.ThreadRecord.actor`). The
+user (a direct principal with that subject) is the requester of every
+approval on the thread, whichever agent started it: they see it and, when
+`requester` is listed, decide it. A delegated principal (an agent presenting
+the user's token) sees only the approvals of threads started under its own
+subject and actor, and never decides one (`decide_refusal`); its roles never
+count as a role approver or a read-across role. The requester's actor is
+recorded with the approval (`requester_actor`) and restored when a role
+approver's decision resumes the run (`resume_principal`).
+
 `langgraph dev` keeps its threads in `.langgraph_api/` and loads them again
 after a restart or a hot reload (a code change reloads the server), so the
 approvals that bind their tool calls must outlive the process too: without
@@ -100,8 +111,14 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     ROLE_APPROVER_PREFIX,
     BoundApproval,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, read_across_roles
+from {{cookiecutter.agent_directory}}.app_utils.auth import (
+    Principal,
+    actor_of_attributes,
+    owner_key_of,
+    read_across_roles,
+)
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, StorageNotReady, capture_full
+from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadRecord
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +137,9 @@ DECISIONS = {APPROVE: APPROVED, REJECT: REJECTED}
 CODE_APPROVAL_PENDING = "approval_pending"  # 409 on /chat while an approval is pending
 CODE_NOT_PENDING = "approval_not_pending"  # 409 on a decision: already decided
 CODE_EXPIRED = "approval_expired"  # 410 on a decision: it expired
+CODE_NOT_AN_APPROVER = "not_an_approver"  # 403 on a decision: not one of its approvers
+CODE_DIRECT_ONLY = "approval_direct_only"  # 403: an agent may not decide it for the person
+NOT_AN_APPROVER_DETAIL = "You may not decide this approval (see its approvers)."
 
 # How often every replica marks pending approvals past their expiry `expired`.
 SWEEP_INTERVAL_S = 30.0
@@ -215,6 +235,8 @@ class ApprovalRecord:
     comment: str | None = None
     used_at: datetime | None = None
     created_at: datetime = field(default_factory=utcnow)
+    # The agent the requester's run acted through ("" for a direct requester).
+    requester_actor: str = ""
 
     def effective_status(self, now: datetime | None = None) -> str:
         """The status, with a pending approval past its expiry read as `expired`."""
@@ -251,6 +273,7 @@ class ApprovalRecord:
                 "reason": self.payload.get("reason"),
                 "approvers": list(self.approvers),
                 "requester": self.requester_hash,
+                "requester_actor": self.requester_actor or None,
                 "created_at": _iso(self.created_at),
                 "expires_at": _iso(self.expires_at),
                 "decided_by": self.decided_by,
@@ -292,6 +315,7 @@ def record_from_interrupt(
         run_id=run_id,
         interrupt_id=str(interrupt_id),
         requester_hash=requester.hashed_id(),
+        requester_actor=requester.actor.id if requester.actor is not None else "",
         requester_context={
             "roles": [str(r) for r in requester.roles],
             "attributes": requester.public_attributes(),
@@ -347,62 +371,108 @@ def role_approvers(approvers: Iterable[str]) -> set[str]:
     }
 
 
-def is_requester(principal: Principal, owner_id: str | None) -> bool:
-    """The principal who started the run: the thread's owner (only the owner runs on it)."""
-    return bool(owner_id) and principal.id == owner_id
+# The thread an approval was asked on: its `ThreadRecord`, or the owner's subject alone
+# (a direct thread), as older callers pass it.
+ThreadOwner = ThreadRecord | str | None
 
 
-def may_decide(principal: Principal, owner_id: str | None, approvers: Iterable[str]) -> bool:
-    """Whether `principal` may approve or reject: see the module docstring.
+def thread_owner(owner: ThreadOwner) -> tuple[str, str]:
+    """`(subject, actor)` of a thread (`actor` "" for a direct thread)."""
+    if isinstance(owner, ThreadRecord):
+        return owner.principal_id or "", owner.actor or ""
+    return owner or "", ""
 
-    The requester decides only when `requester` is listed, never through a
-    role (no self-approval unless the policy asks for requester confirmation).
+
+def is_requester(principal: Principal, owner: ThreadOwner) -> bool:
+    """The principal the thread's runs act for: the thread's owner (only the owner runs on it).
+
+    The subject directly, whichever agent started the thread; an agent only on
+    a thread started under its own subject and actor.
+    """
+    subject, actor = thread_owner(owner)
+    if not subject or principal.id != subject:
+        return False
+    return principal.actor is None or principal.actor.id == actor
+
+
+def decide_refusal(
+    principal: Principal, owner: ThreadOwner, approvers: Iterable[str]
+) -> tuple[str, str] | None:
+    """Why `principal` may not approve or reject (`(code, detail)`, a 403), or None.
+
+    A direct principal: the requester decides only when `requester` is
+    listed, never through a role (no self-approval unless the policy asks for
+    requester confirmation); anyone else through a listed `role:` it holds. A
+    delegated principal (an agent) never decides: the person does, with their
+    own credentials (`approval_direct_only`), and an agent on a thread it did
+    not start learns nothing more than that it is no approver.
     """
     approvers = list(approvers)
-    if is_requester(principal, owner_id):
-        return REQUESTER_APPROVER in approvers
-    return bool(role_approvers(approvers) & set(principal.roles))
+    if principal.actor is not None:
+        if not is_requester(principal, owner):
+            return CODE_NOT_AN_APPROVER, NOT_AN_APPROVER_DETAIL
+        return (
+            CODE_DIRECT_ONLY,
+            "This approval must be decided by the person at this agent (decide_with: direct), "
+            f"not relayed by agent {principal.actor.id}.",
+        )
+    if is_requester(principal, owner):
+        allowed = REQUESTER_APPROVER in approvers
+    else:
+        allowed = bool(role_approvers(approvers) & set(principal.roles))
+    return None if allowed else (CODE_NOT_AN_APPROVER, NOT_AN_APPROVER_DETAIL)
+
+
+def may_decide(principal: Principal, owner: ThreadOwner, approvers: Iterable[str]) -> bool:
+    """Whether `principal` may approve or reject: see `decide_refusal`."""
+    return decide_refusal(principal, owner, approvers) is None
 
 
 def reads_across(principal: Principal) -> bool:
-    return bool(set(principal.roles) & read_across_roles())
+    """A direct principal holding a read-across role (a delegated one never reads across)."""
+    return not principal.delegated and bool(set(principal.roles) & read_across_roles())
 
 
-def may_view(principal: Principal, owner_id: str | None, approvers: Iterable[str]) -> bool:
+def may_view(principal: Principal, owner: ThreadOwner, approvers: Iterable[str]) -> bool:
     """The owner, a decider, or a read-across role (for listing)."""
     return (
-        is_requester(principal, owner_id)
-        or may_decide(principal, owner_id, approvers)
+        is_requester(principal, owner)
+        or may_decide(principal, owner, approvers)
         or reads_across(principal)
     )
 
 
-def sees_call(principal: Principal, owner_id: str | None, approvers: Iterable[str]) -> bool:
+def sees_call(principal: Principal, owner: ThreadOwner, approvers: Iterable[str]) -> bool:
     """Whether the viewer sees the call's query and body: the owner and the deciders
     do (they need them); read-across roles only under `TRACE_CAPTURE=full`."""
     return (
-        is_requester(principal, owner_id)
-        or may_decide(principal, owner_id, approvers)
-        or capture_full()
+        is_requester(principal, owner) or may_decide(principal, owner, approvers) or capture_full()
     )
 
 
-def resume_principal(record: ApprovalRecord, owner_id: str, decider: Principal) -> Principal:
-    """Who the resumed run acts as: always the requester, never the decider.
+def resume_principal(record: ApprovalRecord, owner: ThreadOwner, decider: Principal) -> Principal:
+    """Who the resumed run acts as: always the requester, never another decider.
 
-    When the requester decides, their own principal of this request (its
-    credentials included, for `auth: forward` APIs). When someone else does,
-    the requester with the roles and public attributes the run had when it
-    paused; credentials are never stored, so an `auth: forward` call approved
-    by someone else has none and is not sent.
+    When the requester decides (the same subject and actor, or the subject
+    itself on a thread its agent started), their own principal of this
+    request (its credentials included, for `auth: forward` APIs). When
+    someone else does (a role approver), the requester with the roles, public
+    attributes and actor the run had when it paused; credentials are never
+    stored, so an `auth: forward` call approved by someone else has none and
+    is not sent.
     """
-    if decider.id == owner_id:
+    subject, actor = thread_owner(owner)
+    if decider.owner_key() == owner_key_of(subject, actor) or (
+        decider.actor is None and decider.id == subject
+    ):
         return decider
     context = record.requester_context or {}
+    attributes = dict(context.get("attributes") or {})
     return Principal(
-        id=owner_id,
+        id=subject,
         roles=[str(r) for r in context.get("roles") or []],
-        attributes=dict(context.get("attributes") or {}),
+        attributes=attributes,
+        actor=actor_of_attributes(attributes),
     )
 
 
@@ -420,7 +490,7 @@ def _without_call(payload: Mapping[str, Any]) -> dict[str, Any]:
 _COLUMNS = (
     "approval_id, thread_id, run_id, interrupt_id, requester_hash, requester_context, api, "
     "method, path, operation_id, call_hash, tool_call_id, message_id, approvers, payload, "
-    "status, decided_by, decided_at, comment, used_at, created_at, expires_at"
+    "status, decided_by, decided_at, comment, used_at, created_at, expires_at, requester_actor"
 )
 # Clears the call from the payload unless the first parameter is true (TRACE_CAPTURE=full).
 _CLEARED_PAYLOAD = "CASE WHEN %s THEN payload ELSE payload - 'query' - 'body' END"
@@ -450,6 +520,7 @@ def _record_from_row(row: Mapping[str, Any]) -> ApprovalRecord:
         used_at=_as_datetime(row.get("used_at")),
         created_at=_as_datetime(row.get("created_at")) or utcnow(),
         expires_at=_as_datetime(row.get("expires_at")) or utcnow(),
+        requester_actor=row.get("requester_actor") or "",
     )
 
 
@@ -658,7 +729,7 @@ class ApprovalStore:
             f"""
             INSERT INTO {self.table} ({_COLUMNS})
             VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
-                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
+                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 record.approval_id,
@@ -683,6 +754,7 @@ class ApprovalStore:
                 record.used_at,
                 record.created_at,
                 record.expires_at,
+                record.requester_actor,
             ),
         )
         return record, True, len(rows)
@@ -931,23 +1003,35 @@ class ApprovalStore:
         """Approvals the caller may see across threads, newest first (`GET /approvals`).
 
         Their own (requested on their threads), the ones a role of theirs may
-        decide, and every one for a read-across role. `status` filters (a
-        pending approval past its expiry counts as `expired`).
+        decide, and every one for a read-across role. A delegated principal
+        sees only the ones requested under its own subject and actor. `status`
+        filters (a pending approval past its expiry counts as `expired`).
         """
         now = self.now()
-        across = reads_across(principal)
         own = principal.hashed_id()
-        roles = {f"{ROLE_APPROVER_PREFIX}{r}" for r in principal.roles}
+        actor = principal.actor.id if principal.actor is not None else None
+        across = reads_across(principal)
+        # A delegated principal's roles never make it an approver.
+        roles = (
+            set() if actor is not None else {f"{ROLE_APPROVER_PREFIX}{r}" for r in principal.roles}
+        )
+
+        def mine(r: ApprovalRecord) -> bool:
+            return r.requester_hash == own and (actor is None or r.requester_actor == actor)
+
         if not self.db.is_postgres:
             rows = [
                 r
                 for r in sorted(await self._records(), key=lambda r: r.created_at, reverse=True)
-                if (across or r.requester_hash == own or roles & set(r.approvers))
+                if (across or mine(r) or roles & set(r.approvers))
                 and (status is None or r.effective_status(now) == status)
             ]
             return rows[offset : offset + limit]
-        conditions = ["(%s OR requester_hash = %s OR approvers ?| %s::text[])"]
-        params: list[Any] = [across, own, sorted(roles)]
+        conditions = [
+            "(%s OR (requester_hash = %s AND (%s::text IS NULL OR requester_actor = %s::text)) "
+            "OR approvers ?| %s::text[])"
+        ]
+        params: list[Any] = [across, own, actor, actor, sorted(roles)]
         if status == PENDING:
             conditions.append("status = %s AND expires_at > %s")
             params += [PENDING, now]

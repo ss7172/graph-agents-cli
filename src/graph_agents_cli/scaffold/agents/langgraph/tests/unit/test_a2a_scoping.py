@@ -80,7 +80,7 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     task_owner,
     task_ttl_s,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS, Principal
+from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS, Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import MEMORY, POSTGRES
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
@@ -480,3 +480,100 @@ def test_the_a2a_defaults_on_record() -> None:
     for path in (a2a_module.A2A_RPC_PATH, a2a_module.A2A_CARD_PATH):
         assert path.startswith(telemetry.PEERS_INBOUND_TRACE_PREFIX)
     assert not "/chat".startswith(telemetry.PEERS_INBOUND_TRACE_PREFIX)
+
+
+# --- agents acting for the same user (0.3): tasks are owned by the owner key ---------------
+
+
+class ActorHeaderPolicy:
+    """Test policy: `X-User` is the subject, `X-Actor` (when sent) the agent presenting it."""
+
+    async def authenticate(self, request: Request) -> Principal:
+        user = request.headers.get("x-user")
+        if not user:
+            raise HTTPException(401, "no user", headers={"WWW-Authenticate": "Bearer"})
+        actor = request.headers.get("x-actor")
+        return Principal(
+            id=user,
+            roles=["user"],
+            permissions=set(ACTIONS),
+            actor=Actor(id=actor) if actor else None,
+        )
+
+    async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
+        return None
+
+
+@pytest.fixture
+async def agents(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[dict[str, Any]]:
+    """A2A clients of one user: directly, and through the agents concierge and billing."""
+    monkeypatch.setattr(auth_module, "get_policy", lambda: ActorHeaderPolicy())
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "concierge,billing")
+    user = f"alice-{uuid.uuid4().hex[:8]}"
+    headers = {
+        "direct": {"X-User": user},
+        "concierge": {"X-User": user, "X-Actor": "concierge"},
+        "billing": {"X-User": user, "X-Actor": "billing"},
+    }
+    async with app.router.lifespan_context(app):
+        https = {
+            name: httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+                headers=value,
+                timeout=30,
+            )
+            for name, value in headers.items()
+        }
+        try:
+            clients: dict[str, Any] = {
+                name: await create_client(A2A_URL, ClientConfig(streaming=False, httpx_client=h))
+                for name, h in https.items()
+            }
+            clients["http"] = https
+            yield clients
+        finally:
+            for h in https.values():
+                await h.aclose()
+
+
+def test_the_task_owner_is_the_owner_key() -> None:
+    request = Request({"type": "http", "method": "POST", "path": A2A_PATH, "headers": []})
+    request.state.principal = Principal(id="alice", actor=Actor(id="concierge"))
+    assert PolicyContextBuilder().build_user(request).user_name == "alice\x1fconcierge"
+    request.state.principal = Principal(id="alice")
+    assert PolicyContextBuilder().build_user(request).user_name == "alice"  # as in 0.2
+
+
+async def test_other_actor_cannot_get_list_continue_cancel(agents: dict[str, Any]) -> None:
+    concierge, billing = agents["concierge"], agents["billing"]
+    task = await _send(concierge, _message("my pin is 9876"))
+    assert task.status.state == TaskState.TASK_STATE_COMPLETED
+    assert [t.id for t in (await concierge.list_tasks(ListTasksRequest())).tasks] == [task.id]
+    for other in (billing, agents["direct"]):
+        # Another agent for the same user, and the user directly: other owner keys.
+        assert (await other.list_tasks(ListTasksRequest())).total_size == 0
+        with pytest.raises(Exception, match="not found"):
+            await other.get_task(GetTaskRequest(id=task.id))
+        with pytest.raises(Exception, match="not found"):
+            await other.cancel_task(CancelTaskRequest(id=task.id))
+        with pytest.raises(Exception, match="not found"):
+            await _send(other, _message("hi", task_id=task.id))
+    # The conversation: another agent is refused (no oracle beyond the thread rule) ...
+    refused = await _send(billing, _message("hi", context_id=task.context_id))
+    assert refused.status.state == TaskState.TASK_STATE_FAILED
+    assert "another principal" in refused.status.message.parts[0].text
+    # ... while the person, who owns every thread of theirs, may continue it.
+    continued = await _send(agents["direct"], _message("hi", context_id=task.context_id))
+    assert continued.status.state == TaskState.TASK_STATE_COMPLETED
+
+
+async def test_a_delegated_caller_is_refused_until_listed(
+    agents: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "billing")
+    r = await agents["http"]["concierge"].get(f"{A2A_PATH}/.well-known/agent-card.json")
+    assert r.status_code == 403
+    assert r.json() == {
+        "detail": "Delegated caller concierge is not allowed here (AUTH_ALLOWED_ACTORS)."
+    }

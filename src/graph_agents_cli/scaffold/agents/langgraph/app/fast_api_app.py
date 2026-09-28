@@ -137,6 +137,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import CODE_APPROVAL_P
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
     authenticate_and_authorize,
+    delegation_settings,
     require,
 )
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
@@ -238,6 +239,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             trace_capture,
             task_ttl_s,
             max_message_chars,
+            delegation_settings,
         )
     )
     if RUNTIME.runtime == FASTAPI:
@@ -513,7 +515,10 @@ def principal_for(action: str) -> Callable[[Request], Awaitable[Principal]]:
 
     async def dependency(request: Request) -> Principal:
         principal = await check(request)
-        bind_log_context(principal_hash=principal.hashed_id())
+        bind_log_context(
+            principal_hash=principal.hashed_id(),
+            actor=principal.actor.id if principal.actor is not None else None,
+        )
         return principal
 
     dependency.__name__ = f"principal_for_{action.replace('.', '_')}"

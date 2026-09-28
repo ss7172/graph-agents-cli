@@ -128,7 +128,9 @@ class RequestContextMiddleware:
                 (k, v) for k, v in scope.get("headers") or () if k.lower() != b"x-request-id"
             ] + [(b"x-request-id", request_id.encode())]
         scope.setdefault("state", {})["request_id"] = request_id
-        bind_log_context(request_id=request_id, run_id=None, thread_id=None, principal_hash=None)
+        bind_log_context(
+            request_id=request_id, run_id=None, thread_id=None, principal_hash=None, actor=None
+        )
         status = 500
         started = time.perf_counter()
 

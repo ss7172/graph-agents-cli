@@ -325,3 +325,53 @@ def test_concurrent_env_writes_assign_each_key_once(tmp_path: Path) -> None:
     # A key the file already sets is left alone, not assigned a second time.
     write_env(env_file, {"AUTH_JWT_ISSUER": "someone-else"})
     assert dotenv_values(env_file)["AUTH_JWT_ISSUER"] == "graph-agents-cli-dev"
+
+
+def test_act_nests_the_agents_current_first() -> None:
+    claims = build_claims(
+        sub="alice",
+        roles=[],
+        issuer="i",
+        audience="a",
+        ttl_s=60,
+        actors=["billing", "concierge"],
+        azp="billing",
+    )
+    assert claims["act"] == {"sub": "billing", "act": {"sub": "concierge"}}
+    assert claims["azp"] == "billing" and claims["sub"] == "alice"
+    plain = build_claims(sub="alice", roles=[], issuer="i", audience="a", ttl_s=60)
+    assert "act" not in plain and "azp" not in plain
+    other = build_claims(
+        sub="alice",
+        roles=[],
+        issuer="i",
+        audience="a",
+        ttl_s=60,
+        actors=["bot"],
+        actor_claim_name="ext.actor",
+    )
+    assert other["ext"] == {"actor": {"sub": "bot"}}
+
+
+def test_a_token_an_agent_presents_for_a_user(jwt_project: Path, signed: list[dict]) -> None:
+    result = dev_token(
+        "--sub", "alice", "--act", "billing", "--act", "concierge", "--azp", "billing"
+    )
+    assert result.exit_code == 0, result.output
+    claims = signed[0]["claims"]
+    assert claims["act"] == {"sub": "billing", "act": {"sub": "concierge"}}
+    assert claims["azp"] == "billing"
+    assert "presented by billing <- concierge" in result.stderr
+    assert "--sub alice --act billing --act concierge --azp billing" in result.stderr
+    for bad in (["--act", ""], ["--act", "two words"], ["--azp", " "]):
+        refused = dev_token("--sub", "alice", *bad)
+        assert refused.exit_code == 2, refused.output
+
+
+def test_act_with_the_actor_claim_turned_off_warns(jwt_project: Path, signed) -> None:
+    env = jwt_project / ".env"
+    env.write_text(ENV_EXAMPLE_LIKE + "AUTH_JWT_ACTOR_CLAIM=\n")
+    result = dev_token("--sub", "alice", "--act", "concierge")
+    assert result.exit_code == 0, result.output
+    assert signed[0]["claims"]["act"] == {"sub": "concierge"}
+    assert "reads this token as the user's own" in result.stderr

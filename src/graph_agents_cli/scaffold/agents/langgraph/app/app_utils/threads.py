@@ -15,7 +15,7 @@
 """App-owned thread ownership (one principal per thread) and per-thread run locks.
 
 Under `fastapi` the `threads` table (`thread_id`, `principal_id`, `tenant`,
-`created_at`, `updated_at`) lives beside the library-owned checkpointer
+`actor`, `created_at`, `updated_at`) lives beside the library-owned checkpointer
 schema; the ownership check runs before any checkpointer access, so a thread
 id alone cannot cross a principal boundary. Claiming a new thread is one
 atomic insert-if-absent, so two principals racing for the same new id cannot
@@ -24,8 +24,15 @@ the thread metadata `{principal_id, tenant}` the app writes at creation (the
 server's own `@auth.on` filters in `auth.py` protect the native Threads/Runs
 API called from outside; the app's loopback SDK calls bypass them).
 
-Only the owner may continue (write to) or delete a thread. Roles listed in
-`AUTH_READ_ACROSS_ROLES` may additionally *read* other principals' threads;
+Only the owner may continue (write to) or delete a thread. A thread an agent
+started for a user (a delegated principal, `Principal.actor`) records that
+actor: the user (a direct principal with the same subject) owns it as well,
+and may read, continue and delete it; the agent reaches only the threads
+started under its own subject and actor, never another agent's for the same
+user. A thread without an actor (a direct one, or one created before 0.3) is
+never an agent's. Roles listed in
+`AUTH_READ_ACROSS_ROLES` may additionally *read* other principals' threads
+(direct principals only: a delegated principal's roles never read across);
 listing lists the caller's own threads unless the caller asks for every
 principal's (`GET /threads?scope=all`, read-across roles only). Listed rows
 carry the owner as the hashed principal id (`owner`), never the raw id.
@@ -79,8 +86,10 @@ __all__ = [
     "ThreadRecord",
     "ThreadStore",
     "check_scope",
+    "is_owner",
     "own_view",
     "owner_hash",
+    "owner_metadata_filter",
     "search_server_threads",
     "thread_deleted",
 ]
@@ -105,6 +114,9 @@ class ThreadRecord:
     tenant: str | None = None
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str | None = None
+    # The agent that started the thread for `principal_id` (a delegated principal's
+    # actor); "" for a direct thread.
+    actor: str = ""
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -132,11 +144,20 @@ def read_across_roles() -> set[str]:
 
 
 def reads_across(principal: Principal) -> bool:
-    return bool(set(principal.roles) & read_across_roles())
+    """A direct principal holding a read-across role (a delegated one never reads across)."""
+    return not principal.delegated and bool(set(principal.roles) & read_across_roles())
 
 
 def is_owner(principal: Principal, record: ThreadRecord) -> bool:
-    return record.principal_id == principal.id
+    """The thread's subject, directly; or the agent that started it, for that subject.
+
+    A direct principal owns every thread of its subject, those its agents
+    started included. A delegated one owns only the threads started under its
+    exact subject and actor.
+    """
+    if record.principal_id != principal.id:
+        return False
+    return principal.actor is None or (record.actor or "") == principal.actor.id
 
 
 def can_access(principal: Principal, record: ThreadRecord) -> bool:
@@ -176,6 +197,7 @@ def own_view(principal: Principal) -> Principal:
         roles=[r for r in principal.roles if r not in across],
         permissions=set(principal.permissions),
         attributes=principal.public_attributes(),
+        actor=principal.actor,
     )
 
 
@@ -192,6 +214,7 @@ def _record_from_row(row: dict[str, Any]) -> ThreadRecord:
         tenant=row.get("tenant"),
         created_at=_iso(row.get("created_at")) or utcnow_iso(),
         updated_at=_iso(row.get("updated_at")),
+        actor=row.get("actor") or "",
     )
 
 
@@ -219,6 +242,7 @@ class ThreadStore:
             thread_id=thread_id,
             principal_id=principal.id,
             tenant=principal.public_attributes().get("tenant"),
+            actor=principal.actor.id if principal.actor is not None else "",
         )
         if not self.db.is_postgres:
             existing = self._memory.setdefault(thread_id, record)
@@ -226,14 +250,16 @@ class ThreadStore:
         for _ in range(3):
             row = await self.db.fetchone(
                 """
-                INSERT INTO threads (thread_id, principal_id, tenant, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s) ON CONFLICT (thread_id) DO NOTHING
+                INSERT INTO threads (thread_id, principal_id, tenant, actor, created_at,
+                    updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (thread_id) DO NOTHING
                 RETURNING *
                 """,
                 (
                     record.thread_id,
                     record.principal_id,
                     record.tenant,
+                    record.actor,
                     record.created_at,
                     record.created_at,
                 ),
@@ -304,7 +330,9 @@ class ThreadStore:
         `scope="own"`: its own threads only (a read-across role included);
         `scope="all"`, or no scope: every principal's for a read-across role,
         its own for anyone else. (`GET /threads` checks the scope and passes
-        the caller without its read-across roles for its own threads.)
+        the caller without its read-across roles for its own threads.) A
+        direct principal's own threads are every thread of its subject; a
+        delegated one's only those of its subject and actor.
         """
         if scope == SCOPE_OWN:
             principal = own_view(principal)
@@ -319,6 +347,12 @@ class ThreadStore:
             rows = await self.db.fetchall(
                 "SELECT * FROM threads ORDER BY updated_at DESC, thread_id DESC LIMIT %s OFFSET %s",
                 (limit, offset),
+            )
+        elif principal.actor is not None:
+            rows = await self.db.fetchall(
+                "SELECT * FROM threads WHERE principal_id = %s AND actor = %s "
+                "ORDER BY updated_at DESC, thread_id DESC LIMIT %s OFFSET %s",
+                (principal.id, principal.actor.id, limit, offset),
             )
         else:
             rows = await self.db.fetchall(
@@ -350,6 +384,18 @@ class ThreadStore:
         await thread_deleted(thread_id)
 
 
+def owner_metadata_filter(principal: Principal) -> dict[str, Any]:
+    """langgraph-server: the thread-metadata filter of a principal's own threads.
+
+    A containment filter: the subject's (direct) matches every thread stamped
+    with it, its agents' included; a delegated principal's names its actor
+    too, which a direct thread (no `actor` key) never matches.
+    """
+    if principal.actor is None:
+        return {"principal_id": principal.id}
+    return {"principal_id": principal.id, "actor": principal.actor.id}
+
+
 async def thread_deleted(thread_id: str) -> None:
     """Tell every `DELETE_LISTENERS` entry that `thread_id` is gone; never raises."""
     for listener in list(DELETE_LISTENERS):
@@ -370,7 +416,7 @@ async def search_server_threads(
     """
     filters: dict[str, Any] = {}
     if scope != SCOPE_ALL:
-        filters["metadata"] = {"principal_id": principal.id}
+        filters["metadata"] = owner_metadata_filter(principal)
     threads = await client.threads.search(
         limit=limit, offset=offset, sort_by="updated_at", sort_order="desc", **filters
     )
