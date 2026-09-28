@@ -73,6 +73,14 @@ def test_the_shared_block_is_byte_identical() -> None:
     )
 
 
+def test_the_v03_defaults_on_record(runtime: ModuleType) -> None:
+    """Defaults decided for 0.3 (P1 and P2 read them): approvers decide `direct` unless a
+    gate opts into `relayed`, and the correlation headers go to the APIs that act for the
+    user (`forward`, and `exchange` once the policy accepts it)."""
+    assert cli.DEFAULT_DECIDE_WITH == runtime.DEFAULT_DECIDE_WITH == "direct"
+    assert runtime.PROPAGATING_AUTH_MODES == frozenset({"forward", "exchange"})
+
+
 def test_the_runtime_module_renders_unchanged() -> None:
     """cookiecutter renders the file: it must hold no template syntax at all."""
     source = TEMPLATE_CLIENT.read_text(encoding="utf-8")

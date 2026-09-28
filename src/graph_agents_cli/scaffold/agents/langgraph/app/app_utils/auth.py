@@ -247,6 +247,12 @@ JWKS_REFETCH_INTERVAL_S = 30.0
 # than AUTH_JWT_JWKS_CACHE_S; after that requests get 503 until the issuer answers.
 JWKS_STALE_GRACE_S = 3600.0
 HMAC_MIN_SECRET_BYTES = 32
+# Delegated callers (0.3). The jwt claim that names the agent acting for the user
+# (`AUTH_JWT_ACTOR_CLAIM`, RFC 8693 `act`; set it empty to read every token as the
+# user's own, as 0.2 does), and the agents that may act (`AUTH_ALLOWED_ACTORS`, a comma
+# list): none by default, so a delegated caller is refused until it is listed.
+DEFAULT_JWT_ACTOR_CLAIM = "act"
+DEFAULT_ALLOWED_ACTORS: frozenset[str] = frozenset()
 PRINCIPAL_ID_MAX_CHARS = 256
 MAX_ROLES = 256
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")

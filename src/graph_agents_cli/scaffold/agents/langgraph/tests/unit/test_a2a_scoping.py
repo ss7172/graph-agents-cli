@@ -69,6 +69,7 @@ from starlette.requests import Request
 from {{cookiecutter.agent_directory}}.app_utils import a2a as a2a_module
 from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
 from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module
+from {{cookiecutter.agent_directory}}.app_utils import telemetry
 from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     DEFAULT_TASK_TTL_S,
     ExpiringTaskStore,
@@ -468,3 +469,14 @@ async def test_a_nul_character_never_reaches_the_database() -> None:
     lookups = [params for sql, params in db.statements if not sql.startswith("INSERT")]
     assert ("alice", "t\ufffd") in [tuple(params[:2]) for params in lookups]
     assert any("ab\ufffdcd" in params for params in lookups)
+
+
+def test_the_a2a_defaults_on_record() -> None:
+    """Defaults decided for 0.3 (P4 and the trace scope read them): the user's own words go
+    only to peers that declare the origin extension, and under the default trace scope an
+    incoming `traceparent` is continued on the A2A routes only."""
+    assert a2a_module.DEFAULT_A2A_FORWARD_ORIGIN == "auto"
+    assert telemetry.PEERS_INBOUND_TRACE_PREFIX == "/a2a/"
+    for path in (a2a_module.A2A_RPC_PATH, a2a_module.A2A_CARD_PATH):
+        assert path.startswith(telemetry.PEERS_INBOUND_TRACE_PREFIX)
+    assert not "/chat".startswith(telemetry.PEERS_INBOUND_TRACE_PREFIX)

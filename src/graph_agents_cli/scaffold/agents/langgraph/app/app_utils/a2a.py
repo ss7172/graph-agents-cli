@@ -192,6 +192,10 @@ DEFAULT_DESCRIPTION = "{{cookiecutter.project_name}}: a LangGraph agent served o
 DEFAULT_SKILL_DESCRIPTION = "Hold a conversation with the agent."
 # Set by the request handler for the executor: whether the caller streams the reply.
 STREAMING_STATE_KEY = "a2a_streaming"
+# Whether this agent's A2A client (0.3) passes the user's own words on to the agents it
+# calls (`A2A_FORWARD_ORIGIN`): `auto` sends them only to a peer whose card declares the
+# origin extension, and `off` never does.
+DEFAULT_A2A_FORWARD_ORIGIN = "auto"
 
 
 def card_description() -> str | None:

@@ -122,6 +122,10 @@ ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
 DEFAULT_APPROVAL_TIMEOUT_S = 900
 MIN_APPROVAL_TIMEOUT_S = 30
 MAX_APPROVAL_TIMEOUT_S = 86400
+# How approvers decide once an approval rule takes `decide_with` (0.3): `direct` by
+# default, each with their own credential. `relayed`, with the `relayers` it names, lets
+# those agents deliver the requester's decision: an opt-in that each callee's gate reviews.
+DEFAULT_DECIDE_WITH = "direct"
 _ROLE_NAME_RE = re.compile(r"[^\s,\x00-\x1f\x7f]{1,256}")
 
 LEGACY_POLICY_HINT = (

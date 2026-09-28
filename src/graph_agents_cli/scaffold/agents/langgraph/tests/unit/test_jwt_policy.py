@@ -41,6 +41,8 @@ from starlette.requests import Request
 
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     ACTIONS,
+    DEFAULT_ALLOWED_ACTORS,
+    DEFAULT_JWT_ACTOR_CLAIM,
     JwksCache,
     JwksUnavailable,
     JwtPolicy,
@@ -788,3 +790,11 @@ async def test_langgraph_server_auth_uses_the_same_policy(jwt_env) -> None:
     reset_policy_cache()
     with pytest.raises(RuntimeError, match="AUTH_JWT_ISSUER"):
         build_sdk_auth()
+
+
+def test_the_delegation_defaults_on_record() -> None:
+    """Defaults decided for 0.3 (P1 reads them): the actor is the RFC 8693 `act` claim
+    (empty turns delegation off, as in 0.2), and no delegated caller is allowed until
+    `AUTH_ALLOWED_ACTORS` lists it."""
+    assert DEFAULT_JWT_ACTOR_CLAIM == "act"
+    assert DEFAULT_ALLOWED_ACTORS == frozenset()

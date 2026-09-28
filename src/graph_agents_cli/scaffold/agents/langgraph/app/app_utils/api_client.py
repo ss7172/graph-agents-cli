@@ -197,6 +197,10 @@ ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
 DEFAULT_APPROVAL_TIMEOUT_S = 900
 MIN_APPROVAL_TIMEOUT_S = 30
 MAX_APPROVAL_TIMEOUT_S = 86400
+# How approvers decide once an approval rule takes `decide_with` (0.3): `direct` by
+# default, each with their own credential. `relayed`, with the `relayers` it names, lets
+# those agents deliver the requester's decision: an opt-in that each callee's gate reviews.
+DEFAULT_DECIDE_WITH = "direct"
 _ROLE_NAME_RE = re.compile(r"[^\s,\x00-\x1f\x7f]{1,256}")
 
 LEGACY_POLICY_HINT = (
@@ -1485,8 +1489,10 @@ def approval_ledger() -> ApprovalLedger | None:
 # Headers that follow a request to the services it calls (see set_outbound_headers).
 _outbound_headers: Callable[[], Mapping[str, str]] | None = None
 
-# The `auth` modes whose APIs receive the correlation headers (see `propagates`).
-PROPAGATING_AUTH_MODES = frozenset({"forward"})
+# The `auth` modes whose APIs receive the correlation headers (see `propagates`): the
+# modes that act for the calling user. `exchange` (0.3: a token exchanged for the user's)
+# is one; until the policy accepts that mode, no API has it.
+PROPAGATING_AUTH_MODES = frozenset({"forward", "exchange"})
 
 
 def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> None:
@@ -1507,12 +1513,12 @@ def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> No
 def propagates(api_settings: Mapping[str, Any]) -> bool:
     """Whether calls to this API carry the request's correlation headers.
 
-    Only `auth: forward` APIs do: they act for the calling user, as another
-    agent does when it is reached with the caller's own credential, so they are
-    part of the same request. Any other API (`auth: bearer` or `none`) is a
-    third party that never learns this request's id or trace. This is the one
-    place that decides; `PROPAGATE_TRACE_HEADERS=false` turns the headers off
-    for every API.
+    Only the APIs that act for the calling user do (`PROPAGATING_AUTH_MODES`),
+    `auth: forward` ones: they act as another agent does when it is reached
+    with the caller's own credential, so they are part of the same request. Any
+    other API (`auth: bearer` or `none`) is a third party that never learns this
+    request's id or trace. This is the one place that decides;
+    `PROPAGATE_TRACE_HEADERS=false` turns the headers off for every API.
     """
     return api_settings.get("auth") in PROPAGATING_AUTH_MODES
 

@@ -472,6 +472,10 @@ def _setup_otlp(full: bool) -> None:
 
 TRACE_CONTEXT_HEADERS = ("traceparent", "tracestate")
 _FALSE = ("0", "false", "no", "off")
+# Where an incoming `traceparent` is continued under the default scope (0.3:
+# `PROPAGATE_TRACE_HEADERS=peers`): the A2A routes only, so a caller of the public routes
+# (`/chat`) cannot choose this agent's trace ids. `all` continues it on every path.
+PEERS_INBOUND_TRACE_PREFIX = "/a2a/"
 
 
 def propagate_trace_headers() -> bool:

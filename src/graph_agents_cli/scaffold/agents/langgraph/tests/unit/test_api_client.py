@@ -339,8 +339,8 @@ async def test_correlation_headers_go_only_to_forward_apis(policy_file: Path) ->
     assert (peer.headers["x-request-id"], peer.headers["traceparent"]) == ("req-1", TRACEPARENT)
     assert peer.headers["tracestate"] == "k=v"
     assert own.headers["x-request-id"] == "tool-own" and "traceparent" not in own.headers
-    modes = ("forward", "bearer", "none")
-    assert [api_client.propagates({"auth": mode}) for mode in modes] == [True, False, False]
+    modes = ("forward", "exchange", "bearer", "none")
+    assert [api_client.propagates({"auth": mode}) for mode in modes] == [True, True, False, False]
 
 
 async def test_a_failing_correlation_provider_does_not_stop_the_call(policy_file: Path) -> None:
