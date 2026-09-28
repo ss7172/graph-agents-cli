@@ -212,7 +212,9 @@ sent. Then:
   A message part whose `data` object has an `approval_id` or a `decision` names an approval
   (as the called agent reads it). The message is `reject` only when every such part says
   exactly `reject`, and `approve` when any other does: approve wins. A message naming no
-  approval has no `a2a_operation`. A message request without `params.message` and its list of
+  approval has no `a2a_operation`. A message method in another letter case
+  (`sendmessage`) is read for a decision too, though an A2A server answers it as an unknown
+  method. A message request without `params.message` and its list of
   `parts` is refused.
 
 GET and HEAD have no `rpc_method`. JSON-RPC APIs allow `GET`, `POST` and `HEAD` only.

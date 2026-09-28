@@ -141,7 +141,7 @@ migration" with the steps to follow.
   never from the tool's label: its method (`rpc_method`; under `a2a` an A2A 0.3 name such as
   `tasks/cancel` is read as its 1.0 name, `CancelTask`) and, for an A2A message whose parts
   name an approval, what it decides (`a2a_operation`: `reject` only when every such part
-  rejects, else `approve`). Operation entries may pin `rpc_method` and `a2a_operation`: an allow
+  rejects, else `approve`; a message method in any letter case is read for a decision). Operation entries may pin `rpc_method` and `a2a_operation`: an allow
   must match them; a denial or gate covers every call they describe whatever its path, label
   or spelling. A `protocol: a2a` API that can send messages must gate or deny `a2a_operation:
   approve`, so an agent never decides on its own an approval the agent it calls waits for

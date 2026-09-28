@@ -517,6 +517,20 @@ TEXT = {"text": "hello"}
             ("SendMessage", "approve"),
         ),
         (A2A, "POST", _request("SendMessage", _message(TEXT), id=7), ("SendMessage", None)),
+        # Another letter case: an A2A server answers it as unknown, but it is read for a
+        # decision all the same (fail closed toward a lenient server).
+        (
+            A2A,
+            "POST",
+            _request("sendmessage", _message(_decision("approve"))),
+            ("sendmessage", "approve"),
+        ),
+        (
+            A2A,
+            "POST",
+            _request("Message/Send", _message(_decision("reject"))),
+            ("Message/Send", "reject"),
+        ),
     ],
 )
 def test_what_a_request_is(
@@ -690,6 +704,7 @@ def test_a_gate_on_approve_holds_every_message_that_approves(rules: ModuleType) 
         APPROVE,
         _request("SendStreamingMessage", _message(_decision("approve"))),
         _request("message/send", _message(TEXT, _decision("maybe"))),
+        _request("SENDMESSAGE", _message(_decision("approve"))),
     ):
         gate = _gate(rules, api, body, operation_id="justAsking", path="/a2a/else")
         assert gate is not None
@@ -944,7 +959,9 @@ def _body(rnd: random.Random) -> Any:
     body: Any = {
         "jsonrpc": "2.0",
         "id": rnd.choice(["1", 2, None, True]) if rnd.random() < 0.2 else "1",
-        "method": rnd.choice(["SendMessage", "message/send", "message/stream", "GetTask", "x"]),
+        "method": rnd.choice(
+            ["SendMessage", "message/send", "message/stream", "GetTask", "x", "sendMESSAGE"]
+        ),
         "params": params,
     }
     if rnd.random() < 0.05:
@@ -989,7 +1006,8 @@ def test_deriving_what_a_request_is_fails_closed(rules: ModuleType, seed: int) -
         outcomes.add(rpc.a2a_operation)
         method = rules.canonical_rpc_method("a2a", body["method"])
         assert rpc.rpc_method == method
-        if method in ("SendMessage", "SendStreamingMessage"):
+        messages = {"sendmessage", "sendstreamingmessage", "message/send", "message/stream"}
+        if method.casefold() in messages:
             assert rpc.a2a_operation == _oracle(body)
         else:
             assert rpc.a2a_operation is None

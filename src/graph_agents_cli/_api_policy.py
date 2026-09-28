@@ -137,6 +137,11 @@ A2A_V03_METHODS = {
 }
 # The A2A methods that send a message, which may carry a decision on an approval.
 A2A_MESSAGE_METHODS = ("SendMessage", "SendStreamingMessage")
+# Their names in any letter case, 0.3 spellings included: a message sent under any of them
+# is read for a decision (failing closed toward a server that matched names loosely).
+_A2A_MESSAGE_NAMES = frozenset(
+    name.casefold() for name in (*A2A_MESSAGE_METHODS, "message/send", "message/stream")
+)
 # The members of one JSON-RPC 2.0 request object.
 _JSONRPC_KEYS = ("jsonrpc", "method", "params", "id")
 
@@ -1481,7 +1486,9 @@ def derive_rpc(api: Mapping[str, Any], method: str, body: Any) -> RpcCall:
     its 1.0 name). Under ``a2a``, a ``SendMessage`` or ``SendStreamingMessage``
     whose parts name an approval (a data part with ``approval_id`` or
     ``decision``) is ``a2a_operation: reject`` only when every such part says
-    ``reject``, and ``approve`` otherwise: failing closed, approve wins.
+    ``reject``, and ``approve`` otherwise: failing closed, approve wins. A
+    message method in another letter case (``sendmessage``) is read for a
+    decision too, though an A2A server answers it as an unknown method.
     """
     protocol = api_protocol(api)
     if protocol not in RPC_PROTOCOLS:
@@ -1508,7 +1515,7 @@ def derive_rpc(api: Mapping[str, Any], method: str, body: Any) -> RpcCall:
             f"body refused: {problem})"
         )
     name = canonical_rpc_method(protocol, sent["method"])
-    if protocol != PROTOCOL_A2A or name not in A2A_MESSAGE_METHODS:
+    if protocol != PROTOCOL_A2A or name.casefold() not in _A2A_MESSAGE_NAMES:
         return RpcCall(rpc_method=name)
     return RpcCall(rpc_method=name, a2a_operation=_a2a_operation(protocol, sent.get("params")))
 
