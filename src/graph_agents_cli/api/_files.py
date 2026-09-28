@@ -15,9 +15,11 @@
 """The files an ``api`` command changes: planned as text, shown as a diff, written atomically.
 
 Besides ``api-policy.yaml`` a change keeps the rest of the project in step:
-the manifest (``api_policy.policy_file`` and the bearer ``token_env`` in
-``secrets.keys``), ``.env.example`` and the chart's ``values.yaml`` ``env``
-map (each API's ``base_url_env``). Every edit keeps comments and formatting
+the manifest (``api_policy.policy_file``, and in ``secrets.keys`` the bearer
+``token_env`` and, for ``auth: exchange``, ``TOKEN_EXCHANGE_CLIENT_SECRET``),
+``.env.example`` and the chart's ``values.yaml`` ``env`` map (each API's
+``base_url_env``; for ``auth: exchange``, ``TOKEN_EXCHANGE_URL`` and
+``TOKEN_EXCHANGE_CLIENT_ID`` once). Every edit keeps comments and formatting
 (:mod:`graph_agents_cli.scaffold.utils.keyedit`); one that cannot be made
 safely becomes a "Left for you" item instead.
 """
@@ -35,7 +37,13 @@ from typing import Any
 
 import click
 
-from graph_agents_cli._api_policy import POLICY_FILENAME, bearer_token_envs, summarize
+from graph_agents_cli._api_policy import (
+    POLICY_FILENAME,
+    TOKEN_EXCHANGE_CLIENT_ID_ENV,
+    TOKEN_EXCHANGE_URL_ENV,
+    secret_envs,
+    summarize,
+)
 from graph_agents_cli._defaults import default_secret_keys
 from graph_agents_cli._project import MANIFEST_FILENAME, ProjectConfig
 from graph_agents_cli.scaffold.utils.keyedit import (
@@ -62,6 +70,33 @@ ENV_API_HEADER = re.compile(r"^# ([a-z][a-z0-9_]{0,31}) \(auth: [a-z]+\)$")
 LOCAL_BASE_URL = "http://localhost:9000"
 CHART_BASE_URL = "http://CHANGE-ME"
 VALUES_COMMENT = "Base URLs of the APIs in api-policy.yaml (tokens come from the Secret)."
+# `auth: exchange`: the issuer's token endpoint and this agent's client there, once for every
+# exchange API. `.env.example` lists them under this note (the secret commented out: it goes
+# in .env and reaches the Secret through secrets.keys); `create` renders the same lines, with
+# the optional settings (`EXCHANGE_ENV_OPTIONAL`) between the note and the secret.
+EXCHANGE_ENV_NOTE = [
+    "# Token exchange (RFC 8693) for the auth: exchange APIs: the issuer's token endpoint",
+    "# and this agent's client there. Put the client secret in .env (it is in secrets.keys).",
+]
+EXCHANGE_ENV_OPTIONAL = [
+    "# Optional: client authentication (or client_secret_post), the subject token type",
+    "# sent, the exchange's deadline, how long an exchanged token is reused (at most",
+    "# 300 s), how long a refusal or a failing issuer is left alone, tokens kept per",
+    "# process, and a plain-http token URL outside dev (a trusted in-cluster issuer only).",
+    "# TOKEN_EXCHANGE_CLIENT_AUTH=client_secret_basic",
+    "# TOKEN_EXCHANGE_SUBJECT_TOKEN_TYPE=urn:ietf:params:oauth:token-type:access_token",
+    "# TOKEN_EXCHANGE_TIMEOUT_MS=2000",
+    "# TOKEN_EXCHANGE_MAX_TTL_S=300",
+    "# TOKEN_EXCHANGE_FAILURE_TTL_S=10",
+    "# TOKEN_EXCHANGE_CACHE_MAX=10000",
+    "# TOKEN_EXCHANGE_ALLOW_HTTP=false",
+]
+EXCHANGE_ENV_SECRET = "# TOKEN_EXCHANGE_CLIENT_SECRET="
+EXCHANGE_VARIABLES = (TOKEN_EXCHANGE_URL_ENV, TOKEN_EXCHANGE_CLIENT_ID_ENV)
+EXCHANGE_VALUES_COMMENT = (
+    "Token exchange (RFC 8693) for the auth: exchange APIs (the client secret comes from the "
+    "Secret)."
+)
 
 
 @dataclass
@@ -218,8 +253,8 @@ def sync_manifest(
     except EditError as exc:
         plan.left_for_you.append(f"{MANIFEST_FILENAME} could not be edited safely ({exc})")
         return
-    new_tokens = bearer_token_envs(summarize(document)) if document else []
-    old_tokens = bearer_token_envs(summarize(previous)) if previous else []
+    new_tokens = secret_envs(summarize(document)) if document else []
+    old_tokens = secret_envs(summarize(previous)) if previous else []
     defaults = default_secret_keys(
         config.model_provider, config.runtime, auth_policy=config.auth_policy
     )
@@ -285,18 +320,26 @@ def env_example_add(plan: Plan, name: str, api: dict[str, Any]) -> None:
     variables = [(api["base_url_env"], LOCAL_BASE_URL)]
     if api["auth"] == "bearer":
         variables.append((api["token_env"], ""))
+    exchange = api["auth"] == "exchange"
     try:
         present = env_names(before)
         missing = [(var, value) for var, value in variables if var not in present]
-        if not missing:
-            return
-        lines = [_env_comment(name, api), *(f"{var}={value}" for var, value in missing)]
-        after = env_insert(
-            before, lines, section=ENV_SECTION, before=ENV_BEFORE, drop=ENV_NO_POLICY_NOTES
-        )
+        after = before
+        if missing:
+            lines = [_env_comment(name, api), *(f"{var}={value}" for var, value in missing)]
+            after = env_insert(
+                after, lines, section=ENV_SECTION, before=ENV_BEFORE, drop=ENV_NO_POLICY_NOTES
+            )
+        if exchange and not set(EXCHANGE_VARIABLES) & present:
+            lines = [
+                *EXCHANGE_ENV_NOTE,
+                EXCHANGE_ENV_SECRET,
+                *(f"{v}=" for v in EXCHANGE_VARIABLES),
+            ]
+            after = env_insert(after, lines, section=ENV_SECTION, before=ENV_BEFORE)
     except (EditError, ValueError) as exc:
-        wanted = ", ".join(var for var, _ in variables)
-        plan.left_for_you.append(f"{ENV_EXAMPLE}: document {wanted} (not edited: {exc})")
+        wanted = [var for var, _ in variables] + (list(EXCHANGE_VARIABLES) if exchange else [])
+        plan.left_for_you.append(f"{ENV_EXAMPLE}: document {', '.join(wanted)} (not edited: {exc})")
         return
     plan.set_text(ENV_EXAMPLE, before, after)
 
@@ -306,6 +349,8 @@ def _api_variables(api: Mapping[str, Any]) -> set[str]:
     names = {str(api["base_url_env"])}
     if api["auth"] == "bearer":
         names.add(str(api["token_env"]))
+    if api["auth"] == "exchange":
+        names.update(EXCHANGE_VARIABLES)
     return names
 
 
@@ -329,11 +374,19 @@ def env_example_remove(
         return
     names = [api["base_url_env"]] + ([api["token_env"]] if api["auth"] == "bearer" else [])
     names = [n for n in names if n not in keep]
+    no_exchange = not any(other.get("auth") == "exchange" for other in remaining.values())
     try:
         names = [n for n in names if n in env_names(before)]
         after = before
         if names:
             after = env_remove(before, names, comments=[_env_comment(name, api)])
+        exchange_names = [n for n in EXCHANGE_VARIABLES if n in env_names(after)]
+        if no_exchange and exchange_names:
+            after = env_remove(
+                after,
+                exchange_names,
+                comments=[*EXCHANGE_ENV_NOTE, *EXCHANGE_ENV_OPTIONAL, EXCHANGE_ENV_SECRET],
+            )
         after = _fix_orphan_headers(after, remaining)
         if not remaining:
             after = _restore_no_policy_note(after)
@@ -434,6 +487,85 @@ def values_add(plan: Plan, config: ProjectConfig, document: dict[str, Any], name
         )
         return
     plan.set_text(rel, before, values.text)
+
+
+def values_exchange_add(
+    plan: Plan, config: ProjectConfig, document: dict[str, Any], name: str
+) -> None:
+    """``TOKEN_EXCHANGE_URL`` (a placeholder) and ``TOKEN_EXCHANGE_CLIENT_ID`` (the project's
+    name) in the chart's ``values.yaml`` ``env``, once, after the new exchange API's base URL."""
+    files = chart_values_files(plan.root, config)
+    if not files or document["apis"][name]["auth"] != "exchange":
+        return
+    path = files[0]
+    rel = path.relative_to(plan.root).as_posix()
+    before = plan_text(plan, rel) if plan_text(plan, rel) is not None else read_text(path)
+    try:
+        values = YamlText(before or "")
+        env = values.get(("env",))
+        if not isinstance(env, dict):
+            raise EditError("values.yaml has no env: mapping")
+        if TOKEN_EXCHANGE_URL_ENV in env and TOKEN_EXCHANGE_CLIENT_ID_ENV in env:
+            return
+        after = str(document["apis"][name]["base_url_env"])
+        if TOKEN_EXCHANGE_URL_ENV not in env:
+            values.set(
+                ("env", TOKEN_EXCHANGE_URL_ENV),
+                CHART_BASE_URL,
+                after=after if after in env else None,
+                comment=EXCHANGE_VALUES_COMMENT,
+            )
+        if TOKEN_EXCHANGE_CLIENT_ID_ENV not in values.get(("env",)):
+            values.set(
+                ("env", TOKEN_EXCHANGE_CLIENT_ID_ENV),
+                config.project_name or "CHANGE-ME",
+                after=TOKEN_EXCHANGE_URL_ENV,
+            )
+    except EditError as exc:
+        plan.left_for_you.append(
+            f"{rel}: add {TOKEN_EXCHANGE_URL_ENV}: <the issuer's token endpoint> and "
+            f"{TOKEN_EXCHANGE_CLIENT_ID_ENV}: <this agent's client id> under env: (not edited: "
+            f"{exc})"
+        )
+        return
+    plan.set_text(rel, read_text(path), values.text)
+
+
+def values_exchange_remove(plan: Plan, config: ProjectConfig) -> None:
+    """Drop ``TOKEN_EXCHANGE_URL`` and ``TOKEN_EXCHANGE_CLIENT_ID`` from the chart's env maps
+    (the last exchange API went), with their comment line."""
+    for path in chart_values_files(plan.root, config):
+        rel = path.relative_to(plan.root).as_posix()
+        stored = read_text(path)
+        before = plan_text(plan, rel)
+        before = stored if before is None else before
+        try:
+            values = YamlText(before or "")
+            env = values.get(("env",))
+            if not isinstance(env, dict) or not set(EXCHANGE_VARIABLES) & set(env):
+                continue
+            for variable in EXCHANGE_VARIABLES:
+                if variable in values.get(("env",)):
+                    values.delete(("env", variable))
+            text = values.text
+            lines = text.splitlines(keepends=True)
+            kept = [line for line in lines if line.strip() != f"# {EXCHANGE_VALUES_COMMENT}"]
+            if len(kept) != len(lines) and YamlText("".join(kept)).data == values.data:
+                text = "".join(kept)
+        except EditError as exc:
+            plan.left_for_you.append(
+                f"{rel}: remove {', '.join(EXCHANGE_VARIABLES)} from env: (not edited: {exc})"
+            )
+            continue
+        plan.set_text(rel, stored, text)
+
+
+def plan_text(plan: Plan, path: str) -> str | None:
+    """The text ``path`` has after the changes planned so far (None: none planned)."""
+    for change in plan.changes:
+        if change.path == path:
+            return change.after
+    return None
 
 
 def values_remove(plan: Plan, config: ProjectConfig, variable: str, remaining: set[str]) -> None:

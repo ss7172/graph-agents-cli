@@ -79,6 +79,8 @@ are per process, so scrape every replica. Labels never carry ids, principals or 
 | `agent_tokens_total` | Counter of model tokens by `kind` (`input`, `output`). |
 | `agent_database_up` | Gauge: 1 while the database answered at last contact, 0 while it is known to be down (always 1 without a database). |
 | `agent_approvals_total` | Counter of human approvals of gated API calls by `event`: `requested`, `approved`, `rejected`, `expired` (see [Human approval](approvals.md)). |
+| `agent_token_exchanges_total` | Counter of the tokens asked for [`auth: exchange`](api-policy.md#auth-exchange-act-for-the-user-at-another-agent) APIs by `api` (its name in api-policy.yaml) and `outcome`: `issued` (the issuer minted one), `cached` (a kept one, or one another call was exchanging), `refused` (the issuer refused, or refused within `TOKEN_EXCHANGE_FAILURE_TTL_S`), `unavailable` (a timeout, connection error, 5xx or unusable answer), `circuit_open` (failed at once while the issuer's breaker is open). |
+| `agent_token_exchange_duration_seconds` | Histogram of the exchanges sent to the issuer, by `api`. |
 
 After one `/chat` request on the fake model, the agent series look like this:
 
@@ -257,17 +259,17 @@ value of `TRACE_CAPTURE` stops the app at startup.
 
 A request that crosses agents keeps one request id and, under OTLP, one trace. Every call a
 tool makes through the policy client (`get_client`) to an
-[`auth: forward`](api-policy.md#auth-modes) API carries:
+[`auth: forward` or `auth: exchange`](api-policy.md#auth-modes) API carries:
 
 - `X-Request-ID`: this request's id. An agent built from this template takes a caller's id as
   its own, so its log records carry the same `request_id` as the caller's.
 - Under OTLP tracing, the W3C trace context (`traceparent`, and `tracestate` when there is
   one) of the span of the tool that makes the call, so the callee's spans nest under it.
 
-Only `auth: forward` APIs receive them. Such an API acts for the calling user, as another
-agent does when it is reached with the caller's own credential, so it is part of the same
-request. An `auth: bearer` or `auth: none` API is a third party: it never learns this
-request's id or trace.
+Only `auth: forward` and `auth: exchange` APIs receive them. Such an API acts for the calling
+user, as another agent does when it is reached with the caller's own credential or a token
+exchanged for it, so it is part of the same request. An `auth: bearer` or `auth: none` API is a
+third party: it never learns this request's id or trace.
 
 On the receiving side, a request that carries a `traceparent` continues that trace: its root
 span is a child of the caller's span, so an agent that asks another agent over A2A and the
@@ -280,10 +282,15 @@ runs it causes there show as one trace in Jaeger, Tempo or any other OTLP backen
 - Only W3C Trace Context is propagated, never baggage. Under LangSmith tracing only the
   request id is passed on, so each agent's run is its own LangSmith trace.
 - `PROPAGATE_TRACE_HEADERS=false` turns both directions off: set it on an agent whose
-  `auth: forward` APIs are outside your trust boundary, or whose callers should not choose its
-  trace ids.
-- `auth: forward` is refused under `langgraph-server`, so under that runtime no API receives
-  these headers.
+  `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or whose callers
+  should not choose its trace ids.
+- `auth: forward` and `auth: exchange` are refused under `langgraph-server`, so under that
+  runtime no API receives these headers.
+
+Token exchange logs one line per exchange sent (`token exchange for orders_agent (audience
+orders): issued (38 ms)`, or `refused (invalid_target)`, or `unavailable (timed out)`) and one
+warning when the issuer's circuit breaker opens. Neither the logs nor the metrics carry any
+token or the user's hash: only the issuer's RFC 6749 `error` code and the HTTP status.
 
 ### Hashed principal ids
 

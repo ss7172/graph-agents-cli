@@ -19,7 +19,8 @@ cookiecutter variables. ``finalize_manifest`` then guarantees the contract
 whatever the template rendered: every create parameter is recorded, the
 ``environments`` block exists only for the kubernetes target, ``secrets.keys``
 is never empty (and carries the ``token_env`` of every ``auth: bearer`` API in
-``api-policy.yaml``), ``api_policy`` is present only with a policy file, and
+``api-policy.yaml``, and ``TOKEN_EXCHANGE_CLIENT_SECRET`` when an API uses
+``auth: exchange``), ``api_policy`` is present only with a policy file, and
 ``process`` is always a key. Values the template already rendered correctly
 are left alone; the file is rewritten only when something had to change.
 """
@@ -39,7 +40,7 @@ from graph_agents_cli._api_policy import (
 from graph_agents_cli._api_policy import (
     ApiSummary,
     ExampleCall,
-    bearer_token_envs,
+    secret_envs,
 )
 from graph_agents_cli._defaults import (
     ENVIRONMENTS,
@@ -70,7 +71,8 @@ class CreateParams:
     auth_policy_implemented: bool | None = None
     # The APIs declared in ``api-policy.yaml`` (empty without a policy): the
     # templates document their variables and every ``auth: bearer`` API's
-    # ``token_env`` joins ``secrets.keys`` so the token reaches the Secret.
+    # ``token_env`` (and, for ``auth: exchange``, TOKEN_EXCHANGE_CLIENT_SECRET) joins
+    # ``secrets.keys`` so the secret reaches the Secret.
     apis: tuple[ApiSummary, ...] = ()
     # The call the rendered example tool makes (the first operation the policy's
     # first API allows, any method), chosen so lint and the project's policy test
@@ -80,7 +82,7 @@ class CreateParams:
 
     @property
     def api_token_envs(self) -> list[str]:
-        return bearer_token_envs(self.apis)
+        return secret_envs(self.apis)
 
     def resolved_auth_policy_implemented(self) -> bool:
         if self.auth_policy_implemented is not None:

@@ -64,6 +64,7 @@ _SETTING_PREFIXES = (
     "OTEL_",
     "TRACE_",
     "TRACING_",
+    "TOKEN_EXCHANGE_",
 )
 _PROVIDER_VARIABLES = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"}
 # Settings the app reads that `.env.example` leaves out (the runtime and the

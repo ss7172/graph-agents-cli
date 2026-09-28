@@ -380,3 +380,141 @@ def test_require_user_mentioned_reads_only_the_latest_user_message() -> None:
     require_user_mentioned("ORD-2", dict_state)
     with pytest.raises(ApiPolicyError):
         require_user_mentioned("ORD-2", _Runtime(state={}))  # no state: refused
+
+
+# --- auth: forward with forward_audience (the caller's own token, when minted for the target)
+
+AIMED_POLICY = """
+apis:
+  orders_agent:
+    base_url_env: ORDERS_AGENT_URL
+    auth: forward
+    forward_audience: orders
+    allowed_methods: [GET]
+"""
+SUBJECT = "alice-token-minted-for-concierge-and-orders"
+
+
+@pytest.fixture
+def aimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    path = tmp_path / "api-policy.yaml"
+    path.write_text(AIMED_POLICY, encoding="utf-8")
+    monkeypatch.setenv("API_POLICY_PATH", str(path))
+    monkeypatch.setenv("ORDERS_AGENT_URL", "http://orders.test")
+    monkeypatch.delenv("A2A_NAME", raising=False)
+    monkeypatch.delenv("AUTH_JWT_AUDIENCE", raising=False)
+    reset_policy_cache()
+    reset_limits()
+    yield path
+    reset_policy_cache()
+
+
+def _subject_context(audience: tuple[str, ...], **credentials: str) -> _Context:
+    return _Context(
+        attributes={
+            "credentials": {"@subject_token": SUBJECT, "@subject_aud": audience, **credentials}
+        }
+    )
+
+
+async def test_forward_audience_present_in_aud_forwards_the_callers_token(aimed: Path) -> None:
+    calls: list[httpx.Request] = []
+    context = _subject_context(("concierge", "orders"))
+    await get_client("orders_agent", context=context, transport=_transport(calls)).get("/orders")
+    assert calls[0].headers["authorization"] == f"Bearer {SUBJECT}"
+
+
+async def test_forward_audience_absent_from_aud_sends_nothing(aimed: Path) -> None:
+    """A token minted only for this agent is never replayed at another."""
+    calls: list[httpx.Request] = []
+    context = _subject_context(("concierge",))
+    client = get_client("orders_agent", context=context, transport=_transport(calls))
+    with pytest.raises(ApiCallError, match="the caller has no credential for API 'orders_agent'"):
+        await client.get("/orders")
+    assert calls == []
+
+
+async def test_a_policy_set_credential_wins_over_forward_audience(aimed: Path) -> None:
+    calls: list[httpx.Request] = []
+    context = _subject_context(("orders",), orders_agent="Bearer set-by-the-policy")
+    await get_client("orders_agent", context=context, transport=_transport(calls)).get("/orders")
+    assert calls[0].headers["authorization"] == "Bearer set-by-the-policy"
+
+
+async def test_the_forwarded_token_is_redacted_when_echoed(aimed: Path) -> None:
+    calls: list[httpx.Request] = []
+    context = _subject_context(("orders",))
+    echo = _transport(calls, status=401, content=f"bad token {SUBJECT}".encode())
+    with pytest.raises(ApiCallError) as exc:
+        await get_client("orders_agent", context=context, transport=echo).get("/orders")
+    assert SUBJECT not in str(exc.value) and SUBJECT not in (exc.value.body or "")
+
+
+async def test_forward_audience_in_the_delegation_chain_is_a_loop(aimed: Path) -> None:
+    calls: list[httpx.Request] = []
+    context = _subject_context(("orders",))
+    context.attributes["@actor"] = {"id": "orders", "chain": ["orders"], "client": "orders"}
+    client = get_client("orders_agent", context=context, transport=_transport(calls))
+    with pytest.raises(ApiPolicyError, match="would loop back through the delegation chain"):
+        await client.get("/orders")
+    assert calls == []
+
+
+# --- the transport rule for credentials to A2A peers (`protocol: a2a`) --------------------
+
+
+def _peer_client(auth: str, url: str, monkeypatch: pytest.MonkeyPatch, **extra: Any) -> Any:
+    from {{cookiecutter.agent_directory}}.app_utils.api_client import ApiClient, ApiPolicy
+
+    monkeypatch.setenv("PEER_URL", url)
+    monkeypatch.setenv("PEER_KEY", "k")
+    settings: dict[str, Any] = {
+        "base_url_env": "PEER_URL",
+        "auth": auth,
+        "allowed_methods": ["GET"],
+        **extra,
+    }
+    if auth == "bearer":
+        settings["token_env"] = "PEER_KEY"
+    # `protocol` is not a policy key yet: built without validation, as a later schema will.
+    return ApiClient(ApiPolicy(apis={"peer": settings}), "peer")
+
+
+@pytest.mark.parametrize("auth", ["bearer", "forward", "exchange"])
+@pytest.mark.parametrize(
+    ("url", "refused"),
+    [
+        ("http://orders.example.com", True),
+        ("http://10.0.0.7:8080", True),
+        ("https://orders.example.com", False),
+        ("http://orders-agent", False),  # a single-label service name
+        ("http://orders-agent.orders.svc", False),
+        ("http://orders-agent.orders.svc.cluster.local:8080", False),
+        ("http://localhost:8001", False),
+        ("http://127.0.0.1:8001", False),
+    ],
+)
+def test_a_peer_refuses_plain_http_outside_dev(
+    auth: str, url: str, refused: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    client = _peer_client(auth, url, monkeypatch, protocol="a2a")
+    if refused:
+        with pytest.raises(ApiCallError) as exc:
+            client.base_url()
+        assert str(exc.value) == (
+            "PEER_URL must use https outside APP_ENV=dev to carry credentials; nothing was sent "
+            "to API 'peer'."
+        )
+    else:
+        assert str(client.base_url()).startswith(url)
+    monkeypatch.setenv("APP_ENV", "dev")
+    assert str(client.base_url()).startswith(url)
+
+
+def test_the_transport_rule_leaves_other_apis_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-peer APIs keep today's behaviour (a later release may extend the rule)."""
+    monkeypatch.delenv("APP_ENV", raising=False)
+    for auth in ("bearer", "forward", "exchange"):
+        assert _peer_client(auth, "http://api.example.com", monkeypatch).base_url()
+    assert _peer_client("none", "http://api.example.com", monkeypatch, protocol="a2a").base_url()

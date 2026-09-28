@@ -201,8 +201,9 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
 ## Outbound API policy
 
 ```
-graph-agents-cli api add NAME --base-url-env ENV --auth none|bearer|forward [--token-env ENV]
-  [--forward-header H] --access read-only|read-write|custom [--methods M,...] [--openapi PATH]
+graph-agents-cli api add NAME --base-url-env ENV --auth none|bearer|forward|exchange [--token-env ENV]
+  [--forward-header H] [--audience AUD] [--scope "S ..."] [--resource URI]
+  --access read-only|read-write|custom [--methods M,...] [--openapi PATH]
   [--max-calls-per-run N] [--rate-per-minute N] [--connect-timeout-ms N] [--read-timeout-ms N] [--dry-run]
 graph-agents-cli api access NAME read-only|read-write|custom [--methods M,...] [--dry-run]
 graph-agents-cli api allow NAME (OPERATION_ID [--method M --path P] | --method M --path P) [--methods M,...] [--dry-run]

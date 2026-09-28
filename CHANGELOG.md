@@ -69,6 +69,54 @@ migration" with the steps to follow.
   one factual note after the system prompt saying an agent wrote the request, with the user's
   own words when forwarded; `A2A_CALLER_NOTE=off` drops the note. A bad value of either
   setting stops startup. The `fake` test model reads the request inside that fence.
+- **Agents call other agents for the user with a token exchanged for theirs (`auth:
+  exchange`, RFC 8693).** An API declared `auth: exchange` with `exchange: {audience, scope,
+  resource}` is called with `Bearer <token>` (in `forward_header`, default `Authorization`):
+  a token the identity provider mints for that audience in exchange for the caller's own
+  verified token, naming this agent as the actor. It is asked for just before the call is
+  sent (`app_utils/token_exchange.py`), after the policy check, the approval gate and the
+  limits: a refused call, or one paused for a person's approval, never exchanges, and nothing
+  is exchanged while a request is authenticated. Tokens are kept in process memory only, per
+  user token, audience, scope and resource, for at most `expires_in`, 300 s
+  (`TOKEN_EXCHANGE_MAX_TTL_S`) and the user's own token's expiry, less 30 s; concurrent calls
+  share one exchange. A user token with 10 s or less left is not exchanged; an issuer refusal
+  is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (10 s); three issuer failures in a row
+  (timeouts after `TOKEN_EXCHANGE_TIMEOUT_MS`, 2 s; connection errors; 5xx; unusable answers)
+  open a circuit breaker that fails calls to exchange APIs at once, then lets one call probe
+  the issuer. Nothing is sent when there is no token to exchange (a `shared-bearer` caller, a
+  run resumed by a role approver), and the tool reads why. The issuer and this agent's client
+  are `TOKEN_EXCHANGE_URL` (https outside dev unless loopback or
+  `TOKEN_EXCHANGE_ALLOW_HTTP=true`), `TOKEN_EXCHANGE_CLIENT_ID`, `TOKEN_EXCHANGE_CLIENT_SECRET`
+  (`client_secret_basic`, or `client_secret_post` through `TOKEN_EXCHANGE_CLIENT_AUTH`); outside
+  `APP_ENV=dev` the app refuses to start with an exchange API and any of the three missing, or
+  under `shared-bearer` or `langgraph-server`, and a malformed setting stops it everywhere.
+  Exchange APIs receive the request's `X-Request-ID` and trace context, as `auth: forward` ones
+  do (the owner's decision). A call to an agent already in the request's delegation chain, or
+  to this agent itself, is refused before anything is sent. New metrics:
+  `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`, `refused`, `unavailable`,
+  `circuit_open`) and `agent_token_exchange_duration_seconds{api}`; one log line per exchange
+  sent and a warning when the breaker opens, never a token. `jwt` now also keeps the token's
+  `exp` for this (`keep_subject_token` takes `exp`). The authentication guide has a Keycloak
+  recipe. Existing projects get the runtime from `scaffold upgrade` (a new
+  `app_utils/token_exchange.py`; `api_client.py`, `auth.py`, `metrics.py`, `telemetry.py`,
+  `fast_api_app.py`).
+- **`auth: forward` can forward the caller's own token to an agent it was minted for:
+  `forward_audience`.** Under `jwt`, where no per-API credential is set, an `auth: forward` API
+  with `forward_audience` sends `Bearer <the caller's token>` only when that token's `aud`
+  names the audience; a token minted for this agent alone is never replayed at another. Prefer
+  `auth: exchange`.
+- **`api add --auth exchange --audience AUD [--scope S] [--resource URI]`** declares an exchange
+  API; `--audience` with `--auth forward` writes `forward_audience`, and `--forward-header`
+  goes with either mode. The first exchange API adds `TOKEN_EXCHANGE_CLIENT_SECRET` to the
+  manifest's `secrets.keys`, `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID` to
+  `.env.example` (the secret commented out) and to the chart's `values.yaml` (a placeholder URL
+  and the project's name), and lists what is left: the issuer's permission to exchange for the
+  audience, and the callee's `AUTH_JWT_AUDIENCE` and `AUTH_ALLOWED_ACTORS`. `api remove` takes
+  them away with the last exchange API, and `create --api-policy` with an exchange API renders
+  the same. `api show` names the audience, scope and resource. The schema accepts
+  `forward_header` with `exchange` as well as `forward` (both SHARED copies; the messages name
+  every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
+  `langgraph-server` as they refuse `auth: forward`.
 
 ### Changed
 

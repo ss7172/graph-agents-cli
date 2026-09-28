@@ -949,7 +949,12 @@ async def test_the_subject_token_is_kept_only_when_an_api_acts_with_it(
     monkeypatch.setattr(auth_module, "subject_token_needed", lambda: True)
     principal = await require("chat.send")(_request(token))
     credentials = principal.attributes["credentials"]
-    assert credentials == {"@subject_token": token, "@subject_aud": (AUDIENCE,)}
+    exp = jwt.decode(token, options={"verify_signature": False})["exp"]
+    assert credentials == {
+        "@subject_token": token,
+        "@subject_aud": (AUDIENCE,),
+        "@subject_exp": exp,
+    }
     assert "credentials" not in principal.public_attributes()
     assert token not in repr(principal)
 

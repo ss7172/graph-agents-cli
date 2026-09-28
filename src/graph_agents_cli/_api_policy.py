@@ -20,8 +20,10 @@ at the project root::
     apis:
       orders:
         base_url_env: ORDERS_API_BASE_URL
-        auth: bearer                     # none | bearer | forward
+        auth: bearer                     # none | bearer | forward | exchange
         token_env: ORDERS_API_TOKEN      # auth: bearer only
+        # auth: exchange takes exchange: {audience, scope, resource} (RFC 8693);
+        # auth: forward may take forward_audience
         allowed_methods: [GET, POST]     # required, explicit; ["*"] allows every method
         allowed_operations:              # optional; omitted = every operation
           - operationId: createOrder
@@ -64,7 +66,12 @@ import yaml
 # byte-identical: change both or neither.
 
 POLICY_FILENAME = "api-policy.yaml"
-AUTH_MODES = ("none", "bearer", "forward")
+AUTH_MODES = ("none", "bearer", "forward", "exchange")
+# The modes that send the caller's identity in `forward_header` (default Authorization):
+# `forward` the caller's own credential, `exchange` a token the issuer mints for the API in
+# exchange for the caller's (RFC 8693, configured by the API's `exchange` block).
+HEADER_AUTH_MODES = ("forward", "exchange")
+EXCHANGE_KEY = "exchange"
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 ANY_METHOD = "*"
 DEFAULT_FORWARD_HEADER = "Authorization"
@@ -87,6 +94,8 @@ _API_KEYS = (
     "auth",
     "token_env",
     "forward_header",
+    "forward_audience",
+    EXCHANGE_KEY,
     "allowed_methods",
     "allowed_operations",
     "denied_operations",
@@ -102,6 +111,11 @@ _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
+_EXCHANGE_KEYS = ("audience", "scope", "resource")
+# An RFC 6749 scope: space-separated scope tokens (printable ASCII but space, " " and "\").
+_SCOPE_RE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*")
+# An absolute URI (RFC 8707 `resource`): a scheme, then no whitespace and no fragment.
+_ABSOLUTE_URI_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:[^\s#\x00-\x1f\x7f]+")
 
 # An API's `approval` block names the calls a human must approve before they are
 # sent (`required_for`), who may approve them (`approvers`) and how long a
@@ -214,6 +228,46 @@ def _is_env_name(value: Any) -> bool:
     return isinstance(value, str) and ENV_NAME_RE.match(value) is not None
 
 
+def _is_audience(value: Any) -> bool:
+    """An audience (a token's `aud`): 1-256 characters, no whitespace, commas or control
+    characters (the target's `AUTH_JWT_AUDIENCE` is a comma list of them)."""
+    return isinstance(value, str) and _ROLE_NAME_RE.fullmatch(value) is not None
+
+
+def _exchange_errors(where: str, value: Any) -> list[str]:
+    """Errors of an API's `exchange` block (`auth: exchange`, RFC 8693)."""
+    if not isinstance(value, Mapping):
+        return [f"{where}: must be a mapping with audience, and optionally scope and resource"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_EXCHANGE_KEYS), key=str)
+    ]
+    if "audience" not in value:
+        errors.append(
+            f"{where}.audience: required (the audience the issuer mints the token for: the "
+            "target's AUTH_JWT_AUDIENCE)"
+        )
+    elif not _is_audience(value["audience"]):
+        errors.append(
+            f"{where}.audience: must be an audience (1-256 characters without spaces, commas or "
+            "control characters)"
+        )
+    if "scope" in value:
+        scope = value["scope"]
+        if not (isinstance(scope, str) and _SCOPE_RE.fullmatch(scope)):
+            errors.append(
+                f"{where}.scope: must be scopes separated by single spaces (RFC 6749: printable "
+                "ASCII, no quotes or backslashes)"
+            )
+    if "resource" in value:
+        resource = value["resource"]
+        if not (isinstance(resource, str) and _ABSOLUTE_URI_RE.fullmatch(resource)):
+            errors.append(
+                f"{where}.resource: must be an absolute URI without a fragment (RFC 8707), "
+                "such as https://orders.example.com"
+            )
+    return errors
+
+
 def _api_errors(name: Any, api: Any) -> list[str]:
     where = f"apis.{name}"
     errors: list[str] = []
@@ -231,10 +285,11 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         errors.append(f"{where}.base_url_env: must be an environment variable name")
 
     auth = api.get("auth")
+    modes = ", ".join(AUTH_MODES)
     if "auth" not in api:
-        errors.append(f"{where}.auth: required (one of none, bearer, forward)")
+        errors.append(f"{where}.auth: required (one of {modes})")
     elif auth not in AUTH_MODES:
-        errors.append(f"{where}.auth: must be one of none, bearer, forward (got {auth!r})")
+        errors.append(f"{where}.auth: must be one of {modes} (got {auth!r})")
 
     if auth == "bearer":
         if "token_env" not in api:
@@ -246,10 +301,30 @@ def _api_errors(name: Any, api: Any) -> list[str]:
 
     if "forward_header" in api:
         header = api["forward_header"]
-        if auth != "forward":
-            errors.append(f"{where}.forward_header: only valid with auth: forward")
+        if auth not in HEADER_AUTH_MODES:
+            errors.append(f"{where}.forward_header: only valid with auth: forward or exchange")
         elif not (isinstance(header, str) and HEADER_NAME_RE.match(header)):
             errors.append(f"{where}.forward_header: must be an HTTP header name")
+
+    if "forward_audience" in api:
+        if auth != "forward":
+            errors.append(f"{where}.forward_audience: only valid with auth: forward")
+        elif not _is_audience(api["forward_audience"]):
+            errors.append(
+                f"{where}.forward_audience: must be an audience (1-256 characters without "
+                "spaces, commas or control characters)"
+            )
+
+    if auth == "exchange":
+        if EXCHANGE_KEY not in api:
+            errors.append(
+                f"{where}.{EXCHANGE_KEY}: required when auth is exchange (a mapping with the "
+                "audience the issuer mints the token for, and optionally scope and resource)"
+            )
+        else:
+            errors.extend(_exchange_errors(f"{where}.{EXCHANGE_KEY}", api[EXCHANGE_KEY]))
+    elif EXCHANGE_KEY in api:
+        errors.append(f"{where}.{EXCHANGE_KEY}: only valid with auth: exchange")
 
     if "allowed_methods" not in api:
         errors.append(f'{where}.allowed_methods: required (a list of HTTP methods, or ["*"])')
@@ -1373,17 +1448,47 @@ def bearer_token_envs(summaries: tuple[ApiSummary, ...] | list[ApiSummary]) -> l
     return envs
 
 
+# `auth: exchange` (RFC 8693): the issuer's token endpoint and this agent's client there. The
+# URL and the client id are plain settings (.env, the chart's values); the secret joins
+# `secrets.keys`, so it reaches the Secret and never the values files.
+TOKEN_EXCHANGE_URL_ENV = "TOKEN_EXCHANGE_URL"
+TOKEN_EXCHANGE_CLIENT_ID_ENV = "TOKEN_EXCHANGE_CLIENT_ID"
+TOKEN_EXCHANGE_SECRET_ENV = "TOKEN_EXCHANGE_CLIENT_SECRET"
+
+
+def uses_exchange(summaries: tuple[ApiSummary, ...] | list[ApiSummary]) -> bool:
+    """Whether an API of the policy uses ``auth: exchange``."""
+    return any(summary.auth == "exchange" for summary in summaries)
+
+
+def secret_envs(summaries: tuple[ApiSummary, ...] | list[ApiSummary]) -> list[str]:
+    """The secrets the policy's APIs need in ``secrets.keys``, first occurrence first.
+
+    Every ``auth: bearer`` API's ``token_env``, and ``TOKEN_EXCHANGE_CLIENT_SECRET``
+    once when an API uses ``auth: exchange``.
+    """
+    envs = bearer_token_envs(summaries)
+    if uses_exchange(summaries) and TOKEN_EXCHANGE_SECRET_ENV not in envs:
+        envs.append(TOKEN_EXCHANGE_SECRET_ENV)
+    return envs
+
+
 def forward_runtime_problem(
     summaries: tuple[ApiSummary, ...] | list[ApiSummary], runtime: str
 ) -> str | None:
-    """Why ``auth: forward`` cannot be used with ``runtime``, or None."""
-    forward = [s.name for s in summaries if s.auth == "forward"]
-    if runtime != "langgraph-server" or not forward:
+    """Why ``auth: forward`` or ``auth: exchange`` cannot be used with ``runtime``, or None."""
+    carrying = [s for s in summaries if s.auth in HEADER_AUTH_MODES]
+    if runtime != "langgraph-server" or not carrying:
         return None
+    modes = [mode for mode in HEADER_AUTH_MODES if any(s.auth == mode for s in carrying)]
+    stored = (
+        "forwarded credentials" if modes == ["forward"] else "the caller's credentials (tokens)"
+    )
     return (
-        f"auth: forward (apis: {', '.join(forward)}) is not supported with runtime "
-        "langgraph-server: LangGraph Server persists the run context, so forwarded "
-        "credentials would be stored. Use auth: bearer or none, or the fastapi runtime."
+        f"{' and '.join(f'auth: {mode}' for mode in modes)} (apis: "
+        f"{', '.join(s.name for s in carrying)}) is not supported with runtime "
+        f"langgraph-server: LangGraph Server persists the run context, so {stored} would be "
+        "stored. Use auth: bearer or none, or the fastapi runtime."
     )
 
 

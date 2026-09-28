@@ -62,8 +62,8 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
-| api-policy | 4 | 7 | 11 |
-| approvals | 8 | 5 | 13 |
+| api-policy | 4 | 8 | 12 |
+| approvals | 8 | 6 | 14 |
 | runtime | 11 | 6 | 17 |
 | a2a | 4 | 11 | 15 |
 | eval | 1 | 7 | 8 |
@@ -73,7 +73,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 17 | 18 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **45** | **92** | **137** |
+| **Total** | **45** | **94** | **139** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -789,6 +789,22 @@ Low · api-policy · found in the skill-optimisation experiment
 - **Workaround:** Give every tools module an `API_CALLS` (`[]` when it calls no API) and
   treat the registry's "declares no API_CALLS" warning as an error.
 
+### KI-147: The caller's delegation-loop check knows agents by name only
+
+Low · api-policy · found in v0.3 (identity propagation)
+
+- **Issue:** Before an `auth: exchange` (or `forward_audience`) call is sent, the agent
+  refuses a target audience that is its own (`A2A_NAME`, `AUTH_JWT_AUDIENCE`) or appears in
+  the request's delegation chain. The chain holds the calling agents' client ids (`act.sub`,
+  or `client:<azp>`), so the check assumes each agent's client id equals its audience. An
+  agent registered with a client id other than its audience is not recognised, and an issuer
+  that names no actor in `act` shows only the last agent.
+- **Impact:** A loop through such an agent is not refused by the caller; each hop's callee
+  still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), so the loop ends
+  there.
+- **Workaround:** Give each agent's client the same id as its audience (the Keycloak recipe
+  does), and keep `AUTH_MAX_DELEGATION_DEPTH` low.
+
 ### KI-049: `approvals` output misleads viewers who cannot see the body or decide
 
 Low · approvals · found in waves 7 and 8
@@ -852,6 +868,17 @@ Low · approvals · found in wave 6b
 - **Impact:** Local development only; deployed agents keep approvals in the database, with no
   cap.
 - **Workaround:** None needed outside local development.
+
+### KI-148: An approved `auth: exchange` call whose exchange then fails needs a new approval
+
+Low · approvals · found in v0.3 (identity propagation)
+
+- **Issue:** The token is exchanged after the approval is marked used, just before sending
+  (so a paused or refused call never exchanges). When the issuer refuses or is unavailable at
+  that moment, nothing is sent and the approval stays used, as after any other failure to send.
+- **Impact:** The person approves the same call again once the issuer answers.
+- **Workaround:** None needed beyond asking again; `agent_token_exchanges_total` and the
+  exchange log line show why the call was not sent.
 
 ### KI-054: `langgraph-server` logs a warning on every `/chat` run
 
@@ -1721,21 +1748,20 @@ Low · docs · found in the docs-site review
 - **Impact:** A future change can update one copy and miss the other.
 - **Workaround:** None needed; the fix is to keep each fact on one page and link to it.
 
-### KI-146: The docs do not say that the built-in auth policies send no correlation headers
+### KI-146: The docs do not say that `shared-bearer` and `langgraph-server` send no correlation headers
 
-Low · docs · found in the A2A multi-agent experiment (fix review)
+Low · docs · found in the A2A multi-agent experiment (fix review); narrowed in 0.3 (unreleased)
 
-- **Issue:** Only `auth: forward` APIs receive `X-Request-ID` and the trace context. Such an
-  API gets the caller's own credential, which only a custom auth policy provides
-  (`shared-bearer` and `jwt` principals carry none, so a forward call is refused), and it is
-  refused under `langgraph-server`. So with the built-in policies, and under
-  `langgraph-server`, no API receives these headers, an A2A peer reached with `auth: bearer`
-  included. The observability guide says so only for `langgraph-server`, and a
-  `langgraph-server` project's `.env.example` describes forward propagation for a runtime
-  that refuses it.
-- **Impact:** A reader can expect correlation across agents that the built-in setups do not
-  provide.
-- **Workaround:** Correlate by time and hashed principal, or use a custom auth policy that
-  forwards the caller's credential to peer agents.
+- **Issue:** Only `auth: forward` and `auth: exchange` APIs receive `X-Request-ID` and the
+  trace context. Under `jwt` that is now an `auth: exchange` API (a token exchanged for the
+  caller's, RFC 8693) or an `auth: forward` one with `forward_audience`; but `shared-bearer`
+  principals carry no credential (both modes are refused there), and both modes are refused
+  under `langgraph-server`. So with `shared-bearer`, and under `langgraph-server`, no API
+  receives these headers, an A2A peer reached with `auth: bearer` included. The observability
+  guide says so only for `langgraph-server`, and a `langgraph-server` project's `.env.example`
+  describes forward propagation for a runtime that refuses it.
+- **Impact:** A reader can expect correlation across agents that those setups do not provide.
+- **Workaround:** Correlate by time and hashed principal, or use `jwt` (or a custom policy)
+  with `auth: exchange` to reach peer agents on the fastapi runtime.
 
 <!-- --8<-- [end:entries] -->

@@ -39,6 +39,14 @@ Per process (scrape every replica):
   `requested` (a run paused for one), `approved`, `rejected`, `expired` (a
   pending approval that reached its `timeout_s`, or was superseded). A run
   that pauses ends with status `awaiting_approval` in `agent_runs_total`.
+* `agent_token_exchanges_total{api, outcome}`: tokens asked for `auth: exchange`
+  APIs (`token_exchange.py`) by outcome: `issued` (the issuer minted one),
+  `cached` (a kept one, or one another call was exchanging), `refused` (the
+  issuer refused, or refused within `TOKEN_EXCHANGE_FAILURE_TTL_S`),
+  `unavailable` (a timeout, connection error, 5xx or unusable answer) and
+  `circuit_open` (failed at once while the issuer's breaker is open);
+  `agent_token_exchange_duration_seconds{api}`: the exchanges sent. `api` is
+  the API's name in api-policy.yaml.
 
 Metrics live in a registry of their own, so nothing else in the process
 (libraries, a reloaded module) can add or duplicate series. Labels never carry
@@ -92,6 +100,21 @@ APPROVALS = Counter(
 )
 for _event in APPROVAL_EVENTS:
     APPROVALS.labels(_event)  # every series exists from the start, at 0
+TOKEN_EXCHANGE_OUTCOMES = ("issued", "cached", "refused", "unavailable", "circuit_open")
+TOKEN_EXCHANGES = Counter(
+    "agent_token_exchanges_total",
+    "Tokens asked for auth: exchange APIs by API and outcome (issued, cached, refused, "
+    "unavailable, circuit_open).",
+    ["api", "outcome"],
+    registry=REGISTRY,
+)
+TOKEN_EXCHANGE_LATENCY = Histogram(
+    "agent_token_exchange_duration_seconds",
+    "Token exchanges sent to the issuer, by API.",
+    ["api"],
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+    registry=REGISTRY,
+)
 ACTIVE_RUNS = Gauge("agent_active_runs", "Agent runs in progress.", registry=REGISTRY)
 DATABASE_UP = Gauge(
     "agent_database_up",
@@ -187,3 +210,12 @@ def observe_approvals(event: str, count: int = 1) -> None:
     """`count` approvals `requested`, `approved`, `rejected` or `expired`."""
     if count and event in APPROVAL_EVENTS:
         APPROVALS.labels(event).inc(count)
+
+
+def observe_token_exchange(api: str, outcome: str, seconds: float | None = None) -> None:
+    """A token asked for the `auth: exchange` API `api`; `seconds` when one was sent."""
+    if outcome not in TOKEN_EXCHANGE_OUTCOMES:
+        return
+    TOKEN_EXCHANGES.labels(api, outcome).inc()
+    if seconds is not None:
+        TOKEN_EXCHANGE_LATENCY.labels(api).observe(seconds)

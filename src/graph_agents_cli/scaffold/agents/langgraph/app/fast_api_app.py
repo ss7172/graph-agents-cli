@@ -207,11 +207,13 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
     own_view,
     search_server_threads,
 )
+from {{cookiecutter.agent_directory}}.app_utils.token_exchange import exchange_settings
 
 logger = logging.getLogger(__name__)
 
-# Calls of `auth: forward` APIs (another agent's A2A endpoint, say) carry this request's id
-# and trace context, unless PROPAGATE_TRACE_HEADERS=false; other APIs receive neither.
+# Calls of `auth: forward` and `auth: exchange` APIs (another agent's A2A endpoint, say)
+# carry this request's id and trace context, unless PROPAGATE_TRACE_HEADERS=false; other
+# APIs receive neither.
 set_outbound_headers(outbound_trace_headers)
 
 if detect_runtime() == FASTAPI:
@@ -244,6 +246,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             delegation_settings,
             delegated_mentions,
             caller_note_enabled,
+            exchange_settings,
         )
     )
     if RUNTIME.runtime == FASTAPI:

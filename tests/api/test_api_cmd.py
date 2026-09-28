@@ -1685,3 +1685,163 @@ def test_approval_relayed_refuses_what_cannot_work(project: Path) -> None:
     assert roles.exit_code != 0
     assert "relayed needs requester in approvers" in " ".join(roles.output.split())
     assert (project / "api-policy.yaml").read_text() == before
+
+
+# ---------------------------------------------------------------------------
+# auth: exchange (RFC 8693) and forward_audience
+# ---------------------------------------------------------------------------
+
+EXCHANGE_ADD = [
+    *("api", "add", "orders_agent", "--base-url-env", "ORDERS_AGENT_URL"),
+    *("--auth", "exchange", "--audience", "orders"),
+    *("--access", "custom", "--methods", "GET,POST"),
+]
+
+
+def _auth_policy(project: Path, name: str) -> None:
+    """Record another auth policy in the project's manifest (as create would have)."""
+    path = project / "graph-agents-cli-manifest.yaml"
+    text, count = re.subn(r"auth_policy: '?[a-z-]+'?", f"auth_policy: '{name}'", path.read_text())
+    assert count == 1
+    path.write_text(text)
+
+
+def _values(project: Path) -> dict:
+    return yaml.safe_load((project / "deployment/helm/shop/values.yaml").read_text())["env"]
+
+
+def test_add_exchange_writes_the_block_the_secret_and_the_settings(project: Path) -> None:
+    _auth_policy(project, "jwt")
+    result = ok(
+        *EXCHANGE_ADD, "--scope", "orders.read orders.cancel", "--resource", "https://orders.test"
+    )
+    assert policy(project)["orders_agent"] == {
+        "base_url_env": "ORDERS_AGENT_URL",
+        "auth": "exchange",
+        "exchange": {
+            "audience": "orders",
+            "scope": "orders.read orders.cancel",
+            "resource": "https://orders.test",
+        },
+        "allowed_methods": ["GET", "POST"],
+    }
+    assert "TOKEN_EXCHANGE_CLIENT_SECRET" in manifest(project)["secrets"]["keys"]
+    env_example = (project / ".env.example").read_text()
+    assert "\nTOKEN_EXCHANGE_URL=\nTOKEN_EXCHANGE_CLIENT_ID=\n" in env_example
+    assert "\n# TOKEN_EXCHANGE_CLIENT_SECRET=\n" in env_example
+    assert "\nTOKEN_EXCHANGE_CLIENT_SECRET=" not in env_example  # never an assignment
+    values = _values(project)
+    assert values["TOKEN_EXCHANGE_URL"] == "http://CHANGE-ME"
+    assert values["TOKEN_EXCHANGE_CLIENT_ID"] == "shop"
+    assert "TOKEN_EXCHANGE_CLIENT_SECRET" not in values
+    flat = " ".join(result.output.split())
+    assert "AUTH_ALLOWED_ACTORS includes this agent's client id" in flat
+    assert "let this agent's client exchange users' tokens for audience orders" in flat
+    assert "TOKEN_EXCHANGE_CLIENT_SECRET in .env" in flat
+
+    # A second exchange API adds nothing more of the shared settings.
+    ok(
+        *("api", "add", "billing_agent", "--base-url-env", "BILLING_AGENT_URL"),
+        *("--auth", "exchange", "--audience", "billing", "--access", "read-only"),
+    )
+    assert (project / ".env.example").read_text().count("TOKEN_EXCHANGE_URL=") == 1
+    keys = manifest(project)["secrets"]["keys"]
+    assert keys.count("TOKEN_EXCHANGE_CLIENT_SECRET") == 1
+
+    # The settings and the secret go with the last exchange API, not before.
+    ok("api", "remove", "orders_agent")
+    assert "TOKEN_EXCHANGE_URL=" in (project / ".env.example").read_text()
+    assert "TOKEN_EXCHANGE_URL" in _values(project)
+    ok("api", "remove", "billing_agent")
+    assert "TOKEN_EXCHANGE" not in (project / ".env.example").read_text()
+    assert "TOKEN_EXCHANGE_URL" not in _values(project)
+    assert "Token exchange" not in (project / "deployment/helm/shop/values.yaml").read_text()
+    assert "TOKEN_EXCHANGE_CLIENT_SECRET" not in manifest(project)["secrets"]["keys"]
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (["--auth", "exchange"], "--auth exchange needs --audience"),
+        (["--auth", "bearer", "--token-env", "T", "--scope", "x"], "--scope and --resource go"),
+        (["--auth", "none", "--audience", "x"], "--audience goes with --auth exchange or forward"),
+        (["--auth", "bearer", "--token-env", "T", "--forward-header", "X-A"], "--forward-header"),
+    ],
+)
+def test_add_exchange_usage_errors(project: Path, args: list[str], fragment: str) -> None:
+    result = cli("api", "add", "p", "--base-url-env", "P_URL", "--access", "read-only", *args)
+    assert result.exit_code == 2, result.output
+    assert fragment in " ".join(result.output.split())
+    assert not (project / "api-policy.yaml").exists()
+
+
+def test_add_exchange_refuses_what_cannot_work(project: Path) -> None:
+    bad = cli(*EXCHANGE_ADD, "--resource", "not a uri")
+    assert bad.exit_code == 3 and "exchange.resource: must be an absolute URI" in bad.output
+    _auth_policy(project, "jwt")
+    manifest_path = project / "graph-agents-cli-manifest.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text().replace("runtime: 'fastapi'", "runtime: 'langgraph-server'")
+    )
+    server = cli(*EXCHANGE_ADD)
+    assert server.exit_code == 3
+    assert "auth: exchange (apis: orders_agent) is not supported with runtime" in " ".join(
+        server.output.split()
+    )
+    assert not (project / "api-policy.yaml").exists()
+
+
+def test_forward_audience_is_written_with_audience(project: Path) -> None:
+    _auth_policy(project, "jwt")
+    add = [*("api", "add", "me", "--base-url-env", "ME_URL", "--auth", "forward")]
+    ok(*add, "--audience", "me-api", "--access", "read-only")
+    assert policy(project)["me"]["forward_audience"] == "me-api"
+
+
+def test_show_names_the_exchange(project: Path) -> None:
+    _auth_policy(project, "jwt")
+    ok(*EXCHANGE_ADD, "--scope", "orders.read")
+    shown = " ".join(ok("api", "show", "orders_agent").output.split())
+    assert "a token the issuer mints for audience orders; scope orders.read" in shown
+    assert "sent in Authorization; RFC 8693" in shown
+    data = json.loads(ok("api", "show", "orders_agent", "--json").output)
+    effective = data["apis"]["orders_agent"]
+    assert effective["exchange"] == {"audience": "orders", "scope": "orders.read"}
+    assert effective["forward_header"] == "Authorization"
+    assert ok("api", "check").exit_code == 0
+
+
+def test_create_with_an_exchange_api_records_the_secret_and_the_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "policy.yaml"
+    source.write_text(
+        "apis:\n  orders_agent:\n    base_url_env: ORDERS_AGENT_URL\n    auth: exchange\n"
+        "    exchange: {audience: orders}\n    allowed_methods: [GET]\n"
+    )
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        main,
+        [
+            *("create", "desk", "-y", "--skip-checks", "--skip-deps", "--auth-policy", "jwt"),
+            *("-d", "kubernetes", "--registry", "ghcr.io/acme", "--api-policy", str(source)),
+            *("-o", str(out)),
+        ],
+        env=ENV,
+    )
+    assert result.exit_code == 0, result.output
+    project = out / "desk"
+    assert "TOKEN_EXCHANGE_CLIENT_SECRET" in manifest(project)["secrets"]["keys"]
+    env_example = (project / ".env.example").read_text()
+    assert (
+        "\n# TOKEN_EXCHANGE_CLIENT_SECRET=\nTOKEN_EXCHANGE_URL=\nTOKEN_EXCHANGE_CLIENT_ID=\n"
+        in (env_example)
+    )
+    values = yaml.safe_load((project / "deployment/helm/desk/values.yaml").read_text())["env"]
+    assert values["TOKEN_EXCHANGE_URL"] == "http://CHANGE-ME"
+    assert values["TOKEN_EXCHANGE_CLIENT_ID"] == "desk"
+    monkeypatch.chdir(project)
+    # What create renders is what `api remove` takes away again.
+    ok("api", "remove", "orders_agent")
+    assert "TOKEN_EXCHANGE" not in (project / ".env.example").read_text()
+    assert "TOKEN_EXCHANGE" not in (project / "deployment/helm/desk/values.yaml").read_text()

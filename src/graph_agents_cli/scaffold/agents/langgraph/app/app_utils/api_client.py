@@ -17,8 +17,8 @@
 `api-policy.yaml` (path from `API_POLICY_PATH`, default `./api-policy.yaml`,
 else the one next to the project's `pyproject.toml`) declares every API a tool
 may call: where it lives (`base_url_env`), how requests authenticate
-(`auth: none | bearer | forward`) and which methods and operations are
-allowed. `get_client(name)` returns a client for one declared API; every
+(`auth: none | bearer | forward | exchange`) and which methods and operations
+are allowed. `get_client(name)` returns a client for one declared API; every
 request outside the policy raises `ApiPolicyError` before anything is sent.
 
 Fail closed: without a policy file, with an invalid one, or for an API the
@@ -26,15 +26,23 @@ file does not declare, `get_client` raises `ApiPolicyError`; there is no
 unrestricted fallback. `auth: bearer` sends `Authorization: Bearer
 $<token_env>`. `auth: forward` sends the calling principal's own credential for
 that API, `principal.attributes["credentials"][<name>]`, in `forward_header`
-(default `Authorization`); the principal comes from the run context the server
-sets for the graph run, and nothing is sent when the caller has no credential.
+(default `Authorization`), or, with `forward_audience`, the caller's own
+verified bearer token when it was minted for that audience too; the principal
+comes from the run context the server sets for the graph run, and nothing is
+sent when the caller has no credential. `auth: exchange` sends `Bearer
+<token>` in `forward_header`, a token the issuer mints for the API's
+`exchange.audience` in exchange for the caller's own (RFC 8693,
+`token_exchange.py`): asked for just before the call is sent, after every
+check, the approval and the limits, and never for a refused or paused call.
+A call to such an API that would loop back to this agent, or to an agent
+already in the request's delegation chain, is refused before anything else.
 
 Every method the policy allows can be sent (`request()`, or `get`, `head`,
 `post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
 parameters and extra headers. The app adds its correlation headers to every
-call of an `auth: forward` API, and of no other (`set_outbound_headers`: the
-request id and, under OTLP tracing, the W3C trace context; `propagates`),
-unless the tool sets the same header; they differ per request, so an approval
+call of an `auth: forward` or `auth: exchange` API, and of no other
+(`set_outbound_headers`: the request id and, under OTLP tracing, the W3C trace
+context; `propagates`), unless the tool sets the same header; they differ per request, so an approval
 does not bind them. An API's optional `limits` cap the calls before
 they are sent: `max_calls_per_run` counts the calls to that API within one
 agent run (the run id of the LangGraph run, else the request's; calls made
@@ -105,6 +113,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -139,7 +148,12 @@ POLICY_PATH_ENV = "API_POLICY_PATH"
 # byte-identical: change both or neither.
 
 POLICY_FILENAME = "api-policy.yaml"
-AUTH_MODES = ("none", "bearer", "forward")
+AUTH_MODES = ("none", "bearer", "forward", "exchange")
+# The modes that send the caller's identity in `forward_header` (default Authorization):
+# `forward` the caller's own credential, `exchange` a token the issuer mints for the API in
+# exchange for the caller's (RFC 8693, configured by the API's `exchange` block).
+HEADER_AUTH_MODES = ("forward", "exchange")
+EXCHANGE_KEY = "exchange"
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 ANY_METHOD = "*"
 DEFAULT_FORWARD_HEADER = "Authorization"
@@ -162,6 +176,8 @@ _API_KEYS = (
     "auth",
     "token_env",
     "forward_header",
+    "forward_audience",
+    EXCHANGE_KEY,
     "allowed_methods",
     "allowed_operations",
     "denied_operations",
@@ -177,6 +193,11 @@ _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
+_EXCHANGE_KEYS = ("audience", "scope", "resource")
+# An RFC 6749 scope: space-separated scope tokens (printable ASCII but space, " " and "\").
+_SCOPE_RE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*")
+# An absolute URI (RFC 8707 `resource`): a scheme, then no whitespace and no fragment.
+_ABSOLUTE_URI_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:[^\s#\x00-\x1f\x7f]+")
 
 # An API's `approval` block names the calls a human must approve before they are
 # sent (`required_for`), who may approve them (`approvers`) and how long a
@@ -289,6 +310,46 @@ def _is_env_name(value: Any) -> bool:
     return isinstance(value, str) and ENV_NAME_RE.match(value) is not None
 
 
+def _is_audience(value: Any) -> bool:
+    """An audience (a token's `aud`): 1-256 characters, no whitespace, commas or control
+    characters (the target's `AUTH_JWT_AUDIENCE` is a comma list of them)."""
+    return isinstance(value, str) and _ROLE_NAME_RE.fullmatch(value) is not None
+
+
+def _exchange_errors(where: str, value: Any) -> list[str]:
+    """Errors of an API's `exchange` block (`auth: exchange`, RFC 8693)."""
+    if not isinstance(value, Mapping):
+        return [f"{where}: must be a mapping with audience, and optionally scope and resource"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_EXCHANGE_KEYS), key=str)
+    ]
+    if "audience" not in value:
+        errors.append(
+            f"{where}.audience: required (the audience the issuer mints the token for: the "
+            "target's AUTH_JWT_AUDIENCE)"
+        )
+    elif not _is_audience(value["audience"]):
+        errors.append(
+            f"{where}.audience: must be an audience (1-256 characters without spaces, commas or "
+            "control characters)"
+        )
+    if "scope" in value:
+        scope = value["scope"]
+        if not (isinstance(scope, str) and _SCOPE_RE.fullmatch(scope)):
+            errors.append(
+                f"{where}.scope: must be scopes separated by single spaces (RFC 6749: printable "
+                "ASCII, no quotes or backslashes)"
+            )
+    if "resource" in value:
+        resource = value["resource"]
+        if not (isinstance(resource, str) and _ABSOLUTE_URI_RE.fullmatch(resource)):
+            errors.append(
+                f"{where}.resource: must be an absolute URI without a fragment (RFC 8707), "
+                "such as https://orders.example.com"
+            )
+    return errors
+
+
 def _api_errors(name: Any, api: Any) -> list[str]:
     where = f"apis.{name}"
     errors: list[str] = []
@@ -306,10 +367,11 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         errors.append(f"{where}.base_url_env: must be an environment variable name")
 
     auth = api.get("auth")
+    modes = ", ".join(AUTH_MODES)
     if "auth" not in api:
-        errors.append(f"{where}.auth: required (one of none, bearer, forward)")
+        errors.append(f"{where}.auth: required (one of {modes})")
     elif auth not in AUTH_MODES:
-        errors.append(f"{where}.auth: must be one of none, bearer, forward (got {auth!r})")
+        errors.append(f"{where}.auth: must be one of {modes} (got {auth!r})")
 
     if auth == "bearer":
         if "token_env" not in api:
@@ -321,10 +383,30 @@ def _api_errors(name: Any, api: Any) -> list[str]:
 
     if "forward_header" in api:
         header = api["forward_header"]
-        if auth != "forward":
-            errors.append(f"{where}.forward_header: only valid with auth: forward")
+        if auth not in HEADER_AUTH_MODES:
+            errors.append(f"{where}.forward_header: only valid with auth: forward or exchange")
         elif not (isinstance(header, str) and HEADER_NAME_RE.match(header)):
             errors.append(f"{where}.forward_header: must be an HTTP header name")
+
+    if "forward_audience" in api:
+        if auth != "forward":
+            errors.append(f"{where}.forward_audience: only valid with auth: forward")
+        elif not _is_audience(api["forward_audience"]):
+            errors.append(
+                f"{where}.forward_audience: must be an audience (1-256 characters without "
+                "spaces, commas or control characters)"
+            )
+
+    if auth == "exchange":
+        if EXCHANGE_KEY not in api:
+            errors.append(
+                f"{where}.{EXCHANGE_KEY}: required when auth is exchange (a mapping with the "
+                "audience the issuer mints the token for, and optionally scope and resource)"
+            )
+        else:
+            errors.extend(_exchange_errors(f"{where}.{EXCHANGE_KEY}", api[EXCHANGE_KEY]))
+    elif EXCHANGE_KEY in api:
+        errors.append(f"{where}.{EXCHANGE_KEY}: only valid with auth: exchange")
 
     if "allowed_methods" not in api:
         errors.append(f'{where}.allowed_methods: required (a list of HTTP methods, or ["*"])')
@@ -1073,11 +1155,18 @@ class ApiCallError(Exception):
     """
 
     def __init__(
-        self, message: str, *, status_code: int | None = None, body: str | None = None
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: str | None = None,
+        reason: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        # Why nothing was sent (a fixed phrase, never a value), for the log line.
+        self.reason = reason
 
 
 def error_body_excerpt(text: str, secrets: tuple[str, ...] = ()) -> str:
@@ -1565,8 +1654,8 @@ def approval_ledger() -> ApprovalLedger | None:
 _outbound_headers: Callable[[], Mapping[str, str]] | None = None
 
 # The `auth` modes whose APIs receive the correlation headers (see `propagates`): the
-# modes that act for the calling user. `exchange` (0.3: a token exchanged for the user's)
-# is one; until the policy accepts that mode, no API has it.
+# modes that act for the calling user, `forward` and `exchange` (a token exchanged for the
+# user's, RFC 8693: the owner's decision of 2026-09-28).
 PROPAGATING_AUTH_MODES = frozenset({"forward", "exchange"})
 
 
@@ -1589,10 +1678,10 @@ def propagates(api_settings: Mapping[str, Any]) -> bool:
     """Whether calls to this API carry the request's correlation headers.
 
     Only the APIs that act for the calling user do (`PROPAGATING_AUTH_MODES`),
-    `auth: forward` ones: they act as another agent does when it is reached
-    with the caller's own credential, so they are part of the same request. Any
-    other API (`auth: bearer` or `none`) is a third party that never learns this
-    request's id or trace. This is the one place that decides;
+    `auth: forward` and `auth: exchange` ones: they act as another agent does
+    when it is reached with the caller's own credential, or a token exchanged
+    for it, so they are part of the same request. Any other API (`auth: bearer`
+    or `none`) is a third party that never learns this request's id or trace. This is the one place that decides;
     `PROPAGATE_TRACE_HEADERS=false` turns the headers off for every API.
     """
     return api_settings.get("auth") in PROPAGATING_AUTH_MODES
@@ -1977,6 +2066,57 @@ class PreparedRequest:
     gate: ApprovalGate | None
 
 
+@dataclass(frozen=True)
+class SubjectToken:
+    """The caller's own verified bearer token, as the auth policy kept it.
+
+    `credentials["@subject_token"]`, with its audiences (`@subject_aud`) and
+    expiry (`@subject_exp`, epoch seconds; None when unknown). What `auth:
+    exchange` exchanges and `auth: forward` with `forward_audience` forwards.
+    """
+
+    # Out of repr: a repr ends up in logs and tracebacks.
+    token: str = field(repr=False)
+    audience: tuple[str, ...] = ()
+    expires_at: float | None = None
+
+
+# Where the delegation-carrying APIs send the caller's identity: `forward` and
+# `exchange` in `forward_header`, `bearer` in Authorization.
+_CREDENTIAL_HEADER_MODES = ("bearer", *HEADER_AUTH_MODES)
+# Hosts a credential-carrying call to another agent may reach over plain http outside
+# APP_ENV=dev: loopback, a single-label service name, a cluster-internal name.
+_INTERNAL_SUFFIXES = (".svc", ".svc.cluster.local")
+
+
+def internal_host(host: str) -> bool:
+    """Whether `host` is loopback, a single-label name or a cluster-internal (`.svc`) name."""
+    host = host.strip("[]").lower().rstrip(".")
+    if host == "localhost" or ("." not in host and ":" not in host):
+        return True
+    if host.endswith(_INTERNAL_SUFFIXES):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def peer_transport_problem(settings: Mapping[str, Any], url: httpx.URL, env: str) -> str | None:
+    """Why a call to another agent may not use this base URL, or None.
+
+    Outside `APP_ENV=dev`, an A2A peer (`protocol: a2a`) reached with a
+    credential (`bearer`, `forward` or `exchange`) refuses a plain http base
+    URL unless the host is internal (`internal_host`). Other APIs are not
+    checked (a later release may extend it).
+    """
+    if settings.get("protocol") != "a2a" or settings.get("auth") not in _CREDENTIAL_HEADER_MODES:
+        return None
+    if url.scheme != "http" or os.environ.get("APP_ENV") == "dev" or internal_host(url.host):
+        return None
+    return f"{env} must use https outside APP_ENV=dev to carry credentials"
+
+
 # ---------------------------------------------------------------------------
 # The client
 # ---------------------------------------------------------------------------
@@ -1993,6 +2133,8 @@ class ApiClient:
         credential: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         run_id: str | None = None,
+        subject: SubjectToken | None = None,
+        actor_chain: tuple[str, ...] = (),
     ) -> None:
         self.policy = policy
         self.name = name
@@ -2000,6 +2142,10 @@ class ApiClient:
         self._credential = credential
         self._transport = transport
         self._run_id = run_id
+        # `auth: exchange`: the caller's own token, exchanged just before sending.
+        self._subject = subject
+        # The agents the request came through, current first (loop refusal).
+        self._actor_chain = tuple(actor_chain)
 
     # -- configuration ------------------------------------------------------
 
@@ -2016,7 +2162,95 @@ class ApiClient:
             raise ApiCallError(f"{env} must be an absolute http(s) URL.")
         if url.query or url.fragment or url.userinfo:
             raise ApiCallError(f"{env} must not carry credentials, a query or a fragment.")
+        problem = peer_transport_problem(self.settings, url, env)
+        if problem:
+            raise ApiCallError(f"{problem}; nothing was sent to API {self.name!r}.")
         return url
+
+    def credential_header(self) -> str | None:
+        """The header the policy's credential goes in (None: `auth: none`).
+
+        A tool header of that name is never sent nor bound by an approval: the
+        policy's credential replaces it.
+        """
+        mode = self.settings["auth"]
+        if mode in HEADER_AUTH_MODES:
+            return str(self.settings.get("forward_header") or DEFAULT_FORWARD_HEADER)
+        return "Authorization" if mode == "bearer" else None
+
+    def delegation_target(self) -> str | None:
+        """The agent (audience) a call to this API acts for the caller at, or None.
+
+        `exchange.audience` for `auth: exchange`, `forward_audience` for `auth:
+        forward`: the calls that carry the caller's identity onward.
+        """
+        exchange = self.settings.get(EXCHANGE_KEY)
+        if self.settings["auth"] == "exchange" and isinstance(exchange, Mapping):
+            return str(exchange.get("audience") or "") or None
+        if self.settings["auth"] == "forward" and self.settings.get("forward_audience"):
+            return str(self.settings["forward_audience"])
+        return None
+
+    def check_loop(self) -> None:
+        """Refuse (`ApiPolicyError`) a call that would come back to an agent of this request.
+
+        That is this agent itself, or an agent already in the request's
+        delegation chain (A -> B -> A), named by the API's delegation target.
+        """
+        target = self.delegation_target()
+        if target is None:
+            return
+        try:
+            from .token_exchange import loop_problem
+        except ImportError:  # loaded outside its package: fail closed
+            raise ApiPolicyError(
+                f"{self.name}: the delegation loop check is unavailable; nothing was sent.",
+                reason="delegation loop check unavailable",
+            ) from None
+        problem = loop_problem(target, self._actor_chain)
+        if problem:
+            raise ApiPolicyError(
+                f"{self.name}: refused: {problem}; nothing was sent.", reason="delegation loop"
+            )
+
+    async def exchanged_credential(self) -> tuple[str, str] | None:
+        """`(header, "Bearer <token>")` for an `auth: exchange` API; None for any other.
+
+        The caller's own token exchanged for one minted for the API's
+        `exchange.audience` (`token_exchange.py`: cached, single flight, failures
+        remembered briefly). Raises `ApiCallError` (nothing sent) when the run
+        has no user token, it has expired, or the issuer refuses or fails.
+        """
+        if self.settings["auth"] != "exchange":
+            return None
+        if self._subject is None:
+            raise ApiCallError(
+                f"API {self.name!r} uses auth: exchange, but this run has no user token to "
+                "exchange (shared-bearer, or a run resumed by another principal); nothing was "
+                "sent.",
+                reason="no user token to exchange",
+            )
+        try:
+            from .token_exchange import TokenExchangeError, exchanger
+        except ImportError:  # loaded outside its package: fail closed
+            raise ApiCallError(
+                f"API {self.name!r} uses auth: exchange, but token exchange is unavailable; "
+                "nothing was sent.",
+                reason="token exchange unavailable",
+            ) from None
+        exchange = self.settings[EXCHANGE_KEY]
+        try:
+            token = await exchanger().token(
+                self.name,
+                self._subject.token,
+                audience=str(exchange["audience"]),
+                scope=exchange.get("scope"),
+                resource=exchange.get("resource"),
+                subject_expires_at=self._subject.expires_at,
+            )
+        except TokenExchangeError as exc:
+            raise ApiCallError(str(exc), reason=exc.reason) from None
+        return self.credential_header() or DEFAULT_FORWARD_HEADER, f"Bearer {token}"
 
     def auth_headers(self) -> dict[str, str]:
         mode = self.settings["auth"]
@@ -2175,6 +2409,12 @@ class ApiClient:
                 await self._use_approval(approved, method, operation_id or label, log_fields)
             wire_path, url, query = prepared.wire_path, prepared.url, prepared.query
             request_headers, secrets = prepared.headers, prepared.secrets
+            # Last, just before sending: a refused or paused call never exchanges a token.
+            exchanged = await self.exchanged_credential()
+            if exchanged is not None:
+                header, value = exchanged
+                request_headers[header] = value
+                secrets = (*secrets, value, value.split(" ", 1)[1])
         except ApiPolicyError as exc:
             logger.warning(
                 "api call refused: %s %s %s: %s",
@@ -2185,8 +2425,15 @@ class ApiClient:
                 extra=log_fields,
             )
             raise
-        except ApiCallError:
-            logger.warning("api call not sent: %s %s %s: not configured", self.name, method, label)
+        except ApiCallError as exc:
+            logger.warning(
+                "api call not sent: %s %s %s: %s",
+                self.name,
+                method,
+                label,
+                exc.reason or "not configured",
+                extra=log_fields,
+            )
             raise
         started = time.perf_counter()
         async with httpx.AsyncClient(
@@ -2237,6 +2484,7 @@ class ApiClient:
         sent, and the approval the call needs (`gate`, None when none)."""
         if method not in HTTP_METHODS:
             raise ApiPolicyError(f"{self.name}: unknown HTTP method {method!r}.")
+        self.check_loop()
         if path_params is not None:
             self.policy.check(self.name, method, operation_id, path)
             wire_path = render_path(path, path_params)
@@ -2278,10 +2526,17 @@ class ApiClient:
                 extra={"api": self.name},
             )
         credentials = self.auth_headers()
+        credential_header = self.credential_header()
+        excluded = {c.lower() for c in credentials}
+        if credential_header is not None:
+            excluded.add(credential_header.lower())
+            if credential_header not in credentials and credential_header in request_headers:
+                # `exchange`: the token is added just before sending; never the tool's own.
+                del request_headers[credential_header]
         tool_headers = [
             (name, value)
             for name, value in request_headers.multi_items()
-            if name.lower() not in {c.lower() for c in credentials}
+            if name.lower() not in excluded
         ]
         for name, value in outbound_headers(self.settings).items():
             if name not in request_headers:  # the tool's own header wins
@@ -2663,14 +2918,74 @@ def current_context() -> Any:
         return None
 
 
-def forwarded_credential(api_name: str, context: Any) -> str | None:
-    """`attributes["credentials"][api_name]` of the calling principal, or None."""
+def _context_credentials(context: Any) -> Mapping[str, Any]:
     attributes = getattr(context, "attributes", None)
     if attributes is None and isinstance(context, Mapping):
         attributes = context.get("attributes")
     credentials = attributes.get("credentials") if isinstance(attributes, Mapping) else None
-    value = credentials.get(api_name) if isinstance(credentials, Mapping) else None
-    return value if isinstance(value, str) and value else None
+    return credentials if isinstance(credentials, Mapping) else {}
+
+
+def subject_token_of(context: Any) -> SubjectToken | None:
+    """The calling principal's own verified bearer token (`credentials["@subject_token"]`).
+
+    Kept by the `jwt` policy only when an API acts with it (`auth: exchange`,
+    or `auth: forward` with `forward_audience`), or by a custom policy's
+    `keep_subject_token`; None otherwise (and never under langgraph-server,
+    whose run context carries no credentials).
+    """
+    credentials = _context_credentials(context)
+    token = credentials.get("@subject_token")
+    if not isinstance(token, str) or not token:
+        return None
+    raw_aud = credentials.get("@subject_aud")
+    audience = (
+        tuple(str(a) for a in raw_aud if isinstance(a, str))
+        if isinstance(raw_aud, list | tuple)
+        else (raw_aud,)
+        if isinstance(raw_aud, str)
+        else ()
+    )
+    raw_exp = credentials.get("@subject_exp")
+    expires_at = (
+        float(raw_exp)
+        if isinstance(raw_exp, int | float) and not isinstance(raw_exp, bool)
+        else None
+    )
+    return SubjectToken(token=token, audience=audience, expires_at=expires_at)
+
+
+def _context_actor_chain(context: Any) -> tuple[str, ...]:
+    """The agents the run's request came through (its `@actor` chain), current first."""
+    actor = _context_attributes(context).get("@actor")
+    if not isinstance(actor, Mapping):
+        return ()
+    chain = actor.get("chain")
+    if isinstance(chain, list | tuple) and chain:
+        return tuple(str(a) for a in chain)
+    actor_id = actor.get("id")
+    return (actor_id,) if isinstance(actor_id, str) and actor_id else ()
+
+
+def forwarded_credential(
+    api_name: str, context: Any, forward_audience: str | None = None
+) -> str | None:
+    """The credential `auth: forward` sends for API `api_name`, or None (nothing is sent).
+
+    In order: the calling principal's `attributes["credentials"][api_name]` (a
+    policy set it); else, with `forward_audience`, `Bearer <the caller's own
+    token>` when its `aud` names that audience (the issuer minted it for the
+    target too): a token minted only for this agent is never replayed at another.
+    """
+    credentials = _context_credentials(context)
+    value = credentials.get(api_name)
+    if isinstance(value, str) and value:
+        return value
+    if forward_audience:
+        subject = subject_token_of(context)
+        if subject is not None and forward_audience in subject.audience:
+            return f"Bearer {subject.token}"
+    return None
 
 
 def get_client(
@@ -2683,8 +2998,11 @@ def get_client(
     """A policy-enforcing client for API `api_name` of `api-policy.yaml`.
 
     `context` is the run context holding the calling principal (a tool's
-    `runtime.context`); by default it is read from the current graph run.
-    `run_id` names the run `limits.max_calls_per_run` counts against; by
+    `runtime.context`); by default it is read from the current graph run. For
+    an `auth: forward` API it gives the credential sent; for an `auth:
+    exchange` API, the caller's own token (`subject_token_of`), exchanged when a
+    request is sent, not here. For both, the delegation chain the loop check
+    reads. `run_id` names the run `limits.max_calls_per_run` counts against; by
     default it is read from the current run (`current_run_id`).
     Raises `ApiPolicyError` when the policy file is missing or invalid, or does
     not declare `api_name`.
@@ -2692,11 +3010,24 @@ def get_client(
     policy = load_policy()
     settings = policy.api(api_name)
     credential = None
-    if settings["auth"] == "forward":
-        credential = forwarded_credential(
-            api_name, context if context is not None else current_context()
-        )
-    return ApiClient(policy, api_name, credential=credential, transport=transport, run_id=run_id)
+    subject = None
+    actor_chain: tuple[str, ...] = ()
+    if settings["auth"] in HEADER_AUTH_MODES:
+        ctx = context if context is not None else current_context()
+        actor_chain = _context_actor_chain(ctx)
+        if settings["auth"] == "forward":
+            credential = forwarded_credential(api_name, ctx, settings.get("forward_audience"))
+        else:
+            subject = subject_token_of(ctx)
+    return ApiClient(
+        policy,
+        api_name,
+        credential=credential,
+        transport=transport,
+        run_id=run_id,
+        subject=subject,
+        actor_chain=actor_chain,
+    )
 
 
 # ---------------------------------------------------------------------------

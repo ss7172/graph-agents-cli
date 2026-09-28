@@ -23,7 +23,7 @@ OpenAPI file it names and a tool declaring the three allowed calls:
 apis:
   orders:                             # the name: ^[a-z][a-z0-9_]{0,31}$
     base_url_env: ORDERS_API_BASE_URL # required
-    auth: bearer                      # required: none | bearer | forward
+    auth: bearer                      # required: none | bearer | forward | exchange
     token_env: ORDERS_API_TOKEN       # required with auth: bearer
     allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE]   # required
     allowed_operations:               # optional: only these operations
@@ -78,9 +78,11 @@ letter (`^[a-z][a-z0-9_]{0,31}$`); tools name it in `get_client("<name>")`.
 | Key | Value | Meaning |
 |---|---|---|
 | `base_url_env` | env var name; required | The variable holding the API's base URL, set per environment. A path prefix in the URL (`https://host/v2`) is kept: call paths are joined under it. |
-| `auth` | `none` \| `bearer` \| `forward`; required | `none` sends no credential. `bearer` sends `Authorization: Bearer $<token_env>`. `forward` sends the caller's own credential (see below); refused under the `langgraph-server` runtime, which would persist it. |
+| `auth` | `none` \| `bearer` \| `forward` \| `exchange`; required | `none` sends no credential. `bearer` sends `Authorization: Bearer $<token_env>`. `forward` sends the caller's own credential, and `exchange` a token exchanged for it (see below); both are refused under the `langgraph-server` runtime, which would persist the caller's credentials. |
 | `token_env` | env var name; required with `bearer` | The variable holding the token; valid only with `auth: bearer`. `create` and `api add` add it to the manifest's `secrets.keys`. |
-| `forward_header` | header name; default `Authorization` | The header `auth: forward` sends the credential in; valid only with `auth: forward`. |
+| `forward_header` | header name; default `Authorization` | The header `auth: forward` or `auth: exchange` sends the credential in; valid only with those. `exchange` sends `Bearer <token>`. |
+| `forward_audience` | an audience; optional | `auth: forward` only: when the caller has no per-API credential, forward the caller's own verified token if its `aud` names this audience (the issuer minted it for the target too). 1-256 characters without spaces, commas or control characters. |
+| [`exchange`](#exchange) | `{audience, scope, resource}`; required with `exchange` | The token to ask the issuer for, in exchange for the caller's own (RFC 8693). Valid only with `auth: exchange`. |
 | `allowed_methods` | list of methods; required | The methods the API allows: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` (any case), or `["*"]` alone for every method. There is no default access. |
 | `allowed_operations` | list of [operations](#operation-entries); default every operation within `allowed_methods` | When present, a call must also match one entry. An empty list is refused: omit the key instead. |
 | `denied_operations` | list of [operations](#operation-entries); default none | Endpoints refused whatever else allows them. |
@@ -91,8 +93,46 @@ letter (`^[a-z][a-z0-9_]{0,31}$`); tools name it in `get_client("<name>")`.
 | [`approval`](#approval) | a rule, or a list of rules; default no approval | Calls a person approves before they are sent. |
 
 `auth: forward` sends `attributes["credentials"][<api name>]` of the caller's principal, which
-a per-user auth policy sets (see [Authentication](../guides/authentication.md)); a caller
-without one sends nothing. The policy's credential always overrides a header the tool passes.
+a per-user auth policy sets (see [Authentication](../guides/authentication.md)), or, with
+`forward_audience`, `Bearer <the caller's own token>` when that token's `aud` names the
+audience; a caller with neither sends nothing. The policy's credential always overrides a
+header the tool passes, and a tool header of that name is never bound by an approval.
+
+## `exchange`
+
+`auth: exchange` calls the API with a token the issuer's token endpoint (`TOKEN_EXCHANGE_URL`)
+mints for it in exchange for the caller's own verified token (RFC 8693 token exchange; see
+[the guide](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)):
+
+| Key | Value | Meaning |
+|---|---|---|
+| `audience` | an audience; required | The audience asked for: the target's `AUTH_JWT_AUDIENCE`. 1-256 characters without spaces, commas or control characters. |
+| `scope` | scopes separated by single spaces; optional | The scopes asked for (RFC 6749 scope tokens: printable ASCII without `"` and `\`). |
+| `resource` | an absolute URI without a fragment; optional | The target's resource indicator (RFC 8707). |
+
+Unknown keys are refused. The request sends `grant_type`
+`urn:ietf:params:oauth:grant-type:token-exchange`, the caller's token as `subject_token` (of
+`TOKEN_EXCHANGE_SUBJECT_TOKEN_TYPE`), `requested_token_type`
+`urn:ietf:params:oauth:token-type:access_token`, and these keys, with this agent's client
+authentication. The answer must be a `Bearer` access token of at most 16 KiB with a positive
+integer `expires_in` (absent: 60 s); anything else is refused as an unusable answer.
+[Environment variables](environment.md#token-exchange) lists the settings.
+
+Validation messages (the same from `lint`, `api` and the running agent):
+
+| The file | The error |
+|---|---|
+| `auth: exchange` without `exchange` | `apis.<name>.exchange: required when auth is exchange (...)` |
+| `exchange` with another `auth` | `apis.<name>.exchange: only valid with auth: exchange` |
+| no `audience`, or a bad one | `apis.<name>.exchange.audience: required (...)` / `must be an audience (...)` |
+| a bad `scope` | `apis.<name>.exchange.scope: must be scopes separated by single spaces (...)` |
+| a bad `resource` | `apis.<name>.exchange.resource: must be an absolute URI without a fragment (RFC 8707), ...` |
+| `forward_audience` with another `auth` | `apis.<name>.forward_audience: only valid with auth: forward` |
+| `forward_header` with `none` or `bearer` | `apis.<name>.forward_header: only valid with auth: forward or exchange` |
+
+`create`, `lint` and `api add` refuse `exchange` and `forward` under the `langgraph-server`
+runtime; the app refuses `exchange` at startup where it cannot work (the
+[compatibility table](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)).
 
 ## Operation entries
 

@@ -127,6 +127,7 @@ PRINCIPAL_HASH_SALT_ENV = "PRINCIPAL_HASH_SALT"
 ACTOR_ATTRIBUTE = "@actor"
 SUBJECT_TOKEN_CREDENTIAL = "@subject_token"
 SUBJECT_AUD_CREDENTIAL = "@subject_aud"
+SUBJECT_EXP_CREDENTIAL = "@subject_exp"
 ORIGIN_CREDENTIAL = "@origin"
 # Between the subject and the actor in an owner key: the unit separator, which no
 # valid id holds (ids have no control characters).
@@ -278,15 +279,21 @@ def _valid_id(value: Any) -> bool:
     )
 
 
-def keep_subject_token(principal: Principal, token: str, aud: Any = None) -> Principal:
-    """Keep the verified inbound bearer and its audience in the principal's private credentials.
+def keep_subject_token(
+    principal: Principal, token: str, aud: Any = None, exp: Any = None
+) -> Principal:
+    """Keep the verified inbound bearer, its audience and expiry in the principal's credentials.
 
-    Under `credentials["@subject_token"]` and `credentials["@subject_aud"]` (a
-    tuple): the token an API that acts with the user's own identity is called
-    with (`auth: exchange` exchanges it, `auth: forward` with `forward_audience`
-    forwards it). `jwt` keeps it only when the loaded api-policy has such an API
-    (`subject_token_needed`); a custom policy calls this itself. Credentials are
-    never persisted, logged or traced (`public_attributes()` drops them).
+    Under `credentials["@subject_token"]`, `credentials["@subject_aud"]` (a
+    tuple) and `credentials["@subject_exp"]` (the `exp` claim, epoch seconds,
+    when given): the token an API that acts with the user's own identity is
+    called with (`auth: exchange` exchanges it, `auth: forward` with
+    `forward_audience` forwards it). `jwt` keeps it only when the loaded
+    api-policy has such an API (`subject_token_needed`); a custom policy calls
+    this itself. An exchanged token is never kept past the subject token's
+    expiry, and a subject token with 10 s or less left is not exchanged.
+    Credentials are never persisted, logged or traced (`public_attributes()`
+    drops them).
     """
     if isinstance(aud, str):
         audience: tuple[str, ...] = (aud,)
@@ -298,6 +305,10 @@ def keep_subject_token(principal: Principal, token: str, aud: Any = None) -> Pri
     kept = dict(credentials) if isinstance(credentials, Mapping) else {}
     kept[SUBJECT_TOKEN_CREDENTIAL] = token
     kept[SUBJECT_AUD_CREDENTIAL] = audience
+    if isinstance(exp, int | float) and not isinstance(exp, bool):
+        kept[SUBJECT_EXP_CREDENTIAL] = exp
+    else:
+        kept.pop(SUBJECT_EXP_CREDENTIAL, None)
     principal.attributes[CREDENTIALS_KEY] = kept
     return principal
 
@@ -1205,7 +1216,7 @@ class JwtPolicy:
         principal = self.principal_from_claims(claims)
         if subject_token_needed():
             # An API acts with the user's own token (exchanged, or forwarded to its audience).
-            keep_subject_token(principal, token, claims.get("aud"))
+            keep_subject_token(principal, token, claims.get("aud"), claims.get("exp"))
         return principal
 
     async def authorize(self, principal: Principal, action: str, resource: str | None) -> None:
@@ -1386,15 +1397,34 @@ def check_startup() -> AuthPolicy:
 
     An unknown `AUTH_POLICY` raises in every environment. A policy may expose
     `startup_problems() -> list[str]`; any problem raises outside `APP_ENV=dev`
-    (under dev it is logged and requests get 503 until it is fixed).
+    (under dev it is logged and requests get 503 until it is fixed). So do the
+    APIs of api-policy.yaml that act with the caller's identity where they
+    cannot (`token_exchange.startup_problems`: an `auth: exchange` API under
+    shared-bearer or langgraph-server, or without `TOKEN_EXCHANGE_URL`,
+    `TOKEN_EXCHANGE_CLIENT_ID` and `TOKEN_EXCHANGE_CLIENT_SECRET`; under dev
+    they are logged and the calls to those APIs fail).
     """
     policy = get_policy()
     probe = getattr(policy, "startup_problems", None)
     problems = list(probe()) if callable(probe) else []
-    if problems and not dev_mode():
+    from {{cookiecutter.agent_directory}}.app_utils.token_exchange import (
+        startup_problems as propagation_problems,
+    )
+
+    propagation = propagation_problems(policy_name())
+    if dev_mode():
+        for problem in propagation:
+            logger.error("api-policy: %s (APP_ENV=dev: starting anyway)", problem)
+        return policy
+    if problems:
         raise RuntimeError(
             f"AUTH_POLICY={policy_name()} is misconfigured, refusing to start: "
             + "; ".join(problems)
+        )
+    if propagation:
+        raise RuntimeError(
+            "api-policy.yaml cannot work with this configuration, refusing to start: "
+            + "; ".join(propagation)
         )
     return policy
 

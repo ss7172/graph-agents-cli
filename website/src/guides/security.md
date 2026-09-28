@@ -59,7 +59,7 @@ The template reduces this risk in layers:
 | The fence | `UntrustedToolResults` (in `app_utils.content`, wired into `agent.py`) wraps every tool result the model reads as untrusted data, and, when another agent asks for the user, that agent's request too, with a note saying who wrote it. |
 | The prompt | The default system prompt says tool output is data, never instructions. |
 | Tool checks | Write tools call `require_user_mentioned` (the id must appear in the user's own message; when another agent asks, in the user's own words it forwarded too) and, under a per-user policy, `require_owner` (the record belongs to the caller). `require_direct_caller` keeps a tool for requests the user makes directly. |
-| Per-user upstream authorization | Write-capable APIs use `auth: forward`, so the upstream API authorizes each user itself. |
+| Per-user upstream authorization | Write-capable APIs use `auth: forward`, or `auth: exchange` for another agent (a token minted for that agent alone, in the user's name), so the upstream authorizes each user itself. |
 | Approval gates | A person sees each concrete write before it is sent. |
 | Eval cases | Cases with planted instructions, where `expect.no_approvals` asserts the planted write never reached a gate. |
 
@@ -145,6 +145,11 @@ Work through it for staging first, then prod. Each item links to the page that e
       `auth: forward` where the upstream can authorize the user; `agent.py` keeps
       `UntrustedToolResults`, `AnswerInvalidToolCalls` and the prompt's tool-results rule.
       [Develop your agent](develop.md)
+- [ ] Agents that call other agents for users use `auth: exchange`: `TOKEN_EXCHANGE_URL` is
+      https, the client secret is in `secrets.keys`, the identity provider lets each agent's
+      client exchange only for the audiences it calls and keeps exchanged tokens to 5 minutes
+      or less, and each called agent lists its callers in `AUTH_ALLOWED_ACTORS`.
+      [Authentication](authentication.md#calling-another-agent-for-the-user)
 - [ ] Decide which writes wait for a human (`graph-agents-cli api approval`): `requester`
       confirmation for writes users make on their own records, `role:` approvers (a second
       person, under `jwt` or `custom`) for actions one person should not take alone. Paused

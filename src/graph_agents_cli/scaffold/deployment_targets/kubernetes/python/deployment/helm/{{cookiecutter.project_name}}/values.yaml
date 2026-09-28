@@ -52,6 +52,11 @@ env:
 {%- for api in cookiecutter.apis %}
   {{ api.base_url_env }}: http://CHANGE-ME
 {%- endfor %}
+{%- if cookiecutter.apis | selectattr('auth', 'equalto', 'exchange') | list %}
+  # Token exchange (RFC 8693) for the auth: exchange APIs (the client secret comes from the Secret).
+  TOKEN_EXCHANGE_URL: http://CHANGE-ME
+  TOKEN_EXCHANGE_CLIENT_ID: {{ cookiecutter.project_name }}
+{%- endif %}
 {%- endif %}
   A2A_NAME: {{cookiecutter.agent_directory}}
   # What the A2A agent card (and its chat skill) says the agent does; empty: a

@@ -201,6 +201,25 @@ The database behaviour (keepalives, `/ready`, schema setup) is in
 | each API's `base_url_env` | | The API's base URL, per environment in `values-<env>.yaml`. The URL may carry a path prefix. |
 | each `auth: bearer` API's `token_env` | | The API's token (a secret; `api add` adds it to `secrets.keys`). |
 
+### Token exchange
+
+For `auth: exchange` APIs ([RFC 8693](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)).
+Outside `APP_ENV=dev` the app refuses to start when such an API exists and the URL, the client
+id or the secret is missing; a malformed value stops startup in every environment.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TOKEN_EXCHANGE_URL` | unset | The issuer's token endpoint. https outside `APP_ENV=dev`, unless the host is loopback or `TOKEN_EXCHANGE_ALLOW_HTTP=true`. |
+| `TOKEN_EXCHANGE_CLIENT_ID` | unset | This agent's client at the issuer (the chart's `values.yaml` holds the project name as a placeholder). |
+| `TOKEN_EXCHANGE_CLIENT_SECRET` | unset | Its secret. `api add --auth exchange` adds it to `secrets.keys`; it never goes in a values file. |
+| `TOKEN_EXCHANGE_CLIENT_AUTH` | `client_secret_basic` | Or `client_secret_post` (the id and secret in the form). |
+| `TOKEN_EXCHANGE_SUBJECT_TOKEN_TYPE` | `urn:ietf:params:oauth:token-type:access_token` | Or `urn:ietf:params:oauth:token-type:jwt`. |
+| `TOKEN_EXCHANGE_TIMEOUT_MS` | `2000` | The whole exchange's deadline (connecting takes at most 1 s of it); 100-60000. |
+| `TOKEN_EXCHANGE_MAX_TTL_S` | `300` | How long an exchanged token is reused at most (never past the caller's own token's expiry, less 30 s); 1-300. |
+| `TOKEN_EXCHANGE_FAILURE_TTL_S` | `10` | How long an issuer's refusal is remembered, and how long its circuit breaker stays open after three failures in a row; 1-300. |
+| `TOKEN_EXCHANGE_CACHE_MAX` | `10000` | Exchanged tokens kept per process (least recently used first out). |
+| `TOKEN_EXCHANGE_ALLOW_HTTP` | `false` | A plain-http `TOKEN_EXCHANGE_URL` outside dev, for a trusted in-cluster issuer only. |
+
 ### Guardrails and limits
 
 | Variable | Default | Meaning |
@@ -236,7 +255,7 @@ What each limit does to a request is in the [HTTP API](http-api.md#guardrails).
 | `LANGSMITH_ENDPOINT` | LangSmith's default | A self-hosted LangSmith. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | | Without a LangSmith key, spans go over OTLP/HTTP here. |
 | `OTEL_SERVICE_NAME` | the project name | The OTLP service name. |
-| `PROPAGATE_TRACE_HEADERS` | `true` | Calls of `auth: forward` APIs carry the request's `X-Request-ID` and, under OTLP, its W3C trace context; `auth: bearer` and `auth: none` APIs never receive them. An incoming `traceparent` continues the caller's trace. `false`, `0`, `no` or `off` turns both off. |
+| `PROPAGATE_TRACE_HEADERS` | `true` | Calls of `auth: forward` and `auth: exchange` APIs carry the request's `X-Request-ID` and, under OTLP, its W3C trace context; `auth: bearer` and `auth: none` APIs never receive them. An incoming `traceparent` continues the caller's trace. `false`, `0`, `no` or `off` turns both off. |
 
 See [Observability](../guides/observability.md) for what each mode sends where.
 

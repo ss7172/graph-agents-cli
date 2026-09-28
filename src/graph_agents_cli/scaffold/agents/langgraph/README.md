@@ -204,8 +204,11 @@ refused. The client sends every method the policy allows (`request()`, or `get`,
 `delete`, `head`, `options`) with a JSON body, query parameters and headers.
 
 Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`none`, `bearer` with
-`token_env`, or `forward`, which sends the caller's own `attributes["credentials"][<api>]`; not available
-under langgraph-server, which would persist it), the required `allowed_methods`, and optional
+`token_env`, `forward`, which sends the caller's own `attributes["credentials"][<api>]` or, with
+`forward_audience`, the caller's own token when it was minted for that audience too, or `exchange`, which
+sends a token the issuer mints for `exchange.audience` in exchange for the caller's own, RFC 8693, set up
+with the `TOKEN_EXCHANGE_*` variables; neither is available under langgraph-server, which would persist
+the caller's credentials), the required `allowed_methods`, and optional
 `allowed_operations` / `denied_operations` (an allowed entry pinning both `operationId` and `path` needs
 both to match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the
 parameter) and `limits`: `max_calls_per_run` (calls to that API within one agent run) and
@@ -334,7 +337,7 @@ touch it. There is no default access level: every API lists its methods explicit
 
 | Command | Change |
 |---|---|
-| `graph-agents-cli api add NAME --base-url-env ENV --auth none\|bearer\|forward [--token-env ENV] --access read-only\|read-write\|custom [--methods M,...] [--openapi SPEC] [--max-calls-per-run N] [--rate-per-minute N]` | Declare an API; `--access` is required. read-only = GET, HEAD; read-write = GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods` |
+| `graph-agents-cli api add NAME --base-url-env ENV --auth none\|bearer\|forward\|exchange [--token-env ENV] [--audience AUD] --access read-only\|read-write\|custom [--methods M,...] [--openapi SPEC] [--max-calls-per-run N] [--rate-per-minute N]` | Declare an API; `--access` is required. read-only = GET, HEAD; read-write = GET, HEAD, POST, PUT, PATCH, DELETE; custom = `--methods` |
 | `graph-agents-cli api access NAME read-only\|read-write\|custom [--methods M,...]` | Set the allowed methods |
 | `graph-agents-cli api allow NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add an `allowed_operations` entry pinning every field given (with `openapi`, the id must exist and its method and path are filled in). Creating the list narrows access to the listed operations: the command says so |
 | `graph-agents-cli api deny NAME OPERATION_ID [--method M --path P]` (or `--method M --path P`) | Add a `denied_operations` entry (pin the path: it then holds whatever `operation_id` a call gives) |

@@ -16,13 +16,20 @@
 
 It signs RS256 tokens with one key, serves the key set at `/jwks` and exchanges
 tokens at `/token` (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`)
-for the clients it knows (HTTP Basic client authentication). An exchanged token
+for the clients it knows (HTTP Basic client authentication, or the client id and
+secret in the form: `client_secret_post`). An exchanged token
 keeps the subject token's `sub`, names the calling client in `act` (the subject
 token's own `act` nested inside it, RFC 8693 section 4.1), has the requested
 `audience`, `azp` set to the client and `expires_in` of at most 300 s. It refuses
 an audience the client may not act for (`may_act`), a service token (one whose
-`sub` is its own client) and a token it did not issue. Loopback only, on a free
-port; nothing leaves the process.
+`sub` is its own client) and a token it did not issue. Every exchange request is
+recorded (`requests`: the form, secrets included, and how the client
+authenticated), and a test can make it misbehave: `hold` (a `threading.Event`
+cleared: every `/token` request waits until it is set, a hung issuer), `answers`
+(queued `(status, body)` answers returned instead of an exchange),
+`expires_in` (the lifetime it grants; None leaves it out of the answer) and
+`act` (False: exchanged tokens name no actor, only `azp`, as some issuers do).
+Loopback only, on a free port; nothing leaves the process.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote_plus
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -53,6 +60,12 @@ class FakeIssuer:
         self.kid = uuid.uuid4().hex[:8]
         self.clients = clients
         self.exchanges: list[dict[str, Any]] = []
+        self.requests: list[dict[str, Any]] = []
+        self.hold = threading.Event()
+        self.hold.set()
+        self.answers: list[tuple[int, dict[str, Any]]] = []
+        self.expires_in: int | None = EXCHANGED_TTL_S
+        self.act = True
         issuer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -68,7 +81,13 @@ class FakeIssuer:
                     return
                 length = int(self.headers.get("content-length") or 0)
                 form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode()).items()}
-                status, body = issuer.exchange(self.headers.get("authorization") or "", form)
+                authorization = self.headers.get("authorization") or ""
+                issuer.requests.append({"form": form, "authorization": authorization})
+                issuer.hold.wait(timeout=120)
+                if issuer.answers:
+                    status, body = issuer.answers.pop(0)
+                else:
+                    status, body = issuer.exchange(authorization, form)
                 self._answer(status, body)
 
             def _answer(self, status: int, body: dict[str, Any]) -> None:
@@ -97,6 +116,7 @@ class FakeIssuer:
         return f"{self.url}/token"
 
     def close(self) -> None:
+        self.hold.set()
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -134,12 +154,19 @@ class FakeIssuer:
     def exchange(self, authorization: str, form: dict[str, str]) -> tuple[int, dict[str, Any]]:
         """RFC 8693 token exchange: `(status, body)`."""
         scheme, _, credentials = authorization.partition(" ")
-        try:
-            client, _, secret = base64.b64decode(credentials).decode().partition(":")
-        except Exception:
+        if scheme.lower() == "basic":
+            try:
+                pair = base64.b64decode(credentials).decode()
+            except Exception:
+                pair = ""
+            # RFC 6749 section 2.3.1: each part form-encoded, then joined and base64-encoded.
+            client, _, secret = (unquote_plus(part) for part in pair.partition(":"))
+        elif not authorization and "client_id" in form:
+            client, secret = form.get("client_id") or "", form.get("client_secret") or ""
+        else:
             client, secret = "", ""
         known = self.clients.get(client)
-        if scheme.lower() != "basic" or known is None or known[0] != secret:
+        if known is None or known[0] != secret:
             return 401, {"error": "invalid_client"}
         if form.get("grant_type") != TOKEN_EXCHANGE:
             return 400, {"error": "unsupported_grant_type"}
@@ -170,13 +197,20 @@ class FakeIssuer:
             "act": actor,
             "roles": subject.get("roles") or [],
             "iat": now,
-            "exp": min(now + EXCHANGED_TTL_S, int(subject.get("exp") or now)),
+            "exp": min(now + (self.expires_in or 60), int(subject.get("exp") or now)),
             "jti": uuid.uuid4().hex,
         }
+        if not self.act:
+            del exchanged["act"]
+        for claim in ("scope", "resource"):
+            if form.get(claim):
+                exchanged[claim] = form[claim]
         self.exchanges.append({"client": client, "audience": audience, "sub": subject["sub"]})
-        return 200, {
+        answer: dict[str, Any] = {
             "access_token": self.sign(exchanged),
             "issued_token_type": ACCESS_TOKEN_TYPE,
             "token_type": "Bearer",
-            "expires_in": exchanged["exp"] - now,
         }
+        if self.expires_in is not None:
+            answer["expires_in"] = exchanged["exp"] - now
+        return 200, answer

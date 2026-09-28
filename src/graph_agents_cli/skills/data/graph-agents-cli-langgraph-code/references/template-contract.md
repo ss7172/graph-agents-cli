@@ -261,9 +261,11 @@ line), `--header 'Name: value'` or `--cookie name=value` for what a custom polic
 apis:
   incidents:                             # [a-z][a-z0-9_]*, at most 32 characters
     base_url_env: INCIDENTS_API_BASE_URL # required; the URL may carry a path prefix
-    auth: bearer                         # required: none | bearer | forward
+    auth: bearer                         # required: none | bearer | forward | exchange
     token_env: INCIDENTS_API_TOKEN       # required iff auth: bearer
-    # forward_header: Authorization      # auth: forward only (the default)
+    # forward_header: Authorization      # auth: forward or exchange only (the default)
+    # forward_audience: incidents        # auth: forward only: forward the caller's own token
+    # exchange: {audience: incidents}    # required iff auth: exchange (+ scope, resource)
     allowed_methods: [GET, POST]         # required, explicit (no default); ["*"] = every method
     allowed_operations:                  # optional; omit = every operation within allowed_methods
       - operationId: getIncident
@@ -384,7 +386,10 @@ the API's `openapi:` spec), and name `operation_id` on every call.
 - `auth: bearer` sends `Authorization: Bearer $<token_env>`; `auth: forward` sends the calling
   principal's `attributes["credentials"][<api>]` in `forward_header` (the principal comes from
   the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the
-  caller has none; `forward` is refused at create and lint under `langgraph-server`.
+  caller has none; `auth: exchange` sends `Bearer <token>`, a token the issuer mints for
+  `exchange.audience` in exchange for the caller's own (RFC 8693, `TOKEN_EXCHANGE_*` settings),
+  asked for just before sending; `forward` and `exchange` are refused at create and lint under
+  `langgraph-server`, and lint checks them against the auth policy.
 - Every `*.py` under `app/tools/` (subpackages included, the top-level `__init__.py` excluded) declares one module-level **literal**
   `API_CALLS = [{"api": ..., "method": ..., "operation_id": ..., "path": ...}]` (`[]` when it
   calls no external API) and `TOOLS`. `graph-agents-cli lint` runs the CLI's

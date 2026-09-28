@@ -42,7 +42,7 @@ from rich.prompt import Confirm, IntPrompt
 
 from graph_agents_cli import _defaults
 from graph_agents_cli._api_policy import POLICY_FILENAME as API_POLICY_FILENAME
-from graph_agents_cli._api_policy import ApiSummary, ExampleCall, bearer_token_envs
+from graph_agents_cli._api_policy import ApiSummary, ExampleCall, secret_envs
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_AUTH_POLICY,
@@ -819,7 +819,7 @@ def build_cookiecutter_context(
             default_secret_keys(
                 model_provider,
                 runtime,
-                bearer_token_envs(api_summaries),
+                secret_envs(api_summaries),
                 auth_policy=auth_policy,
             )
         ],

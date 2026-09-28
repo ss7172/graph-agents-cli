@@ -72,7 +72,7 @@ A fuller policy, with operations, a denial, limits and an approval gate:
 apis:
   orders:                              # ^[a-z][a-z0-9_]{0,31}$
     base_url_env: ORDERS_API_BASE_URL  # may carry a path prefix
-    auth: bearer                       # none | bearer | forward
+    auth: bearer                       # none | bearer | forward | exchange
     token_env: ORDERS_API_TOKEN        # auth: bearer only
     allowed_methods: [GET, HEAD, POST, PATCH]
     allowed_operations:                # omitted = every operation
@@ -159,11 +159,81 @@ denials, limits, the approval gate) followed by the same table.
 |---|---|
 | `none` | no credential |
 | `bearer` | `Authorization: Bearer $<token_env>`: one service token, from the app Secret |
-| `forward` | the caller's own credential, `attributes["credentials"][<api name>]` of the principal, in `forward_header` (default `Authorization`); nothing when the caller has none. Refused under `langgraph-server`, which would persist it |
+| `forward` | the caller's own credential, `attributes["credentials"][<api name>]` of the principal, in `forward_header` (default `Authorization`); with `forward_audience`, otherwise the caller's own verified token when its `aud` names that audience too; nothing when the caller has neither. Refused under `langgraph-server`, which would persist it |
+| `exchange` | `Bearer <token>` in `forward_header` (default `Authorization`): a token the issuer mints for the API's `exchange.audience` in exchange for the caller's own (RFC 8693 token exchange). Refused under `langgraph-server` and `shared-bearer` |
 
-Calls of an `auth: forward` API also carry the request's `X-Request-ID` and trace context,
-unless `PROPAGATE_TRACE_HEADERS=false`; other APIs never receive them (see
+Calls of an `auth: forward` or `auth: exchange` API also carry the request's `X-Request-ID`
+and trace context, unless `PROPAGATE_TRACE_HEADERS=false`; other APIs never receive them (see
 [Observability](observability.md#across-agents-and-services)).
+
+### `auth: exchange`: act for the user at another agent
+
+An API that acts with the user's identity (another agent built from this template, or a
+service that authorizes each user) is best reached with `auth: exchange`. Instead of replaying
+the caller's token, the agent asks the identity provider for a new token minted for that API
+alone, in the user's name, naming this agent as the actor (the RFC 8693 `act` claim):
+
+```bash
+graph-agents-cli api add orders_agent --base-url-env ORDERS_AGENT_URL --auth exchange \
+  --audience orders --scope "orders.read orders.cancel" --access custom --methods GET,POST
+```
+
+```yaml title="api-policy.yaml"
+apis:
+  orders_agent:
+    base_url_env: ORDERS_AGENT_URL
+    auth: exchange
+    exchange:
+      audience: orders                      # required: the target's AUTH_JWT_AUDIENCE
+      scope: "orders.read orders.cancel"    # optional: least privilege
+      resource: https://orders.example.com  # optional (RFC 8707): an absolute URI
+    allowed_methods: [GET, POST]
+```
+
+The issuer and this agent's client there are set once for every exchange API:
+`TOKEN_EXCHANGE_URL`, `TOKEN_EXCHANGE_CLIENT_ID` and the secret `TOKEN_EXCHANGE_CLIENT_SECRET`,
+which `api add` adds to `secrets.keys` (see
+[Environment variables](../reference/environment.md#token-exchange)). The
+[authentication guide](authentication.md#token-exchange-with-keycloak) walks through setting
+up an issuer.
+
+How the exchange behaves:
+
+- **After every check, never before.** The token is asked for just before the call is sent:
+  after the policy check, the approval gate and the limits. A refused call, or one paused for a
+  person's approval, exchanges nothing; nothing is exchanged while a request is authenticated.
+  Only the APIs a run actually calls are exchanged for.
+- **Cached, briefly.** Per user token, audience, scope and resource, in process memory only
+  (never stored, traced or logged), for the token's `expires_in` capped at 300 s and at the
+  user's own token's expiry, less 30 s. Concurrent calls share one exchange.
+- **Fails closed, and fast.** No user token (a `shared-bearer` caller, a run resumed by a role
+  approver), a user token with 10 s or less left, or an issuer refusal: nothing is sent and the
+  tool reads why. A refusal is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (10 s). Three
+  issuer failures in a row (a timeout after `TOKEN_EXCHANGE_TIMEOUT_MS`, 2 s; a connection
+  error; a 5xx) open a circuit breaker: calls to exchange APIs fail at once for 10 s, then one
+  call tries the issuer again. Calls to other APIs are never slowed.
+- **No loops.** A call to an agent already in the request's delegation chain (A -> B -> A), or
+  to this agent itself (its `A2A_NAME` or one of its `AUTH_JWT_AUDIENCE` values), is refused
+  before anything is sent. The callee also refuses a chain longer than its
+  `AUTH_MAX_DELEGATION_DEPTH` ([authentication](authentication.md)).
+
+`auth: forward` with `forward_audience` is the alternative when the issuer already mints the
+user's token for both agents: the caller's own token is forwarded only when its `aud` names
+`forward_audience`, so a token minted for this agent alone is never replayed at another.
+Prefer `auth: exchange`: each token is good for one audience, briefly.
+
+Which modes work with which [auth policy](authentication.md) and runtime (the app refuses
+`exchange` at startup where it cannot work, outside `APP_ENV=dev`, and logs a warning for such
+a `forward` API; `create`, `lint` and `api add` refuse both modes under `langgraph-server`):
+
+| `auth` | `shared-bearer` | `jwt` | `custom` | runtime `langgraph-server` |
+|---|---|---|---|---|
+| `none`, `bearer` | yes | yes | yes | yes |
+| `forward` | no: no user credential to forward | with `forward_audience` | yes (the policy sets the credential) | no |
+| `exchange` | no: no user token to exchange | yes | yes, when the policy calls `keep_subject_token` | no: the server persists the run context |
+
+Under `langgraph-server` and `shared-bearer`, reach another agent with `auth: bearer` and a key
+of its own.
 
 The policy's credential always overrides a header the tool passes. A tool cannot reroute a
 request or change its method: `Host`, method-override headers (`X-HTTP-Method-Override`,
@@ -180,8 +250,9 @@ clients see only an error id for a failed tool call.
 The policy decides which endpoints a tool may call, not on whose behalf. For an API the agent
 can write to, prefer per-user authorization:
 
-- **`auth: forward`** with a per-user [auth policy](authentication.md) sends each caller's own
-  credential, so the upstream refuses what that user may not do.
+- **`auth: forward`** or **`auth: exchange`** with a per-user
+  [auth policy](authentication.md) sends each caller's own credential (or a token exchanged for
+  it), so the upstream refuses what that user may not do.
 - **A shared `auth: bearer` token** lets the agent act on every record, so the checks move into
   tool code. Both helpers raise a tool error the model reads:
 

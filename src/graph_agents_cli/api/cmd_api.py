@@ -50,6 +50,8 @@ from graph_agents_cli._api_policy import (
     DEFAULT_APPROVAL_TIMEOUT_S,
     DEFAULT_FORWARD_HEADER,
     DEFAULT_TIMEOUTS_MS,
+    EXCHANGE_KEY,
+    HEADER_AUTH_MODES,
     HTTP_METHODS,
     MAX_APPROVAL_TIMEOUT_S,
     MIN_APPROVAL_TIMEOUT_S,
@@ -72,6 +74,7 @@ from graph_agents_cli._api_policy import (
     rule_deciders,
     rule_never_applies,
     summarize,
+    uses_exchange,
 )
 from graph_agents_cli._click import LazyGroup
 from graph_agents_cli._output import Console, print_table
@@ -85,6 +88,8 @@ from graph_agents_cli.api._files import (
     read_text,
     sync_manifest,
     values_add,
+    values_exchange_add,
+    values_exchange_remove,
     values_remove,
 )
 from graph_agents_cli.dev import policy_check
@@ -241,6 +246,8 @@ _API_KEY_ORDER = (
     "auth",
     "token_env",
     "forward_header",
+    "forward_audience",
+    EXCHANGE_KEY,
     "allowed_methods",
     ch.ALLOWED,
     ch.DENIED,
@@ -494,7 +501,11 @@ def _openapi_reference(
     "auth",
     type=click.Choice(list(AUTH_MODES)),
     required=True,
-    help="none, bearer (a token from --token-env) or forward (the caller's own credential).",
+    help=(
+        "none, bearer (a token from --token-env), forward (the caller's own credential) or "
+        "exchange (a token the issuer mints for --audience in exchange for the caller's, "
+        "RFC 8693)."
+    ),
 )
 @click.option(
     "--token-env", "token_env", default=None, help="--auth bearer: variable holding the token."
@@ -503,7 +514,32 @@ def _openapi_reference(
     "--forward-header",
     "forward_header",
     default=None,
-    help=f"--auth forward: header the credential is sent in (default {DEFAULT_FORWARD_HEADER}).",
+    help=(
+        "--auth forward or exchange: header the credential is sent in (default "
+        f"{DEFAULT_FORWARD_HEADER})."
+    ),
+)
+@click.option(
+    "--audience",
+    "audience",
+    default=None,
+    help=(
+        "--auth exchange (required): the audience the issuer mints the token for (the target's "
+        "AUTH_JWT_AUDIENCE). --auth forward: forward_audience, the audience the caller's own "
+        "token must name to be forwarded (jwt)."
+    ),
+)
+@click.option(
+    "--scope",
+    "scope",
+    default=None,
+    help="--auth exchange: the scopes to ask for, space separated (least privilege).",
+)
+@click.option(
+    "--resource",
+    "resource",
+    default=None,
+    help="--auth exchange: the target's resource indicator, an absolute URI (RFC 8707).",
 )
 @click.option(
     "--access",
@@ -558,6 +594,9 @@ def cmd_add(
     auth: str,
     token_env: str | None,
     forward_header: str | None,
+    audience: str | None,
+    scope: str | None,
+    resource: str | None,
     access: str,
     methods: str | None,
     openapi: Path | None,
@@ -573,8 +612,17 @@ def cmd_add(
         raise click.UsageError("--auth bearer needs --token-env (the variable holding the token)")
     if auth != "bearer" and token_env:
         raise click.UsageError("--token-env goes with --auth bearer only")
-    if auth != "forward" and forward_header:
-        raise click.UsageError("--forward-header goes with --auth forward only")
+    if auth not in HEADER_AUTH_MODES and forward_header:
+        raise click.UsageError("--forward-header goes with --auth forward or exchange only")
+    if auth == "exchange" and not audience:
+        raise click.UsageError(
+            "--auth exchange needs --audience (the audience the issuer mints the token for: "
+            "the target's AUTH_JWT_AUDIENCE)"
+        )
+    if auth not in HEADER_AUTH_MODES and audience:
+        raise click.UsageError("--audience goes with --auth exchange or forward only")
+    if auth != "exchange" and (scope or resource):
+        raise click.UsageError("--scope and --resource go with --auth exchange only")
     project = _load_project()
     if project.document is not None and name in project.document["apis"]:
         raise ch.ApiCommandError(
@@ -587,6 +635,15 @@ def cmd_add(
         api["token_env"] = token_env
     if forward_header:
         api["forward_header"] = forward_header
+    if auth == "forward" and audience:
+        api["forward_audience"] = audience
+    if auth == "exchange":
+        exchange: dict[str, Any] = {"audience": audience}
+        if scope:
+            exchange["scope"] = scope
+        if resource:
+            exchange["resource"] = resource
+        api[EXCHANGE_KEY] = exchange
     api["allowed_methods"] = allowed_methods
     if openapi is not None:
         api["openapi"], _spec = _openapi_reference(project, plan, name, openapi)
@@ -615,7 +672,8 @@ def cmd_add(
     sync_manifest(plan, project.config, document=document, previous=project.document)
     env_example_add(plan, name, api)
     values_add(plan, project.config, document, name)
-    _add_todos(plan, project.config, name, api)
+    values_exchange_add(plan, project.config, document, name)
+    _add_todos(plan, project.config, name, api, first_exchange=not _exchanges(project.document))
     _finish(
         project,
         plan,
@@ -628,7 +686,19 @@ def cmd_add(
     )
 
 
-def _add_todos(plan: Plan, config: ProjectConfig, name: str, api: dict[str, Any]) -> None:
+def _exchanges(document: dict[str, Any] | None) -> bool:
+    """Whether the policy has an ``auth: exchange`` API."""
+    return document is not None and uses_exchange(summarize(document))
+
+
+def _add_todos(
+    plan: Plan,
+    config: ProjectConfig,
+    name: str,
+    api: dict[str, Any],
+    *,
+    first_exchange: bool = True,
+) -> None:
     variable = api["base_url_env"]
     where = "in .env (local runs)"
     if config.deployment_target == "kubernetes":
@@ -646,10 +716,41 @@ def _add_todos(plan: Plan, config: ProjectConfig, name: str, api: dict[str, Any]
         plan.left_for_you.append(
             f"put {api['token_env']} in .env (local runs) and in the environment the agent runs in"
         )
+    elif api["auth"] == "forward" and api.get("forward_audience"):
+        plan.left_for_you.append(
+            f"have the issuer mint the users' tokens for audience {api['forward_audience']} too "
+            "(the caller's own token is forwarded only when its aud names it), or make the auth "
+            f"policy give callers attributes['credentials']['{name}']"
+        )
     elif api["auth"] == "forward":
         plan.left_for_you.append(
             f"make the auth policy give callers attributes['credentials']['{name}'] "
             "(the credential forwarded to the API)"
+        )
+    elif api["auth"] == EXCHANGE_KEY:
+        audience = api[EXCHANGE_KEY]["audience"]
+        if first_exchange:
+            where = "in .env" + (
+                " and in the chart's values-<env>.yaml env:"
+                if config.deployment_target == "kubernetes"
+                else ""
+            )
+            plan.left_for_you.append(
+                f"set TOKEN_EXCHANGE_URL (the issuer's token endpoint) and TOKEN_EXCHANGE_CLIENT_ID "
+                f"(this agent's client there) {where}; put TOKEN_EXCHANGE_CLIENT_SECRET in .env"
+                + (
+                    " and in .env.<env>, then run `graph-agents-cli secrets apply --env <env>`"
+                    if config.deployment_target == "kubernetes"
+                    else " and in the environment the agent runs in"
+                )
+            )
+        plan.left_for_you.append(
+            f"at the issuer, let this agent's client exchange users' tokens for audience "
+            f"{audience} (and name it in the exchanged token's act claim)"
+        )
+        plan.left_for_you.append(
+            f"on the agent behind {name}: AUTH_JWT_AUDIENCE includes {audience}, and "
+            "AUTH_ALLOWED_ACTORS includes this agent's client id"
         )
 
 
@@ -682,6 +783,8 @@ def cmd_remove(name: str, dry_run: bool) -> None:
         values_remove(
             plan, project.config, api["base_url_env"], {str(o["base_url_env"]) for o in others}
         )
+    if api["auth"] == EXCHANGE_KEY and not _exchanges(document if others else None):
+        values_exchange_remove(plan, project.config)
     if api.get("openapi"):
         plan.left_for_you.append(f"delete {api['openapi']} if nothing else uses it")
     notes = []
@@ -1863,9 +1966,13 @@ def _effective(name: str, api: dict[str, Any]) -> dict[str, Any]:
         "token_env": api.get("token_env"),
         "forward_header": (
             (api.get("forward_header") or DEFAULT_FORWARD_HEADER)
-            if api["auth"] == "forward"
+            if api["auth"] in HEADER_AUTH_MODES
             else None
         ),
+        # auth: forward: the audience the caller's own token must name to be forwarded.
+        "forward_audience": api.get("forward_audience"),
+        # auth: exchange (RFC 8693): {audience, scope, resource} as the file sets them.
+        EXCHANGE_KEY: dict(api[EXCHANGE_KEY]) if EXCHANGE_KEY in api else None,
         "allowed_methods": methods,
         "preset": ch.preset_name(methods),
         # None: every operation within allowed_methods.
@@ -1950,8 +2057,22 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
     auth = api["auth"]
     if auth == "bearer":
         auth += f" (token from {api['token_env']})"
+    elif auth == "forward" and api["forward_audience"]:
+        auth += (
+            f" (the caller's credential in {api['forward_header']}, or the caller's own token "
+            f"when it was minted for {api['forward_audience']})"
+        )
     elif auth == "forward":
         auth += f" (the caller's credential in {api['forward_header']})"
+    elif auth == EXCHANGE_KEY:
+        exchange = api[EXCHANGE_KEY]
+        extra = "".join(
+            f"; {key} {exchange[key]}" for key in ("scope", "resource") if exchange.get(key)
+        )
+        auth += (
+            f" (a token the issuer mints for audience {exchange['audience']}{extra}, in exchange "
+            f"for the caller's, sent in {api['forward_header']}; RFC 8693)"
+        )
     rows = [
         ("base URL", f"from {api['base_url_env']}"),
         ("auth", auth),

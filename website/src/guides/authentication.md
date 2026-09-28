@@ -304,6 +304,85 @@ agent's id, chain and client), so it reaches tools under both runtimes and is re
 approval's requester. Logs carry it as `actor` (a client name, not personal data), and run
 records and trace metadata name it too.
 
+### Calling another agent for the user
+
+The calling side is an [`auth: exchange` API](api-policy.md#auth-exchange-act-for-the-user-at-another-agent):
+when a tool calls it, the agent exchanges the user's verified token at the identity provider
+for one minted for the other agent (RFC 8693), and sends that. Under `jwt` the user's token is
+kept for this (in the principal's private credentials, never stored, logged or traced) only
+while `api-policy.yaml` has such an API, or an `auth: forward` one with `forward_audience`; a
+`custom` policy calls `keep_subject_token(principal, token, aud, exp)`.
+
+What the identity provider must guarantee (the agents cannot enforce it):
+
+1. Each agent's client may exchange only for the audiences its peers need.
+2. Exchanged tokens name the calling client: in `act` (with the earlier agents nested), or at
+   least in `azp`/`client_id`, with the sign-in clients listed in the callee's
+   `AUTH_JWT_DIRECT_CLIENTS`.
+3. No exchange of a service's own token, nor of a token issued to another client.
+4. Exchanged tokens live 300 s or less, with a narrowed `scope` where the provider supports it.
+
+### Token exchange with Keycloak
+
+A recipe for two agents, `concierge` calling `orders` for a person who signs in through the
+`web` client. Keycloak's standard token exchange (RFC 8693) ships with Keycloak 26.2 and later;
+earlier releases had only a preview feature with a different setup. Screens, option names and
+defaults change between releases: check each step against your release's documentation.
+
+1. **Clients.** In the realm (`agents` here), `web` is the sign-in client. Each agent is a
+   confidential client whose client id is its audience: `concierge`, `orders`. Turn on standard
+   token exchange for each client that exchanges tokens (`concierge`).
+2. **Audiences.** A person's token for the concierge must carry `concierge` in `aud` (an
+   audience mapper on a client scope of `web`), and the concierge must be allowed to ask for
+   audience `orders` (an audience mapper for `orders` on a client scope of `concierge`). Keep
+   the access-token lifespan at 5 minutes or less.
+3. **The concierge** (`jwt`, calling out):
+
+    ```bash
+    AUTH_POLICY=jwt
+    AUTH_JWT_ISSUER=https://sso.example.com/realms/agents
+    AUTH_JWT_JWKS_URL=https://sso.example.com/realms/agents/protocol/openid-connect/certs
+    AUTH_JWT_AUDIENCE=concierge
+    AUTH_JWT_ROLES_CLAIM=realm_access.roles
+    TOKEN_EXCHANGE_URL=https://sso.example.com/realms/agents/protocol/openid-connect/token
+    TOKEN_EXCHANGE_CLIENT_ID=concierge
+    TOKEN_EXCHANGE_CLIENT_SECRET=...   # .env, and the Secret through secrets.keys
+    ```
+
+    ```bash
+    graph-agents-cli api add orders_agent --base-url-env ORDERS_AGENT_URL --auth exchange \
+      --audience orders --access custom --methods GET,POST
+    ```
+
+4. **Orders** (`jwt`, called): `AUTH_JWT_AUDIENCE=orders`, the same issuer and JWKS URL. Then
+   tell it how the provider marks a token the concierge presents:
+    - The exchanged token carries `act` (`{"sub": "concierge"}`): set
+      `AUTH_ALLOWED_ACTORS=concierge`.
+    - It carries only `azp: concierge` (Keycloak's standard token exchange did not add `act`
+      when this was written; decode one to see): set `AUTH_JWT_DIRECT_CLIENTS=web` (the
+      clients people sign in with) and `AUTH_ALLOWED_ACTORS=client:concierge`. Without it,
+      orders would read the concierge's token as the person's own.
+5. **Check the exchange by hand**, with a person's token for the concierge in `$USER_TOKEN`:
+
+    ```bash
+    curl -s -u "concierge:$TOKEN_EXCHANGE_CLIENT_SECRET" \
+      -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+      -d subject_token="$USER_TOKEN" \
+      -d subject_token_type=urn:ietf:params:oauth:token-type:access_token \
+      -d requested_token_type=urn:ietf:params:oauth:token-type:access_token \
+      -d audience=orders \
+      https://sso.example.com/realms/agents/protocol/openid-connect/token
+    ```
+
+    Decode the `access_token`: `aud` names `orders`, `sub` is the person, `azp` (and `act`, if
+    present) names `concierge`, and `expires_in` is 300 or less. An `invalid_target`, or an
+    `aud` without `orders`, means step 2 is incomplete.
+
+Limits with an issuer that names no actor in `act`: the callee sees only the last agent, so
+`AUTH_MAX_DELEGATION_DEPTH` and the loop check (which reads `client:<id>` as the agent `<id>`)
+see one hop, and every agent that may call another needs its own client listed. Omit `exchange.resource` unless your provider supports
+RFC 8707 resource indicators.
+
 ## Clients and credentials
 
 `run`, `eval` and `approvals` send the same credentials, locally and with `--url`:
