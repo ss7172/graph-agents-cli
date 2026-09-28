@@ -1609,3 +1609,79 @@ def test_the_documented_approval_examples_work(project: Path) -> None:
         "approvers": ["role:finance-approver"],
         "timeout_s": 3600,
     }
+
+
+# ---------------------------------------------------------------------------
+# approval: how the requester decides (decide_with, relayers)
+# ---------------------------------------------------------------------------
+
+
+def test_approval_relayed_is_a_reviewed_loosening_and_direct_narrows(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    (project / "app/tools/orders_write.py").write_text(POST_TOOL)
+    ok("api", "approval", "orders", "--methods", "POST", "--approvers", "requester")
+    relayed = ok("api", "approval", "orders", "--decide-with", "relayed", "--relayers", "concierge")
+    text = " ".join(relayed.output.split())
+    assert (
+        "loosens the approval gate on orders (agents may now relay the requester's decision "
+        "(decide_with: relayed, by concierge)"
+    ) in text
+    assert "Loosening an approval gate is a reviewed change" in text
+    assert "relayed: the agents concierge may deliver the requester's decision" in text
+    assert "no decision is ever relayed" in text  # the scaffold's shared-bearer policy
+    assert (
+        "relaying changes (new relayer(s) concierge): orders_write.py: POST createOrder /orders"
+    ) in text
+    assert policy(project)["orders"]["approval"] == {
+        "required_for": {"methods": ["POST"]},
+        "approvers": ["requester"],
+        "decide_with": "relayed",
+        "relayers": ["concierge"],
+    }
+    more = ok("api", "approval", "orders", "--relayers", "concierge,billing")
+    assert "new relayer(s) billing" in " ".join(more.output.split())
+    shown = ok("api", "show", "orders")
+    assert "approved by requester; relayed by concierge, billing" in " ".join(shown.output.split())
+    data = json.loads(ok("api", "show", "--json").output)
+    gate = next(c["approval"] for c in data["calls"] if c["tool"] == "orders_write.py")
+    assert (gate["decide_with"], gate["relayers"]) == ("relayed", ["concierge", "billing"])
+    assert data["apis"]["orders"]["approval"]["decide_with"] == "relayed"
+    checked = " ".join(ok("lint", "--policy-only").output.split())
+    assert "requester; relayed by concierge, billing" in checked
+    fewer = ok("api", "approval", "orders", "--relayers", "concierge")
+    assert "tightens or keeps" in fewer.output
+    direct = ok("api", "approval", "orders", "--decide-with", "direct")
+    assert "tightens or keeps" in direct.output
+    assert "now decided directly" in " ".join(direct.output.split())
+    assert policy(project)["orders"]["approval"] == {
+        "required_for": {"methods": ["POST"]},
+        "approvers": ["requester"],
+    }
+    again = ok("api", "approval", "orders", "--decide-with", "direct")
+    assert "already says that" in again.output
+
+
+def test_approval_relayed_refuses_what_cannot_work(project: Path) -> None:
+    ok(*ORDERS_ADD)
+    ok("api", "approval", "orders", "--methods", "POST", "--approvers", "requester")
+    before = (project / "api-policy.yaml").read_text()
+    for args, expected in (
+        (["--decide-with", "relayed"], "--decide-with relayed needs --relayers"),
+        (["--relayers", "concierge"], "--relayers needs --decide-with relayed"),
+        (["--decide-with", "direct", "--relayers", "a"], "--relayers is only for"),
+        (["--decide-with", "relayed", "--relayers", "two words"], "is not an agent id"),
+        (["--decide-with", "step_up"], "Invalid value for '--decide-with'"),
+    ):
+        result = cli("api", "approval", "orders", *args)
+        assert result.exit_code == 2, result.output
+        assert expected in " ".join(result.output.split()), result.output
+    # Role approvers always decide directly: the schema refuses relaying them.
+    roles = cli(
+        "api",
+        "approval",
+        "orders",
+        *("--approvers", "role:ops", "--decide-with", "relayed", "--relayers", "concierge"),
+    )
+    assert roles.exit_code != 0
+    assert "relayed needs requester in approvers" in " ".join(roles.output.split())
+    assert (project / "api-policy.yaml").read_text() == before

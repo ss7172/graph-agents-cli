@@ -43,6 +43,7 @@ apis:
 | `required_for.operations` | Gate calls to these operations; entries have the `allowed_operations` shape (`operationId`, `path`, `methods`) |
 | `approvers` | `requester` (the principal who started the run) and/or `role:<name>` (any other principal holding the role) |
 | `timeout_s` | How long a pending approval waits before it expires, which rejects the call (30-86400, default 900) |
+| `decide_with`, `relayers` | How the requester decides: `direct` (default), or `relayed` by the agents `relayers` lists; see [Agents calling agents](#agents-calling-agents) |
 
 `graph-agents-cli api approval NAME` writes the block with the other `api` commands' rules:
 validate, diff, atomic write, `--dry-run`. Each option you give replaces that part of the rule
@@ -145,9 +146,10 @@ graph-agents-cli api approval orders --add-rule --operations createOrder \
 
 - **By method or by operation.** Gate by method to cover every write of an API; gate
   operations for the risky few on an API whose other writes may run unattended.
-- **Loosening is a reviewed change.** Fewer gated calls, a new approver, a longer timeout or
-  removing the gate is reviewed like widening access (CODEOWNERS covers `api-policy.yaml`);
-  `api approval` says when a change loosens the gate. Tightening is always safe.
+- **Loosening is a reviewed change.** Fewer gated calls, a new approver, a longer timeout,
+  letting agents relay decisions (`--decide-with relayed`, a new relayer) or removing the gate
+  is reviewed like widening access (CODEOWNERS covers `api-policy.yaml`); `api approval` says
+  when a change loosens the gate. Tightening is always safe.
 
 ## What happens at run time
 
@@ -354,16 +356,36 @@ agent that presented the request is recorded with each approval it pauses for
   is the requester of every approval on the threads their agents started: they see them
   (`GET /threads/{thread_id}/approvals`, `GET /approvals`) and decide them when `requester` is
   listed.
-- **The agent never decides.** A decision a delegated principal sends (over HTTP or A2A) is
-  refused with 403 `approval_direct_only`: "This approval must be decided by the person at
-  this agent (decide_with: direct), not relayed by agent <agent>." Over A2A the task stays
-  `input-required` with that note. An agent sees only the approvals of threads it started
-  itself; another agent acting for the same user gets 403 `not_an_approver`.
+- **By default, the agent never decides** (`decide_with: direct`). A decision a delegated
+  principal sends (over HTTP or A2A) is refused with 403 `approval_direct_only`: "This approval
+  must be decided by the person at this agent (decide_with: direct), not relayed by agent
+  <agent>." Over A2A the task stays `input-required` with that note.
+- **A gate may let named agents relay the person's decision** (`decide_with: relayed`, for
+  example `graph-agents-cli api approval orders_api --decide-with relayed --relayers
+  concierge`). The listed agent then delivers the decision its person took at that agent
+  (whose own gate showed them the call), with the person's token. It is accepted only when
+  all of these hold: `requester` is an approver; the decider's subject is the thread's; its
+  agent is the one that started the thread (an agent relays only for its own requests, never
+  another hop's); its agent is in `relayers`; and the decision names the approval's `digest`,
+  which covers the call exactly as it was shown (a missing or different one gets 409
+  `approval_digest_mismatch`: "the decision was taken on a different view of the call; fetch
+  the approval again"). Anything else is 403 `not_an_approver`. The approval records the
+  relaying agent as `decided_via`. Moving a gate to `relayed`, or adding a relayer, is a
+  loosening: `api approval` says so and asks for a review, as for new approvers; `direct`
+  narrows it again. Keep `direct` for calls the person should confirm at this agent
+  themselves.
+- **How approvers decide is bound, as the approvers are.** An approval keeps the
+  `decide_with` and `relayers` its rule had when it was asked; a decision is sent only when
+  the policy's gate still decides the same way.
 - **Roles do not travel.** A delegated principal's roles never make it a `role:` approver or a
-  read-across reader.
-- **The resumed run acts as the requester.** When the person decides, the run continues as
-  their direct principal; when a `role:` approver decides, it continues as the requester
-  rebuilt from the approval, its agent included, with no credentials.
+  read-across reader; role approvers always decide with their own direct credentials.
+- **The resumed run acts as the requester.** When the person (or their relaying agent)
+  decides, the run continues as that principal of this request; when a `role:` approver
+  decides, it continues as the requester rebuilt from the approval, its agent included, with
+  no credentials.
+
+The approval object carries `decide_with` (so a caller knows at once whether a relay can
+work) and `digest`; a direct decider may send the digest too, and it is checked when sent.
 
 ## Approvals in eval
 

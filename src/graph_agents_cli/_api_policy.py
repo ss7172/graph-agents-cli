@@ -100,7 +100,7 @@ _OPERATION_KEYS = ("operationId", "path", "methods")
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
-_APPROVAL_KEYS = ("required_for", "approvers", "timeout_s")
+_APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
 
 # An API's `approval` block names the calls a human must approve before they are
@@ -115,7 +115,10 @@ _REQUIRED_FOR_KEYS = ("methods", "operations")
 # covers, is refused (`ApprovalRuleConflict`): it could be either rule's call.
 # It never widens access: a gated call must still be allowed, and denials still
 # win. It belongs to the API only: on an operation entry the key is refused,
-# with a pointer to `approval.required_for.operations`.
+# with a pointer to `approval.required_for.operations`. A rule may also say how
+# the requester decides (`decide_with`): `direct` (the default: with their own
+# credentials, at this agent), or `relayed`, where the agents `relayers` names
+# (by their actor ids) may deliver the requester's decision from another agent.
 APPROVAL_KEY = "approval"
 REQUESTER_APPROVER = "requester"  # the principal who started the run confirms
 ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
@@ -126,6 +129,13 @@ MAX_APPROVAL_TIMEOUT_S = 86400
 # default, each with their own credential. `relayed`, with the `relayers` it names, lets
 # those agents deliver the requester's decision: an opt-in that each callee's gate reviews.
 DEFAULT_DECIDE_WITH = "direct"
+DECIDE_DIRECT = "direct"
+DECIDE_RELAYED = "relayed"
+DECIDE_WITH_VALUES = (DECIDE_DIRECT, DECIDE_RELAYED)
+# A value kept for a later release: a decision signed by the identity provider.
+DECIDE_STEP_UP = "step_up"
+# Role names and actor ids (`relayers`): 1-256 characters, no whitespace, commas or
+# control characters.
 _ROLE_NAME_RE = re.compile(r"[^\s,\x00-\x1f\x7f]{1,256}")
 
 LEGACY_POLICY_HINT = (
@@ -420,6 +430,43 @@ def _approval_rule_errors(where: str, value: Any, api_where: str) -> list[str]:
             errors.append(
                 f"{where}.timeout_s: must be an integer from {MIN_APPROVAL_TIMEOUT_S} to "
                 f"{MAX_APPROVAL_TIMEOUT_S} (seconds)"
+            )
+    errors.extend(_decide_with_errors(where, value))
+    return errors
+
+
+def _decide_with_errors(where: str, rule: Mapping[str, Any]) -> list[str]:
+    """Errors of a rule's `decide_with` and `relayers`."""
+    decide_with = rule.get("decide_with", DEFAULT_DECIDE_WITH)
+    errors: list[str] = []
+    if decide_with == DECIDE_STEP_UP:
+        errors.append(f"{where}.decide_with: step_up is not supported yet (direct or relayed)")
+    elif decide_with not in DECIDE_WITH_VALUES:
+        errors.append(f"{where}.decide_with: must be direct or relayed (got {decide_with!r})")
+    if decide_with != DECIDE_RELAYED:
+        if "relayers" in rule:
+            errors.append(f"{where}.relayers: only valid with decide_with: relayed")
+        return errors
+    approvers = rule.get("approvers")
+    if isinstance(approvers, list) and REQUESTER_APPROVER not in approvers:
+        errors.append(
+            f"{where}.decide_with: relayed needs requester in approvers (role approvers always "
+            "decide with their own direct credentials, never relayed)"
+        )
+    if "relayers" not in rule:
+        errors.append(
+            f"{where}.relayers: required with decide_with: relayed (the agents, by actor id, "
+            "that may deliver the requester's decision)"
+        )
+        return errors
+    relayers = rule["relayers"]
+    if not isinstance(relayers, list) or not relayers:
+        return [*errors, f"{where}.relayers: must be a non-empty list of agent (actor) ids"]
+    for index, relayer in enumerate(relayers):
+        if not (isinstance(relayer, str) and _ROLE_NAME_RE.fullmatch(relayer)):
+            errors.append(
+                f"{where}.relayers[{index}]: {relayer!r} is not an agent id (1-256 characters "
+                "without spaces, commas or control characters)"
             )
     return errors
 
@@ -723,6 +770,13 @@ class ApprovalGate:
     index: int | None = None
     # Later rules that also cover the call; they do not apply to it (the first one does).
     also: tuple[int, ...] = ()
+    # How the requester decides: `direct`, or `relayed` by the agents `relayers` names.
+    decide_with: str = DEFAULT_DECIDE_WITH
+    relayers: tuple[str, ...] = ()
+
+    def deciders(self) -> tuple[frozenset[str], str, frozenset[str]]:
+        """Who decides, and how: what an approval is bound to (`rule_deciders`)."""
+        return frozenset(self.approvers), self.decide_with, frozenset(self.relayers)
 
 
 def approval_rules(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -731,6 +785,25 @@ def approval_rules(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if approval is None:
         return []
     return list(approval) if isinstance(approval, list) else [approval]
+
+
+def rule_deciders(rule: Mapping[str, Any]) -> tuple[frozenset[str], str, frozenset[str]]:
+    """Who decides the calls a rule gates, and how: its approvers, `decide_with` and
+    relayers. Two rules with other deciders are two gates, and an approval taken under one
+    does not cover the other's calls."""
+    return (
+        frozenset(str(a) for a in rule.get("approvers") or ()),
+        str(rule.get("decide_with", DEFAULT_DECIDE_WITH)),
+        frozenset(str(r) for r in rule.get("relayers") or ()),
+    )
+
+
+def describe_deciders(rule: Mapping[str, Any]) -> str:
+    """``requester, role:ops``, or ``requester; relayed by concierge`` for a relayed rule."""
+    approvers = ", ".join(str(a) for a in rule.get("approvers") or ())
+    if rule.get("decide_with", DEFAULT_DECIDE_WITH) != DECIDE_RELAYED:
+        return approvers
+    return f"{approvers}; relayed by {', '.join(str(r) for r in rule.get('relayers') or ())}"
 
 
 def approval_rule_label(api: Mapping[str, Any], index: int) -> str:
@@ -863,14 +936,14 @@ def gated(
     if unnamed:
         pin = f", or pin path and methods in {label}" if unnamed == "operation_id" else ""
         for later, _part, _unnamed in covering[1:]:
-            others = [str(a) for a in rules[later].get("approvers") or ()]
-            if set(others) != set(approvers):
+            if rule_deciders(rules[later]) != rule_deciders(rule):
                 raise ApprovalRuleConflict(
-                    f"{label} (approved by {', '.join(approvers)}) covers it only because the "
+                    f"{label} (approved by {describe_deciders(rule)}) covers it only because the "
                     f"call names no {unnamed} ({label}.{part}), and "
-                    f"{approval_rule_label(api, later)} (approved by {', '.join(others)}) also "
-                    "covers it: it could be either rule's call, so neither rule's approvers are "
-                    f"asked; name the {unnamed} on the call and in API_CALLS{pin}",
+                    f"{approval_rule_label(api, later)} (approved by "
+                    f"{describe_deciders(rules[later])}) also covers it: it could be either "
+                    "rule's call, so neither rule's approvers are asked; name the "
+                    f"{unnamed} on the call and in API_CALLS{pin}",
                     unnamed=unnamed,
                     index=index,
                     later=later,
@@ -882,6 +955,8 @@ def gated(
         rule=f"{label}.{_unsure(part, unnamed)}",
         index=index if listed else None,
         also=tuple(i for i, _, _ in covering[1:]),
+        decide_with=str(rule.get("decide_with", DEFAULT_DECIDE_WITH)),
+        relayers=tuple(str(r) for r in rule.get("relayers") or ()),
     )
 
 
@@ -1035,11 +1110,17 @@ def _effective_rule(rule: Mapping[str, Any]) -> dict[str, Any]:
         effective["methods"] = [str(m).upper() for m in required_for["methods"]]
     if "operations" in required_for:
         effective["operations"] = [dict(entry) for entry in required_for["operations"]]
-    return {
+    out: dict[str, Any] = {
         "required_for": effective,
         "approvers": [str(a) for a in rule["approvers"]],
         "timeout_s": int(rule.get("timeout_s", DEFAULT_APPROVAL_TIMEOUT_S)),
     }
+    # How the requester decides, when the rule says (absent: `direct`).
+    if "decide_with" in rule:
+        out["decide_with"] = str(rule["decide_with"])
+    if "relayers" in rule:
+        out["relayers"] = [str(r) for r in rule["relayers"]]
+    return out
 
 
 def effective_approval(api: Mapping[str, Any]) -> dict[str, Any] | list[dict[str, Any]] | None:
@@ -1048,7 +1129,8 @@ def effective_approval(api: Mapping[str, Any]) -> dict[str, Any] | list[dict[str
     Shaped as the file writes it: one rule ``{"required_for": {"methods": [...],
     "operations": [...]}, "approvers": [...], "timeout_s": N}``, or a list of
     such rules; ``required_for`` holds only the keys the policy sets, methods
-    upper-cased.
+    upper-cased. ``decide_with`` and ``relayers`` are there when the rule sets
+    them (absent: ``direct``).
     """
     approval = api.get(APPROVAL_KEY)
     if approval is None:
@@ -1075,17 +1157,22 @@ def gate_payload(gate: ApprovalGate | None) -> dict[str, Any] | None:
 
     ``rule_index`` is the gating rule's index in a list of rules (None for one
     mapping); ``also_covered_by`` names the later rules that also cover the
-    call, which do not apply to it.
+    call, which do not apply to it. A relayed gate adds ``decide_with`` and
+    ``relayers`` (a gate without them is ``direct``).
     """
     if gate is None:
         return None
-    return {
+    payload: dict[str, Any] = {
         "approvers": list(gate.approvers),
         "timeout_s": gate.timeout_s,
         "rule": gate.rule,
         "rule_index": gate.index,
         "also_covered_by": [f"{APPROVAL_KEY}[{i}]" for i in gate.also],
     }
+    if gate.decide_with != DEFAULT_DECIDE_WITH:
+        payload["decide_with"] = gate.decide_with
+        payload["relayers"] = list(gate.relayers)
+    return payload
 
 
 def describe_gate(gate: ApprovalGate) -> str:
@@ -1098,7 +1185,10 @@ def describe_gate(gate: ApprovalGate) -> str:
     if gate.also:
         later = ", ".join(f"{APPROVAL_KEY}[{i}]" for i in gate.also)
         also = f"; also covered by {later}, which does not apply: the first rule gates the call"
-    return f"{', '.join(gate.approvers)} ({gate.rule}; expires after {gate.timeout_s} s{also})"
+    deciders = describe_deciders(
+        {"approvers": gate.approvers, "decide_with": gate.decide_with, "relayers": gate.relayers}
+    )
+    return f"{deciders} ({gate.rule}; expires after {gate.timeout_s} s{also})"
 
 
 def _rule_methods(rule: Mapping[str, Any]) -> set[str]:
@@ -1170,9 +1260,10 @@ def rule_conflicts(api: Mapping[str, Any]) -> list[tuple[int, list[Mapping[str, 
 
     ``gated`` refuses a call that the first covering rule covers only because
     the call names no operation id (an entry pinning ``operationId`` without
-    ``path``) when a later rule with other approvers also covers it. For each
-    such rule: its index, those entries, and the later rules with other
-    approvers that may cover the same calls (by method; conservative).
+    ``path``) when a later rule with other approvers (or approvers who decide
+    otherwise: ``decide_with``, ``relayers``) also covers it. For each such
+    rule: its index, those entries, and the later rules with other deciders
+    that may cover the same calls (by method; conservative).
     """
     rules = approval_rules(api)
     allowed = {str(m).upper() for m in api.get("allowed_methods") or []}
@@ -1181,7 +1272,7 @@ def rule_conflicts(api: Mapping[str, Any]) -> list[tuple[int, list[Mapping[str, 
     sure: set[str] = set()  # methods an earlier (or this) rule gates outright
     for index, rule in enumerate(rules):
         sure |= _rule_methods(rule)
-        approvers = {str(a) for a in rule.get("approvers") or ()}
+        deciders = rule_deciders(rule)
         entries = [
             entry
             for entry in (rule.get("required_for") or {}).get("operations") or []
@@ -1195,8 +1286,7 @@ def rule_conflicts(api: Mapping[str, Any]) -> list[tuple[int, list[Mapping[str, 
         later = [
             j
             for j in range(index + 1, len(rules))
-            if {str(a) for a in rules[j].get("approvers") or ()} != approvers
-            and methods & _rule_cover_methods(rules[j])
+            if rule_deciders(rules[j]) != deciders and methods & _rule_cover_methods(rules[j])
         ]
         if entries and methods and later:
             found.append((index, entries, later))
@@ -1219,7 +1309,7 @@ def approval_notes(name: str, api: Mapping[str, Any]) -> list[str]:
         label = approval_rule_label(api, index)
         others = ", ".join(
             f"{approval_rule_label(api, j)} (approved by "
-            f"{', '.join(str(a) for a in approval_rules(api)[j]['approvers'])})"
+            f"{describe_deciders(approval_rules(api)[j])})"
             for j in later
         )
         named = "; ".join(describe_operation(entry) for entry in entries)

@@ -124,6 +124,8 @@ need different approvers:
 | `required_for` | `{methods, operations}`; required | The calls the rule gates: `methods` (a list; `"*"` alone for every method) and/or `operations` (a non-empty list of [operation entries](#operation-entries)). |
 | `approvers` | list; required | `requester` (the principal who started the run) and/or `role:<name>` (any other principal holding the role; a name of 1-256 characters without spaces or commas). |
 | `timeout_s` | integer; default `900` | 30 to 86400 seconds. A pending approval then expires, which rejects the call. |
+| `decide_with` | `direct` or `relayed`; default `direct` | How the requester decides. `direct`: with their own credentials, at this agent. `relayed`: the agents `relayers` names may deliver the requester's decision from another agent. Needs `requester` in `approvers` (role approvers always decide directly). `step_up` is reserved: "not supported yet". |
+| `relayers` | list; required with `relayed`, refused otherwise | The agents that may relay, by actor id (the calling agent's client id): 1-256 characters without spaces, commas or control characters. |
 
 ```yaml
 approval:
@@ -147,7 +149,8 @@ approval:
   (`approval[N]`, from 0) each declared call waits for.
 - **A call that could be either rule's is refused.** When an earlier rule covers a call only
   because the call leaves out what the rule knows the operation by (no `operation_id`, no
-  path), and a later rule with other approvers also covers it, nothing is sent. Pin `path`
+  path), and a later rule with other approvers (or approvers who decide otherwise:
+  `decide_with`, `relayers`) also covers it, nothing is sent. Pin `path`
   and `methods` in rules that come before broader ones, and name `operation_id` on every
   call.
 - **Approval never widens access.** A gated call must still pass the rest of the policy.
@@ -155,7 +158,32 @@ approval:
   and query fields the approver sees masked
   ([KI-052](known-issues.md#ki-052-no-policy-level-redaction-list-for-approval-bodies)).
 
-What approvers see and how a decision is bound to its call: [Human approval](../guides/approvals.md).
+A relayed rule, for a call an agent makes after its person approved it at their own agent:
+
+```yaml
+approval:
+  required_for:
+    operations:
+      - {operationId: cancelOrder, path: "/orders/{order_id}/cancel", methods: [POST]}
+  approvers: [requester]
+  decide_with: relayed      # direct (default) | relayed
+  relayers: [concierge]     # required with relayed: the agents' actor ids
+```
+
+Validation messages (each prefixed with the rule's place, `apis.<name>.approval[...]`):
+
+| Problem | Message |
+|---|---|
+| `decide_with: step_up` | `decide_with: step_up is not supported yet (direct or relayed)` |
+| Another value | `decide_with: must be direct or relayed (got '<value>')` |
+| `relayed` without `relayers` | `relayers: required with decide_with: relayed (the agents, by actor id, that may deliver the requester's decision)` |
+| `relayers` without `relayed` | `relayers: only valid with decide_with: relayed` |
+| An empty list | `relayers: must be a non-empty list of agent (actor) ids` |
+| A bad id | `relayers[N]: '<id>' is not an agent id (1-256 characters without spaces, commas or control characters)` |
+| `relayed` without `requester` | `decide_with: relayed needs requester in approvers (role approvers always decide with their own direct credentials, never relayed)` |
+
+What approvers see and how a decision is bound to its call (how the approvers decide
+included): [Human approval](../guides/approvals.md).
 
 ## Access shorthands
 

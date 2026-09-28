@@ -66,9 +66,12 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     ApprovalRecord,
     ApprovalStore,
     LedgerUnavailable,
+    approval_digest,
+    approval_view,
     decide_refusal,
     decision_value,
     dev_ledger_path,
+    digest_refusal,
     may_decide,
     may_view,
     record_from_interrupt,
@@ -76,6 +79,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     sees_call,
     utcnow,
 )
+from {{cookiecutter.agent_directory}}.app_utils.approvals import _row_of as _row_of
 from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
 from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadRecord
@@ -1102,3 +1106,164 @@ async def test_listing_follows_the_owner_key(store: ApprovalStore) -> None:
     assert await store.visible(ops_agent) == []
     reloaded = await store.get(by_agent.approval_id)
     assert reloaded is not None and reloaded.requester_actor == "concierge"
+
+
+# --- relayed decisions (decide_with: relayed, relayers) ----------------------------------------
+
+RELAYED = {"decide_with": "relayed", "relayers": ["concierge"]}
+
+
+def _relayed_record(**overrides: Any) -> ApprovalRecord:
+    value = _interrupt_value(approvers=["requester"], **{**RELAYED, **overrides})
+    return record_from_interrupt(
+        value, interrupt_id="i1", thread_id="t1", run_id="r1", requester=ALICE_VIA_CONCIERGE
+    )
+
+
+def test_relayed_requires_listed_actor_owner_actor_and_digest() -> None:
+    """The 2.2 table, cell by cell."""
+    record = _relayed_record()
+    rule = {"decide_with": record.decide_with, "relayers": record.relayers}
+    approvers = record.approvers
+    # Direct, the subject (whichever agent started the thread): yes, as under direct.
+    assert decide_refusal(Principal(id="alice"), CONCIERGE_THREAD, approvers, **rule) is None
+    # Direct, another subject holding a listed role: yes (a role gate is always direct).
+    carol = Principal(id="carol", roles=["ops"])
+    assert may_decide(carol, CONCIERGE_THREAD, ["requester", "role:ops"], **rule)
+    # Delegated: all of requester listed, its own thread (subject and actor), a listed relayer.
+    assert decide_refusal(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, approvers, **rule) is None
+    for principal, thread, why in (
+        (ALICE_VIA_BILLING, CONCIERGE_THREAD, "You may not decide this approval"),
+        (ALICE_VIA_CONCIERGE, DIRECT_THREAD, "You may not decide this approval"),
+        (
+            Principal(id="bob", actor=CONCIERGE_ACTOR),
+            ThreadRecord(thread_id="t1", principal_id="bob", actor="concierge"),
+            None,
+        ),
+    ):
+        refusal = decide_refusal(principal, thread, approvers, **rule)
+        if why is None:  # bob's own thread, but alice's approval rule: listed, so it may
+            assert refusal is None
+        else:
+            assert refusal is not None and refusal[0] == "not_an_approver" and why in refusal[1]
+    unlisted = {"decide_with": "relayed", "relayers": ["billing"]}
+    assert decide_refusal(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, approvers, **unlisted) == (
+        "not_an_approver",
+        "concierge may not relay decisions for this approval.",
+    )
+    # A role-only rule is never relayed (the schema refuses it; fail closed anyway).
+    refusal = decide_refusal(ALICE_VIA_CONCIERGE, CONCIERGE_THREAD, ["role:ops"], **rule)
+    assert refusal is not None and refusal[0] == "approval_direct_only"
+    # The digest: required of a relayer, checked when a direct decider sends one.
+    assert digest_refusal(ALICE_VIA_CONCIERGE, record, record.display_digest) is False
+    assert digest_refusal(ALICE_VIA_CONCIERGE, record, None) is True
+    assert digest_refusal(ALICE_VIA_CONCIERGE, record, "sha256:" + "0" * 64) is True
+    assert digest_refusal(Principal(id="alice"), record, None) is False
+    assert digest_refusal(Principal(id="alice"), record, "sha256:x") is True
+    assert digest_refusal(Principal(id="alice"), record, record.display_digest) is False
+
+
+def test_the_digest_covers_what_the_approver_sees() -> None:
+    record = _relayed_record()
+    assert record.display_digest == approval_digest(approval_view(record))
+    assert record.display_digest.startswith("sha256:") and len(record.display_digest) == 71
+    public = record.public()
+    assert public["digest"] == record.display_digest
+    assert (public["decide_with"], public["decided_via"]) == ("relayed", None)
+    assert "relayers" not in public
+    other = _relayed_record(body={"reason": "something else"})
+    assert other.display_digest != record.display_digest
+    assert _record().public()["decide_with"] == "direct"  # a gate without decide_with
+
+
+def test_how_approvers_decide_is_bound_with_the_approvers() -> None:
+    record = _relayed_record()
+    assert (record.decide_with, record.relayers) == ("relayed", ["concierge"])
+    value = decision_value(record, "approve")
+    assert (value["decide_with"], value["relayers"]) == ("relayed", ["concierge"])
+    # An interrupt from before 0.3 (no decide_with) asks for a direct decision.
+    legacy = record_from_interrupt(
+        {k: v for k, v in _interrupt_value().items() if k not in RELAYED},
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE,
+    )
+    assert (legacy.decide_with, legacy.relayers) == ("direct", [])
+    forged = _relayed_record(decide_with="any")
+    assert (forged.decide_with, forged.relayers) == ("direct", [])
+
+
+async def test_decided_via_is_recorded(store: ApprovalStore) -> None:
+    record, _, _ = await store.add(_relayed_record())
+    decided = await store.decide(
+        record.approval_id, APPROVED, Principal(id="alice").hashed_id(), None, "concierge"
+    )
+    assert decided is not None and decided.decided_via == "concierge"
+    reloaded = await store.get(record.approval_id)
+    assert reloaded is not None and reloaded.decided_via == "concierge"
+    assert reloaded.public()["decided_via"] == "concierge"
+    assert (reloaded.decide_with, reloaded.relayers) == ("relayed", ["concierge"])
+    assert reloaded.display_digest == record.display_digest
+
+
+async def test_a_version_1_approvals_file_is_read(tmp_path: Path) -> None:
+    path = tmp_path / ".langgraph_api" / "agent_approvals.json"
+    path.parent.mkdir()
+    row = {
+        k: v
+        for k, v in _row_of(_record()).items()
+        if k not in ("requester_actor", "decide_with", "relayers", "decided_via", "display_digest")
+    }
+    path.write_text(json.dumps({"version": 1, "approvals": [row]}), encoding="utf-8")
+    store = ApprovalStore(Database("memory"), path=path)
+    assert await store.load() == 1
+    [record] = await store.for_thread("t1")
+    assert (record.decide_with, record.relayers, record.requester_actor) == ("direct", [], "")
+    assert record.decided_via is None and record.display_digest is None
+    # The next write is a version-2 file.
+    await store.decide(record.approval_id, REJECTED, "x", None)
+    assert json.loads(path.read_text())["version"] == 2
+
+
+async def test_a_gate_that_starts_relaying_does_not_keep_a_direct_approval(
+    graph, store, tmp_path
+) -> None:
+    interrupt, record = await _pause(graph, "t1", store)
+    assert interrupt.value["decide_with"] == "direct" and interrupt.value["relayers"] == []
+    decided = await _decided(store, record, "approve")
+    relayed = POLICY.replace(
+        "      timeout_s: 60",
+        "      timeout_s: 60\n      decide_with: relayed\n      relayers: [concierge]",
+    )
+    _change_policy(tmp_path, relayed)
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    result = await _last_tool_result(graph, "t1")
+    assert "decide_with or relayers, differs from the policy's now" in result
+    assert SENT == []
+
+
+async def test_a_relayed_gate_binds_its_relayers(graph, store, tmp_path) -> None:
+    relayed = POLICY.replace(
+        '      approvers: [requester, "role:ops"]',
+        "      approvers: [requester]\n      decide_with: relayed\n      relayers: [concierge]",
+    )
+    _change_policy(tmp_path, relayed)
+    interrupt, record = await _pause(graph, "t1", store)
+    assert (interrupt.value["decide_with"], interrupt.value["relayers"]) == (
+        "relayed",
+        ["concierge"],
+    )
+    assert (record.decide_with, record.relayers) == ("relayed", ["concierge"])
+    decided = await _decided(store, record, "approve")
+    # Another relayer by the time the call is sent: the approval does not cover it.
+    _change_policy(tmp_path, relayed.replace("[concierge]", "[billing]"))
+    await _run(graph, "t1", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert "differs from the policy's now" in await _last_tool_result(graph, "t1")
+    assert SENT == []
+    # The same relayers: sent once.
+    _change_policy(tmp_path, relayed)
+    interrupt, record = await _pause(graph, "t2", store)
+    decided = await _decided(store, record, "approve")
+    await _run(graph, "t2", Command(resume={interrupt.id: decision_value(decided, "approve")}))
+    assert [r.url.path for r in SENT] == ["/orders/7/cancel"]

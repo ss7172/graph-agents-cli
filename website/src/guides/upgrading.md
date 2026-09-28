@@ -241,8 +241,13 @@ The development branch adds agents calling agents
 project after `scaffold upgrade`:
 
 - **Database.** At startup, `ADD COLUMN IF NOT EXISTS` adds `threads.actor`, `runs.actor` and
-  `approvals.requester_actor` (in `agent_*` tables under `langgraph-server`); no row is
-  rewritten, and existing rows read as direct.
+  the approvals columns `requester_actor`, `decide_with`, `relayers`, `decided_via` and
+  `display_digest` (in `agent_*` tables under `langgraph-server`); no row is rewritten, and
+  existing rows read as direct. A pending approval asked before the upgrade is `direct` and
+  is decided exactly as before. Under `langgraph dev` the approvals file is read as version 1
+  and written as version 2.
+- **`api-policy.yaml` is unchanged.** `decide_with` and `relayers` are optional; an approval
+  rule without them decides `direct`.
 - **`jwt` reads the `act` claim.** A token carrying one is an agent's for the user, and is
   refused (403) until `AUTH_ALLOWED_ACTORS` lists that agent. Set `AUTH_JWT_ACTOR_CLAIM=`
   (empty) to read every token as the user's own, as 0.2 did. Every other principal, and every

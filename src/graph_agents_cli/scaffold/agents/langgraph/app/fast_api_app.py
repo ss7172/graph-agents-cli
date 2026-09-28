@@ -575,6 +575,8 @@ def _run_stream(
 class DecisionBody(BaseModel):
     decision: Literal["approve", "reject"]
     comment: str | None = Field(default=None, max_length=1000)
+    # The approval's `digest`: an agent relaying the person's decision must send it.
+    digest: str | None = Field(default=None, max_length=80)
 
     @field_validator("comment")
     @classmethod
@@ -609,8 +611,9 @@ async def decide_approval(
 ) -> RunStreamingResponse:
     """Approve or reject a pending approval; stream the resumed run (the `/chat` events).
 
-    404 `approval_not_found`, 403 `not_an_approver`, 409 `approval_not_pending`
-    (decided already), 410 `approval_expired`, 409 `thread_busy`.
+    404 `approval_not_found`, 403 `not_an_approver` or `approval_direct_only`,
+    409 `approval_not_pending` (decided already), 409 `approval_digest_mismatch`,
+    410 `approval_expired`, 409 `thread_busy`.
     """
     lease, resume, acting = await RUNTIME.decide(
         principal,
@@ -619,6 +622,7 @@ async def decide_approval(
         body.decision,
         body.comment,
         _forward_headers(request),
+        digest=body.digest,
     )
     req = ChatRequest(
         message="", thread_id=lease.thread_id, forward_headers=_forward_headers(request)

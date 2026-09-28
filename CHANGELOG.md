@@ -39,6 +39,23 @@ migration" with the steps to follow.
   `threads.actor`, `runs.actor` and `approvals.requester_actor` at startup (`ADD COLUMN IF NOT
   EXISTS`); existing rows are direct, and every 0.2 principal is direct, so 0.2 behaviour is
   unchanged for them.
+- **Approvals relayed across agents.** An approval rule may let named agents deliver the
+  requester's decision from another agent: `decide_with: relayed` with `relayers` (actor
+  ids) in `api-policy.yaml`, written by `api approval NAME --decide-with relayed --relayers
+  concierge` (a loosening, reviewed like new approvers; `--decide-with direct` narrows it
+  again). The default stays `direct`: the person decides with their own credentials. A relayed
+  decision is accepted only from a listed agent, on a thread it started for that user, with
+  `requester` an approver, naming the approval's `digest` (a SHA-256 of the call as the
+  approver saw it; missing or different: 409 `approval_digest_mismatch`), and is recorded as
+  `decided_via`. How the approvers decide is bound to the approval when it is asked, as the
+  approvers are: a policy that starts or stops relaying, or changes the relayers, while a call
+  waits does not keep its approval. The approval object shows `decide_with`, `decided_via`
+  and `digest`; the HTTP decision body and the A2A decision part take an optional `digest`.
+  Rules that decide differently are different gates for the rule-conflict check, `api show`
+  and `lint` print `approved by requester; relayed by concierge`, and `api show --json` adds
+  `decide_with` and `relayers` to a relayed gate. The approvals table gains `decide_with`,
+  `relayers`, `decided_via` and `display_digest` at startup, and the `langgraph dev` approvals
+  file moves to version 2 (a version-1 file is read, its approvals direct).
 
 ### Changed
 

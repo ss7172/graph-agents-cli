@@ -250,6 +250,9 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `approvers` | `requester` and/or `role:<name>` entries of the rule that gated the call. |
 | `requester`, `decided_by` | Hashed principal ids. |
 | `requester_actor` | The agent the requester's run acted through (a delegated request), or null. |
+| `decide_with` | How the requester decides: `direct`, or `relayed` by the agents the rule lists. |
+| `decided_via` | The agent that relayed the decision, or null (decided directly). |
+| `digest` | `sha256:<hex>` of the call as shown (api, method, path, operation id, query and body, masked fields masked): a relayed decision must name it. |
 | `created_at`, `expires_at`, `decided_at` | ISO 8601 times. |
 | `comment` | The decider's comment. |
 
@@ -265,14 +268,16 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
     status, `limit` 1-100 (default 20). Each row carries its `thread_id`.
 
 `POST /threads/{thread_id}/approvals/{approval_id}`
-:   Body `{"decision": "approve" | "reject", "comment": "..."}` (the comment at most 1000
-    characters). The run resumes and streams the rest with the `/chat` events. An approval
+:   Body `{"decision": "approve" | "reject", "comment": "...", "digest": "sha256:..."}` (the
+    comment at most 1000 characters; the approval's `digest`, required of an agent relaying
+    the person's decision and checked when a person sends it). The run resumes and streams the rest with the `/chat` events. An approval
     is decided once:
 
 | Status | `code` | When |
 |---|---|---|
 | `403` | `not_an_approver` | The caller is not one of the approvers (a requester decides their own call only when `requester` is listed). |
-| `403` | `approval_direct_only` | An agent (a delegated request) tried to decide: the person decides, with their own credentials. |
+| `403` | `approval_direct_only` | An agent (a delegated request) tried to decide a `decide_with: direct` approval: the person decides, with their own credentials. |
+| `409` | `approval_digest_mismatch` | The decision named no digest (a relayed one must) or another one: it was taken on a different view of the call. |
 | `404` | `approval_not_found` | No such approval on this thread. |
 | `409` | `approval_not_pending` | Decided already (the body names its `status`). |
 | `409` | `thread_busy` | Another run holds the thread. |
@@ -345,11 +350,13 @@ Approvals
 :   A gated run moves the task to `input-required`, with a data part
     `{"type": "approval_request", "approval": {...}, "approvals": [...]}`. The client resumes
     it with a message on the same task whose data part is
-    `{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`, under the same
-    checks as the HTTP route. A task belongs to its requester, so only the requester decides
-    over A2A; `role:` approvers use the HTTP routes. An agent calling for a user never
-    decides: its decision leaves the task `input-required` with the note
-    `approval_direct_only: ...`, and the person decides over HTTP with their own credentials.
+    `{"approval_id": "...", "decision": "approve" | "reject", "comment": "...", "digest": "..."}`,
+    under the same checks as the HTTP route. A task belongs to its requester, so only the
+    requester decides over A2A; `role:` approvers use the HTTP routes. An agent calling for a
+    user decides only an approval whose rule relays through it (`decide_with: relayed`, its
+    actor in `relayers`, the approval's `digest` named); otherwise its decision leaves the
+    task `input-required` with the note (`approval_direct_only: ...`), and the person decides
+    over HTTP with their own credentials.
 
 A 1.0 call and its answer (trimmed):
 

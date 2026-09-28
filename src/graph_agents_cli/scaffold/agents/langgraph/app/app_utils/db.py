@@ -121,7 +121,10 @@ CREATE SEQUENCE IF NOT EXISTS {locks}_token_seq;
 # public attributes, which a run resumed by another principal acts with;
 # `message_id` and `tool_call_id` name the tool call that asked, which the API
 # client looks up (with `interrupt_id`) when that tool call runs again;
-# `requester_actor` the agent the requester's run acted through ('' for none).
+# `requester_actor` the agent the requester's run acted through ('' for none);
+# `decide_with` and `relayers` how the requester decides (bound when asked),
+# `decided_via` the agent that relayed the decision, `display_digest` a hash of
+# what the approver was shown (a relayed decision names it).
 APPROVALS_DDL = """
 CREATE TABLE IF NOT EXISTS {approvals} (
     approval_id       TEXT PRIMARY KEY,
@@ -149,6 +152,10 @@ CREATE TABLE IF NOT EXISTS {approvals} (
 );
 ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS message_id TEXT;
 ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS requester_actor TEXT NOT NULL DEFAULT '';
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS decide_with TEXT NOT NULL DEFAULT 'direct';
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS relayers JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS decided_via TEXT;
+ALTER TABLE {approvals} ADD COLUMN IF NOT EXISTS display_digest TEXT;
 CREATE INDEX IF NOT EXISTS {approvals}_thread_id_idx ON {approvals} (thread_id);
 CREATE INDEX IF NOT EXISTS {approvals}_tool_call_idx ON {approvals} (message_id, tool_call_id);
 CREATE INDEX IF NOT EXISTS {approvals}_interrupt_idx ON {approvals} (interrupt_id);

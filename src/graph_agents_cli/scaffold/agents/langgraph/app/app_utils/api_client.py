@@ -175,7 +175,7 @@ _OPERATION_KEYS = ("operationId", "path", "methods")
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
-_APPROVAL_KEYS = ("required_for", "approvers", "timeout_s")
+_APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
 
 # An API's `approval` block names the calls a human must approve before they are
@@ -190,7 +190,10 @@ _REQUIRED_FOR_KEYS = ("methods", "operations")
 # covers, is refused (`ApprovalRuleConflict`): it could be either rule's call.
 # It never widens access: a gated call must still be allowed, and denials still
 # win. It belongs to the API only: on an operation entry the key is refused,
-# with a pointer to `approval.required_for.operations`.
+# with a pointer to `approval.required_for.operations`. A rule may also say how
+# the requester decides (`decide_with`): `direct` (the default: with their own
+# credentials, at this agent), or `relayed`, where the agents `relayers` names
+# (by their actor ids) may deliver the requester's decision from another agent.
 APPROVAL_KEY = "approval"
 REQUESTER_APPROVER = "requester"  # the principal who started the run confirms
 ROLE_APPROVER_PREFIX = "role:"  # any principal holding the role decides
@@ -201,6 +204,13 @@ MAX_APPROVAL_TIMEOUT_S = 86400
 # default, each with their own credential. `relayed`, with the `relayers` it names, lets
 # those agents deliver the requester's decision: an opt-in that each callee's gate reviews.
 DEFAULT_DECIDE_WITH = "direct"
+DECIDE_DIRECT = "direct"
+DECIDE_RELAYED = "relayed"
+DECIDE_WITH_VALUES = (DECIDE_DIRECT, DECIDE_RELAYED)
+# A value kept for a later release: a decision signed by the identity provider.
+DECIDE_STEP_UP = "step_up"
+# Role names and actor ids (`relayers`): 1-256 characters, no whitespace, commas or
+# control characters.
 _ROLE_NAME_RE = re.compile(r"[^\s,\x00-\x1f\x7f]{1,256}")
 
 LEGACY_POLICY_HINT = (
@@ -495,6 +505,43 @@ def _approval_rule_errors(where: str, value: Any, api_where: str) -> list[str]:
             errors.append(
                 f"{where}.timeout_s: must be an integer from {MIN_APPROVAL_TIMEOUT_S} to "
                 f"{MAX_APPROVAL_TIMEOUT_S} (seconds)"
+            )
+    errors.extend(_decide_with_errors(where, value))
+    return errors
+
+
+def _decide_with_errors(where: str, rule: Mapping[str, Any]) -> list[str]:
+    """Errors of a rule's `decide_with` and `relayers`."""
+    decide_with = rule.get("decide_with", DEFAULT_DECIDE_WITH)
+    errors: list[str] = []
+    if decide_with == DECIDE_STEP_UP:
+        errors.append(f"{where}.decide_with: step_up is not supported yet (direct or relayed)")
+    elif decide_with not in DECIDE_WITH_VALUES:
+        errors.append(f"{where}.decide_with: must be direct or relayed (got {decide_with!r})")
+    if decide_with != DECIDE_RELAYED:
+        if "relayers" in rule:
+            errors.append(f"{where}.relayers: only valid with decide_with: relayed")
+        return errors
+    approvers = rule.get("approvers")
+    if isinstance(approvers, list) and REQUESTER_APPROVER not in approvers:
+        errors.append(
+            f"{where}.decide_with: relayed needs requester in approvers (role approvers always "
+            "decide with their own direct credentials, never relayed)"
+        )
+    if "relayers" not in rule:
+        errors.append(
+            f"{where}.relayers: required with decide_with: relayed (the agents, by actor id, "
+            "that may deliver the requester's decision)"
+        )
+        return errors
+    relayers = rule["relayers"]
+    if not isinstance(relayers, list) or not relayers:
+        return [*errors, f"{where}.relayers: must be a non-empty list of agent (actor) ids"]
+    for index, relayer in enumerate(relayers):
+        if not (isinstance(relayer, str) and _ROLE_NAME_RE.fullmatch(relayer)):
+            errors.append(
+                f"{where}.relayers[{index}]: {relayer!r} is not an agent id (1-256 characters "
+                "without spaces, commas or control characters)"
             )
     return errors
 
@@ -798,6 +845,13 @@ class ApprovalGate:
     index: int | None = None
     # Later rules that also cover the call; they do not apply to it (the first one does).
     also: tuple[int, ...] = ()
+    # How the requester decides: `direct`, or `relayed` by the agents `relayers` names.
+    decide_with: str = DEFAULT_DECIDE_WITH
+    relayers: tuple[str, ...] = ()
+
+    def deciders(self) -> tuple[frozenset[str], str, frozenset[str]]:
+        """Who decides, and how: what an approval is bound to (`rule_deciders`)."""
+        return frozenset(self.approvers), self.decide_with, frozenset(self.relayers)
 
 
 def approval_rules(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -806,6 +860,25 @@ def approval_rules(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if approval is None:
         return []
     return list(approval) if isinstance(approval, list) else [approval]
+
+
+def rule_deciders(rule: Mapping[str, Any]) -> tuple[frozenset[str], str, frozenset[str]]:
+    """Who decides the calls a rule gates, and how: its approvers, `decide_with` and
+    relayers. Two rules with other deciders are two gates, and an approval taken under one
+    does not cover the other's calls."""
+    return (
+        frozenset(str(a) for a in rule.get("approvers") or ()),
+        str(rule.get("decide_with", DEFAULT_DECIDE_WITH)),
+        frozenset(str(r) for r in rule.get("relayers") or ()),
+    )
+
+
+def describe_deciders(rule: Mapping[str, Any]) -> str:
+    """``requester, role:ops``, or ``requester; relayed by concierge`` for a relayed rule."""
+    approvers = ", ".join(str(a) for a in rule.get("approvers") or ())
+    if rule.get("decide_with", DEFAULT_DECIDE_WITH) != DECIDE_RELAYED:
+        return approvers
+    return f"{approvers}; relayed by {', '.join(str(r) for r in rule.get('relayers') or ())}"
 
 
 def approval_rule_label(api: Mapping[str, Any], index: int) -> str:
@@ -938,14 +1011,14 @@ def gated(
     if unnamed:
         pin = f", or pin path and methods in {label}" if unnamed == "operation_id" else ""
         for later, _part, _unnamed in covering[1:]:
-            others = [str(a) for a in rules[later].get("approvers") or ()]
-            if set(others) != set(approvers):
+            if rule_deciders(rules[later]) != rule_deciders(rule):
                 raise ApprovalRuleConflict(
-                    f"{label} (approved by {', '.join(approvers)}) covers it only because the "
+                    f"{label} (approved by {describe_deciders(rule)}) covers it only because the "
                     f"call names no {unnamed} ({label}.{part}), and "
-                    f"{approval_rule_label(api, later)} (approved by {', '.join(others)}) also "
-                    "covers it: it could be either rule's call, so neither rule's approvers are "
-                    f"asked; name the {unnamed} on the call and in API_CALLS{pin}",
+                    f"{approval_rule_label(api, later)} (approved by "
+                    f"{describe_deciders(rules[later])}) also covers it: it could be either "
+                    "rule's call, so neither rule's approvers are asked; name the "
+                    f"{unnamed} on the call and in API_CALLS{pin}",
                     unnamed=unnamed,
                     index=index,
                     later=later,
@@ -957,6 +1030,8 @@ def gated(
         rule=f"{label}.{_unsure(part, unnamed)}",
         index=index if listed else None,
         also=tuple(i for i, _, _ in covering[1:]),
+        decide_with=str(rule.get("decide_with", DEFAULT_DECIDE_WITH)),
+        relayers=tuple(str(r) for r in rule.get("relayers") or ()),
     )
 
 
@@ -1699,6 +1774,28 @@ def _decision_waiting(identity: tuple[str, str, str]) -> Mapping[str, Any] | Non
     return None
 
 
+def _decided_with(value: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+    """`(decide_with, relayers)` an interrupt or a decision carries (`direct` when absent: a
+    call paused before 0.3)."""
+    decide_with = value.get("decide_with")
+    relayers = value.get("relayers")
+    return (
+        decide_with if isinstance(decide_with, str) else DEFAULT_DECIDE_WITH,
+        tuple(str(r) for r in relayers) if isinstance(relayers, list | tuple) else (),
+    )
+
+
+def _context_actor() -> str | None:
+    """The agent the current run acts through (its principal's `@actor`), or None."""
+    context = current_context()
+    attributes = getattr(context, "attributes", None)
+    if attributes is None and isinstance(context, Mapping):
+        attributes = context.get("attributes")
+    actor = attributes.get("@actor") if isinstance(attributes, Mapping) else None
+    actor_id = actor.get("id") if isinstance(actor, Mapping) else None
+    return actor_id if isinstance(actor_id, str) and actor_id else None
+
+
 def _bound_refusal(bound: list[BoundApproval]) -> tuple[str, str]:
     """What the model reads, and the log reason, for a call refused by its recorded approval.
 
@@ -2308,6 +2405,7 @@ class ApiClient:
         if gate is not None:
             approvers: tuple[str, ...] = gate.approvers
             timeout_s, rule = gate.timeout_s, gate.rule
+            decide_with, relayers = gate.decide_with, gate.relayers
         else:
             # The paused call's gate is gone from the policy: its decision still binds it.
             assert waiting is not None
@@ -2315,6 +2413,7 @@ class ApiClient:
             approvers = tuple(str(a) for a in asked) if isinstance(asked, list | tuple) else ()
             timeout_s = DEFAULT_APPROVAL_TIMEOUT_S
             rule = "the approval this call was paused for (the policy no longer gates it)"
+            decide_with, relayers = _decided_with(waiting)
         rule_reason = f"approval required by {rule}"
 
         def refuse(why: str, reason: str = rule_reason) -> ApiPolicyError:
@@ -2360,6 +2459,11 @@ class ApiClient:
             "message_id": scope.message_id if scope is not None else None,
             "reason": f"{tool}: {purpose}" if tool and purpose else (tool or purpose or None),
             "approvers": list(approvers),
+            # How the requester decides (bound, as the approvers are: see `_check_decision`),
+            # and the agent this run acts through (None: the user directly).
+            "decide_with": decide_with,
+            "relayers": list(relayers),
+            "requester_actor": _context_actor(),
             "timeout_s": timeout_s,
             "rule": rule,
             "call_hash": digest,
@@ -2444,9 +2548,11 @@ class ApiClient:
         `gate` is what the policy requires of the call now (None: it no longer
         gates it). A rejection or an expiry refuses whatever the policy says.
         An approval must also have been asked of the approvers the policy's
-        gate names now: a policy that changed while the call waited (a new
-        image with other approvers, or one that no longer gates the call) is
-        not satisfied by a decision taken under the old one.
+        gate names now, to be decided the same way (`decide_with`, `relayers`):
+        a policy that changed while the call waited (a new image with other
+        approvers, one that lets other agents relay the decision, or one that
+        no longer gates the call) is not satisfied by a decision taken under
+        the old one.
         """
         if not isinstance(decision, Mapping) or decision.get("type") != APPROVAL_DECISION:
             raise refuse(
@@ -2486,6 +2592,14 @@ class ApiClient:
             raise refuse(
                 "was approved under an approval gate that has changed since (its approvers "
                 "differ from the policy's now), so the approval does not cover it; ask again",
+                reason="approval gate changed",
+            )
+        decide_with, relayers = _decided_with(decision)
+        if (decide_with, frozenset(relayers)) != (gate.decide_with, frozenset(gate.relayers)):
+            raise refuse(
+                "was approved under an approval gate that has changed since (how its approvers "
+                "decide, decide_with or relayers, differs from the policy's now), so the "
+                "approval does not cover it; ask again",
                 reason="approval gate changed",
             )
         return approval_id

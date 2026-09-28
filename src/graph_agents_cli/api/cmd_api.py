@@ -45,6 +45,8 @@ from graph_agents_cli._api_policy import (
     ANY_METHOD,
     APPROVAL_KEY,
     AUTH_MODES,
+    DECIDE_DIRECT,
+    DECIDE_RELAYED,
     DEFAULT_APPROVAL_TIMEOUT_S,
     DEFAULT_FORWARD_HEADER,
     DEFAULT_TIMEOUTS_MS,
@@ -58,6 +60,7 @@ from graph_agents_cli._api_policy import (
     approval_rule_label,
     approval_rules,
     denial_match,
+    describe_deciders,
     effective_approval,
     effective_approval_rules,
     ensure_no_legacy_api_policy,
@@ -66,6 +69,7 @@ from graph_agents_cli._api_policy import (
     parse_policy_yaml,
     policy_errors,
     rule_conflicts,
+    rule_deciders,
     rule_never_applies,
     summarize,
 )
@@ -312,7 +316,35 @@ def _call_effects(
                 f"approvers change ({kind}): {label}: now {', '.join(gate.approvers)}"
                 f"{_rule_of(gate)}, was {', '.join(old_gate.approvers)}{_rule_of(old_gate)}"
             )
+        elif (
+            now == policy_check.STATUS_ALLOWED
+            and gate is not None
+            and old_gate is not None
+            and gate.deciders() != old_gate.deciders()
+        ):
+            relayed = gate.decide_with == DECIDE_RELAYED
+            was_relayed = old_gate.decide_with == DECIDE_RELAYED
+            gained = [r for r in gate.relayers if not was_relayed or r not in old_gate.relayers]
+            kind = (
+                f"new relayer(s) {', '.join(gained)}"
+                if relayed and gained
+                else "fewer relayers"
+                if relayed
+                else "now decided directly"
+            )
+            lines.append(
+                f"relaying changes ({kind}): {label}: now "
+                f"{_deciders_of(gate)}{_rule_of(gate)}, was "
+                f"{_deciders_of(old_gate)}{_rule_of(old_gate)}"
+            )
     return lines
+
+
+def _deciders_of(gate: Any) -> str:
+    """``requester; relayed by concierge`` for a gate (its approvers, and relayers when any)."""
+    return describe_deciders(
+        {"approvers": gate.approvers, "decide_with": gate.decide_with, "relayers": gate.relayers}
+    )
 
 
 def _rule_of(gate: Any) -> str:
@@ -324,6 +356,7 @@ _EFFECT_STYLES = {
     "now refused": "red",
     "no longer gated": "yellow",
     "approvers change (new": "yellow",
+    "relaying changes (new": "yellow",
 }
 
 
@@ -1068,6 +1101,20 @@ def _parse_approvers(value: str) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+def _parse_relayers(value: str) -> list[str]:
+    """``concierge, billing`` -> ``["concierge", "billing"]``: the agents' actor ids."""
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise click.UsageError("--relayers needs at least one agent id")
+    for item in items:
+        if len(item) > 256 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in item):
+            raise click.UsageError(
+                f"--relayers: {item!r} is not an agent id (1-256 characters without spaces, "
+                "commas or control characters)"
+            )
+    return list(dict.fromkeys(items))
+
+
 def _parse_operation_ids(value: str) -> list[str]:
     items = [item.strip() for item in value.split(",") if item.strip()]
     if not items:
@@ -1170,8 +1217,10 @@ def _gate_loosening(before: Mapping[str, Any] | None, after: Mapping[str, Any] |
     """How the change loosens one rule (effective rules): empty when it tightens or keeps it.
 
     Loosening: a call that waited may go out without a human (a method or an
-    operation no longer gated, the block removed), someone new may approve, or
-    a pending approval stays open longer.
+    operation no longer gated, the block removed), someone new may approve, an
+    agent may now relay the requester's decision (``decide_with: relayed``, or
+    a new relayer), or a pending approval stays open longer. Moving back to
+    ``direct`` narrows the gate.
     """
     if before is None:
         return []
@@ -1191,6 +1240,16 @@ def _gate_loosening(before: Mapping[str, Any] | None, after: Mapping[str, Any] |
     added = [a for a in after["approvers"] if a not in before["approvers"]]
     if added:
         reasons.append(f"new approver(s) {', '.join(added)}")
+    if after.get("decide_with") == DECIDE_RELAYED:
+        if before.get("decide_with") != DECIDE_RELAYED:
+            reasons.append(
+                "agents may now relay the requester's decision (decide_with: relayed, by "
+                f"{', '.join(after.get('relayers') or [])})"
+            )
+        else:
+            relayers = [r for r in after.get("relayers") or [] if r not in before["relayers"]]
+            if relayers:
+                reasons.append(f"new relayer(s) {', '.join(relayers)}")
     if after["timeout_s"] > before["timeout_s"]:
         reasons.append(
             f"pending approvals wait longer ({before['timeout_s']} -> {after['timeout_s']} s)"
@@ -1249,37 +1308,54 @@ def _order_loosening(
     reasons = []
     for later in rules[index + 1 :]:
         gained = [a for a in after["approvers"] if a not in later["approvers"]]
+        if after.get("decide_with") == DECIDE_RELAYED:
+            later_relayers = (
+                later.get("relayers") or [] if later.get("decide_with") == DECIDE_RELAYED else []
+            )
+            gained += [f"relayer {r}" for r in after["relayers"] if r not in later_relayers]
         if gained and _may_overlap(methods, entries, later):
             reasons.append(
                 f"{after['rule']} now comes first for calls {later['rule']} may have gated "
-                f"(approved by {', '.join(later['approvers'])}): {', '.join(gained)} may decide "
+                f"(approved by {describe_deciders(later)}): {', '.join(gained)} may decide "
                 "them"
             )
     return reasons
 
 
-def _conflicts(api: Mapping[str, Any]) -> set[tuple[str, frozenset[str], frozenset[str]]]:
+def _conflicts(api: Mapping[str, Any]) -> set[tuple[str, Any, Any]]:
     """The rule conflicts of ``api`` (``rule_conflicts``) as comparable facts.
 
-    Each is an operationId named without a path, the approvers of its rule and
-    those of a later rule that may also cover a call naming no operation id.
+    Each is an operationId named without a path, the deciders of its rule
+    (``rule_deciders``) and those of a later rule that may also cover a call
+    naming no operation id.
     """
     rules = approval_rules(api)
     return {
-        (
-            str(entry["operationId"]),
-            frozenset(str(a) for a in rules[index]["approvers"]),
-            frozenset(str(a) for a in rules[j]["approvers"]),
-        )
+        (str(entry["operationId"]), rule_deciders(rules[index]), rule_deciders(rules[j]))
         for index, entries, later in rule_conflicts(api)
         for entry in entries
         for j in later
     }
 
 
-def _approver_notes(project: _Project, approvers: list[str]) -> list[str]:
+def _approver_notes(
+    project: _Project, approvers: list[str], rule: Mapping[str, Any] | None = None
+) -> list[str]:
     roles = [a for a in approvers if a.startswith(ROLE_APPROVER_PREFIX)]
     notes = []
+    if rule is not None and rule.get("decide_with") == DECIDE_RELAYED:
+        relayers = ", ".join(str(r) for r in rule.get("relayers") or [])
+        notes.append(
+            f"relayed: the agents {relayers} may deliver the requester's decision from another "
+            "agent (with the requester's own token, only on threads they started, naming the "
+            "approval's digest); list them in AUTH_ALLOWED_ACTORS too. Keep decide_with: "
+            "direct for calls the person should confirm at this agent themselves"
+        )
+        if project.config.auth_policy == "shared-bearer":
+            notes.append(
+                "under the shared-bearer auth policy no caller is an agent acting for a user, so "
+                "no decision is ever relayed; use jwt or custom"
+            )
     if REQUESTER_APPROVER in approvers and not roles:
         notes.append(
             "requester confirms their own calls: the person whose run it is sees each gated "
@@ -1326,6 +1402,37 @@ def _add_rule_command(
     return " ".join(parts)
 
 
+def _set_decide_with(
+    new_rule: dict[str, Any],
+    old_rule: Mapping[str, Any] | None,
+    decide_with: str | None,
+    relayer_list: list[str] | None,
+) -> None:
+    """Put the rule's ``decide_with`` and ``relayers`` in ``new_rule``: the old rule's, with
+    the options given applied (``direct`` drops both keys: absent means direct)."""
+    old = old_rule or {}
+    for key in ("decide_with", "relayers"):
+        if key in old:
+            new_rule[key] = copy.deepcopy(old[key])
+    if decide_with == DECIDE_DIRECT:
+        new_rule.pop("relayers", None)
+        if old.get("decide_with") != DECIDE_DIRECT:
+            new_rule.pop("decide_with", None)
+    elif decide_with == DECIDE_RELAYED:
+        new_rule["decide_with"] = DECIDE_RELAYED
+    if relayer_list is not None:
+        if new_rule.get("decide_with") != DECIDE_RELAYED:
+            raise click.UsageError(
+                "--relayers needs --decide-with relayed (the rule decides directly)"
+            )
+        new_rule["relayers"] = relayer_list
+    if new_rule.get("decide_with") == DECIDE_RELAYED and not new_rule.get("relayers"):
+        raise click.UsageError(
+            "--decide-with relayed needs --relayers: the agents, by actor id, that may relay "
+            "the requester's decision"
+        )
+
+
 def _edit_rule(
     editor: YamlText, base: tuple[Any, ...], old: Mapping[str, Any], new: Mapping[str, Any]
 ) -> None:
@@ -1338,9 +1445,12 @@ def _edit_rule(
     for key in ("methods", "operations"):
         if key not in new_rf and key in old_rf:
             editor.delete((*base, "required_for", key))
-    for key in ("approvers", "timeout_s"):
+    for key in ("approvers", "timeout_s", "decide_with", "relayers"):
         if key in new and old.get(key) != new[key]:
             editor.set((*base, key), new[key])
+    for key in ("relayers", "decide_with"):
+        if key not in new and key in old:
+            editor.delete((*base, key))
 
 
 @api_group.command("approval")
@@ -1382,6 +1492,27 @@ def _edit_rule(
     ),
 )
 @click.option(
+    "--decide-with",
+    "decide_with",
+    type=click.Choice([DECIDE_DIRECT, DECIDE_RELAYED]),
+    default=None,
+    help=(
+        "How the requester decides: direct (the default: with their own credentials, at this "
+        "agent) or relayed (the agents --relayers names may deliver the requester's decision "
+        "from another agent; a loosening, reviewed like one)."
+    ),
+)
+@click.option(
+    "--relayers",
+    "relayers",
+    default=None,
+    metavar="ID,...",
+    help=(
+        "With --decide-with relayed: the agents, by actor id (their client ids), that may relay "
+        "the requester's decision."
+    ),
+)
+@click.option(
     "--add-rule",
     "add_rule",
     is_flag=True,
@@ -1419,6 +1550,8 @@ def cmd_approval(
     operations: str | None,
     approvers: str | None,
     timeout_s: int | None,
+    decide_with: str | None,
+    relayers: str | None,
     add_rule: bool,
     rule_index: int | None,
     remove: bool,
@@ -1439,6 +1572,9 @@ def cmd_approval(
       --operations cancelOrder     calls to those operations
       --approvers requester        who decides (required for a new rule)
       --timeout-s 900              how long a pending approval waits
+      --decide-with relayed --relayers concierge
+                                   let the agent concierge deliver the
+                                   requester's decision (default: direct)
 
     \b
     Different approvers for different calls: add a rule, and name one to
@@ -1451,7 +1587,7 @@ def cmd_approval(
     later rule that also covers it does not apply to it (lint and api show
     name the rule each declared call waits for).
     """
-    changing = (methods, operations, approvers, timeout_s)
+    changing = (methods, operations, approvers, timeout_s, decide_with, relayers)
     if add_rule and rule_index is not None:
         raise click.UsageError(
             "--add-rule adds a new rule and --rule N changes an existing one: give one of them"
@@ -1462,7 +1598,8 @@ def cmd_approval(
         raise click.UsageError("--remove takes no other option (but --rule N)")
     if not remove and all(option is None for option in changing):
         raise click.UsageError(
-            "give --methods and/or --operations, --approvers, --timeout-s, or --remove"
+            "give --methods and/or --operations, --approvers, --timeout-s, --decide-with, "
+            "--relayers, or --remove"
         )
     new_methods = None
     if methods is not None and methods.strip().lower() != "none":
@@ -1471,6 +1608,11 @@ def cmd_approval(
     if operations is not None and operations.strip().lower() != "none":
         operation_ids = _parse_operation_ids(operations)
     approver_list = _parse_approvers(approvers) if approvers is not None else None
+    relayer_list = _parse_relayers(relayers) if relayers is not None else None
+    if relayer_list is not None and decide_with == DECIDE_DIRECT:
+        raise click.UsageError(
+            "--relayers is only for --decide-with relayed (direct: nobody relays)"
+        )
     if add_rule:
         if approver_list is None:
             raise click.UsageError("--add-rule needs --approvers (requester and/or role:<name>)")
@@ -1557,6 +1699,7 @@ def cmd_approval(
             new_rule["timeout_s"] = timeout_s
         elif old_rule is not None and "timeout_s" in old_rule:
             new_rule["timeout_s"] = old_rule["timeout_s"]
+        _set_decide_with(new_rule, old_rule, decide_with, relayer_list)
         if old_rule is not None and new_rule == dict(old_rule):
             Console().print(f"{name}'s {what} already says that.")
             return
@@ -1634,7 +1777,7 @@ def cmd_approval(
         notes.extend(approval_notes(name, target))
         notes.extend(
             f"{label}: {note}" if becomes_list else note
-            for note in _approver_notes(project, new_rule["approvers"])
+            for note in _approver_notes(project, new_rule["approvers"], new_rule)
         )
         if (
             not add_rule
@@ -1645,9 +1788,11 @@ def cmd_approval(
             and _gate_loosening(
                 before,
                 {
-                    **after_rules[index],
+                    **{k: v for k, v in after_rules[index].items() if k != "relayers"},
                     "approvers": before["approvers"],
                     "timeout_s": before["timeout_s"],
+                    "decide_with": before.get("decide_with", DECIDE_DIRECT),
+                    **({"relayers": before["relayers"]} if "relayers" in before else {}),
                 },
             )
         ):
@@ -1660,6 +1805,8 @@ def cmd_approval(
     effects = _call_effects(project, project.document, document, name)
     if any(line.startswith("approvers change (new") for line in effects):
         loosening.append("a declared call gets new approver(s) (see above)")
+    if any(line.startswith("relaying changes (new") for line in effects):
+        loosening.append("a declared call gets new relayer(s) (see above)")
     if any(line.startswith("now allowed") for line in effects):
         loosening.append("a declared call the rules refused is now sent after an approval")
     refuses = bool(_conflicts(target) - _conflicts(api)) or any(
@@ -1849,7 +1996,7 @@ def _describe_rule(rule: Mapping[str, Any]) -> str:
             "operations " + "; ".join(ch.describe_entry(e) for e in required_for["operations"])
         )
     return (
-        f"{' and '.join(gates)}; approved by {', '.join(rule['approvers'])}; "
+        f"{' and '.join(gates)}; approved by {describe_deciders(rule)}; "
         f"expires after {rule['timeout_s']} s"
     )
 

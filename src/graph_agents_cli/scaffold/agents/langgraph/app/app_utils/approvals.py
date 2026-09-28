@@ -64,10 +64,16 @@ user (a direct principal with that subject) is the requester of every
 approval on the thread, whichever agent started it: they see it and, when
 `requester` is listed, decide it. A delegated principal (an agent presenting
 the user's token) sees only the approvals of threads started under its own
-subject and actor, and never decides one (`decide_refusal`); its roles never
-count as a role approver or a read-across role. The requester's actor is
-recorded with the approval (`requester_actor`) and restored when a role
-approver's decision resumes the run (`resume_principal`).
+subject and actor; its roles never count as a role approver or a read-across
+role. It decides only a gate whose rule opted into `decide_with: relayed` and
+lists its actor in `relayers`, only on a thread it started itself, and only
+with the approval's `digest` (`decide_refusal`, `digest_refusal`): it then
+delivers the person's decision, recorded as `decided_via`. Under the default
+`decide_with: direct` the person decides with their own credentials. How the
+approvers decide is bound to the approval when it is asked, as the approvers
+are. The requester's actor is recorded with the approval (`requester_actor`)
+and restored when a role approver's decision resumes the run
+(`resume_principal`).
 
 `langgraph dev` keeps its threads in `.langgraph_api/` and loads them again
 after a restart or a hot reload (a code change reloads the server), so the
@@ -89,6 +95,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -104,6 +111,9 @@ from typing import Any
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     APPROVAL_DECISION,
     APPROVAL_INTERRUPT,
+    DECIDE_DIRECT,
+    DECIDE_RELAYED,
+    DECIDE_WITH_VALUES,
     DEFAULT_APPROVAL_TIMEOUT_S,
     MAX_APPROVAL_TIMEOUT_S,
     MIN_APPROVAL_TIMEOUT_S,
@@ -139,7 +149,14 @@ CODE_NOT_PENDING = "approval_not_pending"  # 409 on a decision: already decided
 CODE_EXPIRED = "approval_expired"  # 410 on a decision: it expired
 CODE_NOT_AN_APPROVER = "not_an_approver"  # 403 on a decision: not one of its approvers
 CODE_DIRECT_ONLY = "approval_direct_only"  # 403: an agent may not decide it for the person
+CODE_DIGEST_MISMATCH = "approval_digest_mismatch"  # 409: decided on another view of the call
 NOT_AN_APPROVER_DETAIL = "You may not decide this approval (see its approvers)."
+DIGEST_MISMATCH_DETAIL = (
+    "The decision was taken on a different view of the call; fetch the approval again."
+)
+# `sha256:<hex>`, at most this long in a decision.
+DIGEST_MAX_CHARS = 80
+DIGEST_PREFIX = "sha256:"
 
 # How often every replica marks pending approvals past their expiry `expired`.
 SWEEP_INTERVAL_S = 30.0
@@ -153,7 +170,10 @@ CALL_CONTENT_KEYS = ("query", "body")
 # and the file the app keeps their approvals in there.
 DEV_STATE_DIR = ".langgraph_api"
 DEV_LEDGER_FILE = "agent_approvals.json"
-LEDGER_FILE_VERSION = 1
+# Version 2 (0.3) adds each approval's requester actor, how it is decided (`decide_with`,
+# `relayers`), `decided_via` and `display_digest`; a version-1 file reads with the defaults.
+LEDGER_FILE_VERSION = 2
+LEDGER_FILE_VERSIONS = (1, 2)
 _DATETIME_FIELDS = ("decided_at", "used_at", "created_at", "expires_at")
 
 
@@ -237,6 +257,14 @@ class ApprovalRecord:
     created_at: datetime = field(default_factory=utcnow)
     # The agent the requester's run acted through ("" for a direct requester).
     requester_actor: str = ""
+    # How the requester decides, bound when the approval was asked: `direct`, or `relayed`
+    # by the agents in `relayers`.
+    decide_with: str = DECIDE_DIRECT
+    relayers: list[str] = field(default_factory=list)
+    # The agent that delivered the decision (a relayed decision), else None.
+    decided_via: str | None = None
+    # What the approver was shown, hashed (`approval_digest`): a relayed decision names it.
+    display_digest: str | None = None
 
     def effective_status(self, now: datetime | None = None) -> str:
         """The status, with a pending approval past its expiry read as `expired`."""
@@ -272,8 +300,11 @@ class ApprovalRecord:
                 "tool": self.payload.get("tool"),
                 "reason": self.payload.get("reason"),
                 "approvers": list(self.approvers),
+                "decide_with": self.decide_with,
                 "requester": self.requester_hash,
                 "requester_actor": self.requester_actor or None,
+                "decided_via": self.decided_via,
+                "digest": self.display_digest,
                 "created_at": _iso(self.created_at),
                 "expires_at": _iso(self.expires_at),
                 "decided_by": self.decided_by,
@@ -282,6 +313,31 @@ class ApprovalRecord:
             }
         )
         return out
+
+
+def approval_view(record: ApprovalRecord) -> dict[str, Any]:
+    """The call as the approver sees it while the approval is pending (masked fields masked).
+
+    `rpc_method` and `a2a_operation` are None until the policy derives them from
+    JSON-RPC bodies.
+    """
+    return {
+        "api": record.api,
+        "method": record.method,
+        "path": record.path,
+        "operation_id": record.operation_id,
+        "rpc_method": None,
+        "a2a_operation": None,
+        "query": record.payload.get("query"),
+        "body": record.payload.get("body"),
+    }
+
+
+def approval_digest(view: Mapping[str, Any]) -> str:
+    """`sha256:<hex>` of the approver's view of a call (canonical JSON): what a relayed
+    decision names, so a decision taken on another view is refused."""
+    text = json.dumps(view, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return DIGEST_PREFIX + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def record_from_interrupt(
@@ -303,13 +359,17 @@ def record_from_interrupt(
     )
     timeout = min(max(timeout, MIN_APPROVAL_TIMEOUT_S), MAX_APPROVAL_TIMEOUT_S)
     approvers = [str(a) for a in value.get("approvers") or [] if isinstance(a, str)]
+    decide_with = value.get("decide_with")
+    if decide_with not in DECIDE_WITH_VALUES:
+        decide_with = DECIDE_DIRECT  # a call paused before 0.3
+    relayers = value.get("relayers") if decide_with == DECIDE_RELAYED else None
     payload = {
         "query": value.get("query") or {},
         "body": value.get("body"),
         "tool": value.get("tool"),
         "reason": value.get("reason"),
     }
-    return ApprovalRecord(
+    record = ApprovalRecord(
         approval_id=uuid.uuid4().hex,
         thread_id=thread_id,
         run_id=run_id,
@@ -331,7 +391,11 @@ def record_from_interrupt(
         payload=payload,
         created_at=now,
         expires_at=now + timedelta(seconds=timeout),
+        decide_with=str(decide_with),
+        relayers=[str(r) for r in relayers or [] if isinstance(r, str)],
     )
+    record.display_digest = approval_digest(approval_view(record))
+    return record
 
 
 def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
@@ -341,9 +405,10 @@ def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
     It names the call it was taken for (API, method, path): the client applies
     it to that call whatever the policy says about gating it by then, so a
     rejected or expired call is never sent and a pending one pauses again.
-    `approvers` are the ones the approval was asked of: the client refuses an
-    approval whose approvers differ from what the policy's gate names when
-    the call is about to be sent.
+    `approvers` (and how they decide: `decide_with`, `relayers`) are the ones
+    the approval was asked of: the client refuses an approval whose approvers,
+    or how they decide, differ from what the policy's gate names when the call
+    is about to be sent.
     """
     return {
         "type": APPROVAL_DECISION,
@@ -354,6 +419,8 @@ def decision_value(record: ApprovalRecord, decision: str) -> dict[str, Any]:
         "path": record.path,
         "call_hash": record.call_hash,
         "approvers": list(record.approvers),
+        "decide_with": record.decide_with,
+        "relayers": list(record.relayers),
         "comment": record.comment,
     }
 
@@ -396,26 +463,41 @@ def is_requester(principal: Principal, owner: ThreadOwner) -> bool:
 
 
 def decide_refusal(
-    principal: Principal, owner: ThreadOwner, approvers: Iterable[str]
+    principal: Principal,
+    owner: ThreadOwner,
+    approvers: Iterable[str],
+    *,
+    decide_with: str = DECIDE_DIRECT,
+    relayers: Iterable[str] = (),
 ) -> tuple[str, str] | None:
     """Why `principal` may not approve or reject (`(code, detail)`, a 403), or None.
 
     A direct principal: the requester decides only when `requester` is
     listed, never through a role (no self-approval unless the policy asks for
     requester confirmation); anyone else through a listed `role:` it holds. A
-    delegated principal (an agent) never decides: the person does, with their
-    own credentials (`approval_direct_only`), and an agent on a thread it did
-    not start learns nothing more than that it is no approver.
+    delegated principal (an agent) decides only on a thread it started for
+    that user (else it learns nothing more than that it is no approver), when
+    the rule is `decide_with: relayed` with `requester` listed (else
+    `approval_direct_only`: the person decides with their own credentials),
+    and when its actor is one of the rule's `relayers`. It must also send the
+    approval's digest (`digest_refusal`).
     """
     approvers = list(approvers)
     if principal.actor is not None:
         if not is_requester(principal, owner):
             return CODE_NOT_AN_APPROVER, NOT_AN_APPROVER_DETAIL
-        return (
-            CODE_DIRECT_ONLY,
-            "This approval must be decided by the person at this agent (decide_with: direct), "
-            f"not relayed by agent {principal.actor.id}.",
-        )
+        if decide_with != DECIDE_RELAYED or REQUESTER_APPROVER not in approvers:
+            return (
+                CODE_DIRECT_ONLY,
+                "This approval must be decided by the person at this agent (decide_with: "
+                f"direct), not relayed by agent {principal.actor.id}.",
+            )
+        if principal.actor.id not in set(relayers):
+            return (
+                CODE_NOT_AN_APPROVER,
+                f"{principal.actor.id} may not relay decisions for this approval.",
+            )
+        return None
     if is_requester(principal, owner):
         allowed = REQUESTER_APPROVER in approvers
     else:
@@ -423,9 +505,32 @@ def decide_refusal(
     return None if allowed else (CODE_NOT_AN_APPROVER, NOT_AN_APPROVER_DETAIL)
 
 
-def may_decide(principal: Principal, owner: ThreadOwner, approvers: Iterable[str]) -> bool:
+def may_decide(
+    principal: Principal,
+    owner: ThreadOwner,
+    approvers: Iterable[str],
+    *,
+    decide_with: str = DECIDE_DIRECT,
+    relayers: Iterable[str] = (),
+) -> bool:
     """Whether `principal` may approve or reject: see `decide_refusal`."""
-    return decide_refusal(principal, owner, approvers) is None
+    refusal = decide_refusal(
+        principal, owner, approvers, decide_with=decide_with, relayers=relayers
+    )
+    return refusal is None
+
+
+def digest_refusal(principal: Principal, record: ApprovalRecord, digest: Any) -> bool:
+    """Whether a decision's `digest` refuses it (409 `approval_digest_mismatch`).
+
+    A delegated decider (a relayer) must name the digest of the view the
+    person approved (`ApprovalRecord.display_digest`); a direct decider may,
+    and a digest it sends is checked too.
+    """
+    if digest is None and principal.actor is None:
+        return False
+    expected = record.display_digest
+    return not (isinstance(digest, str) and expected is not None and digest == expected)
 
 
 def reads_across(principal: Principal) -> bool:
@@ -490,7 +595,8 @@ def _without_call(payload: Mapping[str, Any]) -> dict[str, Any]:
 _COLUMNS = (
     "approval_id, thread_id, run_id, interrupt_id, requester_hash, requester_context, api, "
     "method, path, operation_id, call_hash, tool_call_id, message_id, approvers, payload, "
-    "status, decided_by, decided_at, comment, used_at, created_at, expires_at, requester_actor"
+    "status, decided_by, decided_at, comment, used_at, created_at, expires_at, requester_actor, "
+    "decide_with, relayers, decided_via, display_digest"
 )
 # Clears the call from the payload unless the first parameter is true (TRACE_CAPTURE=full).
 _CLEARED_PAYLOAD = "CASE WHEN %s THEN payload ELSE payload - 'query' - 'body' END"
@@ -521,6 +627,12 @@ def _record_from_row(row: Mapping[str, Any]) -> ApprovalRecord:
         created_at=_as_datetime(row.get("created_at")) or utcnow(),
         expires_at=_as_datetime(row.get("expires_at")) or utcnow(),
         requester_actor=row.get("requester_actor") or "",
+        decide_with=(
+            row["decide_with"] if row.get("decide_with") in DECIDE_WITH_VALUES else DECIDE_DIRECT
+        ),
+        relayers=[str(r) for r in _decode(row.get("relayers")) or []],
+        decided_via=row.get("decided_via"),
+        display_digest=row.get("display_digest"),
     )
 
 
@@ -587,7 +699,7 @@ class ApprovalStore:
             raise self._unreadable(exc) from exc
         try:
             data = json.loads(raw)
-            if not isinstance(data, dict) or data.get("version") != LEDGER_FILE_VERSION:
+            if not isinstance(data, dict) or data.get("version") not in LEDGER_FILE_VERSIONS:
                 raise ValueError(f"not a version {LEDGER_FILE_VERSION} approvals file")
             return [_record_from_row(row) for row in data["approvals"]]
         except Exception as exc:
@@ -729,7 +841,7 @@ class ApprovalStore:
             f"""
             INSERT INTO {self.table} ({_COLUMNS})
             VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
-                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+                    %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             """,
             (
                 record.approval_id,
@@ -755,17 +867,27 @@ class ApprovalStore:
                 record.created_at,
                 record.expires_at,
                 record.requester_actor,
+                record.decide_with,
+                _json(record.relayers),
+                record.decided_via,
+                record.display_digest,
             ),
         )
         return record, True, len(rows)
 
     async def decide(
-        self, approval_id: str, status: str, decided_by: str, comment: str | None
+        self,
+        approval_id: str,
+        status: str,
+        decided_by: str,
+        comment: str | None,
+        decided_via: str | None = None,
     ) -> ApprovalRecord | None:
         """Decide a pending, unexpired approval (`approved` or `rejected`), atomically.
 
         None when it is not pending any more (decided, expired, gone): of two
-        concurrent decisions exactly one gets the record.
+        concurrent decisions exactly one gets the record. `decided_via` is the
+        agent that relayed the decision (None: decided directly).
         """
         if status not in (APPROVED, REJECTED):
             raise ValueError(f"not a decision: {status!r}")
@@ -778,17 +900,28 @@ class ApprovalStore:
                 if record is None or not record.is_pending(now):
                     return None
                 self._close(record, status, now, decided_by=decided_by, comment=comment)
+                record.decided_via = decided_via
             await self._save()
             return record
         row = await self.db.fetchone(
             f"""
             UPDATE {self.table}
                SET status = %s, decided_by = %s, decided_at = %s, comment = %s,
-                   payload = {_CLEARED_PAYLOAD}
+                   decided_via = %s, payload = {_CLEARED_PAYLOAD}
              WHERE approval_id = %s AND status = %s AND expires_at > %s
             RETURNING {_COLUMNS}
             """,
-            (status, decided_by, now, comment, capture_full(), approval_id, PENDING, now),
+            (
+                status,
+                decided_by,
+                now,
+                comment,
+                decided_via,
+                capture_full(),
+                approval_id,
+                PENDING,
+                now,
+            ),
         )
         return _record_from_row(row) if row is not None else None
 

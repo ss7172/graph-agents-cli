@@ -60,7 +60,8 @@ for approval and a data part `{"type": "approval_request", "approval": {...},
 "approvals": [...]}` (the approvals as `/chat`'s `message.end` has them). The
 client answers with a message on the same task whose data part is
 `{"approval_id": "...", "decision": "approve" | "reject", "comment": "..."}`
-(no text needed): the decision goes through the same checks as `POST
+(no text needed; an agent relaying the person's decision adds the approval's
+`digest`): the decision goes through the same checks as `POST
 /threads/{thread_id}/approvals/{approval_id}`, the auth policy's
 `approval.decide` action included (the task's principal is the requester,
 so this works when `requester` is an approver), and the resumed
@@ -146,6 +147,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     CODE_APPROVAL_PENDING,
     COMMENT_MAX_CHARS,
     DECISIONS,
+    DIGEST_MAX_CHARS,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     CUSTOM,
@@ -862,14 +864,16 @@ def decision_problem(data: Any) -> str | None:
     """Why a data part naming an approval is not a valid decision, or None.
 
     A decision is `{"approval_id": str, "decision": "approve" | "reject",
-    "comment": str (optional)}`.
+    "comment": str (optional), "digest": str (optional; an agent relaying the
+    person's decision sends the approval's digest)}`.
     """
     if not isinstance(data, dict):
         return "An approval decision must be an object."
-    unknown = sorted(set(data) - {"approval_id", "decision", "comment"})
+    unknown = sorted(set(data) - {"approval_id", "decision", "comment", "digest"})
     if unknown:
         return (
-            f"An approval decision has only approval_id, decision and comment (not {unknown[0]})."
+            "An approval decision has only approval_id, decision, comment and digest "
+            f"(not {unknown[0]})."
         )
     approval_id = data.get("approval_id")
     if not isinstance(approval_id, str) or not 0 < len(approval_id) <= _APPROVAL_ID_MAX_CHARS:
@@ -879,6 +883,9 @@ def decision_problem(data: Any) -> str | None:
     comment = data.get("comment")
     if comment is not None and (not isinstance(comment, str) or len(comment) > COMMENT_MAX_CHARS):
         return f"comment must be text of at most {COMMENT_MAX_CHARS} characters."
+    digest = data.get("digest")
+    if digest is not None and (not isinstance(digest, str) or len(digest) > DIGEST_MAX_CHARS):
+        return f"digest must be the approval's digest (at most {DIGEST_MAX_CHARS} characters)."
     if any(_has_lone_surrogate(text) for text in _strings(data)):
         return "The approval decision is not valid Unicode text (an unpaired surrogate)."
     return None
@@ -1341,6 +1348,7 @@ class LangGraphAgentExecutor(AgentExecutor):
                     decision["approval_id"],
                     decision["decision"],
                     decision.get("comment"),
+                    digest=decision.get("digest"),
                 )
             except (ApprovalError, ThreadBusy, HTTPException) as exc:
                 await self._decision_refused(updater, thread_id, exc)

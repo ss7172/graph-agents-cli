@@ -116,9 +116,11 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     APPROVE,
     APPROVED,
     CODE_APPROVAL_PENDING,
+    CODE_DIGEST_MISMATCH,
     CODE_EXPIRED,
     CODE_NOT_PENDING,
     DECISIONS,
+    DIGEST_MISMATCH_DETAIL,
     EXPIRED,
     PENDING,
     REJECTED,
@@ -128,6 +130,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     decide_refusal,
     decision_value,
     dev_ledger_path,
+    digest_refusal,
     is_approval_interrupt,
     may_view,
     record_from_interrupt,
@@ -1511,13 +1514,17 @@ class ChatRuntime:
         decision: str,
         comment: str | None = None,
         forward_headers: Mapping[str, str] | None = None,
+        digest: str | None = None,
     ) -> tuple[ThreadLease, Resume, Principal]:
         """Approve or reject a pending approval; the thread's run lock and what to resume.
 
         `ApprovalError` 404 (no such approval on this thread), 403 (the caller
-        may not decide it), 410 (expired), 409 (decided already, or the run no
-        longer waits for it); `ThreadBusy` while a run is in progress on the
-        thread. The decision is one atomic change under the thread's run lock,
+        may not decide it: `not_an_approver`, or `approval_direct_only` for an
+        agent at a gate the person decides directly), 410 (expired), 409
+        (decided already, the run no longer waits for it, or
+        `approval_digest_mismatch`: a relayed decision must name the digest of
+        the call the person saw, and a direct one is checked when it sends
+        one); `ThreadBusy` while a run is in progress on the thread. The decision is one atomic change under the thread's run lock,
         so of two concurrent decisions one wins. Returns the held lease (the
         caller streams the resumed run with it), the resume values and the
         principal the resumed run acts as (the requester, never the decider).
@@ -1538,10 +1545,19 @@ class ChatRuntime:
             thread = await self._thread_record(thread_id, headers)
         if thread is None:
             raise ApprovalError(404, "approval_not_found", "Unknown approval.")
-        refusal = decide_refusal(principal, thread, record.approvers)
+        refusal = decide_refusal(
+            principal,
+            thread,
+            record.approvers,
+            decide_with=record.decide_with,
+            relayers=record.relayers,
+        )
         if refusal is not None:
             raise ApprovalError(403, *refusal)
         self._check_decidable(record)
+        if digest_refusal(principal, record, digest):
+            raise ApprovalError(409, CODE_DIGEST_MISMATCH, DIGEST_MISMATCH_DETAIL)
+        relayed_by = principal.actor.id if principal.actor is not None else None
         lease = await self.acquire_thread(thread_id)
         try:
             with database_errors():
@@ -1557,7 +1573,7 @@ class ChatRuntime:
                         status=EXPIRED,
                     )
                 decided = await self.approvals.decide(
-                    approval_id, verdict, principal.hashed_id(), comment
+                    approval_id, verdict, principal.hashed_id(), comment, decided_via=relayed_by
                 )
                 if decided is None:
                     current = await self.approvals.get(approval_id)
@@ -1588,8 +1604,9 @@ class ChatRuntime:
             await lease.release()
             raise
         logger.info(
-            "approval decided: %s",
+            "approval decided: %s%s",
             verdict,
+            f" (relayed by {relayed_by})" if relayed_by else "",
             extra={"thread_id": thread_id, "approval_id": approval_id},
         )
         acting = resume_principal(decided, thread, principal)
