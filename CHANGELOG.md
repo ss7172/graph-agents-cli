@@ -354,6 +354,12 @@ migration" with the steps to follow.
   salt task, against 1 of 9 with the old text. Tracing for one environment now edits only
   that environment's files and ends with the commands still to run; local tracing edits
   only `.env` and adds none of the LangSmith SDK's own switches.
+- **Approval times read from Postgres are in UTC**, whatever the database session's time zone
+  (`created_at`, `expires_at`, `decided_at`, `used_at`; they came back in that zone, the same
+  instant written differently). An approval now reads back with the very times it was
+  created with, which the A2A client's relay binds in its decision when it reads what a peer
+  waits on from the peer's approvals ledger (the peer lost the task): on a database not set
+  to UTC that decision differed from the one the person approved, and nothing was sent.
 
 ### Fixed
 

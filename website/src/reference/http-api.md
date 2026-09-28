@@ -258,7 +258,7 @@ ends with status `awaiting_approval`. The concepts and the CLI commands are in
 | `digest` | `sha256:<hex>` of the call as shown (api, method, path, operation id, JSON-RPC method and A2A decision, query and body, masked fields masked): a relayed decision must name it. |
 | `nested` | Only for a decision this agent relays to another agent (an A2A message that approves): the other agent's approval it decides, as that agent reported it (`agent`, `approval_id`, `call` with `api`, `method`, `path`, `operation_id`, `query`, `body`, `reason`, `expires_at`, `digest`, `reported_by`, `decide_with`), and in its own `nested` the approval that one relays in turn. Copied from the message the approval binds, so it is exactly what is sent. |
 | `effect` | With `nested`: the call that will actually happen once approved (the innermost `nested` call, the `agent` that makes it, and `via`, the agents between, the called one first), shown first. The approval expires 5 s before the approval it decides, at the latest. Its `query` and `body` (and every `nested` call's) are dropped once decided, as the call's own are. |
-| `created_at`, `expires_at`, `decided_at` | ISO 8601 times. |
+| `created_at`, `expires_at`, `decided_at` | ISO 8601 times in UTC (`+00:00`), whatever the database's time zone. |
 | `comment` | The decider's comment. |
 
 ### Routes

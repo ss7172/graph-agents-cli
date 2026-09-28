@@ -27,11 +27,16 @@ decision). The loop check's idea of "this agent" is pinned to the concierge
   decision reaches orders once, the order is cancelled once, orders records
   `decided_via: concierge`, its waiting task follows, and the token was
   exchanged once for the pair (alice, orders).
+* When orders checks the order against the user's own words, the run alice's
+  relayed approval resumes there checks the words she asked with, not those she
+  said when approving at the concierge.
+* When orders lost the task before alice decided, the relay reads its approvals
+  ledger instead and still sends exactly the decision she approved.
 * With orders' gate at `decide_with: direct`, the concierge relays nothing: it
   says alice must approve at orders, and she does, with her own token there.
 
 Every test runs with the in-memory checkpointer, and on Postgres when
-`TEST_POSTGRES_DSN` is set.
+`TEST_POSTGRES_DSN` is set (its sessions in a time zone other than UTC).
 """
 
 from __future__ import annotations
@@ -185,6 +190,8 @@ async def database(
     name = f"gac_test_{uuid.uuid4().hex[:12]}"
     async with await psycopg.AsyncConnection.connect(ADMIN_DSN, autocommit=True) as admin:
         await admin.execute(f'CREATE DATABASE "{name}"')
+        # Sessions answer in a zone other than UTC (as a server set up on a laptop does).
+        await admin.execute(f"ALTER DATABASE \"{name}\" SET timezone TO 'America/New_York'")
     monkeypatch.setenv("CHECKPOINTER", "postgres")
     monkeypatch.setenv("POSTGRES_DSN", urlsplit(ADMIN_DSN)._replace(path=f"/{name}").geturl())
     yield "postgres"
@@ -258,7 +265,7 @@ async def relayed(
 ) -> AsyncIterator[dict[str, Any]]:
     """orders' cancel gate relays the concierge's decisions (`decide_with: relayed`)."""
     async for agents in _agents(issuer, tmp_path, monkeypatch, use_test_tools, RELAYED):
-        yield agents
+        yield {**agents, "database": database}
 
 
 @pytest.fixture
@@ -398,6 +405,37 @@ async def test_the_run_alice_approves_checks_the_words_she_asked_with(
     resumed = await _approve_relayed(agents, thread, task_id)
     assert _end(resumed)["status"] == "ok", resumed
     assert "refused" not in _results(resumed), _results(resumed)
+    assert [(s.method, s.url.path) for s in SENT] == [("POST", "/orders/1/cancel")]
+
+
+async def test_when_orders_lost_the_task_the_relay_reads_its_ledger_and_sends_once(
+    relayed: dict[str, Any],
+) -> None:
+    """orders loses the task between the relay and alice's decision (A2A_TASK_TTL_S is far
+    shorter than an approval may wait): the resumed relay reads what orders waits on from
+    its approvals ledger instead, which gives the times the task gave, whatever the
+    database's time zone (America/New_York here), so the decision is the one alice approved
+    and the order is cancelled once."""
+    agents = relayed
+    if agents["database"] != "postgres":
+        pytest.skip("the tasks are in process memory")
+    import psycopg
+
+    thread, task_id = await _ask(agents, "needs_user_approval")
+    paused = _end(await _chat(agents, f"approve_agent_action for {task_id}", thread))
+    assert paused["status"] == "awaiting_approval", paused
+    async with await psycopg.AsyncConnection.connect(os.environ["POSTGRES_DSN"]) as conn:
+        cursor = await conn.execute("DELETE FROM a2a_tasks WHERE task_id = %s", (task_id,))
+        assert cursor.rowcount == 1
+        await conn.commit()
+    r = await agents["http"].post(
+        f"/threads/{thread}/approvals/{paused['approval']['approval_id']}",
+        json={"decision": "approve"},
+        headers={"Authorization": f"Bearer {agents['at_concierge']}"},
+    )
+    assert r.status_code == 200, r.text
+    resumed = _events(r.text)
+    assert "differs from the request that was approved" not in _results(resumed), resumed
     assert [(s.method, s.url.path) for s in SENT] == [("POST", "/orders/1/cancel")]
 
 

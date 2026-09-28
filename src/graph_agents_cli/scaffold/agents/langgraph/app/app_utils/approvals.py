@@ -237,12 +237,19 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _as_datetime(value: Any) -> datetime | None:
+    """A stored time as an aware datetime in UTC (naive: read as UTC).
+
+    Postgres answers `timestamptz` in the session's time zone: normalised, an
+    approval reads back with the very times it was written with (`public()`
+    shows them, and a relay that reads the ledger binds them in its decision).
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _json(value: Any) -> str:

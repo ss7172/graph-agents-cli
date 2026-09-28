@@ -29,7 +29,7 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -79,6 +79,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     sees_call,
     utcnow,
 )
+from {{cookiecutter.agent_directory}}.app_utils.approvals import _as_datetime as _as_datetime
 from {{cookiecutter.agent_directory}}.app_utils.approvals import _row_of as _row_of
 from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.db import Database
@@ -131,6 +132,8 @@ def _record(**overrides: Any) -> ApprovalRecord:
 
 
 ADMIN_DSN = os.environ.get("TEST_POSTGRES_DSN", "")
+# The time zone of the test databases' sessions: not UTC.
+DB_TIME_ZONE = "America/New_York"
 
 
 @pytest.fixture(params=["memory", "file", "postgres"])
@@ -152,6 +155,8 @@ async def store(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator
     name = f"gac_test_{uuid.uuid4().hex[:12]}"
     async with await psycopg.AsyncConnection.connect(ADMIN_DSN, autocommit=True) as admin:
         await admin.execute(f'CREATE DATABASE "{name}"')
+        # Sessions answer in a zone other than UTC (as a server set up on a laptop does).
+        await admin.execute(f"ALTER DATABASE \"{name}\" SET timezone TO '{DB_TIME_ZONE}'")
     db = Database("postgres", urlsplit(ADMIN_DSN)._replace(path=f"/{name}").geturl())
     await db.open()
     try:
@@ -270,6 +275,30 @@ async def test_decided_records_drop_the_call_unless_full_capture(
     kept, _, _ = await store.add(_record(interrupt_id="i2"))
     decided = await store.decide(kept.approval_id, APPROVED, "x", None)
     assert decided is not None and decided.payload["body"] == {"reason": "asked"}
+
+
+def test_times_read_from_a_database_are_kept_in_utc() -> None:
+    """A row's times in the session's zone (or naive) read as the same instant in UTC."""
+    for raw in (
+        "2026-09-28T16:17:10.165695-04:00",
+        datetime.fromisoformat("2026-09-28T16:17:10.165695-04:00"),
+        "2026-09-28T20:17:10.165695",
+    ):
+        parsed = _as_datetime(raw)
+        assert parsed is not None and parsed.isoformat() == "2026-09-28T20:17:10.165695+00:00"
+
+
+async def test_times_read_back_are_the_times_written(store: ApprovalStore) -> None:
+    """Whatever the database session's zone (the Postgres store's is not UTC), an approval
+    reads back with the very times it was written with: a relay that reads the approvals
+    ledger binds them into the decision it sends."""
+    record, _, _ = await store.add(_record())
+    got = await store.get(record.approval_id)
+    assert got is not None and got.expires_at.utcoffset() == timedelta(0)
+    for key in ("created_at", "expires_at"):
+        assert got.public()[key] == record.public()[key]
+    decided = await store.decide(record.approval_id, APPROVED, "x", None)
+    assert decided is not None and decided.public()["decided_at"].endswith("+00:00")
 
 
 async def test_an_expired_approval_cannot_be_decided(store: ApprovalStore) -> None:
