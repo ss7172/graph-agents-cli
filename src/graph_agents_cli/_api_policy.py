@@ -163,7 +163,10 @@ _API_KEYS = (
 _OPERATION_KEYS = ("operationId", "path", "methods", RPC_METHOD_KEY, A2A_OPERATION_KEY)
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
-_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
+_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute", "max_response_bytes")
+# `limits.max_response_bytes`: the most a response body may hold (decoded) before the
+# client stops reading it and discards it. Unset: no cap (as in 0.2).
+MAX_RESPONSE_BYTES_LIMIT = 67108864
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
 _EXCHANGE_KEYS = ("audience", "scope", "resource", ALLOW_ACTORLESS_KEY)
@@ -702,13 +705,22 @@ def _pagination_errors(where: str, value: Any) -> list[str]:
 
 def _limits_errors(where: str, value: Any) -> list[str]:
     if not isinstance(value, Mapping) or not value:
-        return [f"{where}: must be a mapping with max_calls_per_run and/or rate_per_minute"]
+        return [
+            f"{where}: must be a mapping with max_calls_per_run, rate_per_minute and/or "
+            "max_response_bytes"
+        ]
     errors = [
         f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_LIMIT_KEYS), key=str)
     ]
     for key in _LIMIT_KEYS:
         if key in value and not _is_positive_int(value[key]):
             errors.append(f"{where}.{key}: must be an integer >= 1")
+    size = value.get("max_response_bytes")
+    if _is_positive_int(size) and size > MAX_RESPONSE_BYTES_LIMIT:
+        errors.append(
+            f"{where}.max_response_bytes: must be an integer from 1 to "
+            f"{MAX_RESPONSE_BYTES_LIMIT} (bytes; 64 MiB at most)"
+        )
     return errors
 
 

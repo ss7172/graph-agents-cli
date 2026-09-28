@@ -272,3 +272,39 @@ def test_show_and_check_name_the_protocol_and_each_json_rpc_call(project: Path) 
     assert calls[("SendMessage", None)]["approval"] is None
     assert data["violations"] == 0
     assert ok("api", "check").exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# limits.max_response_bytes
+# ---------------------------------------------------------------------------
+
+
+def test_the_answer_cap_is_set_kept_and_cleared(project: Path) -> None:
+    ok(*PEER_ADD, "--max-calls-per-run", "12", "--max-response-bytes", "1048576")
+    assert peer(project)["limits"] == {"max_calls_per_run": 12, "max_response_bytes": 1048576}
+    # Another limit's edit keeps the cap (the keys are written in the schema's order).
+    ok("api", "limits", "orders_agent", "--rate-per-minute", "60")
+    assert peer(project)["limits"] == {
+        "max_calls_per_run": 12,
+        "rate_per_minute": 60,
+        "max_response_bytes": 1048576,
+    }
+    raised = ok("api", "limits", "orders_agent", "--max-response-bytes", "2097152")
+    assert "This widens access to orders_agent" in " ".join(raised.output.split())
+    lowered = ok("api", "limits", "orders_agent", "--max-response-bytes", "1024")
+    assert "narrows or keeps access" in lowered.output
+    shown = ok("api", "show", "orders_agent")
+    assert "answers of at most 1024 bytes" in " ".join(shown.output.split())
+    ok("api", "limits", "orders_agent", "--max-response-bytes", "none")
+    assert peer(project)["limits"] == {"max_calls_per_run": 12, "rate_per_minute": 60}
+
+
+def test_an_answer_cap_over_64_mib_is_refused(project: Path) -> None:
+    result = cli(*PEER_ADD, "--max-response-bytes", "67108865")
+    assert result.exit_code == 2 and "67108865 is not in the range 1<=x<=67108864" in result.output
+    ok(*PEER_ADD)
+    before = text(project)
+    result = cli("api", "limits", "orders_agent", "--max-response-bytes", "67108865")
+    assert result.exit_code == 3
+    assert "max_response_bytes: must be an integer from 1 to 67108864" in result.output
+    assert text(project) == before

@@ -43,7 +43,7 @@ apis:
     openapi: specs/orders.yaml        # optional: lint checks calls against it
     timeouts_ms: {connect: 2000, read: 5000}
     pagination: {page_size_param: pageSize, max_page_size: 200}
-    limits: {max_calls_per_run: 20, rate_per_minute: 120}
+    limits: {max_calls_per_run: 20, rate_per_minute: 120, max_response_bytes: 1048576}
     approval:                         # optional: a person approves first
       required_for: {methods: [POST, PATCH, DELETE]}
       approvers: [requester]
@@ -92,7 +92,7 @@ letter (`^[a-z][a-z0-9_]{0,31}$`); tools name it in `get_client("<name>")`.
 | `openapi` | file path | An OpenAPI spec, relative to the project root. `lint` checks declared calls against it, and `api allow`, `api deny` and `api approval --operations` fill in an operation's method and path from it. |
 | `timeouts_ms` | `{connect, read}`; default `{connect: 2000, read: 5000}` | Positive integers, in milliseconds. |
 | `pagination` | `{page_size_param, max_page_size}`; default no cap | Both keys required when present: the query parameter that sets a page size, and its cap (a positive integer). |
-| `limits` | `{max_calls_per_run, rate_per_minute}`; default no limits | At least one key; integers of 1 or more. `max_calls_per_run` counts the calls to this API in one agent run; `rate_per_minute` is a token bucket. Both are per process. |
+| `limits` | `{max_calls_per_run, rate_per_minute, max_response_bytes}`; default no limits | At least one key; integers of 1 or more. `max_calls_per_run` counts the calls to this API in one agent run; `rate_per_minute` is a token bucket; both are per process. `max_response_bytes` (at most 67108864, 64 MiB) caps each answer: its body is read, decoded, only up to that many bytes, and past it the answer is discarded and the call fails. |
 | [`approval`](#approval) | a rule, or a list of rules; default no approval | Calls a person approves before they are sent. |
 
 `auth: forward` sends `attributes["credentials"][<api name>]` of the caller's principal, which
@@ -394,7 +394,7 @@ Requests
 
 Limits
 :   Counted last, just before sending; a call over a limit is refused with a reason the
-    model reads.
+    model reads. An answer over `max_response_bytes` is discarded as it is read.
 
 A denial or an allow by `operationId` alone matches only the label a tool passes. Pin `path`
 too, or record `openapi:` so the `api` commands pin it for you

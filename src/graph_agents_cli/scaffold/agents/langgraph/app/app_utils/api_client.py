@@ -68,7 +68,9 @@ outside any run share one count), and `rate_per_minute` is a token bucket per
 process, so each replica allows that rate. Counters are dropped when a `/chat`
 or A2A run ends (`end_run`), and otherwise (LangGraph Server runs included)
 after `RUN_COUNTER_TTL_S` without a call or beyond `MAX_TRACKED_RUNS` runs, so
-memory does not grow across runs.
+memory does not grow across runs. `limits.max_response_bytes` caps each answer:
+the body is read (decoded) up to that many bytes and discarded past it, and the
+call fails; unset, answers are not capped.
 
 An API's optional `approval` block names the calls a human must approve before
 they are sent (`gated`, `ApiPolicy.gate`). It is one rule, or a list of rules
@@ -267,7 +269,10 @@ _API_KEYS = (
 _OPERATION_KEYS = ("operationId", "path", "methods", RPC_METHOD_KEY, A2A_OPERATION_KEY)
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
-_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
+_LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute", "max_response_bytes")
+# `limits.max_response_bytes`: the most a response body may hold (decoded) before the
+# client stops reading it and discards it. Unset: no cap (as in 0.2).
+MAX_RESPONSE_BYTES_LIMIT = 67108864
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
 _EXCHANGE_KEYS = ("audience", "scope", "resource", ALLOW_ACTORLESS_KEY)
@@ -806,13 +811,22 @@ def _pagination_errors(where: str, value: Any) -> list[str]:
 
 def _limits_errors(where: str, value: Any) -> list[str]:
     if not isinstance(value, Mapping) or not value:
-        return [f"{where}: must be a mapping with max_calls_per_run and/or rate_per_minute"]
+        return [
+            f"{where}: must be a mapping with max_calls_per_run, rate_per_minute and/or "
+            "max_response_bytes"
+        ]
     errors = [
         f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_LIMIT_KEYS), key=str)
     ]
     for key in _LIMIT_KEYS:
         if key in value and not _is_positive_int(value[key]):
             errors.append(f"{where}.{key}: must be an integer >= 1")
+    size = value.get("max_response_bytes")
+    if _is_positive_int(size) and size > MAX_RESPONSE_BYTES_LIMIT:
+        errors.append(
+            f"{where}.max_response_bytes: must be an integer from 1 to "
+            f"{MAX_RESPONSE_BYTES_LIMIT} (bytes; 64 MiB at most)"
+        )
     return errors
 
 
@@ -1701,6 +1715,10 @@ class ApiCallError(Exception):
         self.body = body
         # Why nothing was sent (a fixed phrase, never a value), for the log line.
         self.reason = reason
+
+
+class ResponseTooLarge(Exception):
+    """A response body over the API's `limits.max_response_bytes` (the client discards it)."""
 
 
 def error_body_excerpt(text: str, secrets: tuple[str, ...] = ()) -> str:
@@ -2962,7 +2980,9 @@ class ApiClient:
         path prefix (`https://host/v2`); `path` is joined under it.
         `json_body` is sent as JSON with any method the policy allows. The
         API's `limits` are counted last, just before sending. Redirects are
-        never followed. An empty response body returns "". Raises
+        never followed. With `limits.max_response_bytes`, the body is read
+        only up to that many bytes (decoded): past it the response is
+        discarded and `ApiCallError` raised. An empty response body returns "". Raises
         `ApiPolicyError` (nothing sent) or `ApiCallError` (with `status_code`
         and a bounded `body` for a non-2xx response).
 
@@ -3034,14 +3054,27 @@ class ApiClient:
             )
             raise
         started = time.perf_counter()
+        cap = self.response_cap()
         async with httpx.AsyncClient(
             transport=self._transport, timeout=self.timeout(), follow_redirects=False
         ) as client:
             try:
-                response = await client.request(
-                    method, url, params=query, json=json_body, headers=request_headers
-                )
+                if cap is None:
+                    response = await client.request(
+                        method, url, params=query, json=json_body, headers=request_headers
+                    )
+                else:
+                    request = client.build_request(
+                        method, url, params=query, json=json_body, headers=request_headers
+                    )
+                    response = await self._send_capped(client, request, cap)
                 response.raise_for_status()
+            except ResponseTooLarge:
+                self._log_call(label, "too large", started, log_fields, failed=True)
+                raise ApiCallError(
+                    f"{self.name} answered with more than {cap} bytes; discarded",
+                    reason="response over limits.max_response_bytes",
+                ) from None
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 self._log_call(label, status, started, log_fields, failed=True)
@@ -3067,6 +3100,46 @@ class ApiClient:
                     status_code=response.status_code,
                 ) from exc
         return response.text
+
+    def response_cap(self) -> int | None:
+        """`limits.max_response_bytes`: the most a response body may hold, or None (no cap)."""
+        cap = (self.settings.get("limits") or {}).get("max_response_bytes")
+        return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None
+
+    @staticmethod
+    async def _send_capped(
+        client: httpx.AsyncClient, request: httpx.Request, cap: int
+    ) -> httpx.Response:
+        """Send `request` and read at most `cap` bytes of its body (decoded, as the tool gets
+        it); `ResponseTooLarge` past that, with the rest never read. A declared
+        `Content-Length` over the cap (an uncompressed body) is refused before reading."""
+        response = await client.send(request, stream=True)
+        try:
+            encoded = response.headers.get("content-encoding", "identity").strip().lower()
+            declared = response.headers.get("content-length", "")
+            if encoded in ("", "identity") and declared.isdigit() and int(declared) > cap:
+                raise ResponseTooLarge
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > cap:
+                    raise ResponseTooLarge
+                chunks.append(chunk)
+        finally:
+            await response.aclose()
+        # The body as read (decoded): a response that holds it, for the usual handling.
+        headers = [
+            (name, value)
+            for name, value in response.headers.multi_items()
+            if name.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+        ]
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            content=b"".join(chunks),
+            request=request,
+        )
 
     def _prepare(
         self,

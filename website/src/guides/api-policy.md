@@ -449,6 +449,11 @@ graph-agents-cli api limits orders --max-calls-per-run 20 --rate-per-minute 120
 - A call over a limit is refused before it is sent, with a reason the model reads. A run's
   counters are dropped when its `/chat` or A2A run ends, and otherwise after an hour without a
   call (at most 10 000 runs are tracked).
+- `max_response_bytes` caps each answer (`api limits orders --max-response-bytes 1048576`, up
+  to 64 MiB): the client reads the body, decoded, only up to that many bytes, and past it
+  discards the answer and the call fails (`orders answered with more than 1048576 bytes;
+  discarded`), a compressed body that decodes larger included. Unset, answers are not capped,
+  as before.
 - `none` removes a limit: `api limits orders --rate-per-minute none`.
 
 !!! warning "Limits are per process"

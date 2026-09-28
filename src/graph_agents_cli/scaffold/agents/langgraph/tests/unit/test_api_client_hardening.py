@@ -20,6 +20,7 @@ Requests go to an httpx MockTransport; nothing leaves the process.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -518,3 +519,100 @@ def test_the_transport_rule_leaves_other_apis_alone(monkeypatch: pytest.MonkeyPa
     for auth in ("bearer", "forward", "exchange"):
         assert _peer_client(auth, "http://api.example.com", monkeypatch).base_url()
     assert _peer_client("none", "http://api.example.com", monkeypatch, protocol="a2a").base_url()
+
+
+# --- limits.max_response_bytes ----------------------------------------------------------------
+
+CAP_POLICY = """
+apis:
+  capped:
+    base_url_env: CAPPED_URL
+    auth: none
+    allowed_methods: [GET, POST]
+    limits: {max_response_bytes: 1024}
+  open:
+    base_url_env: OPEN_URL
+    auth: none
+    allowed_methods: [GET]
+"""
+
+
+@pytest.fixture
+def capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    path = tmp_path / "api-policy.yaml"
+    path.write_text(CAP_POLICY, encoding="utf-8")
+    monkeypatch.setenv("API_POLICY_PATH", str(path))
+    monkeypatch.setenv("CAPPED_URL", "http://capped.test")
+    monkeypatch.setenv("OPEN_URL", "http://open.test")
+    reset_policy_cache()
+    yield
+    reset_policy_cache()
+
+
+class _Chunks(httpx.AsyncByteStream):
+    """A body sent in chunks, without Content-Length; counts how much was read."""
+
+    def __init__(self, *chunks: bytes) -> None:
+        self.chunks = chunks
+        self.read = 0
+
+    async def __aiter__(self) -> Any:
+        for chunk in self.chunks:
+            self.read += 1
+            yield chunk
+
+
+def _answer(response: httpx.Response) -> httpx.MockTransport:
+    return httpx.MockTransport(lambda request: response)
+
+
+async def test_max_response_bytes(capped: None, caplog: pytest.LogCaptureFixture) -> None:
+    """Answers up to the cap are the tool's as before; past it the body is discarded and the
+    call fails, whatever its encoding, before the rest of it is read."""
+    import gzip
+
+    def client(response: httpx.Response) -> Any:
+        return get_client("capped", transport=_answer(response))
+
+    assert await client(httpx.Response(200, json={"ok": True})).get("/x") == {"ok": True}
+    assert await client(httpx.Response(200, text="a" * 1024)).get("/x") == "a" * 1024
+    zipped = gzip.compress(json.dumps({"n": "b" * 900}).encode())
+    compressed = httpx.Response(
+        200,
+        content=zipped,
+        headers={"content-encoding": "gzip", "content-type": "application/json"},
+    )
+    assert await client(compressed).get("/x") == {"n": "b" * 900}
+
+    too_large = "capped answered with more than 1024 bytes; discarded"
+    stream = _Chunks(b"a" * 600, b"a" * 600, b"a" * 600)
+    with caplog.at_level(logging.WARNING), pytest.raises(ApiCallError) as refused:
+        await client(httpx.Response(200, stream=stream)).get("/x")
+    assert str(refused.value) == too_large and refused.value.status_code is None
+    assert stream.read == 2  # stopped at the chunk that crossed the cap
+    assert "too large" in caplog.text
+    # A declared Content-Length over the cap is refused before anything is read.
+    declared = _Chunks(b"a" * 10)
+    with pytest.raises(ApiCallError, match=too_large):
+        await client(httpx.Response(200, headers={"content-length": "4096"}, stream=declared)).get(
+            "/x"
+        )
+    assert declared.read == 0
+    # A small compressed body that decodes past the cap (a decompression bomb).
+    bomb = httpx.Response(
+        200, content=gzip.compress(b"z" * 100_000), headers={"content-encoding": "gzip"}
+    )
+    with pytest.raises(ApiCallError, match=too_large):
+        await client(bomb).get("/x")
+    # An error answer: its status and reason within the cap, discarded past it.
+    with pytest.raises(ApiCallError) as failed:
+        await client(httpx.Response(409, text="order already shipped")).post("/x", json_body={})
+    assert failed.value.status_code == 409 and failed.value.body == "order already shipped"
+    with pytest.raises(ApiCallError, match=too_large):
+        await client(httpx.Response(500, text="e" * 5000)).get("/x")
+
+
+async def test_without_a_cap_answers_are_read_whole(capped: None) -> None:
+    body = "c" * 3_000_000
+    client = get_client("open", transport=_answer(httpx.Response(200, text=body)))
+    assert await client.get("/x") == body

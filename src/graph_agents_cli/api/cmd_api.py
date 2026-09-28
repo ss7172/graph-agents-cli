@@ -61,6 +61,7 @@ from graph_agents_cli._api_policy import (
     HEADER_AUTH_MODES,
     HTTP_METHODS,
     MAX_APPROVAL_TIMEOUT_S,
+    MAX_RESPONSE_BYTES_LIMIT,
     MIN_APPROVAL_TIMEOUT_S,
     POLICY_FILENAME,
     PROTOCOL_A2A,
@@ -633,6 +634,13 @@ def _openapi_reference(
     help="Limit: calls per minute, per process (replica).",
 )
 @click.option(
+    "--max-response-bytes",
+    type=click.IntRange(min=1, max=MAX_RESPONSE_BYTES_LIMIT),
+    default=None,
+    metavar="N",
+    help="Limit: the most an answer may hold, in bytes (larger answers are discarded).",
+)
+@click.option(
     "--connect-timeout-ms",
     type=click.IntRange(min=1),
     default=None,
@@ -665,6 +673,7 @@ def cmd_add(
     openapi: Path | None,
     max_calls_per_run: int | None,
     rate_per_minute: int | None,
+    max_response_bytes: int | None,
     connect_timeout_ms: int | None,
     read_timeout_ms: int | None,
     dry_run: bool,
@@ -749,7 +758,9 @@ def cmd_add(
             "connect": connect_timeout_ms or defaults["connect"],
             "read": read_timeout_ms or defaults["read"],
         }
-    limits = ch.new_limits(None, max_calls_per_run or "keep", rate_per_minute or "keep")
+    limits = ch.new_limits(
+        None, max_calls_per_run or "keep", rate_per_minute or "keep", max_response_bytes or "keep"
+    )
     if limits:
         api["limits"] = limits
     document = ch.with_api(project.document, name, api)
@@ -1355,17 +1366,32 @@ def cmd_revoke(
     metavar="N|none",
     help="Calls per minute, per process (replica); none removes the limit.",
 )
+@click.option(
+    "--max-response-bytes",
+    "max_bytes",
+    default=None,
+    metavar="N|none",
+    help=(
+        f"The most an answer may hold, in bytes (1-{MAX_RESPONSE_BYTES_LIMIT}; larger answers "
+        "are discarded); none removes the cap."
+    ),
+)
 @_dry_run_option
-def cmd_limits(name: str, max_calls: str | None, rate: str | None, dry_run: bool) -> None:
-    """Set or clear an API's call limits (max calls per run, rate per minute)."""
-    if max_calls is None and rate is None:
-        raise click.UsageError("give --max-calls-per-run and/or --rate-per-minute (N or none)")
+def cmd_limits(
+    name: str, max_calls: str | None, rate: str | None, max_bytes: str | None, dry_run: bool
+) -> None:
+    """Set or clear an API's limits (max calls per run, rate per minute, answer size)."""
+    if max_calls is None and rate is None and max_bytes is None:
+        raise click.UsageError(
+            "give --max-calls-per-run, --rate-per-minute and/or --max-response-bytes (N or none)"
+        )
     max_calls_value = ch.parse_limit(max_calls, "--max-calls-per-run")
     rate_value = ch.parse_limit(rate, "--rate-per-minute")
+    max_bytes_value = ch.parse_limit(max_bytes, "--max-response-bytes")
     project = _load_project()
     api = project.api(name)
     current = api.get("limits")
-    new = ch.new_limits(current, max_calls_value, rate_value)
+    new = ch.new_limits(current, max_calls_value, rate_value, max_bytes_value)
     if new == (dict(current) if current else None):
         Console().print(f"{name}'s limits are already {ch.describe_limits(current)}.")
         return

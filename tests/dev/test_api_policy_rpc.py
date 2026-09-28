@@ -994,3 +994,40 @@ def test_deriving_what_a_request_is_fails_closed(rules: ModuleType, seed: int) -
         else:
             assert rpc.a2a_operation is None
     assert outcomes == {"refused", None, "approve", "reject"}
+
+
+# --- limits.max_response_bytes -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("size", [1, 1048576, 67108864])
+def test_an_answer_cap_within_64_mib_is_valid(size: int, runtime: ModuleType) -> None:
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["GET"]}
+    assert _errors(_doc(a={**api, "limits": {"max_response_bytes": size}}), runtime) == []
+    peer = _peer(limits={"max_calls_per_run": 12, "max_response_bytes": size})
+    assert _errors(_doc(orders_agent=peer), runtime) == []
+
+
+@pytest.mark.parametrize(
+    ("size", "message"),
+    [
+        (0, "apis.a.limits.max_response_bytes: must be an integer >= 1"),
+        ("1024", "apis.a.limits.max_response_bytes: must be an integer >= 1"),
+        (True, "apis.a.limits.max_response_bytes: must be an integer >= 1"),
+        (
+            67108865,
+            "apis.a.limits.max_response_bytes: must be an integer from 1 to 67108864 (bytes; "
+            "64 MiB at most)",
+        ),
+    ],
+)
+def test_a_bad_answer_cap_is_refused(size: Any, message: str, runtime: ModuleType) -> None:
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["GET"]}
+    assert _errors(_doc(a={**api, "limits": {"max_response_bytes": size}}), runtime) == [message]
+
+
+def test_the_limits_message_names_every_key(runtime: ModuleType) -> None:
+    api = {"base_url_env": "A", "auth": "none", "allowed_methods": ["GET"], "limits": {}}
+    assert _errors(_doc(a=api), runtime) == [
+        "apis.a.limits: must be a mapping with max_calls_per_run, rate_per_minute and/or "
+        "max_response_bytes"
+    ]

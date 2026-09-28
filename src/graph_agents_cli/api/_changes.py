@@ -437,19 +437,28 @@ def parse_limit(value: str | None, option: str) -> int | str | None:
     return number
 
 
+LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute", "max_response_bytes")
+
+
 def new_limits(
-    current: Mapping[str, Any] | None, max_calls: int | str | None, rate: int | str | None
+    current: Mapping[str, Any] | None,
+    max_calls: int | str | None,
+    rate: int | str | None,
+    max_bytes: int | str | None = "keep",
 ) -> dict[str, int] | None:
-    """The ``limits`` mapping after the change; None when no limit is left."""
+    """The ``limits`` mapping after the change; None when no limit is left.
+
+    ``"keep"`` leaves a limit as it is, None removes it; the other keys stay.
+    """
     limits = dict(current or {})
-    for key, value in (("max_calls_per_run", max_calls), ("rate_per_minute", rate)):
+    for key, value in zip(LIMIT_KEYS, (max_calls, rate, max_bytes), strict=True):
         if value == "keep":
             continue
         if value is None:
             limits.pop(key, None)
         else:
             limits[key] = value
-    ordered = {k: limits[k] for k in ("max_calls_per_run", "rate_per_minute") if k in limits}
+    ordered = {k: limits[k] for k in LIMIT_KEYS if k in limits}
     return ordered or None
 
 
@@ -461,6 +470,8 @@ def describe_limits(limits: Mapping[str, Any] | None) -> str:
         parts.append(f"{limits['max_calls_per_run']} call(s) per run")
     if "rate_per_minute" in limits:
         parts.append(f"{limits['rate_per_minute']} per minute per replica")
+    if "max_response_bytes" in limits:
+        parts.append(f"answers of at most {limits['max_response_bytes']} bytes")
     return ", ".join(parts)
 
 
