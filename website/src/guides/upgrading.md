@@ -247,7 +247,12 @@ project after `scaffold upgrade`:
   is decided exactly as before. Under `langgraph dev` the approvals file is read as version 1
   and written as version 2.
 - **`api-policy.yaml` is unchanged.** `decide_with` and `relayers` are optional; an approval
-  rule without them decides `direct`.
+  rule without them decides `direct`. One exception needs your edit: an `auth: forward` API
+  that can never send a credential (under `shared-bearer`, under `jwt` without
+  `forward_audience`, or under the `langgraph-server` runtime) now stops the app from starting
+  outside `APP_ENV=dev`, as `lint` reports it (exit 3). Every call to such an API already
+  failed with "the caller has no credential". Give it `forward_audience`, move it to
+  `auth: exchange`, or remove it; under `APP_ENV=dev` the app logs why and starts.
 - **`jwt` reads the `act` claim.** A token carrying one is an agent's for the user, and is
   refused (403) until `AUTH_ALLOWED_ACTORS` lists that agent. Set `AUTH_JWT_ACTOR_CLAIM=`
   (empty) to read every token as the user's own, as 0.2 did. Every other principal, and every

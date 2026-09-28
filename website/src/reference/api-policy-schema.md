@@ -137,7 +137,7 @@ Validation messages (the same from `lint`, `api` and the running agent):
 `exchange` or `forward` under `shared-bearer`, `forward` under `jwt` without
 `forward_audience`, and either under `langgraph-server` are errors, and an API with
 `allow_actorless: true` gets a note naming what the agent behind it must set. The app refuses
-`exchange` at startup where it cannot work.
+to start with either where it cannot work, outside `APP_ENV=dev`.
 
 ## Operation entries
 

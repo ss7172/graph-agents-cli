@@ -239,8 +239,8 @@ user's token for both agents: the caller's own token is forwarded only when its 
 Prefer `auth: exchange`: each token is good for one audience, briefly.
 
 Which modes work with which [auth policy](authentication.md) and runtime (`lint` and `api add`
-refuse the rest; the app refuses `exchange` at startup where it cannot work, outside
-`APP_ENV=dev`, and logs a warning for such a `forward` API):
+refuse the rest, and the app refuses to start with one outside `APP_ENV=dev`; under dev it
+logs why and starts, and the calls to that API fail):
 
 | `auth` | `shared-bearer` | `jwt` | `custom` | runtime `langgraph-server` |
 |---|---|---|---|---|

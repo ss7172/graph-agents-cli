@@ -323,20 +323,19 @@ def compatibility(
     auth_policy: str,
     runtime: str,
     apis: Mapping[str, Mapping[str, Any]] | None = None,
-) -> tuple[list[str], list[str]]:
+) -> list[str]:
     """The api-policy's identity-carrying APIs against this auth policy and runtime.
 
-    Returns `(problems, warnings)`. Problems (the startup refuses them outside
-    `APP_ENV=dev`): an `auth: exchange` API under `shared-bearer` (no user token
-    to exchange) or under langgraph-server (the server persists the run
-    context, so the user's token would be stored). Warnings, logged: an
-    `auth: forward` API under `shared-bearer`, under `jwt` without
-    `forward_audience`, or under langgraph-server, whose every call fails for
-    want of a credential (0.2 projects keep starting with one).
+    The problems (the startup refuses them outside `APP_ENV=dev` and logs them
+    under dev; `lint` and `api add` report the same cells as errors): an
+    `auth: exchange` API under `shared-bearer` (no user token to exchange) or
+    under langgraph-server (the server persists the run context, so the user's
+    token would be stored), and an `auth: forward` API under `shared-bearer`,
+    under `jwt` without `forward_audience`, or under langgraph-server, whose
+    every call fails for want of a credential.
     """
     apis = _policy_apis() if apis is None else apis
     problems: list[str] = []
-    warnings: list[str] = []
     exchange = _names(apis, lambda a: a.get("auth") == "exchange")
     forward = _names(apis, lambda a: a.get("auth") == "forward")
     if exchange and auth_policy == SHARED_BEARER:
@@ -350,33 +349,32 @@ def compatibility(
             "LangGraph Server persists the run context, so the user's token would be stored"
         )
     if forward and auth_policy == SHARED_BEARER:
-        warnings.append(
+        problems.append(
             f"auth: forward (apis: {forward}) under AUTH_POLICY=shared-bearer: there is no user "
             "credential to forward, so every call to it fails"
         )
     unaimed = _names(apis, lambda a: a.get("auth") == "forward" and "forward_audience" not in a)
     if unaimed and auth_policy == JWT:
-        warnings.append(
+        problems.append(
             f"auth: forward (apis: {unaimed}) under AUTH_POLICY=jwt without forward_audience: jwt "
             "sets no per-API credential, so every call to it fails; set forward_audience (the "
             "caller's token must be minted for that audience too), or prefer auth: exchange"
         )
     if forward and runtime == LANGGRAPH_SERVER:
-        warnings.append(
+        problems.append(
             f"auth: forward (apis: {forward}) is not supported with runtime langgraph-server: "
             "the server's run context carries no credentials, so every call to it fails"
         )
-    return problems, warnings
+    return problems
 
 
 def startup_problems(auth_policy: str, runtime: str | None = None) -> list[str]:
-    """What stops startup outside `APP_ENV=dev` (`auth.check_startup`): the refused
-    cells of the compatibility matrix, and an `auth: exchange` API without the
-    issuer's token endpoint or this agent's client. The warnings are logged."""
+    """What stops startup outside `APP_ENV=dev` (`auth.check_startup`, which logs it
+    under dev): the refused cells of the compatibility matrix, and an
+    `auth: exchange` API without the issuer's token endpoint or this agent's
+    client."""
     apis = _policy_apis()
-    problems, warnings = compatibility(auth_policy, runtime or server_runtime(), apis)
-    for warning in warnings:
-        logger.warning("api-policy: %s", warning)
+    problems = compatibility(auth_policy, runtime or server_runtime(), apis)
     exchange = _names(apis, lambda a: a.get("auth") == "exchange")
     if exchange:
         try:

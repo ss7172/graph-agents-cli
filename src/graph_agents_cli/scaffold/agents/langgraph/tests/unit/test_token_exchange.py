@@ -35,6 +35,8 @@ from urllib.parse import parse_qs, unquote
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from {{cookiecutter.agent_directory}}.app_utils import api_client, metrics, token_exchange
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
@@ -860,38 +862,44 @@ def test_the_defaults() -> None:
 # The compatibility matrix and the startup checks
 # ---------------------------------------------------------------------------
 
+# A public key for the jwt policy of a startup check (no token is verified with it).
+JWT_PUBLIC_KEY = (
+    rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    .public_key()
+    .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    .decode()
+)
 EXCHANGE_API = {"auth": "exchange", "exchange": {"audience": "orders"}}
 FORWARD_API = {"auth": "forward"}
 AIMED_FORWARD_API = {"auth": "forward", "forward_audience": "orders"}
 
 
 @pytest.mark.parametrize(
-    ("apis", "auth_policy", "runtime", "problem", "warning"),
+    ("apis", "auth_policy", "runtime", "problem"),
     [
-        ({"p": EXCHANGE_API}, "jwt", "fastapi", None, None),
-        ({"p": EXCHANGE_API}, "custom", "fastapi", None, None),
-        ({"p": EXCHANGE_API}, "shared-bearer", "fastapi", "shared-bearer has no user token", None),
-        ({"p": EXCHANGE_API}, "jwt", "langgraph-server", "persists the run context", None),
-        ({"p": FORWARD_API}, "custom", "fastapi", None, None),
-        ({"p": AIMED_FORWARD_API}, "jwt", "fastapi", None, None),
-        ({"p": FORWARD_API}, "jwt", "fastapi", None, "without forward_audience"),
-        ({"p": FORWARD_API}, "shared-bearer", "fastapi", None, "no user credential to forward"),
-        ({"p": FORWARD_API}, "custom", "langgraph-server", None, "carries no credentials"),
+        ({"p": EXCHANGE_API}, "jwt", "fastapi", None),
+        ({"p": EXCHANGE_API}, "custom", "fastapi", None),
+        ({"p": EXCHANGE_API}, "shared-bearer", "fastapi", "shared-bearer has no user token"),
+        ({"p": EXCHANGE_API}, "jwt", "langgraph-server", "persists the run context"),
+        ({"p": FORWARD_API}, "custom", "fastapi", None),
+        ({"p": AIMED_FORWARD_API}, "jwt", "fastapi", None),
+        # The forward rows refuse at startup too (the owner's decision of 2026-09-28).
+        ({"p": FORWARD_API}, "jwt", "fastapi", "without forward_audience"),
+        ({"p": FORWARD_API}, "shared-bearer", "fastapi", "no user credential to forward"),
+        ({"p": FORWARD_API}, "custom", "langgraph-server", "carries no credentials"),
         (
             {"p": {"auth": "bearer"}, "q": {"auth": "none"}},
             "shared-bearer",
             "langgraph-server",
             None,
-            None,
         ),
     ],
 )
 def test_the_compatibility_matrix(
-    apis: dict[str, Any], auth_policy: str, runtime: str, problem: str | None, warning: str | None
+    apis: dict[str, Any], auth_policy: str, runtime: str, problem: str | None
 ) -> None:
-    problems, warnings = compatibility(auth_policy, runtime, apis)
+    problems = compatibility(auth_policy, runtime, apis)
     assert [problem in p for p in problems] == ([True] if problem else [])
-    assert [warning in w for w in warnings] == ([True] if warning else [])
 
 
 @pytest.fixture
@@ -949,26 +957,64 @@ def test_check_startup_refuses_outside_dev_and_logs_under_dev(
         auth.reset_policy_cache()
 
 
-def test_a_forward_api_that_cannot_work_is_only_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    ("api", "auth_policy", "runtime", "problem"),
+    [
+        ("auth: forward", "shared-bearer", "fastapi", "no user credential to forward"),
+        ("auth: forward", "jwt", "fastapi", "without forward_audience"),
+        ("auth: forward", "custom", "langgraph-server", "the server's run context carries no"),
+    ],
+)
+def test_a_forward_api_that_cannot_work_refuses_startup_outside_dev(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    api: str,
+    auth_policy: str,
+    runtime: str,
+    problem: str,
 ) -> None:
-    """0.2 projects keep starting: such an API's calls already fail with 'no credential'."""
+    """The owner's decision of 2026-09-28: such an API's every call fails ('no credential'),
+    so outside APP_ENV=dev the app does not start with it (lint and api add already refuse
+    it); under dev it starts and says why."""
     from {{cookiecutter.agent_directory}}.app_utils import auth
 
     path = tmp_path / "api-policy.yaml"
     path.write_text(
-        "apis:\n  me:\n    base_url_env: ME_URL\n    auth: forward\n    allowed_methods: [GET]\n"
+        f"apis:\n  me:\n    base_url_env: ME_URL\n    {api}\n    allowed_methods: [GET]\n"
     )
     monkeypatch.setenv("API_POLICY_PATH", str(path))
-    monkeypatch.setenv("AUTH_POLICY", "shared-bearer")
-    monkeypatch.setenv("API_KEY", "k")
+    monkeypatch.setenv("AUTH_POLICY", auth_policy)
+    monkeypatch.setenv("RUNTIME", runtime)
     monkeypatch.delenv("APP_ENV", raising=False)
+    policies = {
+        "shared-bearer": {"API_KEY": "k"},
+        "jwt": {
+            "AUTH_JWT_PUBLIC_KEY": JWT_PUBLIC_KEY,
+            "AUTH_JWT_ISSUER": "https://issuer.test",
+            "AUTH_JWT_AUDIENCE": "me",
+        },
+        "custom": {},
+    }
+    for name, value in policies[auth_policy].items():
+        monkeypatch.setenv(name, value)
     reset_policy_cache()
     auth.reset_policy_cache()
     try:
+        probe = getattr(auth.get_policy(), "startup_problems", None)
+        if callable(probe) and probe():
+            pytest.skip(f"the {auth_policy} policy itself is not configured here: {probe()}")
+        with pytest.raises(RuntimeError) as exc:
+            auth.check_startup()
+        assert str(exc.value).startswith(
+            "api-policy.yaml cannot work with this configuration, refusing to start: "
+        )
+        assert problem in str(exc.value)
+        monkeypatch.setenv("APP_ENV", "dev")
         with caplog.at_level(logging.WARNING):
             auth.check_startup()
-        assert "no user credential to forward" in caplog.text
+        [record] = [r for r in caplog.records if problem in r.getMessage()]
+        assert "APP_ENV=dev: starting anyway" in record.getMessage()
     finally:
         auth.reset_policy_cache()
         reset_policy_cache()

@@ -138,9 +138,14 @@ migration" with the steps to follow.
 - **`lint` and `api add` check each API's `auth` against the project's auth policy.**
   `auth: exchange` or `auth: forward` under `shared-bearer`, and `auth: forward` under `jwt`
   without `forward_audience`, are errors (exit 3): such an API never had a credential to send,
-  so every call to it failed with "the caller has no credential". The running app only logs a
-  warning at startup for such a `forward` API, and still starts. `lint` and `api add` also note
-  a `forward` API with `forward_audience` under `jwt` ("prefer auth: exchange").
+  so every call to it failed with "the caller has no credential". Outside `APP_ENV=dev` the
+  running app now refuses to start with such an API too, as it does for `auth: exchange` (the
+  owner's decision of 2026-09-28; also `auth: forward` under the `langgraph-server` runtime);
+  under dev it logs why and starts. **Migration:** a 0.2 project with such a `forward` API
+  stops starting outside dev after the upgrade until the API gets `forward_audience`, moves to
+  `auth: exchange` or is removed (`scaffold upgrade` never rewrites `api-policy.yaml`, and
+  `lint` names the API). `lint` and `api add` also note a `forward` API with
+  `forward_audience` under `jwt` ("prefer auth: exchange").
 
 - **`jwt` reads the `act` claim.** A token carrying it is an agent's for the user, refused
   (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=` (empty) to

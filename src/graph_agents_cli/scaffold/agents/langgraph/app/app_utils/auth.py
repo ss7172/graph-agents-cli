@@ -1401,8 +1401,10 @@ def check_startup() -> AuthPolicy:
     APIs of api-policy.yaml that act with the caller's identity where they
     cannot (`token_exchange.startup_problems`: an `auth: exchange` API under
     shared-bearer or langgraph-server, or without `TOKEN_EXCHANGE_URL`,
-    `TOKEN_EXCHANGE_CLIENT_ID` and `TOKEN_EXCHANGE_CLIENT_SECRET`; under dev
-    they are logged and the calls to those APIs fail).
+    `TOKEN_EXCHANGE_CLIENT_ID` and `TOKEN_EXCHANGE_CLIENT_SECRET`; an
+    `auth: forward` API under shared-bearer, under jwt without
+    `forward_audience`, or under langgraph-server; under dev they are logged,
+    the app starts and the calls to those APIs fail).
     """
     policy = get_policy()
     probe = getattr(policy, "startup_problems", None)
