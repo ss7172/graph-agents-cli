@@ -802,6 +802,9 @@ Low · api-policy · found in the A2A multi-agent experiment
   to the same endpoint under another label, until someone edits the entry by hand.
 - **Workaround:** Add `path` and `methods` to the gate's entry by hand, or record the API's
   OpenAPI spec before running `api approval`.
+- **0.3:** Closed for `protocol: jsonrpc|a2a` APIs: their gates name `rpc_method` or
+  `a2a_operation`, which the client reads from the request body, never from the tool's label,
+  and a label naming an entry for another request is refused. Unchanged for `http` APIs.
 ### KI-130: `lint` accepts a tools module that declares no `API_CALLS`
 
 Low · api-policy · found in the skill-optimisation experiment

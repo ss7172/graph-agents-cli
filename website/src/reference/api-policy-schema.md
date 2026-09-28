@@ -77,6 +77,9 @@ letter (`^[a-z][a-z0-9_]{0,31}$`); tools name it in `get_client("<name>")`.
 
 | Key | Value | Meaning |
 |---|---|---|
+| `description` | text; optional | What the API is for: 1-300 characters without control characters. Any API may have one; `api show` prints it. |
+| [`protocol`](#json-rpc-apis-protocol) | `http` \| `jsonrpc` \| `a2a`; default `http` | How calls are judged. `jsonrpc` and `a2a` also judge each POST by the JSON-RPC request it sends, read from the body. |
+| [`a2a`](#json-rpc-apis-protocol) | `{path}`; required with `protocol: a2a` | The agent's A2A endpoint, a literal path such as `/a2a/orders`. Valid only with `protocol: a2a`. |
 | `base_url_env` | env var name; required | The variable holding the API's base URL, set per environment. A path prefix in the URL (`https://host/v2`) is kept: call paths are joined under it. |
 | `auth` | `none` \| `bearer` \| `forward` \| `exchange`; required | `none` sends no credential. `bearer` sends `Authorization: Bearer $<token_env>`. `forward` sends the caller's own credential, and `exchange` a token exchanged for it (see below); both are refused under the `langgraph-server` runtime, which would persist the caller's credentials. |
 | `token_env` | env var name; required with `bearer` | The variable holding the token; valid only with `auth: bearer`. `create` and `api add` add it to the manifest's `secrets.keys`. |
@@ -149,15 +152,125 @@ of one shape:
 | `operationId` | string without spaces | The operation's label, as tools pass it in `operation_id=`. |
 | `path` | path template | `/orders/{order_id}`: literal segments and `{name}` placeholders. |
 | `methods` | list of methods | The methods the entry covers (no `"*"`); omitted, every method. |
+| `rpc_method` | a JSON-RPC method name | `protocol: jsonrpc` or `a2a` only: the method of the JSON-RPC request a POST sends (a letter, then up to 63 letters, digits, `_`, `/` or `.`). Under `a2a`, write the A2A 1.0 name (`CancelTask`, not `tasks/cancel`). |
+| `a2a_operation` | `approve` \| `reject` | `protocol: a2a` only: a message that decides a pending approval of the agent behind the API. With `rpc_method`, that must be `SendMessage` or `SendStreamingMessage`. |
 
-Each entry needs `operationId`, `path` or both. An `approval` key on an entry is refused:
-gate an operation with `approval.required_for.operations`.
+Each entry needs `operationId`, `path` or both (on a JSON-RPC API, `rpc_method` or
+`a2a_operation` will do). An `approval` key on an entry is refused: gate an operation with
+`approval.required_for.operations`.
 
 A path template starts with `/` and may end with one `/`. Each segment holds literal
 characters and `{name}` placeholders only: no query, fragment or whitespace, no empty, `.` or
 `..` segment, and none of the characters the client refuses to send (control characters,
 whitespace at either end of a segment or next to a dot, `;`, a backslash or an encoded
 slash), also percent-encoded.
+
+## JSON-RPC APIs: `protocol`
+
+`protocol: jsonrpc` is a JSON-RPC 2.0 API; `protocol: a2a` is another agent, reached over A2A
+1.0 JSON-RPC (an agent built from this template serves it at `/a2a/<its name>`). Both judge
+each POST by the request it sends, which the client reads from the JSON body itself: never from
+the tool's `operation_id`, which the model can influence.
+
+```yaml
+apis:
+  orders_agent:
+    description: "Orders agent: reads the caller's orders; cancels one after approval."
+    protocol: a2a
+    a2a: {path: /a2a/orders}
+    base_url_env: ORDERS_AGENT_URL
+    auth: exchange
+    exchange: {audience: orders}
+    allowed_methods: [GET, POST]
+    allowed_operations:
+      - {operationId: getAgentCard, methods: [GET], path: /a2a/orders/.well-known/agent-card.json}
+      - {rpc_method: SendMessage, methods: [POST], path: /a2a/orders}
+      - {rpc_method: GetTask, methods: [POST], path: /a2a/orders}
+    approval:
+      required_for: {operations: [{a2a_operation: approve}]}
+      approvers: [requester]
+```
+
+**What a request is.** Under `jsonrpc` and `a2a`, a POST must send one JSON-RPC 2.0 request
+object: `jsonrpc: "2.0"`, a `method` name, an `id` that is a string or an integer, optional
+`params` (an object or an array), and no other member. A batch (a list), a notification (no
+`id`), a body that is not plain JSON (a `NaN`, a set) or anything else is refused before
+anything is sent, as is a body on a GET or HEAD. The body is read as the server reads the JSON
+sent. Then:
+
+- `rpc_method` is the request's `method`. Under `a2a`, an A2A 0.3 name is read as its 1.0
+  name, so a 0.3 spelling cannot slip past an entry that names the call:
+
+    | A2A 0.3 | A2A 1.0 |
+    |---|---|
+    | `message/send`, `message/stream` | `SendMessage`, `SendStreamingMessage` |
+    | `tasks/get`, `tasks/list`, `tasks/cancel`, `tasks/resubscribe` | `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask` |
+    | `tasks/pushNotificationConfig/set`, `/get`, `/list`, `/delete` | `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig` |
+    | `agent/getAuthenticatedExtendedCard` | `GetExtendedAgentCard` |
+
+- `a2a_operation`, under `a2a`, is what a `SendMessage` or `SendStreamingMessage` decides.
+  A message part whose `data` object has an `approval_id` or a `decision` names an approval
+  (as the called agent reads it). The message is `reject` only when every such part says
+  exactly `reject`, and `approve` when any other does: approve wins. A message naming no
+  approval has no `a2a_operation`. A message request without `params.message` and its list of
+  `parts` is refused.
+
+GET and HEAD have no `rpc_method`. JSON-RPC APIs allow `GET`, `POST` and `HEAD` only.
+
+**Matching.** An allow must match every field it pins, `rpc_method` and `a2a_operation`
+included (compared exactly): `{rpc_method: SendMessage}` also allows messages that approve
+or reject, and the gate separates them. A denial or a gate that pins `rpc_method` or
+`a2a_operation` covers every call they describe, whatever its path or `operation_id`:
+`rpc_method` compared ignoring letter case, `a2a_operation: approve` every message that
+approves in any spelling. Its `path` neither widens nor narrows it, and it also covers the
+calls that name its `operationId`. Every POST names its method, so nothing is left unnamed.
+
+**The approve operation must be held.** An `a2a` API whose allow-list may send a message (POST
+allowed, and no `allowed_operations`, or an entry that could match `SendMessage` or
+`SendStreamingMessage` with an approve) must gate `a2a_operation: approve` (a rule whose
+`required_for.methods` has `POST` or `"*"`, or an entry `{a2a_operation: approve}` in
+`required_for.operations`) or deny it (the same entry in `denied_operations`). Otherwise this
+agent could decide, on its own, the approvals the agent behind the API waits for. The client
+also refuses such a message at runtime when nothing holds it. A gate on
+`{rpc_method: SendMessage}` does not count: it leaves `SendStreamingMessage` out.
+
+**A label names its request.** A tool's `operation_id` that names an entry pinning
+`rpc_method` or `a2a_operation` must name the request sent: a message that approves,
+labelled with an entry for `GetTask`, is refused (`operation_id 'getTask' does not match the
+request (rpc_method SendMessage); refused`). On an `http` API labels are unchanged.
+
+`auth: none` is refused with `protocol: a2a`: an agent's A2A endpoint authenticates its
+callers. Outside `APP_ENV=dev`, an `a2a` API that sends a credential refuses a plain `http`
+base URL unless the host is loopback, a single-label name or a cluster-internal `.svc` name.
+
+Validation messages (the same from `lint`, `api` and the running agent):
+
+| The file | The error |
+|---|---|
+| another `protocol` | `apis.<name>.protocol: must be one of http, jsonrpc, a2a (got '<value>')` |
+| a method other than GET, POST, HEAD | `apis.<name>.allowed_methods: protocol <p> allows GET, POST and HEAD only (a JSON-RPC request is a POST), not <methods>` |
+| `protocol: a2a` without `a2a` | `apis.<name>.a2a: required with protocol a2a (...)` |
+| `a2a` with another protocol | `apis.<name>.a2a: only valid with protocol a2a` |
+| a missing, templated or empty `a2a.path` | `apis.<name>.a2a.path: required (...)` / `must be the literal path of one endpoint (...)` |
+| `protocol: a2a` with `auth: none` | `apis.<name>.auth: protocol a2a needs a credential (bearer, forward or exchange): ...` |
+| a bad `description` | `apis.<name>.description: must be text of 1-300 characters without control characters` |
+| `rpc_method` on an `http` API | `...rpc_method: only valid with protocol jsonrpc or a2a` |
+| a bad `rpc_method` | `...rpc_method: must be a JSON-RPC method name (...)` |
+| an A2A 0.3 name under `a2a` | `...rpc_method: tasks/cancel is the A2A 0.3 name; write CancelTask (...)` |
+| `a2a_operation` without `protocol: a2a` | `...a2a_operation: only valid with protocol a2a` |
+| another `a2a_operation` | `...a2a_operation: must be approve or reject` |
+| `a2a_operation` with another `rpc_method` | `...a2a_operation: goes with rpc_method SendMessage or SendStreamingMessage (...)` |
+| approve neither gated nor denied | `apis.<name>: protocol a2a allows SendMessage, so this agent could decide approvals at <agent>: gate them (graph-agents-cli api approval <name> --a2a-operations approve --approvers requester) or deny them (graph-agents-cli api deny <name> --a2a-operation approve)` |
+
+And at runtime, before anything is sent (`ApiPolicyError`):
+
+| The request | The error |
+|---|---|
+| not one JSON-RPC request | `<name>: protocol a2a sends one JSON-RPC request per call (a batch or non-request body refused: <why>).` |
+| a method no entry allows | `<name>: POST /a2a/orders (rpc_method DeleteEverything) refused by the API policy: not in allowed_operations.` |
+| a denied approve | `... (rpc_method SendMessage, a2a_operation approve) refused by the API policy: denied by denied_operations (a2a_operation=approve).` |
+| a gated approve | pauses for a person's approval (not an error) |
+| a label for another request | `<name>: operation_id 'getTask' does not match the request (rpc_method SendMessage); refused.` |
 
 ## `approval`
 
@@ -257,7 +370,9 @@ same way. A call is refused unless all of these hold:
    a pinned field does not match.
 
 Gates match like denials: an `approval.required_for.operations` entry gates every call to its
-path, and the calls that name its `operationId`, whatever label they carry.
+path, and the calls that name its `operationId`, whatever label they carry. On a JSON-RPC API
+the request's `rpc_method` and `a2a_operation`, read from its body, are judged too (see
+[`protocol`](#json-rpc-apis-protocol)).
 
 Paths
 :   Compared after decoding percent-encoded unreserved characters and ignoring one trailing

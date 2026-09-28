@@ -261,6 +261,46 @@ A non-2xx response raises `ApiCallError` with `status_code` and `body` (the star
 body, the credential redacted); the model reads the upstream's reason. Outside `APP_ENV=dev`,
 clients see only an error id for a failed tool call.
 
+## Other agents and JSON-RPC APIs: `protocol`
+
+Every call to a JSON-RPC API is a POST to one endpoint, so method and path say nothing about
+what it does. Set `protocol: jsonrpc` (any JSON-RPC 2.0 API) or `protocol: a2a` (another
+agent, over A2A 1.0 JSON-RPC) and the client reads each request from the body it sends,
+never from the tool's label: its JSON-RPC method (`rpc_method`) and, for a message to another
+agent, whether it approves or rejects one of that agent's pending approvals
+(`a2a_operation`). Entries then allow, deny and gate by them:
+
+```yaml title="api-policy.yaml"
+apis:
+  orders_agent:
+    description: "Orders agent: reads the caller's orders; cancels one after approval."
+    protocol: a2a
+    a2a: {path: /a2a/orders}         # the agent's A2A endpoint
+    base_url_env: ORDERS_AGENT_URL
+    auth: exchange
+    exchange: {audience: orders}
+    allowed_methods: [GET, POST]     # JSON-RPC APIs: GET, POST and HEAD only
+    allowed_operations:
+      - {rpc_method: SendMessage, methods: [POST], path: /a2a/orders}
+      - {rpc_method: GetTask, methods: [POST], path: /a2a/orders}
+    approval:                        # required: a message that approves waits for the person
+      required_for: {operations: [{a2a_operation: approve}]}
+      approvers: [requester]
+```
+
+- **One request per call.** A batch, a notification or any other body is refused before it is
+  sent. An A2A 0.3 name (`tasks/cancel`) is read as its 1.0 name (`CancelTask`), so a spelling
+  cannot slip past a denial.
+- **An agent never approves on its own.** A message whose data part names an approval
+  (`approval_id` or `decision`) approves unless every such part rejects. An `a2a` API that can
+  send messages must gate `a2a_operation: approve` (the person decides, as above) or deny it;
+  the policy is invalid otherwise, and the client refuses such a message at runtime too.
+- **Labels cannot hide a request.** A tool's `operation_id` naming an entry for another method
+  or decision is refused.
+
+The complete rules, and every message, are in
+[the schema reference](../reference/api-policy-schema.md#json-rpc-apis-protocol).
+
 ## Per-user authorization for writes
 
 The policy decides which endpoints a tool may call, not on whose behalf. For an API the agent

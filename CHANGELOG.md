@@ -132,6 +132,27 @@ migration" with the steps to follow.
   `forward_header` with `exchange` as well as `forward` (both SHARED copies; the messages name
   every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
   `langgraph-server` as they refuse `auth: forward`.
+- **JSON-RPC APIs and other agents in `api-policy.yaml`: `protocol`, `rpc_method` and
+  `a2a_operation`.** An API may set `protocol: jsonrpc` (a JSON-RPC 2.0 API) or `protocol:
+  a2a` (another agent over A2A 1.0 JSON-RPC, with its endpoint in `a2a: {path: /a2a/<name>}`),
+  and any API a `description`. For those, every POST must send one JSON-RPC request object
+  (a batch, a notification, extra members, a body that is not plain JSON, or a body on a GET
+  or HEAD is refused before sending), and the policy client reads what it is from the body,
+  never from the tool's label: its method (`rpc_method`; under `a2a` an A2A 0.3 name such as
+  `tasks/cancel` is read as its 1.0 name, `CancelTask`) and, for an A2A message whose parts
+  name an approval, what it decides (`a2a_operation`: `reject` only when every such part
+  rejects, else `approve`). Operation entries may pin `rpc_method` and `a2a_operation`: an allow
+  must match them; a denial or gate covers every call they describe whatever its path, label
+  or spelling. A `protocol: a2a` API that can send messages must gate or deny `a2a_operation:
+  approve`, so an agent never decides on its own an approval the agent it calls waits for
+  (the policy is invalid otherwise, and the client refuses such a message at runtime too), and
+  refuses `auth: none`; JSON-RPC APIs allow GET, POST and HEAD only. A tool's `operation_id`
+  that names an entry pinning another method or decision is refused (the label cannot hide a
+  request). Plain `http` APIs, and every entry without the new keys, are judged exactly as in
+  0.2 (property tests against the 0.2.0 rules). With `protocol: a2a`, the transport rule for
+  peers applies: outside `APP_ENV=dev` a credential goes to such an API over https only,
+  unless the host is loopback, a single-label or a `.svc` name. Both SHARED copies; every
+  message is in the schema reference.
 
 - **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:

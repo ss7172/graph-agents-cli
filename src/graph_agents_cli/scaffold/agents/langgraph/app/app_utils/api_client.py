@@ -40,6 +40,21 @@ readable JWT) is refused and nothing is sent, unless the API sets
 A call to such an API that would loop back to this agent, or to an agent
 already in the request's delegation chain, is refused before anything else.
 
+An API's `protocol` (`http` by default) says how its calls are judged. For
+`protocol: jsonrpc` (a JSON-RPC 2.0 API) and `protocol: a2a` (another agent,
+over A2A 1.0 JSON-RPC), every POST must send one JSON-RPC request object, and
+the client reads what it is from the body sent, never from the tool
+(`derive_rpc`): its method (`rpc_method`; under `a2a` an A2A 0.3 name is read
+as its 1.0 name) and, for an A2A message whose parts name an approval, what it
+decides (`a2a_operation`: `reject` only when every such part rejects, else
+`approve`). Operation entries may pin `rpc_method` and `a2a_operation`: an
+allow must match them, and a denial or approval gate naming them covers every
+call they describe, whatever its path or label. A tool's `operation_id` that
+names an entry pinning another method or decision is refused
+(`label_problem`), as is a message that approves without an approval gate or
+a denial holding it: an agent never decides, on its own, an approval the agent
+it calls waits for.
+
 Every method the policy allows can be sent (`request()`, or `get`, `head`,
 `post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
 parameters and extra headers. The app adds its correlation headers to every
@@ -178,8 +193,57 @@ _SPACE_BY_DOT_RE = re.compile(r"\s\.|\.\s")
 _ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 _UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
+# An API's `protocol` says how its calls are judged: `http` (the default) by method, path
+# and the operation id the tool names; `jsonrpc` also by the JSON-RPC request every POST
+# sends, whose method (`rpc_method`) the policy client reads from the body, never from the
+# tool; `a2a` (another agent, over A2A 1.0 JSON-RPC) as `jsonrpc`, plus what a message
+# decides (`a2a_operation`: `approve` or `reject` a pending approval of that agent). A
+# JSON-RPC API allows GET, POST and HEAD only, and an `a2a` one names its endpoint
+# (`a2a.path`) and must gate or deny `a2a_operation: approve` if it can send messages.
+PROTOCOL_KEY = "protocol"
+PROTOCOL_HTTP = "http"
+PROTOCOL_JSONRPC = "jsonrpc"
+PROTOCOL_A2A = "a2a"
+PROTOCOLS = (PROTOCOL_HTTP, PROTOCOL_JSONRPC, PROTOCOL_A2A)
+DEFAULT_PROTOCOL = PROTOCOL_HTTP
+RPC_PROTOCOLS = (PROTOCOL_JSONRPC, PROTOCOL_A2A)
+RPC_HTTP_METHODS = ("GET", "POST", "HEAD")
+A2A_KEY = "a2a"
+_A2A_KEYS = ("path",)
+DESCRIPTION_KEY = "description"
+DESCRIPTION_MAX_CHARS = 300
+RPC_METHOD_KEY = "rpc_method"
+A2A_OPERATION_KEY = "a2a_operation"
+A2A_APPROVE = "approve"
+A2A_REJECT = "reject"
+A2A_OPERATIONS = (A2A_APPROVE, A2A_REJECT)
+# A JSON-RPC method name as an operation entry pins it.
+_RPC_METHOD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_/.]{0,63}")
+# The A2A 0.3 method names and the A2A 1.0 names they are read as under `protocol: a2a`,
+# so a 0.3 spelling of a call cannot slip past an entry that names it.
+A2A_V03_METHODS = {
+    "message/send": "SendMessage",
+    "message/stream": "SendStreamingMessage",
+    "tasks/get": "GetTask",
+    "tasks/list": "ListTasks",
+    "tasks/cancel": "CancelTask",
+    "tasks/resubscribe": "SubscribeToTask",
+    "tasks/pushNotificationConfig/set": "CreateTaskPushNotificationConfig",
+    "tasks/pushNotificationConfig/get": "GetTaskPushNotificationConfig",
+    "tasks/pushNotificationConfig/list": "ListTaskPushNotificationConfigs",
+    "tasks/pushNotificationConfig/delete": "DeleteTaskPushNotificationConfig",
+    "agent/getAuthenticatedExtendedCard": "GetExtendedAgentCard",
+}
+# The A2A methods that send a message, which may carry a decision on an approval.
+A2A_MESSAGE_METHODS = ("SendMessage", "SendStreamingMessage")
+# The members of one JSON-RPC 2.0 request object.
+_JSONRPC_KEYS = ("jsonrpc", "method", "params", "id")
+
 _POLICY_KEYS = ("apis",)
 _API_KEYS = (
+    DESCRIPTION_KEY,
+    PROTOCOL_KEY,
+    A2A_KEY,
     "base_url_env",
     "auth",
     "token_env",
@@ -195,7 +259,7 @@ _API_KEYS = (
     "limits",
     "approval",
 )
-_OPERATION_KEYS = ("operationId", "path", "methods")
+_OPERATION_KEYS = ("operationId", "path", "methods", RPC_METHOD_KEY, A2A_OPERATION_KEY)
 _TIMEOUT_KEYS = ("connect", "read")
 _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
@@ -426,10 +490,25 @@ def _api_errors(name: Any, api: Any) -> list[str]:
     elif EXCHANGE_KEY in api:
         errors.append(f"{where}.{EXCHANGE_KEY}: only valid with auth: exchange")
 
+    protocol = api.get(PROTOCOL_KEY, DEFAULT_PROTOCOL)
+    errors.extend(_protocol_errors(where, api, protocol, auth))
+
     if "allowed_methods" not in api:
         errors.append(f'{where}.allowed_methods: required (a list of HTTP methods, or ["*"])')
     else:
-        errors.extend(_methods_errors(f"{where}.allowed_methods", api["allowed_methods"], True))
+        method_errors = _methods_errors(f"{where}.allowed_methods", api["allowed_methods"], True)
+        errors.extend(method_errors)
+        if protocol in RPC_PROTOCOLS and not method_errors:
+            outside = [
+                str(m).upper()
+                for m in api["allowed_methods"]
+                if str(m).upper() not in RPC_HTTP_METHODS
+            ]
+            if outside:
+                errors.append(
+                    f"{where}.allowed_methods: protocol {protocol} allows GET, POST and HEAD "
+                    f"only (a JSON-RPC request is a POST), not {', '.join(outside)}"
+                )
 
     if "allowed_operations" in api:
         errors.extend(
@@ -438,11 +517,14 @@ def _api_errors(name: Any, api: Any) -> list[str]:
                 api["allowed_operations"],
                 where,
                 "must not be empty; omit the key to allow every operation within allowed_methods",
+                protocol=protocol,
             )
         )
     if "denied_operations" in api:
         errors.extend(
-            _operations_errors(f"{where}.denied_operations", api["denied_operations"], where)
+            _operations_errors(
+                f"{where}.denied_operations", api["denied_operations"], where, protocol=protocol
+            )
         )
 
     if "openapi" in api:
@@ -457,8 +539,133 @@ def _api_errors(name: Any, api: Any) -> list[str]:
     if "limits" in api:
         errors.extend(_limits_errors(f"{where}.limits", api["limits"]))
     if APPROVAL_KEY in api:
-        errors.extend(_approval_errors(where, api[APPROVAL_KEY]))
+        errors.extend(_approval_errors(where, api[APPROVAL_KEY], protocol=protocol))
+    if not errors:
+        errors.extend(_approve_errors(where, api))
     return errors
+
+
+def _protocol_errors(where: str, api: Mapping[str, Any], protocol: Any, auth: Any) -> list[str]:
+    """Errors of an API's `protocol`, `a2a` and `description`."""
+    errors: list[str] = []
+    if protocol not in PROTOCOLS:
+        errors.append(
+            f"{where}.{PROTOCOL_KEY}: must be one of {', '.join(PROTOCOLS)} (got {protocol!r})"
+        )
+    if protocol == PROTOCOL_A2A:
+        if A2A_KEY not in api:
+            errors.append(
+                f"{where}.{A2A_KEY}: required with protocol a2a (a mapping with path, the "
+                "agent's A2A endpoint, such as /a2a/orders)"
+            )
+        else:
+            errors.extend(_a2a_errors(f"{where}.{A2A_KEY}", api[A2A_KEY]))
+        if auth == "none":
+            errors.append(
+                f"{where}.auth: protocol a2a needs a credential (bearer, forward or exchange): "
+                "an agent's A2A endpoint authenticates its callers"
+            )
+    elif A2A_KEY in api:
+        errors.append(f"{where}.{A2A_KEY}: only valid with protocol a2a")
+    if DESCRIPTION_KEY in api:
+        description = api[DESCRIPTION_KEY]
+        if not (
+            isinstance(description, str)
+            and description.strip()
+            and len(description) <= DESCRIPTION_MAX_CHARS
+            and not any(ord(c) < 0x20 or 0x7F <= ord(c) < 0xA0 for c in description)
+        ):
+            errors.append(
+                f"{where}.{DESCRIPTION_KEY}: must be text of 1-{DESCRIPTION_MAX_CHARS} "
+                "characters without control characters"
+            )
+    return errors
+
+
+def _a2a_errors(where: str, value: Any) -> list[str]:
+    """Errors of an API's `a2a` block: `path`, the literal path of the agent's A2A endpoint."""
+    if not isinstance(value, Mapping):
+        return [f"{where}: must be a mapping with path (the agent's A2A endpoint, /a2a/<name>)"]
+    errors = [
+        f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_A2A_KEYS), key=str)
+    ]
+    if "path" not in value:
+        errors.append(f"{where}.path: required (the agent's A2A endpoint, such as /a2a/orders)")
+        return errors
+    path = value["path"]
+    problem = path_template_problem(path)
+    if problem:
+        errors.append(f"{where}.path: {problem}")
+    elif "{" in path or path.rstrip("/") == "":
+        errors.append(
+            f"{where}.path: must be the literal path of one endpoint (no placeholders), such "
+            "as /a2a/orders"
+        )
+    return errors
+
+
+def api_protocol(api: Mapping[str, Any]) -> str:
+    """An API's `protocol`: `http` when it sets none."""
+    return str(api.get(PROTOCOL_KEY) or DEFAULT_PROTOCOL)
+
+
+def _rpc_pins(entry: Mapping[str, Any]) -> bool:
+    """Whether an operation entry pins what a JSON-RPC request is (`rpc_method`, `a2a_operation`)."""
+    return entry.get(RPC_METHOD_KEY) is not None or entry.get(A2A_OPERATION_KEY) is not None
+
+
+def _may_send_approve(api: Mapping[str, Any]) -> bool:
+    """Whether an A2A API's allow-list may let through a message that approves (`approve`)."""
+    methods = {str(m).upper() for m in api.get("allowed_methods") or []}
+    if "POST" not in methods and ANY_METHOD not in methods:
+        return False
+    allowed = api.get("allowed_operations")
+    if allowed is None:
+        return True
+    return any(
+        _methods_match(entry, "POST")
+        and entry.get(RPC_METHOD_KEY) in (None, *A2A_MESSAGE_METHODS)
+        and entry.get(A2A_OPERATION_KEY) in (None, A2A_APPROVE)
+        for entry in allowed
+    )
+
+
+def _covers_every_approve(entry: Mapping[str, Any]) -> bool:
+    """Whether a denial or gate entry covers every message that approves, on any path."""
+    return entry.get(A2A_OPERATION_KEY) == A2A_APPROVE and _methods_match(entry, "POST")
+
+
+def approve_is_held(api: Mapping[str, Any]) -> bool:
+    """Whether every message that approves waits for a human approval, or is denied.
+
+    An approval rule gating POST (or `"*"`), or an entry `a2a_operation: approve` (with no
+    methods, or POST among them) in a rule's `required_for.operations` or in
+    `denied_operations`. An entry pinning `rpc_method: SendMessage` does not count: it
+    leaves `SendStreamingMessage` out.
+    """
+    for rule in approval_rules(api):
+        required_for = rule.get("required_for") or {}
+        methods = {str(m).upper() for m in required_for.get("methods") or []}
+        if "POST" in methods or ANY_METHOD in methods:
+            return True
+        if any(_covers_every_approve(entry) for entry in required_for.get("operations") or []):
+            return True
+    return any(_covers_every_approve(entry) for entry in api.get("denied_operations") or [])
+
+
+def _approve_errors(where: str, api: Mapping[str, Any]) -> list[str]:
+    """A `protocol: a2a` API that may send a message must gate or deny `approve`: otherwise
+    this agent could decide, on its own, the approvals the agent behind it waits for."""
+    if api_protocol(api) != PROTOCOL_A2A or not _may_send_approve(api) or approve_is_held(api):
+        return []
+    name = where.split(".", 1)[1] if "." in where else where
+    agent = str((api.get(A2A_KEY) or {}).get("path") or "").rstrip("/").rsplit("/", 1)[-1]
+    return [
+        f"{where}: protocol a2a allows SendMessage, so this agent could decide approvals at "
+        f"{agent or name}: gate them (graph-agents-cli api approval {name} --a2a-operations "
+        f"approve --approvers requester) or deny them (graph-agents-cli api deny {name} "
+        "--a2a-operation approve)"
+    ]
 
 
 def _methods_errors(where: str, value: Any, allow_any: bool) -> list[str]:
@@ -478,9 +685,18 @@ def _methods_errors(where: str, value: Any, allow_any: bool) -> list[str]:
 
 
 def _operations_errors(
-    where: str, value: Any, api_where: str, empty_error: str | None = None
+    where: str,
+    value: Any,
+    api_where: str,
+    empty_error: str | None = None,
+    *,
+    protocol: Any = DEFAULT_PROTOCOL,
 ) -> list[str]:
-    """Errors of a list of operation entries; ``empty_error`` refuses an empty list."""
+    """Errors of a list of operation entries; ``empty_error`` refuses an empty list.
+
+    ``rpc_method`` is valid only with `protocol` jsonrpc or a2a, and ``a2a_operation``
+    only with a2a.
+    """
     if not isinstance(value, list):
         return [f"{where}: must be a list of operations"]
     if not value and empty_error:
@@ -498,8 +714,12 @@ def _operations_errors(
                 f"{at}.{APPROVAL_KEY}: not valid on an operation entry; gate the operation "
                 f"with {api_where}.{APPROVAL_KEY}.required_for.operations"
             )
-        if "operationId" not in entry and "path" not in entry:
+        if protocol in RPC_PROTOCOLS:
+            if not any(key in entry for key in _OPERATION_KEYS if key != "methods"):
+                errors.append(f"{at}: needs operationId, path, rpc_method and/or a2a_operation")
+        elif "operationId" not in entry and "path" not in entry:
             errors.append(f"{at}: needs operationId and/or path")
+        errors.extend(_rpc_entry_errors(at, entry, protocol))
         if "operationId" in entry:
             op_id = entry["operationId"]
             if not isinstance(op_id, str) or not op_id or any(c.isspace() for c in op_id):
@@ -510,6 +730,37 @@ def _operations_errors(
                 errors.append(f"{at}.path: {problem}")
         if "methods" in entry:
             errors.extend(_methods_errors(f"{at}.methods", entry["methods"], False))
+    return errors
+
+
+def _rpc_entry_errors(at: str, entry: Mapping[str, Any], protocol: Any) -> list[str]:
+    """Errors of an operation entry's `rpc_method` and `a2a_operation`."""
+    errors: list[str] = []
+    rpc_method = entry.get(RPC_METHOD_KEY)
+    if RPC_METHOD_KEY in entry:
+        if protocol not in RPC_PROTOCOLS:
+            errors.append(f"{at}.{RPC_METHOD_KEY}: only valid with protocol jsonrpc or a2a")
+        elif not (isinstance(rpc_method, str) and _RPC_METHOD_RE.fullmatch(rpc_method)):
+            errors.append(
+                f"{at}.{RPC_METHOD_KEY}: must be a JSON-RPC method name (a letter, then up to 63 "
+                "letters, digits, '_', '/' or '.')"
+            )
+        elif protocol == PROTOCOL_A2A and rpc_method in A2A_V03_METHODS:
+            errors.append(
+                f"{at}.{RPC_METHOD_KEY}: {rpc_method} is the A2A 0.3 name; write "
+                f"{A2A_V03_METHODS[rpc_method]} (a 0.3 name in a request is read as its 1.0 name)"
+            )
+    if A2A_OPERATION_KEY in entry:
+        operation = entry[A2A_OPERATION_KEY]
+        if protocol != PROTOCOL_A2A:
+            errors.append(f"{at}.{A2A_OPERATION_KEY}: only valid with protocol a2a")
+        elif operation not in A2A_OPERATIONS:
+            errors.append(f"{at}.{A2A_OPERATION_KEY}: must be approve or reject")
+        elif rpc_method is not None and rpc_method not in A2A_MESSAGE_METHODS:
+            errors.append(
+                f"{at}.{A2A_OPERATION_KEY}: goes with rpc_method SendMessage or "
+                f"SendStreamingMessage (the messages that decide an approval), not {rpc_method}"
+            )
     return errors
 
 
@@ -560,7 +811,7 @@ def _limits_errors(where: str, value: Any) -> list[str]:
     return errors
 
 
-def _approval_errors(api_where: str, value: Any) -> list[str]:
+def _approval_errors(api_where: str, value: Any, *, protocol: Any = DEFAULT_PROTOCOL) -> list[str]:
     """Errors of an API's `approval`: one rule (a mapping), or a non-empty list of rules."""
     where = f"{api_where}.{APPROVAL_KEY}"
     if isinstance(value, list):
@@ -568,17 +819,21 @@ def _approval_errors(api_where: str, value: Any) -> list[str]:
             return [f"{where}: must not be empty; omit the key when no call needs approval"]
         errors: list[str] = []
         for index, rule in enumerate(value):
-            errors.extend(_approval_rule_errors(f"{where}[{index}]", rule, api_where))
+            errors.extend(
+                _approval_rule_errors(f"{where}[{index}]", rule, api_where, protocol=protocol)
+            )
         return errors
     if not isinstance(value, Mapping):
         return [
             f"{where}: must be a mapping with required_for and approvers, or a non-empty "
             "list of such mappings (rules; the first that covers a call gates it)"
         ]
-    return _approval_rule_errors(where, value, api_where)
+    return _approval_rule_errors(where, value, api_where, protocol=protocol)
 
 
-def _approval_rule_errors(where: str, value: Any, api_where: str) -> list[str]:
+def _approval_rule_errors(
+    where: str, value: Any, api_where: str, *, protocol: Any = DEFAULT_PROTOCOL
+) -> list[str]:
     """Errors of one approval rule (``where``: ``apis.<name>.approval`` or ``...approval[i]``)."""
     if not isinstance(value, Mapping):
         return [f"{where}: must be a mapping with required_for and approvers"]
@@ -589,7 +844,9 @@ def _approval_rule_errors(where: str, value: Any, api_where: str) -> list[str]:
         errors.append(f"{where}.required_for: required (the methods and/or operations it gates)")
     else:
         errors.extend(
-            _required_for_errors(f"{where}.required_for", value["required_for"], api_where)
+            _required_for_errors(
+                f"{where}.required_for", value["required_for"], api_where, protocol=protocol
+            )
         )
     if "approvers" not in value:
         errors.append(f'{where}.approvers: required (a list of "requester" and/or "role:<name>")')
@@ -646,7 +903,9 @@ def _decide_with_errors(where: str, rule: Mapping[str, Any]) -> list[str]:
     return errors
 
 
-def _required_for_errors(where: str, value: Any, api_where: str) -> list[str]:
+def _required_for_errors(
+    where: str, value: Any, api_where: str, *, protocol: Any = DEFAULT_PROTOCOL
+) -> list[str]:
     if not isinstance(value, Mapping) or not value:
         return [f"{where}: must be a mapping with methods and/or operations"]
     errors = [
@@ -664,6 +923,7 @@ def _required_for_errors(where: str, value: Any, api_where: str) -> list[str]:
                 value["operations"],
                 api_where,
                 "must not be empty; omit the key when no operation needs approval",
+                protocol=protocol,
             )
         )
     return errors
@@ -809,13 +1069,21 @@ def _methods_match(entry: Mapping[str, Any], method: str) -> bool:
 
 
 def operation_matches(
-    entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+    entry: Mapping[str, Any],
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    *,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> bool:
     """Whether an ``allowed_operations`` entry covers the call.
 
     AND semantics: every field the entry pins (``operationId``, ``path``,
-    ``methods``) must match. A call that does not name a pinned field (no
-    operation id, or no path) does not match: an allow must be shown.
+    ``methods``, and on a JSON-RPC API ``rpc_method`` and ``a2a_operation``,
+    compared with the values derived from the request body) must match. A
+    call that does not name a pinned field (no operation id, no path, no
+    JSON-RPC method or no decision) does not match: an allow must be shown.
     """
     if not _methods_match(entry, method):
         return False
@@ -825,11 +1093,28 @@ def operation_matches(
     pinned_path = entry.get("path")
     if pinned_path is not None and (path is None or not path_matches(pinned_path, path)):
         return False
-    return pinned_id is not None or pinned_path is not None
+    pinned_rpc = entry.get(RPC_METHOD_KEY)
+    if pinned_rpc is not None and rpc_method != pinned_rpc:
+        return False
+    pinned_operation = entry.get(A2A_OPERATION_KEY)
+    if pinned_operation is not None and a2a_operation != pinned_operation:
+        return False
+    return (
+        pinned_id is not None
+        or pinned_path is not None
+        or pinned_rpc is not None
+        or pinned_operation is not None
+    )
 
 
 def denial_match(
-    entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+    entry: Mapping[str, Any],
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    *,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> str | None:
     """How a ``denied_operations`` entry covers the call: None when it does not.
 
@@ -846,10 +1131,36 @@ def denial_match(
     on the wire. Operation ids and paths are compared ignoring letter case,
     and a path's literal segments also cover their dot-suffixed spellings
     (``cancel.json``, ``cancel.``: ``path_matches`` with ``suffixes``).
+
+    An entry of a JSON-RPC API that pins ``rpc_method`` or ``a2a_operation``
+    (the values derived from the request body) covers, with its ``methods``,
+    a call whose JSON-RPC method is its ``rpc_method`` (ignoring letter case),
+    a call that decides as its ``a2a_operation`` says, and a call that names
+    its ``operationId``, whatever the path: its ``path``, if any, neither
+    widens nor narrows it. Every POST to such an API names its method (a body
+    that does not is refused first), so there is nothing left unnamed.
     """
     if not _methods_match(entry, method):
         return None
     pinned_id = entry.get("operationId")
+    if _rpc_pins(entry):
+        pinned_rpc = entry.get(RPC_METHOD_KEY)
+        if (
+            pinned_rpc is not None
+            and rpc_method is not None
+            and str(rpc_method).casefold() == str(pinned_rpc).casefold()
+        ):
+            return ""
+        pinned_operation = entry.get(A2A_OPERATION_KEY)
+        if pinned_operation is not None and a2a_operation == pinned_operation:
+            return ""
+        if (
+            pinned_id is not None
+            and operation_id is not None
+            and str(operation_id).casefold() == str(pinned_id).casefold()
+        ):
+            return ""
+        return None
     pinned_path = entry.get("path")
     if (
         pinned_path is not None
@@ -871,14 +1182,26 @@ def denial_match(
 
 
 def denial_matches(
-    entry: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+    entry: Mapping[str, Any],
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    *,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> bool:
     """Whether a ``denied_operations`` entry covers the call (see ``denial_match``)."""
-    return denial_match(entry, method, operation_id, path) is not None
+    return (
+        denial_match(
+            entry, method, operation_id, path, rpc_method=rpc_method, a2a_operation=a2a_operation
+        )
+        is not None
+    )
 
 
 def describe_operation(entry: Mapping[str, Any]) -> str:
-    """``operationId=updateOrder path=/orders/{order_id} methods=['PATCH']`` for messages."""
+    """``operationId=updateOrder path=/orders/{order_id} methods=['PATCH']`` for messages
+    (and ``rpc_method=GetTask a2a_operation=approve`` for an entry that pins them)."""
     parts = []
     if entry.get("operationId") is not None:
         parts.append(f"operationId={entry['operationId']}")
@@ -886,6 +1209,9 @@ def describe_operation(entry: Mapping[str, Any]) -> str:
         parts.append(f"path={entry['path']}")
     if entry.get("methods"):
         parts.append(f"methods={sorted(str(m).upper() for m in entry['methods'])}")
+    for key in (RPC_METHOD_KEY, A2A_OPERATION_KEY):
+        if entry.get(key) is not None:
+            parts.append(f"{key}={entry[key]}")
     return " ".join(parts)
 
 
@@ -894,6 +1220,9 @@ def refusal_reason(
     method: str,
     operation_id: str | None = None,
     path: str | None = None,
+    *,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> str | None:
     """Why the API's policy refuses the call, or None when it is allowed.
 
@@ -903,16 +1232,19 @@ def refusal_reason(
     whatever operation id it names, and a call that leaves out what a denial
     knows the operation by is refused by it: ``denial_match``); and, when
     ``allowed_operations`` is present, one of its entries matches
-    (``operation_matches``: every field it pins).
+    (``operation_matches``: every field it pins). On a JSON-RPC API
+    (``protocol: jsonrpc|a2a``) ``rpc_method`` and ``a2a_operation`` are the
+    values ``derive_rpc`` reads from the request body.
     """
     method = method.upper()
     operation_id = operation_id or None
     path = path or None
+    rpc = {"rpc_method": rpc_method or None, "a2a_operation": a2a_operation or None}
     allowed = [str(m).upper() for m in api.get("allowed_methods") or []]
     if ANY_METHOD not in allowed and method not in allowed:
         return f"method {method} is not in allowed_methods {allowed}"
     for entry in api.get("denied_operations") or []:
-        unnamed = denial_match(entry, method, operation_id, path)
+        unnamed = denial_match(entry, method, operation_id, path, **rpc)
         if unnamed is not None:
             reason = f"denied by denied_operations ({describe_operation(entry)})"
             if unnamed:
@@ -923,7 +1255,7 @@ def refusal_reason(
             return reason
     allowed_operations = api.get("allowed_operations")
     if allowed_operations is not None and not any(
-        operation_matches(entry, method, operation_id, path) for entry in allowed_operations
+        operation_matches(entry, method, operation_id, path, **rpc) for entry in allowed_operations
     ):
         return "not in allowed_operations"
     return None
@@ -1005,7 +1337,11 @@ class ApprovalRuleConflict(ValueError):
 
 
 def _rule_match(
-    rule: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+    rule: Mapping[str, Any],
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    rpc: Mapping[str, str | None] | None = None,
 ) -> tuple[str, str] | None:
     """How one approval rule covers the call: ``(part, unnamed)``, or None.
 
@@ -1021,7 +1357,7 @@ def _rule_match(
         return f"required_for.methods {methods}", ""
     unsure: tuple[str, str] | None = None
     for entry in required_for.get("operations") or []:
-        unnamed = denial_match(entry, method, operation_id, path)
+        unnamed = denial_match(entry, method, operation_id, path, **(rpc or {}))
         if unnamed is None:
             continue
         part = f"required_for.operations ({describe_operation(entry)})"
@@ -1038,7 +1374,13 @@ def _unsure(part: str, unnamed: str) -> str:
 
 
 def rule_covers(
-    rule: Mapping[str, Any], method: str, operation_id: str | None, path: str | None
+    rule: Mapping[str, Any],
+    method: str,
+    operation_id: str | None,
+    path: str | None,
+    *,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> str | None:
     """Which part of one approval rule's ``required_for`` covers the call, or None.
 
@@ -1047,7 +1389,8 @@ def rule_covers(
     denial does (``denial_match``: fail closed), not as an allow; an entry
     that surely covers it is named before one that only cannot rule it out.
     """
-    match = _rule_match(rule, method.upper(), operation_id or None, path or None)
+    rpc = {"rpc_method": rpc_method or None, "a2a_operation": a2a_operation or None}
+    match = _rule_match(rule, method.upper(), operation_id or None, path or None, rpc)
     return None if match is None else _unsure(*match)
 
 
@@ -1058,6 +1401,8 @@ def gated(
     path: str | None = None,
     *,
     template: str | None = None,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
 ) -> ApprovalGate | None:
     """The approval the API's policy (a validated one) requires before the call, or None.
 
@@ -1084,7 +1429,9 @@ def gated(
     get it: ``ApprovalRuleConflict`` is raised and the call is refused. At
     runtime, ask with the path that is sent and, when there is one, the
     ``template`` it was rendered from: a rule covers the call when it covers
-    either (surely, when it surely covers either).
+    either (surely, when it surely covers either). On a JSON-RPC API an entry
+    pinning ``rpc_method`` or ``a2a_operation`` covers the call as a denial
+    does (``denial_match``), by the values derived from the request body.
     """
     rules = approval_rules(api)
     if not rules:
@@ -1093,11 +1440,12 @@ def gated(
     operation_id = operation_id or None
     path = path or None
     template = template or None
+    rpc = {"rpc_method": rpc_method or None, "a2a_operation": a2a_operation or None}
     covering: list[tuple[int, str, str]] = []
     for index, rule in enumerate(rules):
-        match = _rule_match(rule, method, operation_id, path)
+        match = _rule_match(rule, method, operation_id, path, rpc)
         if template is not None and (match is None or match[1]):
-            other = _rule_match(rule, method, operation_id, template)
+            other = _rule_match(rule, method, operation_id, template, rpc)
             if other is not None and (match is None or not other[1]):
                 match = other
         if match is not None:
@@ -1133,6 +1481,169 @@ def gated(
         decide_with=str(rule.get("decide_with", DEFAULT_DECIDE_WITH)),
         relayers=tuple(str(r) for r in rule.get("relayers") or ()),
     )
+
+
+class RpcRequestError(ValueError):
+    """A request a JSON-RPC API (``protocol: jsonrpc|a2a``) refuses to send (``derive_rpc``)."""
+
+
+@dataclass(frozen=True)
+class RpcCall:
+    """What a request to a JSON-RPC API is, read from its body (``derive_rpc``).
+
+    ``rpc_method``: the JSON-RPC method of a POST (an A2A 0.3 name read as its 1.0
+    name under ``protocol: a2a``); None for GET and HEAD, and for any call to an
+    ``http`` API. ``a2a_operation``: under ``protocol: a2a``, ``approve`` or
+    ``reject`` for a message that decides a pending approval, else None.
+    """
+
+    rpc_method: str | None = None
+    a2a_operation: str | None = None
+
+
+def canonical_rpc_method(protocol: str, name: str) -> str:
+    """``name`` as the policy compares it: an A2A 0.3 name as its 1.0 name under a2a."""
+    return A2A_V03_METHODS.get(name, name) if protocol == PROTOCOL_A2A else name
+
+
+def _is_rpc_id(value: Any) -> bool:
+    return isinstance(value, str) or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _names_approval(data: Any) -> bool:
+    """Whether a message part's data names an approval (as the called agent reads it)."""
+    return isinstance(data, Mapping) and ("approval_id" in data or "decision" in data)
+
+
+def _a2a_operation(protocol: str, params: Any) -> str | None:
+    """What an A2A message decides: ``reject`` only when every part that names an approval
+    says ``reject``, ``approve`` when any other does (approve wins), None when none does."""
+    message = params.get("message") if isinstance(params, Mapping) else None
+    parts = message.get("parts", []) if isinstance(message, Mapping) else None
+    if not isinstance(parts, list):
+        raise RpcRequestError(
+            f"protocol {protocol}: a message request needs params.message with a list of parts"
+        )
+    decisions = [
+        part["data"].get("decision")
+        for part in parts
+        if isinstance(part, Mapping) and _names_approval(part.get("data"))
+    ]
+    if not decisions:
+        return None
+    return A2A_REJECT if all(d == A2A_REJECT for d in decisions) else A2A_APPROVE
+
+
+def _rpc_body_problem(sent: Any) -> str | None:
+    """Why a parsed JSON body is not one JSON-RPC 2.0 request object, or None."""
+    if isinstance(sent, list):
+        return "a batch"
+    if not isinstance(sent, dict):
+        return "not a JSON-RPC request object"
+    if set(sent) - set(_JSONRPC_KEYS):
+        return "members other than jsonrpc, method, params and id"
+    if sent.get("jsonrpc") != "2.0":
+        return 'jsonrpc is not "2.0"'
+    if not isinstance(sent.get("method"), str) or not sent["method"]:
+        return "no method name"
+    if "id" not in sent:
+        return "a notification (no id)"
+    if not _is_rpc_id(sent["id"]):
+        return "an id that is not a string or an integer"
+    if "params" in sent and not isinstance(sent["params"], dict | list):
+        return "params that are not an object or an array"
+    return None
+
+
+def derive_rpc(api: Mapping[str, Any], method: str, body: Any) -> RpcCall:
+    """What a request to ``api`` is, read from the body sent (never from the tool's labels).
+
+    Nothing for an ``http`` API. For ``protocol: jsonrpc|a2a``: a POST must send
+    one JSON-RPC 2.0 request object (``jsonrpc: "2.0"``, a method name, an ``id``
+    that is a string or an integer, optional ``params`` that are an object or an
+    array, and no other member), read as the server reads the JSON sent; a
+    batch, a notification (no ``id``), a body that is not plain JSON or any
+    other body raises ``RpcRequestError``, as does a GET or HEAD with a body.
+    Its ``rpc_method`` is the request's method (under ``a2a``, an A2A 0.3 name as
+    its 1.0 name). Under ``a2a``, a ``SendMessage`` or ``SendStreamingMessage``
+    whose parts name an approval (a data part with ``approval_id`` or
+    ``decision``) is ``a2a_operation: reject`` only when every such part says
+    ``reject``, and ``approve`` otherwise: failing closed, approve wins.
+    """
+    protocol = api_protocol(api)
+    if protocol not in RPC_PROTOCOLS:
+        return RpcCall()
+    method = method.upper()
+    if method != "POST":
+        if body is not None:
+            raise RpcRequestError(
+                f"protocol {protocol}: a {method} sends no body (a JSON-RPC request is a POST)"
+            )
+        return RpcCall()
+    try:
+        # The JSON the server reads: tuples become lists, keys strings (never trust a
+        # Python object that serializes as something other than it looks).
+        sent = json.loads(json.dumps(body, allow_nan=False))
+    except (TypeError, ValueError):
+        sent = None
+        problem: str | None = "not plain JSON"
+    else:
+        problem = _rpc_body_problem(sent)
+    if problem is not None:
+        raise RpcRequestError(
+            f"protocol {protocol} sends one JSON-RPC request per call (a batch or non-request "
+            f"body refused: {problem})"
+        )
+    name = canonical_rpc_method(protocol, sent["method"])
+    if protocol != PROTOCOL_A2A or name not in A2A_MESSAGE_METHODS:
+        return RpcCall(rpc_method=name)
+    return RpcCall(rpc_method=name, a2a_operation=_a2a_operation(protocol, sent.get("params")))
+
+
+def _operation_entries(api: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Every operation entry of an API: allowed, denied and those its approval rules gate."""
+    entries = [*(api.get("allowed_operations") or []), *(api.get("denied_operations") or [])]
+    for rule in approval_rules(api):
+        entries.extend((rule.get("required_for") or {}).get("operations") or [])
+    return [entry for entry in entries if isinstance(entry, Mapping)]
+
+
+def label_problem(
+    api: Mapping[str, Any],
+    operation_id: str | None,
+    rpc_method: str | None = None,
+    a2a_operation: str | None = None,
+) -> str | None:
+    """Why a tool's ``operation_id`` does not name the request it labels, or None.
+
+    On a JSON-RPC API, an entry that pins ``operationId`` with ``rpc_method``
+    or ``a2a_operation`` says what a call so labelled is. A call labelled so
+    whose request (``derive_rpc``) is something else is refused, so a label
+    never carries a decision past a rule written for another request.
+    Operation ids and JSON-RPC methods are compared ignoring letter case.
+    """
+    if not operation_id or api_protocol(api) not in RPC_PROTOCOLS:
+        return None
+    label = str(operation_id).casefold()
+    for entry in _operation_entries(api):
+        pinned_id = entry.get("operationId")
+        if pinned_id is None or str(pinned_id).casefold() != label:
+            continue
+        pinned_rpc = entry.get(RPC_METHOD_KEY)
+        if pinned_rpc is not None and (
+            rpc_method is None or str(pinned_rpc).casefold() != str(rpc_method).casefold()
+        ):
+            return (
+                f"operation_id {operation_id!r} does not match the request (rpc_method "
+                f"{rpc_method or 'none'}); refused"
+            )
+        pinned_operation = entry.get(A2A_OPERATION_KEY)
+        if pinned_operation is not None and pinned_operation != a2a_operation:
+            return (
+                f"operation_id {operation_id!r} does not match the request (a2a_operation "
+                f"{a2a_operation or 'none'}); refused"
+            )
+    return None
 
 
 # --- END SHARED API POLICY RULES ---
@@ -1298,15 +1809,26 @@ class ApiPolicy:
         method: str,
         operation_id: str | None = None,
         path: str | None = None,
+        *,
+        rpc: RpcCall | None = None,
     ) -> None:
         """Raise `ApiPolicyError` when the call is outside the API's policy.
 
         The message is what the model reads (a tool error): the API, the
-        call and the rule that refused it, without file names.
+        call and the rule that refused it, without file names. `rpc` is what
+        a request to a JSON-RPC API is (`derive_rpc`: its method and decision).
         """
-        reason = refusal_reason(self.api(api_name), method, operation_id, path)
+        rpc = rpc or RpcCall()
+        reason = refusal_reason(
+            self.api(api_name),
+            method,
+            operation_id,
+            path,
+            rpc_method=rpc.rpc_method,
+            a2a_operation=rpc.a2a_operation,
+        )
         if reason:
-            what = operation_id or path or "<unnamed operation>"
+            what = (operation_id or path or "<unnamed operation>") + describe_rpc(rpc)
             raise ApiPolicyError(
                 f"{api_name}: {method.upper()} {what} refused by the API policy: {reason}.",
                 reason=reason,
@@ -1320,6 +1842,7 @@ class ApiPolicy:
         path: str | None = None,
         *,
         template: str | None = None,
+        rpc: RpcCall | None = None,
     ) -> ApprovalGate | None:
         """The human approval the API's policy requires before the call is sent, or None.
 
@@ -1334,15 +1857,34 @@ class ApiPolicy:
         `ApiPolicyError` (refused, nothing is sent) instead of asking either
         rule's approvers.
         """
+        rpc = rpc or RpcCall()
         try:
-            return gated(self.api(api_name), method, operation_id, path, template=template)
+            return gated(
+                self.api(api_name),
+                method,
+                operation_id,
+                path,
+                template=template,
+                rpc_method=rpc.rpc_method,
+                a2a_operation=rpc.a2a_operation,
+            )
         except ApprovalRuleConflict as exc:
             reason = str(exc)
-            what = operation_id or path or "<unnamed operation>"
+            what = (operation_id or path or "<unnamed operation>") + describe_rpc(rpc)
             raise ApiPolicyError(
                 f"{api_name}: {method.upper()} {what} refused by the API policy: {reason}.",
                 reason=reason,
             ) from None
+
+
+def describe_rpc(rpc: RpcCall) -> str:
+    """` (rpc_method GetTask)`, ` (rpc_method SendMessage, a2a_operation approve)`, or ""."""
+    parts = [
+        f"{key} {value}"
+        for key, value in ((RPC_METHOD_KEY, rpc.rpc_method), (A2A_OPERATION_KEY, rpc.a2a_operation))
+        if value
+    ]
+    return f" ({', '.join(parts)})" if parts else ""
 
 
 def _beside_pyproject() -> Path | None:
@@ -2082,6 +2624,8 @@ class PreparedRequest:
     tool_headers: list[tuple[str, str]]
     secrets: tuple[str, ...]
     gate: ApprovalGate | None
+    # What a request to a JSON-RPC API is, read from its body (`derive_rpc`).
+    rpc: RpcCall = field(default_factory=RpcCall)
 
 
 @dataclass(frozen=True)
@@ -2505,15 +3049,23 @@ class ApiClient:
         if method not in HTTP_METHODS:
             raise ApiPolicyError(f"{self.name}: unknown HTTP method {method!r}.")
         self.check_loop()
+        # What the request is, read from the body sent (a JSON-RPC API): a malformed one is
+        # refused before any rule is asked, and no rule trusts the tool's label for it.
+        rpc = self.rpc_call(method, json_body)
         if path_params is not None:
-            self.policy.check(self.name, method, operation_id, path)
+            self.policy.check(self.name, method, operation_id, path, rpc=rpc)
             wire_path = render_path(path, path_params)
         elif _PLACEHOLDER.search(path):
             raise ApiPolicyError(f"path {path!r} has unfilled parameters; pass path_params=.")
         else:
             wire_path = path
         validate_concrete_path(wire_path)
-        self.policy.check(self.name, method, operation_id, wire_path)
+        self.policy.check(self.name, method, operation_id, wire_path, rpc=rpc)
+        mislabelled = label_problem(self.settings, operation_id, rpc.rpc_method, rpc.a2a_operation)
+        if mislabelled:
+            raise ApiPolicyError(
+                f"{self.name}: {mislabelled}.", reason="operation_id does not match the request"
+            )
         query = self.query(params)
         if isinstance(json_body, Mapping) and any(
             isinstance(k, str) and k.casefold() == METHOD_OVERRIDE_PARAM for k in json_body
@@ -2566,6 +3118,16 @@ class ApiClient:
         secrets = tuple(credentials.values()) + tuple(
             value.split(" ", 1)[1] for value in credentials.values() if " " in value
         )
+        gate = self.gate_for(method, operation_id, path, wire_path, path_params is not None, rpc)
+        if rpc.a2a_operation == A2A_APPROVE and gate is None:
+            # The policy's validator already refuses an A2A API that could send one: this
+            # holds even for a policy that was never validated.
+            reason = "a message that approves must wait for an approval or be denied"
+            raise ApiPolicyError(
+                f"{self.name}: {method} {(operation_id or wire_path) + describe_rpc(rpc)} refused "
+                f"by the API policy: {reason} (gate or deny a2a_operation: approve).",
+                reason=reason,
+            )
         return PreparedRequest(
             wire_path=wire_path,
             url=url,
@@ -2573,8 +3135,22 @@ class ApiClient:
             headers=request_headers,
             tool_headers=tool_headers,
             secrets=secrets,
-            gate=self.gate_for(method, operation_id, path, wire_path, path_params is not None),
+            gate=gate,
+            rpc=rpc,
         )
+
+    def rpc_call(self, method: str, json_body: Any) -> RpcCall:
+        """What a request to this API is, read from the JSON body sent (`derive_rpc`).
+
+        Empty for an `http` API. A body a JSON-RPC API cannot send as one
+        JSON-RPC request raises `ApiPolicyError`, before anything is sent.
+        """
+        try:
+            return derive_rpc(self.settings, method, json_body)
+        except RpcRequestError as exc:
+            raise ApiPolicyError(
+                f"{self.name}: {exc}.", reason="not one JSON-RPC request"
+            ) from None
 
     def gate_for(
         self,
@@ -2583,16 +3159,24 @@ class ApiClient:
         path: str,
         wire_path: str,
         templated: bool,
+        rpc: RpcCall | None = None,
     ) -> ApprovalGate | None:
         """The approval the API's `approval` requires before this call, or None.
 
         A rule covers the call when it covers the sent path or the template it
         was rendered from; the first such rule in file order gates it, and its
-        approvers are the ones the approval is asked of (and bound to).
+        approvers are the ones the approval is asked of (and bound to). On a
+        JSON-RPC API an entry naming `rpc_method` or `a2a_operation` covers
+        the call by what its body is (`rpc`).
         Asked only once the policy allowed the call: approval never widens access.
         """
         return self.policy.gate(
-            self.name, method, operation_id, wire_path, template=path if templated else None
+            self.name,
+            method,
+            operation_id,
+            wire_path,
+            template=path if templated else None,
+            rpc=rpc,
         )
 
     async def _bound_approvals(
