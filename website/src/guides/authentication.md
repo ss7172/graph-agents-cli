@@ -247,7 +247,10 @@ an invalid one, two principals that must not see each other's threads), then set
 Under `langgraph-server`, the native API is also held to the approval rules: a native run
 cannot resume a paused run (decide through the [approval routes](approvals.md)), a run without
 input or from a checkpoint is refused on a thread that has approvals or waits on a gated call,
-and a thread that has approvals is not copied.
+and a thread that has approvals is not copied. A native run's tools act for the caller, as a
+`/chat` run's do: the auth handler replaces any run context the request sends (`context`, or
+`config.configurable`) with the caller's own id, roles and public attributes (`@actor`
+included, credentials never).
 
 ## Agents calling agents
 

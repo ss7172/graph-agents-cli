@@ -137,7 +137,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     resume_principal,
     sees_call,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, run_context_of
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
     checkpointer_kind,
     get_checkpointer,
@@ -2613,12 +2613,9 @@ class ChatRuntime:
             # The server persists run context: never the principal's credentials.
             # The raw id stays here (tools act on the caller's behalf); run
             # context is not traced, and the metadata key above keeps it out of
-            # checkpoint metadata too.
-            context={
-                "principal_id": principal.id,
-                "roles": list(principal.roles),
-                "attributes": principal.public_attributes(),
-            },
+            # checkpoint metadata too. The server's auth handler puts the same
+            # context on a run it authorizes (LANGGRAPH_SERVER_URL, native runs).
+            context=run_context_of(principal),
             multitask_strategy="reject",
             on_disconnect="cancel",
         ):

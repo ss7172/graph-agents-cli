@@ -351,14 +351,13 @@ Medium · runtime · found in wave 2b
 - **Workaround:** The server's own `DELETE /threads/{id}` removes a thread's run records
   directly (the main path); at that scale, clean up the rest by hand.
 
-### KI-020: `langgraph-server`: native-API runs store the caller's raw id and lack its context
+### KI-020: `langgraph-server`: native-API runs store the caller's raw id
 
 Medium · runtime · found in waves 2b and 6b
 
 - **Issue:** Runs started through LangGraph Server's native API (not `/chat`) carry the
   caller's raw principal id in checkpoint metadata (the server injects it), where `/chat`
-  runs keep only the hash. Such runs also start without the app's per-run caller context, so
-  tools that need the caller refuse.
+  runs keep only the hash.
 - **Impact:** Raw principal ids, possibly email addresses, are persisted in checkpoints.
 - **Workaround:** Serve users through `/chat` and A2A, and do not publish native run routes
   (see KI-034). Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
@@ -584,7 +583,8 @@ Medium · chart/CD · found in wave 2b
   them native run creation, which skips `/chat`'s guardrails (run timeout, one run per
   thread, run records). HTTPRoute method matching, which could narrow it, is not used.
 - **Impact:** Authenticated users can start runs outside the app's guardrails; the auth
-  handler still limits them to their own threads.
+  handler still limits them to their own threads, and their tools act for them (their own
+  id, roles and actor, whatever run context the request sends).
 - **Workaround:** Narrow the route at the gateway to the app's own `GET` and `DELETE` thread
   routes. Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 

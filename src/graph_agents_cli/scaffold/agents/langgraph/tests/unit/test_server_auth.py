@@ -535,3 +535,168 @@ async def test_the_authenticate_handler_publishes_only_the_policys_actor(
     with pytest.raises(Auth.exceptions.HTTPException) as exc:
         await auth._authenticate_handler(request=_http("GET", "/threads"))
     assert exc.value.status_code == 403
+
+
+# --- a native run's context: the caller's own, whatever the request sends ----------------
+
+
+class _ServerUser(dict):  # type: ignore[type-arg]
+    """The server's user as its handlers get it: the authenticate handler's dict, whose
+    fields read as keys (`get`) and as attributes."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+async def _server_user(auth: Any, monkeypatch: pytest.MonkeyPatch, principal: Principal) -> Any:
+    """The user the server builds from the authenticate handler for a policy's `principal`."""
+    from {{cookiecutter.agent_directory}}.app_utils import auth as auth_module
+
+    class _Policy:
+        async def authenticate(self, request: Any) -> Principal:
+            return principal
+
+        async def authorize(self, *args: Any) -> None:
+            return None
+
+    monkeypatch.setattr(auth_module, "get_policy", lambda: _Policy())
+    return _ServerUser(await auth._authenticate_handler(request=_http("POST", "/threads")))
+
+
+def _principal(*roles: str, actor: Any = None) -> Principal:
+    from {{cookiecutter.agent_directory}}.app_utils.auth import ACTIONS
+
+    return Principal(
+        id="alice",
+        roles=list(roles),
+        permissions=set(ACTIONS),
+        attributes={"tenant": "acme", "credentials": {"shop": "secret-token"}},
+        actor=actor,
+    )
+
+
+async def test_a_native_run_gets_the_callers_own_run_context_whatever_it_sends(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_approvals(monkeypatch)
+    alice = await _server_user(auth, monkeypatch, _principal("user", "ops"))
+    own = {"principal_id": "alice", "roles": ["user", "ops"], "attributes": {"tenant": "acme"}}
+    assert "secret-token" not in repr(dict(alice))  # published without credentials
+    forged = {
+        "principal_id": "bob",
+        "roles": ["admin"],
+        "attributes": {"@actor": {"id": "concierge"}, "credentials": {"shop": "forged"}},
+    }
+    run: dict[str, Any] = {
+        "thread_id": SOURCE,
+        "metadata": {},
+        "kwargs": {
+            "input": INPUT,
+            # The server copies the run context into `config.configurable` (and back).
+            "context": {**forged, "locale": "fr"},
+            "config": {"configurable": {**forged, "thread_id": SOURCE}},
+        },
+    }
+    assert await _dispatch(auth, alice, "threads", "create_run", run) == {"principal_id": "alice"}
+    assert run["kwargs"]["context"] == {**own, "locale": "fr"}  # other settings are kept
+    assert run["kwargs"]["config"]["configurable"] == {**own, "thread_id": SOURCE}
+    # Nothing sent: the run still acts for the caller (a run context the server keeps).
+    bare: dict[str, Any] = {"thread_id": None, "metadata": {}, "kwargs": {"input": INPUT}}
+    await _dispatch(auth, alice, "threads", "create_run", bare)
+    assert bare["kwargs"]["context"] == own
+    bare["kwargs"]["context"]["attributes"]["tenant"] = "changed"  # a copy, not the user's
+    assert alice["run_context"] == own
+
+
+async def test_a_delegated_native_run_keeps_its_actor_and_only_lent_roles(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from {{cookiecutter.agent_directory}}.app_utils.auth import Actor
+
+    monkeypatch.setenv("AUTH_ALLOWED_ACTORS", "billing")
+    _no_approvals(monkeypatch)
+    actor = Actor(id="billing", chain=("billing", "concierge"), client="billing-app")
+    billing = await _server_user(auth, monkeypatch, _principal("ops", actor=actor))
+    for sent in (
+        None,
+        {"principal_id": "alice", "roles": ["ops"], "attributes": {}},
+        {"principal_id": "alice", "attributes": {"@actor": {"id": "concierge"}}},
+    ):
+        run: dict[str, Any] = {"thread_id": SOURCE, "metadata": {}, "kwargs": {"input": INPUT}}
+        if sent is not None:
+            run["kwargs"]["context"] = sent
+        await _dispatch(auth, billing, "threads", "create_run", run)
+        assert run["kwargs"]["context"] == {
+            "principal_id": "alice",
+            "roles": [],  # AUTH_DELEGATED_ROLES lends none
+            "attributes": {
+                "tenant": "acme",
+                "@actor": {
+                    "id": "billing",
+                    "chain": ["billing", "concierge"],
+                    "client": "billing-app",
+                },
+            },
+        }
+        assert run["metadata"]["actor"] == "billing"
+
+
+async def test_a_run_context_comes_from_the_verified_user_never_from_the_request(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user without a published run context (or with another caller's) gets one built
+    from its identity and permissions."""
+    _no_approvals(monkeypatch)
+
+    async def context_of(user: Any) -> Any:
+        run: dict[str, Any] = {
+            "thread_id": SOURCE,
+            "metadata": {},
+            "kwargs": {"input": INPUT, "context": {"principal_id": "bob", "roles": ["admin"]}},
+        }
+        await _dispatch(auth, user, "threads", "create_run", run)
+        return run["kwargs"]["context"]
+
+    concierge = {"@actor": {"id": "concierge", "chain": ["concierge"], "client": None}}
+    assert await context_of(_user("alice", "ops")) == {
+        "principal_id": "alice",
+        "roles": ["ops"],
+        "attributes": {},
+    }
+    assert await context_of(_agent("alice", "concierge")) == {
+        "principal_id": "alice",
+        "roles": [],
+        "attributes": concierge,
+    }
+    for published in (
+        {"principal_id": "bob", "roles": ["admin"], "attributes": {}},
+        {"principal_id": "alice", "roles": ["admin"], "attributes": {}},  # drops the actor
+        {"principal_id": "alice", "roles": [], "attributes": {"@actor": {"id": "billing"}}},
+    ):
+        user = _ServerUser(
+            identity="alice",
+            permissions=["chat.send", "actor:concierge"],
+            run_context=published,
+        )
+        assert await context_of(user) == {
+            "principal_id": "alice",
+            "roles": [],
+            "attributes": concierge,
+        }
+
+
+async def test_a_studio_run_keeps_its_context_and_a_run_without_settings_is_refused(
+    auth: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("APP_ENV", "dev")
+    studio = Auth.types.StudioUser("langgraph-studio-user")
+    context = {"principal_id": "tester", "roles": ["ops"], "attributes": {}}
+    run: dict[str, Any] = {"metadata": {}, "kwargs": {"input": INPUT, "context": dict(context)}}
+    await _dispatch(auth, studio, "threads", "create_run", run)
+    assert run["kwargs"]["context"] == context  # the developer's, under `langgraph dev` only
+    with pytest.raises(Auth.exceptions.HTTPException) as exc:
+        await _dispatch(auth, _user("alice"), "threads", "create_run", {"kwargs": "input"})
+    assert exc.value.status_code == 403

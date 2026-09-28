@@ -68,6 +68,7 @@ ignore delegated principals.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import hmac
 import json
@@ -489,6 +490,25 @@ def actor_of_attributes(attributes: Any) -> Actor | None:
     if not isinstance(attributes, Mapping):
         return None
     return Actor.from_public(attributes.get(ACTOR_ATTRIBUTE))
+
+
+# The keys of a graph run's context that say who is calling (`agent.AgentContext`).
+RUN_CONTEXT_KEYS = ("principal_id", "roles", "attributes")
+
+
+def run_context_of(principal: Principal) -> dict[str, Any]:
+    """The run context LangGraph Server runs the graph with for `principal`: who tools act for.
+
+    Its id, roles and public attributes (`@actor` included; never `credentials`,
+    since the server persists run context). `/chat` and A2A send it with each
+    run under `langgraph-server`, and the server auth handler puts it on every
+    run the native API starts, whatever that request sent.
+    """
+    return {
+        "principal_id": principal.id,
+        "roles": list(principal.roles),
+        "attributes": principal.public_attributes(),
+    }
 
 
 @runtime_checkable
@@ -1448,6 +1468,9 @@ ROLE_PERMISSION_PREFIX = "role:"
 # The delegated caller's actor, carried beside the roles in the server's user
 # permissions (`actor:<id>`; none for a direct caller).
 ACTOR_PERMISSION_PREFIX = "actor:"
+# The key of the server's user dict holding the caller's run context (`run_context_of`),
+# which the handlers put on every native run.
+RUN_CONTEXT_USER_KEY = "run_context"
 
 # Where `build_sdk_auth` leaves the policy's 401 challenge (`WWW-Authenticate`)
 # in the request's ASGI state: LangGraph Server drops the headers of an auth
@@ -1526,6 +1549,13 @@ def build_sdk_auth() -> Any:
       caller's own thread whatever the caller's roles. A thread that recorded
       approvals of gated API calls is not copied (403): the copy would carry
       its tool calls without their approvals.
+    * every run gets the caller's own run context (`run_context_of`: its id,
+      roles and public attributes, `@actor` included), whatever the request
+      sent in `context` or `config.configurable`: tools act only for the
+      authenticated caller, with its roles, and see the agent presenting a
+      delegated request. `authenticate` publishes it in the server's user
+      (`run_context`); a user without it (or with another's) gets one built
+      from its identity and permissions, never from the request.
     * a run that carries a `command` (a resume of a paused run) is refused:
       a run paused for the approval of a gated API call resumes only through
       the app's approval routes, which check who may decide (the app's
@@ -1640,6 +1670,53 @@ def build_sdk_auth() -> Any:
             )
         return metadata
 
+    def _caller_run_context(ctx: Any) -> dict[str, Any]:
+        """The caller's run context (a copy): as `authenticate` published it in the
+        user, else built from the user's identity and permissions. Never the request's."""
+        user = ctx.user
+        getter = getattr(user, "get", None)
+        published = (
+            getter(RUN_CONTEXT_USER_KEY)
+            if callable(getter)
+            else getattr(user, RUN_CONTEXT_USER_KEY, None)
+        )
+        actor = _actor_of(ctx)
+        if isinstance(published, Mapping) and published.get("principal_id") == user.identity:
+            published_actor = actor_of_attributes(published.get("attributes"))
+            if (published_actor.id if published_actor is not None else None) == actor:
+                return {key: copy.deepcopy(published.get(key)) for key in RUN_CONTEXT_KEYS}
+        return {
+            "principal_id": user.identity,
+            "roles": [
+                p[len(ROLE_PERMISSION_PREFIX) :]
+                for p in _permissions_of(ctx)
+                if p.startswith(ROLE_PERMISSION_PREFIX)
+            ],
+            "attributes": {} if actor is None else {ACTOR_ATTRIBUTE: Actor(id=actor).public()},
+        }
+
+    def _stamp_run_context(ctx: Any, value: Any) -> None:
+        """Put the caller's run context on a run, over whatever the request sent.
+
+        In `context` (what the graph runs with; all three keys, so an
+        assistant's context cannot add any either) and in
+        `config.configurable`, which the server fills from it.
+        """
+        kwargs = value.setdefault("kwargs", {}) if isinstance(value, dict) else None
+        if not isinstance(kwargs, dict):
+            raise Auth.exceptions.HTTPException(
+                status_code=403, detail="The run's caller context could not be set."
+            )
+        caller = _caller_run_context(ctx)
+        sent = kwargs.get("context")
+        kwargs["context"] = {**(sent if isinstance(sent, dict) else {}), **caller}
+        config = kwargs.get("config")
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        if isinstance(configurable, dict):
+            for key in RUN_CONTEXT_KEYS:
+                if key in configurable:
+                    configurable[key] = copy.deepcopy(caller[key])
+
     @auth.authenticate
     async def authenticate(request: Any) -> dict[str, Any]:
         _THREAD_COPY.set(_is_thread_copy(request))
@@ -1665,6 +1742,8 @@ def build_sdk_auth() -> Any:
             "display_name": principal.id,
             "is_authenticated": True,
             "permissions": permissions,
+            # What a native run's tools act for (public attributes only: no credentials).
+            RUN_CONTEXT_USER_KEY: run_context_of(principal),
         }
 
     # -- default deny: whatever has no rule below -----------------------------
@@ -1787,6 +1866,10 @@ def build_sdk_auth() -> Any:
             metadata["principal_id"] = Principal(id=str(ctx.user.identity)).hashed_id()
         metadata["tenant"] = None
         _stamp_actor(ctx, metadata)
+        if not _is_studio(ctx):
+            # Who the run's tools act for is the caller: a request cannot name
+            # another principal, other roles, or drop (or add) an actor.
+            _stamp_run_context(ctx, value)
         return _strict_owner_filter(ctx)
 
     # -- assistants, crons, store: read for everyone, change for admins --------

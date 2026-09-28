@@ -202,6 +202,23 @@ migration" with the steps to follow.
   Existing projects get it from `scaffold upgrade` (it changes `app_utils/content.py`,
   `chat.py` and `a2a.py`); an `agent.py` that builds its own middleware list keeps
   `UntrustedToolResults` in it.
+- **Under `langgraph-server`, a native run no longer chooses who its tools act for.** The
+  server's native run API (`POST /threads/{thread_id}/runs`, `/runs/wait`, `/runs/stream`
+  and the thread-less `/runs` routes; the default `/threads` path prefix publishes the first
+  three) takes the run context from the request (`context`, or `config.configurable`, which
+  the server copies into it), and tools read the calling principal from that context
+  (`current_caller()`, `require_owner`, `require_direct_caller`, `require_user_mentioned`).
+  The auth handler checked whose thread it was but passed the context through, as in 0.2.0:
+  any authenticated user could have the tools act as another principal, with roles of their
+  choosing (`{"principal_id": "bob", "roles": ["ops"]}`), and an agent presenting a user's
+  request could drop its `@actor` and pass `require_direct_caller` as the user. The handler
+  now puts the caller's own run context on every run it authorizes, whatever the request
+  sent: the caller's id, its roles (an agent's are only those `AUTH_DELEGATED_ROLES` lends)
+  and its public attributes with `@actor` (never credentials), the context `/chat` sends
+  (`authenticate` publishes it in the server's user as `run_context`). A native run that
+  sends none now acts for its caller, where every tool that needs one refused (KI-020 no
+  longer lists that). Studio under `langgraph dev` keeps the context it sends. Existing
+  projects get it from `scaffold upgrade` (it changes `app_utils/auth.py` and `chat.py`).
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

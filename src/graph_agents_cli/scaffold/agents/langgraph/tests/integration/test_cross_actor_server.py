@@ -20,8 +20,9 @@ the agents presenting them. The server's own thread filters are containment
 filters on the thread metadata: the user's (direct) filter must match the
 threads their agents started, an agent's must match only its own, and a thread
 without `actor` (the user's own, or one created before 0.3) must match no
-agent's. Skipped when the LangGraph CLI and its in-memory server are not
-installed.
+agent's. A run the native API starts acts for the authenticated caller, with
+its roles and actor, whatever run context the request sends. Skipped when the
+LangGraph CLI and its in-memory server are not installed.
 """
 
 from __future__ import annotations
@@ -174,3 +175,73 @@ def test_the_apps_routes_stamp_the_actor_under_this_runtime(server: str) -> None
         f"{server}/chat", json={"message": "hello"}, headers=_token(user, "stranger"), timeout=30
     )
     assert other.status_code == 403
+
+
+def _native_whoami(
+    server: str,
+    headers: dict[str, str],
+    *,
+    context: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Who the `whoami` tool of a native run (`POST /threads/{id}/runs/wait`) acts for."""
+    created = httpx.post(f"{server}/threads", json={}, headers=headers, timeout=30)
+    assert created.status_code == 200, created.text
+    body: dict[str, Any] = {
+        "assistant_id": "agent",
+        "input": {"messages": [{"role": "user", "content": "whoami for me"}]},
+    }
+    if context is not None:
+        body["context"] = context
+    if config is not None:
+        body["config"] = config
+    thread = created.json()["thread_id"]
+    r = httpx.post(f"{server}/threads/{thread}/runs/wait", json=body, headers=headers, timeout=60)
+    assert r.status_code == 200, r.text
+    results = [m for m in r.json().get("messages", []) if m.get("type") == "tool"]
+    assert results, r.text
+    return json.loads(results[-1]["content"])
+
+
+def test_a_native_run_acts_for_the_authenticated_caller_whatever_it_sends(server: str) -> None:
+    """The native run API takes a run context in the request (`context`, or
+    `config.configurable`, which the server copies into it); tools read who they act
+    for from it. The auth handler puts the caller's own there instead."""
+    user = f"alice-{uuid.uuid4().hex[:8]}"
+    alice, concierge = _token(user), _token(user, "concierge")
+    as_alice = {
+        "principal_id": user,
+        "roles": ["user"],
+        "actor": None,
+        "actor_chain": [],
+        "direct_only": "allowed",
+    }
+    # A person names another principal and roles, or poses as an agent: the tools
+    # still act for them, with their own roles.
+    bob = {"principal_id": "bob", "roles": ["ops"], "attributes": {}}
+    posing = {
+        "principal_id": user,
+        "roles": ["user"],
+        "attributes": {"@actor": {"id": "concierge", "chain": ["concierge"], "client": None}},
+    }
+    assert _native_whoami(server, alice, context=bob) == as_alice
+    assert _native_whoami(server, alice, config={"configurable": bob}) == as_alice
+    assert _native_whoami(server, alice, context=posing) == as_alice
+    assert _native_whoami(server, alice) == as_alice  # nothing sent: still the caller's
+    # An agent cannot drop its actor (a tool only a person may trigger refuses it),
+    # name another one, or take roles it was not lent.
+    for sent in (
+        None,
+        {"principal_id": user, "roles": [], "attributes": {}},
+        {"principal_id": user, "roles": ["ops"], "attributes": {"@actor": {"id": "billing"}}},
+    ):
+        seen = _native_whoami(server, concierge, context=sent)
+        assert seen["principal_id"] == user and seen["roles"] == [], seen
+        assert seen["actor"] == "concierge" and seen["actor_chain"] == ["concierge"], seen
+        refusal = "only the user directly may ask for this, not agent 'concierge'"
+        assert refusal in seen["direct_only"], seen
+    # The whole chain of agents reaches the tools, as through /chat.
+    seen = _native_whoami(
+        server, _token(user, "billing", "concierge"), context={"principal_id": user}
+    )
+    assert seen["actor"] == "billing" and seen["actor_chain"] == ["billing", "concierge"], seen

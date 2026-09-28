@@ -20,7 +20,9 @@ a test tool that cancels an order through `api_client`: a call the test's
 `TEST_APPROVAL_BODY_FILE`, so a test can change the request between the pause
 and the decision. Two more tools place and amend orders, for a policy whose
 approval rules ask other approvers for other calls, and one reads a gauge whose
-reading holds a lone surrogate. Not collected by pytest (no `test_` prefix).
+reading holds a lone surrogate. `whoami` reports the caller its run acts for
+(`current_caller`) and whether `require_direct_caller` lets it through. Not
+collected by pytest (no `test_` prefix).
 """
 
 from __future__ import annotations
@@ -35,7 +37,12 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 
 from {{cookiecutter.agent_directory}} import agent
-from {{cookiecutter.agent_directory}}.app_utils.api_client import get_client
+from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    ApiPolicyError,
+    current_caller,
+    get_client,
+    require_direct_caller,
+)
 from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
 
@@ -90,11 +97,33 @@ def gauge_reading(place: str) -> str:
     return f"gauge at {place}:\ud80042"
 
 
+@tool
+def whoami(topic: str, runtime: ToolRuntime[Any]) -> str:
+    """Say whoami: the caller this run acts for, and whether only a person may ask here."""
+    context = getattr(runtime, "context", None)
+    caller = current_caller(context)
+    try:
+        require_direct_caller(context)
+        direct_only = "allowed"
+    except ApiPolicyError as exc:
+        direct_only = str(exc)
+    return json.dumps(
+        {
+            "principal_id": caller.principal_id,
+            "roles": sorted(caller.roles),
+            "actor": caller.actor,
+            "actor_chain": list(caller.actor_chain),
+            "direct_only": direct_only,
+        }
+    )
+
+
 graph = create_agent(
     model=get_model(),
     # The fake model calls the first tool a message names: "Cancel ..." cancels,
-    # "Place ..." places, "Amend ..." amends and "... gauge ..." reads the gauge.
-    tools=[cancel_order, place_order, amend_order, gauge_reading],
+    # "Place ..." places, "Amend ..." amends, "... gauge ..." reads the gauge and
+    # "whoami" reports the caller.
+    tools=[cancel_order, place_order, amend_order, gauge_reading, whoami],
     system_prompt=agent.SYSTEM_PROMPT,
     middleware=agent.middleware(),
     context_schema=agent.AgentContext,

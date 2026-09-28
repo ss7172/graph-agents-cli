@@ -383,7 +383,9 @@ above behaves the same, with these differences:
   then drops the thread's run records, approvals and A2A tasks.
 - `/threads` on the public route also exposes the server's native thread and run routes.
   Native run creation skips `/chat`'s guardrails (run timeout, one run per thread, run
-  records); the auth handler still limits it to the caller's threads.
+  records); the auth handler still limits it to the caller's threads, and its tools act for
+  the caller: a run context the request sends (`context`, or `config.configurable`) is
+  replaced with the caller's own id, roles and public attributes, `@actor` included.
 - The native state routes (`GET /threads/{id}/state`, `POST /threads/{id}/history`,
   `GET /threads/{id}`, search and run joins) return the stored state as it is, a failed tool
   call's error text included; only `/chat`, `/threads/{id}/messages` and A2A replace it with
