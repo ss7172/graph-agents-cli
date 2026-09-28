@@ -65,8 +65,11 @@ ENV_NO_POLICY_NOTES = [
 ]
 # The current wording, as a fresh project without a policy has it.
 ENV_NO_POLICY_NOTE = [ENV_NO_POLICY_NOTES[0], ENV_NO_POLICY_NOTES[2]]
-# The line above an API's variables (written by `create` and `api add`).
-ENV_API_HEADER = re.compile(r"^# ([a-z][a-z0-9_]{0,31}) \(auth: [a-z]+\)$")
+# The line above an API's variables (written by `create`, `api add` and `peer add`, which
+# names the peer: `# orders_agent (A2A peer orders; auth: exchange)`).
+ENV_API_HEADER = re.compile(
+    r"^# ([a-z][a-z0-9_]{0,31}) \((?:A2A peer [a-z][a-z0-9_]{0,31}; )?auth: [a-z]+\)$"
+)
 LOCAL_BASE_URL = "http://localhost:9000"
 CHART_BASE_URL = "http://CHANGE-ME"
 VALUES_COMMENT = "Base URLs of the APIs in api-policy.yaml (tokens come from the Secret)."
@@ -308,16 +311,26 @@ def _manifest_todo(kind: str, value: Any, exc: EditError) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _env_comment(name: str, api: dict[str, Any]) -> str:
+def _env_comment(name: str, api: dict[str, Any], peer: str | None = None) -> str:
+    if peer is not None:
+        return f"# {name} (A2A peer {peer}; auth: {api['auth']})"
     return f"# {name} (auth: {api['auth']})"
 
 
-def env_example_add(plan: Plan, name: str, api: dict[str, Any]) -> None:
+def env_example_add(
+    plan: Plan,
+    name: str,
+    api: dict[str, Any],
+    *,
+    peer: str | None = None,
+    base_url: str = LOCAL_BASE_URL,
+) -> None:
+    """Document an API's variables in ``.env.example`` (``peer``: the A2A peer it is)."""
     path = plan.root / ENV_EXAMPLE
     before = read_text(path)
     if before is None:
         return
-    variables = [(api["base_url_env"], LOCAL_BASE_URL)]
+    variables = [(api["base_url_env"], base_url)]
     if api["auth"] == "bearer":
         variables.append((api["token_env"], ""))
     exchange = api["auth"] == "exchange"
@@ -326,7 +339,10 @@ def env_example_add(plan: Plan, name: str, api: dict[str, Any]) -> None:
         missing = [(var, value) for var, value in variables if var not in present]
         after = before
         if missing:
-            lines = [_env_comment(name, api), *(f"{var}={value}" for var, value in missing)]
+            lines = [
+                _env_comment(name, api, peer),
+                *(f"{var}={value}" for var, value in missing),
+            ]
             after = env_insert(
                 after, lines, section=ENV_SECTION, before=ENV_BEFORE, drop=ENV_NO_POLICY_NOTES
             )
@@ -379,7 +395,8 @@ def env_example_remove(
         names = [n for n in names if n in env_names(before)]
         after = before
         if names:
-            after = env_remove(before, names, comments=[_env_comment(name, api)])
+            headers = [_env_comment(name, api), *_peer_comments(before, name)]
+            after = env_remove(before, names, comments=headers)
         exchange_names = [n for n in EXCHANGE_VARIABLES if n in env_names(after)]
         if no_exchange and exchange_names:
             after = env_remove(
@@ -394,6 +411,17 @@ def env_example_remove(
         plan.left_for_you.append(f"{ENV_EXAMPLE}: remove {', '.join(names)} (not edited: {exc})")
         return
     plan.set_text(ENV_EXAMPLE, before, after)
+
+
+def _peer_comments(text: str, name: str) -> list[str]:
+    """The header lines ``peer add`` wrote for API ``name`` (whichever peer and auth)."""
+    found = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = ENV_API_HEADER.match(stripped)
+        if match and match.group(1) == name and "(A2A peer " in stripped:
+            found.append(stripped)
+    return found
 
 
 def _fix_orphan_headers(text: str, remaining: Mapping[str, Mapping[str, Any]]) -> str:
@@ -558,6 +586,33 @@ def values_exchange_remove(plan: Plan, config: ProjectConfig) -> None:
             )
             continue
         plan.set_text(rel, stored, text)
+
+
+def values_env_set(plan: Plan, config: ProjectConfig, variable: str, template: str) -> list[str]:
+    """Set ``variable`` in each ``values-<env>.yaml``'s ``env`` to ``template`` with ``{env}``
+    filled; the environments it was set for."""
+    done = []
+    for path in chart_values_files(plan.root, config)[1:]:
+        environment = path.stem.removeprefix("values-")
+        rel = path.relative_to(plan.root).as_posix()
+        planned = plan_text(plan, rel)
+        before = planned if planned is not None else read_text(path)
+        value = template.replace("{env}", environment)
+        try:
+            values = YamlText(before or "")
+            env = values.get(("env",))
+            if env is None:
+                values.set(("env",), {variable: value})
+            elif not isinstance(env, dict):
+                raise EditError(f"{rel} has an env: that is not a mapping")
+            elif env.get(variable) != value:
+                values.set(("env", variable), value)
+        except EditError as exc:
+            plan.left_for_you.append(f"{rel}: set env.{variable}: {value} (not edited: {exc})")
+            continue
+        plan.set_text(rel, read_text(path), values.text)
+        done.append(environment)
+    return done
 
 
 def plan_text(plan: Plan, path: str) -> str | None:

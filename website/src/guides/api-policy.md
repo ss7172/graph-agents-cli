@@ -323,6 +323,79 @@ about a peer without a `description` and about more than 40 peers. The complete 
 every message, are in
 [the schema reference](../reference/api-policy-schema.md#json-rpc-apis-protocol).
 
+### Declare the agents it asks: `graph-agents-cli peer`
+
+`peer add` writes a peer's whole entry, and the files that follow it, in one reviewed diff:
+
+```bash
+graph-agents-cli peer add orders \
+  --description "Orders agent: lists and reads the caller's orders; cancels one after approval." \
+  --cluster-url "http://orders-agent.orders-agent-{env}.svc.cluster.local"
+```
+
+- **`api-policy.yaml`**: the API `orders_agent` (`--api-name`) with `protocol: a2a`, its
+  endpoint `/a2a/orders` (`--path`: the peer's agent directory or `A2A_NAME`), its base URL
+  variable `ORDERS_AGENT_URL` (`--url-env`), the credential the project's auth policy calls
+  for (`jwt`: `auth: exchange` for audience `orders`; `custom`: `auth: forward`;
+  `shared-bearer`: `auth: bearer` with `ORDERS_AGENT_KEY`; `--auth` to choose), the agent card,
+  `SendMessage` and `GetTask` (`--calls ask,status[,cancel]`), and, with `--approvals relay`
+  (the default), the approve gate (`requester`, `--approval-timeout-s`, 900 s) and the
+  approvals read the relay falls back on; `--approvals deny` denies approve messages instead.
+  Limits for an agent that runs a model: 12 calls a run, a 120 s read timeout and a 1 MiB
+  answer cap.
+- **The manifest** (`secrets.keys`: `TOKEN_EXCHANGE_CLIENT_SECRET` or the bearer key),
+  **`.env.example`** (`ORDERS_AGENT_URL`, and the token-exchange settings for the first
+  exchange peer) and **the chart** (`values.yaml`, and each `values-<env>.yaml` with
+  `--cluster-url`). `.env` is never touched.
+- **`<agent_dir>/tools/a2a_peers.py`**, regenerated: `PEERS` (each peer's API, whether it
+  relays approvals, its description), `API_CALLS` (exactly the calls the policy allows) and
+  `TOOLS = peer_tools(PEERS)`. It is data only and generated from the policy; the name the
+  model picks a peer by is recorded there. Do not edit it: put your own peer behaviour in
+  another tool module that uses `A2APeerClient`.
+
+It then prints what it cannot set, including the settings on the peer:
+
+```text
+Left for you:
+  - set ORDERS_AGENT_URL (the base URL of orders) in .env (local runs)
+  - set TOKEN_EXCHANGE_URL ... and TOKEN_EXCHANGE_CLIENT_ID ...; put TOKEN_EXCHANGE_CLIENT_SECRET in .env ...
+  - at the issuer: let this agent's client (concierge) exchange users' tokens for audience orders, ...
+  - on orders: AUTH_JWT_AUDIENCE includes orders, and AUTH_ALLOWED_ACTORS includes concierge
+  - if the issuer's exchanged tokens name no actor (no act claim; ...), this agent refuses them: then add
+    --allow-actorless and, on orders, set AUTH_JWT_DIRECT_CLIENTS=... and list client:concierge in AUTH_ALLOWED_ACTORS
+  - on orders, to let this agent relay the person's decisions: `graph-agents-cli api approval <its gated API>
+    --decide-with relayed --relayers concierge` ... (a reviewed loosening there; without it the person approves at orders directly)
+  - set PRINCIPAL_HASH_SALT (a secret) ...
+  - then `graph-agents-cli lint`, `graph-agents-cli peer show orders --check`, and an eval case ...
+```
+
+The peer's own gates stay `decide_with: direct` until its owners run that `api approval`
+line there: until then the concierge reports `needs_direct_approval` and the person approves
+at orders with their own token.
+
+The other commands:
+
+- `peer list [--json]`: each peer's API, URL (from the environment or `.env`: URLs only,
+  never secrets), auth, audience, approvals and limits.
+- `peer show NAME [--json] [--check]`: its entry and what is left; `--check` reads its agent
+  card without a credential (reachable, or reachable with a 401), checks that the card names
+  the endpoint this agent calls (the peer's `APP_URL`), and says whether it reads the user's
+  words; exit 1 when the peer is unreachable or names another endpoint.
+- `peer remove NAME`: the API and its variables go (the token-exchange ones with the last
+  exchange peer), and the module is regenerated, or deleted with the last peer.
+- `peer sync`: regenerates the module from the policy. `scaffold upgrade` never touches
+  `tools/`, and the `api` commands edit the policy only: after either, run `peer sync`.
+  `lint` fails while the module and the policy differ (`tools/a2a_peers.py: out of sync with
+  api-policy.yaml`), and notes a tool module of your own that calls a peer directly.
+
+`peer add` refuses a 0.2 runtime (run `scaffold upgrade` first), a name that is this agent's
+own, an API name already taken (`--api-name`), a peer that exists with other settings (change
+it with `api`, or remove and add it again), a credential the project cannot serve (the
+[compatibility matrix](#auth-modes): no exchange under `shared-bearer` or `langgraph-server`),
+and a `tools/a2a_peers.py` it did not write. `--card URL|FILE` reads the description, the path
+and whether the peer reads the user's words from its agent card; an unreachable card is a
+warning.
+
 ### Ask other agents: `app_utils/a2a_client.py`
 
 The template's A2A client calls a peer through this policy, never around it: every request

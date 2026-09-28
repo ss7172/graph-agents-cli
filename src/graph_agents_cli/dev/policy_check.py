@@ -1059,15 +1059,72 @@ def build_report(
         report.notes.append(f"no {policy_file} at the project root: outbound API calls are refused")
 
     report.notes.extend(delegated_mentions_notes(project_root))
+    if not report.policy_invalid:
+        drift = peers_module_problem(project_root, agent_dir, document)
+        if drift:
+            report.invalid(drift.split(":", 1)[0], drift)
     tools_dir = project_root / agent_dir / TOOLS_SUBDIR
     calls, problems = collect_declared_calls(tools_dir)
     for problem in problems:
         report.invalid(problem.split(":", 1)[0], problem)
+    report.notes.extend(direct_peer_call_notes(calls, document))
     for call in calls:
         report.results.append(check_call(call, document, specs, policy_file=policy_file))
     if not calls and not problems:
         report.notes.append(f"no {CALLS_NAME} declarations under {agent_dir}/{TOOLS_SUBDIR}/")
     return report
+
+
+def peers_module_problem(
+    project_root: Path, agent_dir: str, document: Mapping[str, Any] | None
+) -> str | None:
+    """Why the generated `tools/a2a_peers.py` is out of step with the policy, or None.
+
+    Only the module `graph-agents-cli peer` wrote (its marker line) is compared,
+    with the text the policy generates now: a module of your own is yours.
+    """
+    from graph_agents_cli.peer import _generate as generated
+
+    path = generated.module_path(project_root, agent_dir)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not generated.is_generated(text):
+        return None
+    peers = generated.peers_of(document, generated.names_in(text))
+    expected = generated.module_text(peers, agent_dir)
+    if text == expected:
+        return None
+    rel = path.relative_to(project_root).as_posix()
+    return (
+        f"{rel}: out of sync with {POLICY_FILENAME} (its peers, calls or descriptions differ); "
+        "fix: graph-agents-cli peer sync"
+    )
+
+
+def direct_peer_call_notes(
+    calls: list[DeclaredCall], document: Mapping[str, Any] | None
+) -> list[str]:
+    """A note for each tool module (other than the generated one) that calls an A2A peer."""
+    from graph_agents_cli.peer._generate import MODULE_NAME
+
+    apis = (document or {}).get("apis") or {}
+    modules = sorted(
+        {
+            call.tool
+            for call in calls
+            if call.api in apis
+            and api_protocol(apis[call.api]) == PROTOCOL_A2A
+            and Path(call.tool).name != MODULE_NAME
+        }
+    )
+    return [
+        f"{module} calls an A2A peer (protocol: a2a) directly: prefer app_utils.a2a_client "
+        "(A2APeerClient, peer_tools), which checks the peer's card, keys the conversation and "
+        "relays approvals"
+        for module in modules
+    ]
 
 
 def peer_notes(document: Mapping[str, Any]) -> list[str]:

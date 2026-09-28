@@ -525,6 +525,11 @@ main.add_lazy_command(
     "Declare and change the outbound APIs tools may call (api-policy.yaml).",
 )
 main.add_lazy_command(
+    "peer",
+    "graph_agents_cli.peer.cmd_peer:peer_group",
+    "Declare the other agents this agent asks, over A2A (its peers).",
+)
+main.add_lazy_command(
     "install",
     "graph_agents_cli.dev.cmd_install:cmd_install",
     "Install project dependencies.",

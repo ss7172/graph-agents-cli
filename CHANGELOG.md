@@ -261,6 +261,28 @@ migration" with the steps to follow.
   once. `.env.example` and the environment reference list the new settings, which the startup
   check validates. The fake test model fills a one-value `Literal` argument (a JSON-schema
   `const`).
+- **`graph-agents-cli peer add|remove|list|show|sync`: declare the agents this agent asks**
+  (B3). `peer add NAME` writes the peer's `protocol: a2a` API (its endpoint `/a2a/NAME`, the
+  credential the auth policy calls for: `jwt` exchange for audience NAME, `custom` forward,
+  `shared-bearer` bearer; the card, `SendMessage`, `GetTask`, optionally `CancelTask`; the approve
+  gate with `--approvals relay`, the default, or its denial with `deny`; 12 calls a run, a 120 s
+  read timeout and a 1 MiB answer cap), the manifest's `secrets.keys`, `.env.example`, the
+  chart's `values.yaml` and, with `--cluster-url`, each `values-<env>.yaml` (never `.env`), and
+  regenerates `<agent_dir>/tools/a2a_peers.py`: data only (`PEERS`, a literal `API_CALLS` of
+  exactly the calls the policy allows, `TOOLS = peer_tools(PEERS)`), importing the manifest's
+  agent directory. It prints what is left, including the peer's side: `AUTH_JWT_AUDIENCE` and
+  `AUTH_ALLOWED_ACTORS` there, `AUTH_JWT_DIRECT_CLIENTS` and `client:<id>` for an issuer whose
+  exchanged tokens name no actor (`--allow-actorless`), and the `api approval <its gated API>
+  --decide-with relayed --relayers <this agent>` line that lets it relay (a reviewed loosening
+  the peer's owners run). Guards: a 0.2 runtime (run `scaffold upgrade`), a bad or own name
+  (exit 2), a taken API name, a peer with other settings, an auth mode the project cannot serve,
+  a module it did not write (exit 3); `--card URL|FILE` reads the description, path and origin
+  support. `peer remove` takes it all back, `peer list` and `peer show [--check]` report (the
+  check reads the card without a credential: reachable, 401, or a foreign endpoint, exit 1),
+  and `peer sync` regenerates the module after `scaffold upgrade` or `api` edits. `lint` fails
+  while the module and the policy differ, and notes a tool module that calls a peer itself.
+  Wiring the round-1 concierge's five peers takes five `peer add` commands instead of 40 `api`
+  commands and 418 hand-written lines.
 
 ### Changed
 
