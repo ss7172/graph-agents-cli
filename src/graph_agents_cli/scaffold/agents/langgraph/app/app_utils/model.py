@@ -246,6 +246,12 @@ def build_model(
         if not base_url:
             raise ValueError("OPENAI_BASE_URL is required when MODEL_PROVIDER=openai-compatible.")
         params["base_url"] = base_url
+    if lc_provider == "openai":
+        # Ask for token usage on streamed responses (stream_options.include_usage).
+        # langchain-openai does this by itself only for api.openai.com, so without it an
+        # OpenAI-compatible endpoint (a proxy, gateway or self-hosted server) records zero
+        # usage in run records and eval traces, and `expect.max_tokens` passes vacuously.
+        params.setdefault("stream_usage", True)
     from langchain.chat_models import init_chat_model
 
     return init_chat_model(name, model_provider=lc_provider, **params)

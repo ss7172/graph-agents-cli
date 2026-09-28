@@ -137,6 +137,21 @@ def test_provider_models_get_a_timeout_and_retries(monkeypatch: pytest.MonkeyPat
     assert model.request_timeout == 3 and model.max_retries == 5
 
 
+def test_openai_models_report_streamed_usage() -> None:
+    # langchain-openai asks for streamed usage only for api.openai.com by itself: an
+    # OpenAI-compatible endpoint recorded zero tokens (Track C finding F1).
+    model = build_model(
+        "openai-compatible", "gpt-test", base_url="http://gateway:8080/v1", api_key="k"
+    )
+    assert model.stream_usage is True
+    assert build_model("openai", "gpt-test", api_key="sk-test").stream_usage is True
+    # An explicit argument wins.
+    model = build_model(
+        "openai-compatible", "gpt-test", base_url="http://gw/v1", api_key="k", stream_usage=False
+    )
+    assert model.stream_usage is False
+
+
 # --- reasoning effort and the Responses API (OpenAI-API models) ---------------------------
 
 

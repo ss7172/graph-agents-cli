@@ -54,7 +54,7 @@ os.environ.update(
 
 import httpx
 import pytest
-from fake_openai import RESPONSES_USAGE, FakeOpenAI
+from fake_openai import CHAT_USAGE, RESPONSES_USAGE, FakeOpenAI
 from langchain_core.tools import tool
 
 from {{cookiecutter.agent_directory}}.app_utils.model import get_judge_model, get_model
@@ -190,6 +190,12 @@ async def test_chat_completions_with_a_tool_and_a_reasoning_effort(
         assert body["reasoning_effort"] == "low" and "reasoning" not in body
     assert [t["function"]["name"] for t in first["tools"]] == ["probe"]
     assert second["messages"][-1]["role"] == "tool"
+    # Usage is asked for on the stream (F1), so the run records what the server reports.
+    assert all(r["body"]["stream_options"] == {"include_usage": True} for r in server.requests)
+    assert events[-1][1]["usage"] == {
+        "input_tokens": 2 * CHAT_USAGE["prompt_tokens"],
+        "output_tokens": 2 * CHAT_USAGE["completion_tokens"],
+    }
 
 
 async def test_a_model_that_refuses_tools_with_an_effort_on_chat_completions(

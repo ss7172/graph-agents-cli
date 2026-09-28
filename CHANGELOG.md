@@ -315,6 +315,14 @@ migration" with the steps to follow.
   sends none now acts for its caller, where every tool that needs one refused (KI-020 no
   longer lists that). Studio under `langgraph dev` keeps the context it sends. Existing
   projects get it from `scaffold upgrade` (it changes `app_utils/auth.py` and `chat.py`).
+- **Streamed runs on an OpenAI-compatible endpoint record their token usage.** The generated
+  agent now asks OpenAI-API models for usage on streamed responses
+  (`stream_options.include_usage`); langchain-openai did so by itself only for
+  api.openai.com, so with `MODEL_PROVIDER=openai-compatible` (a proxy, a gateway or a
+  self-hosted server) run records and eval traces showed zero tokens and
+  `expect.max_tokens` passed whatever the run used. On the Responses API
+  (`MODEL_USE_RESPONSES_API`) usage comes with every streamed answer anyway, and nothing
+  more is sent. Existing projects get it from `scaffold upgrade` (`app_utils/model.py`).
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
