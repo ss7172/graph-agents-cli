@@ -180,11 +180,15 @@ migration" with the steps to follow.
 - **`limits.max_response_bytes` caps an API's answers.** With it (1 to 67108864 bytes), the
   client reads a response body, decoded, only up to that many bytes: past it, the answer is
   discarded and the call fails with `<api> answered with more than N bytes; discarded` (a
-  declared `Content-Length` over the cap is refused before reading, and a small compressed
-  body that decodes larger is caught). `api add --max-response-bytes N` and `api limits NAME
-  --max-response-bytes N|none` set it, and `api limits` edits keep it; `api show` prints it.
-  Unset, answers are read whole as in 0.2 (no default cap for existing APIs). Both SHARED
-  copies.
+  declared `Content-Length` over the cap is refused before reading). Memory stays bounded
+  whatever the answer's compression: a capped call asks for gzip or deflate at most and
+  decodes the body itself, never past the cap (httpx decodes each network read whole, and 32
+  KiB of zstd is 1 GiB), and an answer in any other content encoding (zstd, br, an unknown or
+  a stacked one) is refused unread: `<api> answered in a content encoding other than gzip or
+  deflate, which limits.max_response_bytes cannot bound; discarded`. `api add
+  --max-response-bytes N` and `api limits NAME --max-response-bytes N|none` set it, and `api
+  limits` edits keep it; `api show` prints it. Unset, answers are read whole as in 0.2 (no
+  default cap for existing APIs). Both SHARED copies.
 - **Other agents get the request id and trace context, and credentials only over TLS.** A
   call to an API declared `protocol: a2a` now carries the request's `X-Request-ID` and, under
   OTLP, its W3C trace context whatever its `auth` (the owner's decision: A2A peers and APIs

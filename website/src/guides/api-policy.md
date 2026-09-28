@@ -453,8 +453,9 @@ graph-agents-cli api limits orders --max-calls-per-run 20 --rate-per-minute 120
 - `max_response_bytes` caps each answer (`api limits orders --max-response-bytes 1048576`, up
   to 64 MiB): the client reads the body, decoded, only up to that many bytes, and past it
   discards the answer and the call fails (`orders answered with more than 1048576 bytes;
-  discarded`), a compressed body that decodes larger included. Unset, answers are not capped,
-  as before.
+  discarded`). A capped call asks for gzip or deflate at most and decodes the body itself,
+  never past the cap, so a small compressed answer cannot fill memory; an answer in another
+  content encoding (zstd, br) is refused unread. Unset, answers are not capped, as before.
 - `none` removes a limit: `api limits orders --rate-per-minute none`.
 
 !!! warning "Limits are per process"

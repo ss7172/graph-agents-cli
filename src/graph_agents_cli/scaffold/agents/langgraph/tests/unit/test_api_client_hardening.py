@@ -612,6 +612,104 @@ async def test_max_response_bytes(capped: None, caplog: pytest.LogCaptureFixture
         await client(httpx.Response(500, text="e" * 5000)).get("/x")
 
 
+async def test_a_capped_answer_is_decoded_a_bounded_piece_at_a_time(capped: None) -> None:
+    """A small compressed body that decodes to far more than the cap never lands in memory.
+    httpx decodes each network read whole before a cap could be checked (64 KiB of gzip is
+    64 MiB, 32 KiB of zstd 1 GiB); under a cap the client decodes the raw body itself, never
+    past the cap, here from one 32 KiB read that decodes to 32 MiB."""
+    import tracemalloc
+    import zlib
+
+    mib = 1024 * 1024
+    # Warm up first: the call path's lazy imports are not what is measured.
+    warm_up = httpx.Response(
+        200, stream=_Chunks(zlib.compress(bytes(4096))), headers={"content-encoding": "deflate"}
+    )
+    with pytest.raises(ApiCallError, match="more than 1024 bytes; discarded"):
+        await get_client("capped", transport=_answer(warm_up)).get("/x")
+    for wbits, encoding in ((31, "gzip"), (15, "deflate"), (-15, "deflate")):
+        packer = zlib.compressobj(9, zlib.DEFLATED, wbits)
+        raw = b"".join(packer.compress(bytes(mib)) for _ in range(32)) + packer.flush()
+        assert len(raw) < 64 * 1024
+        stream = _Chunks(raw)
+        response = httpx.Response(200, stream=stream, headers={"content-encoding": encoding})
+        client = get_client("capped", transport=_answer(response))
+        tracemalloc.start()
+        try:
+            with pytest.raises(ApiCallError, match="more than 1024 bytes; discarded"):
+                await client.get("/x")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 2 * mib, f"{encoding} (wbits {wbits}): {peak} bytes held"
+        assert stream.read == 1
+
+
+async def test_a_capped_answer_is_read_in_gzip_or_deflate_only(capped: None) -> None:
+    """Under a cap the client asks for gzip or deflate at most, whatever the tool asks for,
+    and refuses, unread, an answer in any other content encoding: zstd and br (which httpx
+    would decode whole when their packages are installed), an unknown one, or two stacked."""
+    import gzip
+    import zlib
+
+    calls: list[httpx.Request] = []
+
+    def client(api: str, response: httpx.Response) -> Any:
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return response
+
+        return get_client(api, transport=httpx.MockTransport(handler))
+
+    body = json.dumps({"n": "b" * 900}).encode()
+    json_type = {"content-type": "application/json"}
+    zipped = gzip.compress(body)
+    for encoding, reads in (
+        ("gzip", (zipped,)),
+        ("gzip", (zipped[:10], zipped[10:20], zipped[20:])),  # across network reads
+        ("deflate", (zlib.compress(body),)),
+        ("deflate", (zlib.compress(body, wbits=-15),)),  # raw deflate, as some servers send
+        ("identity", (body,)),
+        ("Gzip, identity", (zipped,)),
+    ):
+        stream = _Chunks(*reads)
+        headers = {**json_type, "content-encoding": encoding}
+        answer = httpx.Response(200, stream=stream, headers=headers)
+        assert await client("capped", answer).get("/x") == {"n": "b" * 900}, encoding
+        assert stream.read == len(reads)
+
+    calls.clear()
+    await client("capped", httpx.Response(200, text="ok")).get(
+        "/x", headers={"Accept-Encoding": "zstd, br"}
+    )
+    assert calls[0].headers["accept-encoding"] == "gzip, deflate"
+    await client("open", httpx.Response(200, text="ok")).get(
+        "/x", headers={"Accept-Encoding": "zstd, br"}
+    )
+    assert calls[1].headers["accept-encoding"] == "zstd, br"  # no cap: as before
+
+    refused = (
+        "capped answered in a content encoding other than gzip or deflate, which "
+        "limits.max_response_bytes cannot bound; discarded"
+    )
+    for encoding in ("zstd", "br", "compress", "gzip, gzip", "deflate, br", "ZSTD"):
+        unread = _Chunks(b"(\xb5/\xfd junk")
+        answer = httpx.Response(200, stream=unread, headers={"content-encoding": encoding})
+        with pytest.raises(ApiCallError) as exc:
+            await client("capped", answer).get("/x")
+        assert str(exc.value) == refused, encoding
+        assert exc.value.reason == (
+            "response encoding not readable within limits.max_response_bytes"
+        )
+        assert unread.read == 0, encoding
+
+    corrupt = httpx.Response(
+        200, stream=_Chunks(b"not gzip at all"), headers={"content-encoding": "gzip"}
+    )
+    with pytest.raises(ApiCallError, match="capped: GET /x failed: DecodingError"):
+        await client("capped", corrupt).get("/x")
+
+
 async def test_without_a_cap_answers_are_read_whole(capped: None) -> None:
     body = "c" * 3_000_000
     client = get_client("open", transport=_answer(httpx.Response(200, text=body)))

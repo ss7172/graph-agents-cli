@@ -70,7 +70,10 @@ or A2A run ends (`end_run`), and otherwise (LangGraph Server runs included)
 after `RUN_COUNTER_TTL_S` without a call or beyond `MAX_TRACKED_RUNS` runs, so
 memory does not grow across runs. `limits.max_response_bytes` caps each answer:
 the body is read (decoded) up to that many bytes and discarded past it, and the
-call fails; unset, answers are not capped.
+call fails; unset, answers are not capped. Under a cap the client asks for gzip
+or deflate at most and decodes them itself, never past the cap, so a small
+compressed body cannot fill memory; an answer in another content encoding
+(zstd, br) is refused unread.
 
 An API's optional `approval` block names the calls a human must approve before
 they are sent (`gated`, `ApiPolicy.gate`). It is one rule, or a list of rules
@@ -145,6 +148,7 @@ import os
 import re
 import threading
 import time
+import zlib
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
@@ -1728,6 +1732,81 @@ class ResponseTooLarge(Exception):
     """A response body over the API's `limits.max_response_bytes` (the client discards it)."""
 
 
+class ResponseEncodingRefused(Exception):
+    """A capped response in a content encoding the client cannot decode within the cap."""
+
+
+# Under `limits.max_response_bytes` the client asks for these content encodings only and
+# decodes them itself, never more than the cap at a time (zlib's `max_length`). httpx
+# decodes each network read (up to 64 KiB) whole before a cap could be checked: 32 KiB of
+# zstd decodes to 1 GiB, and 64 KiB of gzip to 64 MiB. An answer in any other encoding
+# (zstd, br, an unknown one, or two stacked) is refused unread, whatever was asked for.
+CAPPED_ACCEPT_ENCODING = "gzip, deflate"
+_CAPPED_CODINGS = ("gzip", "deflate")
+
+
+class CappedBody:
+    """A response body read, decoded, up to `cap` bytes.
+
+    `content_encoding` is the response's `Content-Encoding`: none or `identity`, `gzip`,
+    or `deflate` (zlib-wrapped, or raw as some servers send it, as httpx reads it).
+    Anything else raises `ResponseEncodingRefused` before a byte is read. `feed` each raw
+    chunk as it arrives, then `finish`; `ResponseTooLarge` as soon as the decoded body
+    passes the cap, so at most `cap + 1` decoded bytes are ever held. A corrupt compressed
+    body raises `zlib.error`."""
+
+    def __init__(self, content_encoding: str, cap: int) -> None:
+        codings = [
+            coding
+            for coding in (part.strip().lower() for part in content_encoding.split(","))
+            if coding not in ("", "identity")
+        ]
+        if len(codings) > 1 or (codings and codings[0] not in _CAPPED_CODINGS):
+            raise ResponseEncodingRefused
+        self.coding = codings[0] if codings else None
+        self.cap = cap
+        self.size = 0
+        self._parts: list[bytes] = []
+        self._first = True
+        self._zlib: Any = None
+        if self.coding == "gzip":
+            self._zlib = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        elif self.coding == "deflate":
+            self._zlib = zlib.decompressobj()
+
+    def feed(self, data: bytes) -> None:
+        if self._zlib is None:
+            self._take(data)
+            return
+        while data:
+            # At most one byte past the cap per call (a `max_length` of 0 would mean no bound);
+            # the input left over waits in `unconsumed_tail`.
+            self._take(self._decompress(data, self.cap - self.size + 1))
+            data = self._zlib.unconsumed_tail
+
+    def finish(self) -> bytes:
+        if self._zlib is not None:
+            self._take(self._zlib.flush())  # every input byte is consumed: nothing unbounded
+        return b"".join(self._parts)
+
+    def _decompress(self, data: bytes, room: int) -> bytes:
+        first, self._first = self._first, False
+        try:
+            return self._zlib.decompress(data, room)
+        except zlib.error:
+            if not (first and self.coding == "deflate"):
+                raise
+            self._zlib = zlib.decompressobj(-zlib.MAX_WBITS)  # raw deflate, no zlib header
+            return self._zlib.decompress(data, room)
+
+    def _take(self, piece: bytes) -> None:
+        self.size += len(piece)
+        if self.size > self.cap:
+            raise ResponseTooLarge
+        if piece:
+            self._parts.append(piece)
+
+
 def error_body_excerpt(text: str, secrets: tuple[str, ...] = ()) -> str:
     """`text` bounded to `ERROR_BODY_MAX_CHARS`, control characters dropped, `secrets` redacted."""
     for secret in secrets:
@@ -3008,7 +3087,9 @@ class ApiClient:
         API's `limits` are counted last, just before sending. Redirects are
         never followed. With `limits.max_response_bytes`, the body is read
         only up to that many bytes (decoded): past it the response is
-        discarded and `ApiCallError` raised. An empty response body returns "". Raises
+        discarded and `ApiCallError` raised; the call asks for gzip or deflate
+        at most, and an answer in another content encoding is refused unread
+        (`ApiCallError`). An empty response body returns "". Raises
         `ApiPolicyError` (nothing sent) or `ApiCallError` (with `status_code`
         and a bounded `body` for a non-2xx response).
 
@@ -3101,6 +3182,13 @@ class ApiClient:
                     f"{self.name} answered with more than {cap} bytes; discarded",
                     reason="response over limits.max_response_bytes",
                 ) from None
+            except ResponseEncodingRefused:
+                self._log_call(label, "encoding refused", started, log_fields, failed=True)
+                raise ApiCallError(
+                    f"{self.name} answered in a content encoding other than gzip or deflate, "
+                    "which limits.max_response_bytes cannot bound; discarded",
+                    reason="response encoding not readable within limits.max_response_bytes",
+                ) from None
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 self._log_call(label, status, started, log_fields, failed=True)
@@ -3137,21 +3225,33 @@ class ApiClient:
         client: httpx.AsyncClient, request: httpx.Request, cap: int
     ) -> httpx.Response:
         """Send `request` and read at most `cap` bytes of its body (decoded, as the tool gets
-        it); `ResponseTooLarge` past that, with the rest never read. A declared
-        `Content-Length` over the cap (an uncompressed body) is refused before reading."""
+        it); `ResponseTooLarge` past that, with the rest never read.
+
+        The request asks for gzip or deflate at most (`CAPPED_ACCEPT_ENCODING`, in place of
+        httpx's default or the tool's own `Accept-Encoding`), and the raw body is decoded
+        here by `CappedBody`, never more than the cap at a time: an answer in any other
+        encoding raises `ResponseEncodingRefused` unread. A declared `Content-Length` over
+        the cap (an uncompressed body) is refused before reading."""
+        request.headers["Accept-Encoding"] = CAPPED_ACCEPT_ENCODING
         response = await client.send(request, stream=True)
         try:
-            encoded = response.headers.get("content-encoding", "identity").strip().lower()
+            body = CappedBody(response.headers.get("content-encoding", ""), cap)
             declared = response.headers.get("content-length", "")
-            if encoded in ("", "identity") and declared.isdigit() and int(declared) > cap:
+            if body.coding is None and declared.isdigit() and int(declared) > cap:
                 raise ResponseTooLarge
-            chunks: list[bytes] = []
-            size = 0
-            async for chunk in response.aiter_bytes():
-                size += len(chunk)
-                if size > cap:
-                    raise ResponseTooLarge
-                chunks.append(chunk)
+            try:
+                if response.is_stream_consumed:
+                    # Already read whole and decoded by httpx: a response built with its
+                    # content, as a MockTransport handler returns it (a network answer is
+                    # always streamed). Only the cap is left to check.
+                    body = CappedBody("", cap)
+                    body.feed(response.content)
+                else:
+                    async for chunk in response.aiter_raw():
+                        body.feed(chunk)
+                content = body.finish()
+            except zlib.error as exc:
+                raise httpx.DecodingError(str(exc), request=request) from exc
         finally:
             await response.aclose()
         # The body as read (decoded): a response that holds it, for the usual handling.
@@ -3161,10 +3261,7 @@ class ApiClient:
             if name.lower() not in ("content-encoding", "content-length", "transfer-encoding")
         ]
         return httpx.Response(
-            response.status_code,
-            headers=headers,
-            content=b"".join(chunks),
-            request=request,
+            response.status_code, headers=headers, content=content, request=request
         )
 
     def _prepare(
