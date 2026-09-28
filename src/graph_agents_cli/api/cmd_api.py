@@ -42,6 +42,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from graph_agents_cli._api_policy import (
+    ALLOW_ACTORLESS_KEY,
     ANY_METHOD,
     APPROVAL_KEY,
     AUTH_MODES,
@@ -543,6 +544,17 @@ def _openapi_reference(
     help="--auth exchange: the target's resource indicator, an absolute URI (RFC 8707).",
 )
 @click.option(
+    "--allow-actorless",
+    "allow_actorless",
+    is_flag=True,
+    default=False,
+    help=(
+        "--auth exchange: accept exchanged tokens that name no actor (exchange.allow_actorless; "
+        "refused by default). Only when the agent behind the API sets AUTH_JWT_DIRECT_CLIENTS "
+        "and lists this agent as client:<its client id> in AUTH_ALLOWED_ACTORS."
+    ),
+)
+@click.option(
     "--access",
     "access",
     type=click.Choice(list(ch.ACCESS_CHOICES)),
@@ -598,6 +610,7 @@ def cmd_add(
     audience: str | None,
     scope: str | None,
     resource: str | None,
+    allow_actorless: bool,
     access: str,
     methods: str | None,
     openapi: Path | None,
@@ -622,8 +635,10 @@ def cmd_add(
         )
     if auth not in HEADER_AUTH_MODES and audience:
         raise click.UsageError("--audience goes with --auth exchange or forward only")
-    if auth != "exchange" and (scope or resource):
-        raise click.UsageError("--scope and --resource go with --auth exchange only")
+    if auth != "exchange" and (scope or resource or allow_actorless):
+        raise click.UsageError(
+            "--scope, --resource and --allow-actorless go with --auth exchange only"
+        )
     project = _load_project()
     if project.document is not None and name in project.document["apis"]:
         raise ch.ApiCommandError(
@@ -644,6 +659,8 @@ def cmd_add(
             exchange["scope"] = scope
         if resource:
             exchange["resource"] = resource
+        if allow_actorless:
+            exchange[ALLOW_ACTORLESS_KEY] = True
         api[EXCHANGE_KEY] = exchange
     api["allowed_methods"] = allowed_methods
     if openapi is not None:
@@ -760,18 +777,28 @@ def _add_todos(
             f"at the issuer, let this agent's client exchange users' tokens for audience "
             f"{audience} (and name it in the exchanged token's act claim)"
         )
-        plan.left_for_you.append(
-            f"on the agent behind {name}: AUTH_JWT_AUDIENCE includes {audience}, and "
-            "AUTH_ALLOWED_ACTORS includes this agent's client id"
-        )
-        plan.left_for_you.append(
-            "if the issuer's exchanged tokens carry no act claim (some issuers, Keycloak among "
-            f"them, add none; decode one to see), also on the agent behind {name}: set "
-            "AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with>, and list this agent "
-            "in AUTH_ALLOWED_ACTORS as client:<its client id>; without it, that agent reads "
-            "this agent's calls as the person's own, and this agent could decide the "
-            "person's approvals there"
-        )
+        if api[EXCHANGE_KEY].get(ALLOW_ACTORLESS_KEY) is True:
+            plan.left_for_you.append(
+                f"on the agent behind {name}: AUTH_JWT_AUDIENCE includes {audience}; set "
+                "AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with>, and list this agent "
+                "in AUTH_ALLOWED_ACTORS as client:<its client id> (and as its act id, if the "
+                "issuer names one). exchange.allow_actorless lets this agent send tokens that "
+                "name no actor: without those settings, that agent reads this agent's calls as "
+                "the person's own, and this agent could decide the person's approvals there"
+            )
+        else:
+            plan.left_for_you.append(
+                f"on the agent behind {name}: AUTH_JWT_AUDIENCE includes {audience}, and "
+                "AUTH_ALLOWED_ACTORS includes this agent's client id"
+            )
+            plan.left_for_you.append(
+                "check that the issuer names this agent in the exchanged token's act claim "
+                "(some issuers, Keycloak among them, add none; decode one to see): this agent "
+                f"refuses a token that names no actor, so calls to {name} fail. The opt-in "
+                f"exchange.allow_actorless: true (api add --allow-actorless) needs, on the agent "
+                f"behind {name}, AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with> and "
+                "this agent in AUTH_ALLOWED_ACTORS as client:<its client id>"
+            )
 
 
 @api_group.command("remove")
@@ -2090,9 +2117,14 @@ def _print_api(console: Console, api: dict[str, Any]) -> None:
         extra = "".join(
             f"; {key} {exchange[key]}" for key in ("scope", "resource") if exchange.get(key)
         )
+        actorless = (
+            "; accepts tokens that name no actor (allow_actorless)"
+            if exchange.get(ALLOW_ACTORLESS_KEY) is True
+            else ""
+        )
         auth += (
             f" (a token the issuer mints for audience {exchange['audience']}{extra}, in exchange "
-            f"for the caller's, sent in {api['forward_header']}; RFC 8693)"
+            f"for the caller's, sent in {api['forward_header']}; RFC 8693{actorless})"
         )
     rows = [
         ("base URL", f"from {api['base_url_env']}"),

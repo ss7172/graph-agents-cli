@@ -283,8 +283,9 @@ Then one rule set applies to every policy, right after `authenticate`:
 A bad value stops startup. With `jwt`, `AUTH_ALLOWED_ACTORS` set and `AUTH_JWT_DIRECT_CLIENTS`
 empty, startup logs that delegation is recognised only by the actor claim: if your issuer's
 exchanged tokens carry none, list your sign-in clients in `AUTH_JWT_DIRECT_CLIENTS`. An agent
-that calls others with [`auth: exchange`](#calling-another-agent-for-the-user) logs a warning
-the first time the issuer mints it a token with no actor claim.
+that calls others with [`auth: exchange`](#calling-another-agent-for-the-user) refuses to send
+an exchanged token with no actor claim, unless the API sets `exchange.allow_actorless: true`
+(then it logs a warning the first time the issuer mints it one).
 
 What a delegated principal reaches:
 
@@ -320,7 +321,8 @@ What the identity provider must guarantee (the agents cannot enforce it):
 1. Each agent's client may exchange only for the audiences its peers need.
 2. Exchanged tokens name the calling client: in `act` (with the earlier agents nested), or at
    least in `azp`/`client_id`, with the sign-in clients listed in the callee's
-   `AUTH_JWT_DIRECT_CLIENTS`.
+   `AUTH_JWT_DIRECT_CLIENTS` and `exchange.allow_actorless: true` on the caller's API (the
+   caller refuses a token with no actor claim otherwise).
 3. No exchange of a service's own token, nor of a token issued to another client.
 4. Exchanged tokens live 300 s or less, with a narrowed `scope` where the provider supports it.
 
@@ -361,11 +363,14 @@ defaults change between releases: check each step against your release's documen
     - The exchanged token carries `act` (`{"sub": "concierge"}`): set
       `AUTH_ALLOWED_ACTORS=concierge`.
     - It carries only `azp: concierge` (Keycloak's standard token exchange did not add `act`
-      when this was written; decode one to see): set `AUTH_JWT_DIRECT_CLIENTS=web` (the
-      clients people sign in with) and `AUTH_ALLOWED_ACTORS=client:concierge`. Without it,
-      orders would read the concierge's token as the person's own, and would let the
-      concierge decide the person's approvals there. The concierge logs a warning the first
-      time Keycloak mints it a token with no `act`.
+      when this was written; decode one to see): the concierge refuses to send such a token
+      (the tool reads "the issuer's token names no actor"), since orders would read it as the
+      person's own and would let the concierge decide the person's approvals there. On orders,
+      set `AUTH_JWT_DIRECT_CLIENTS=web` (the clients people sign in with) and
+      `AUTH_ALLOWED_ACTORS=client:concierge`; then, on the concierge, opt the API in with
+      `exchange.allow_actorless: true` in `api-policy.yaml` (or `--allow-actorless` on `api
+      add`). The concierge logs a warning the first time Keycloak mints it a token with no
+      `act`.
 5. **Check the exchange by hand**, with a person's token for the concierge in `$USER_TOKEN`:
 
     ```bash
@@ -382,10 +387,11 @@ defaults change between releases: check each step against your release's documen
     present) names `concierge`, and `expires_in` is 300 or less. An `invalid_target`, or an
     `aud` without `orders`, means step 2 is incomplete.
 
-Limits with an issuer that names no actor in `act`: the callee sees only the last agent, so
-`AUTH_MAX_DELEGATION_DEPTH` and the loop check (which reads `client:<id>` as the agent `<id>`)
-see one hop, and every agent that may call another needs its own client listed. Omit `exchange.resource` unless your provider supports
-RFC 8707 resource indicators.
+Limits with an issuer that names no actor in `act` (usable only with `allow_actorless`): the
+callee sees only the last agent, so `AUTH_MAX_DELEGATION_DEPTH` and the loop check (which reads
+`client:<id>` as the agent `<id>`) see one hop, and every agent that may call another needs its
+own client listed. Omit `exchange.resource` unless your provider supports RFC 8707 resource
+indicators.
 
 ## Clients and credentials
 

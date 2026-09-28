@@ -22,8 +22,8 @@ at the project root::
         base_url_env: ORDERS_API_BASE_URL
         auth: bearer                     # none | bearer | forward | exchange
         token_env: ORDERS_API_TOKEN      # auth: bearer only
-        # auth: exchange takes exchange: {audience, scope, resource} (RFC 8693);
-        # auth: forward may take forward_audience
+        # auth: exchange takes exchange: {audience, scope, resource,
+        # allow_actorless} (RFC 8693); auth: forward may take forward_audience
         allowed_methods: [GET, POST]     # required, explicit; ["*"] allows every method
         allowed_operations:              # optional; omitted = every operation
           - operationId: createOrder
@@ -72,6 +72,11 @@ AUTH_MODES = ("none", "bearer", "forward", "exchange")
 # exchange for the caller's (RFC 8693, configured by the API's `exchange` block).
 HEADER_AUTH_MODES = ("forward", "exchange")
 EXCHANGE_KEY = "exchange"
+# `exchange.allow_actorless: true` lets an `auth: exchange` API be called with an exchanged
+# token that names no actor (no `act` claim, or one that is not a readable JWT); the calling
+# agent refuses such tokens otherwise, since the agent behind the API would read them as the
+# user's own unless it sets AUTH_JWT_DIRECT_CLIENTS.
+ALLOW_ACTORLESS_KEY = "allow_actorless"
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 ANY_METHOD = "*"
 DEFAULT_FORWARD_HEADER = "Authorization"
@@ -111,7 +116,7 @@ _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
-_EXCHANGE_KEYS = ("audience", "scope", "resource")
+_EXCHANGE_KEYS = ("audience", "scope", "resource", ALLOW_ACTORLESS_KEY)
 # An RFC 6749 scope: space-separated scope tokens (printable ASCII but space, " " and "\").
 _SCOPE_RE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*")
 # An absolute URI (RFC 8707 `resource`): a scheme, then no whitespace and no fragment.
@@ -237,7 +242,10 @@ def _is_audience(value: Any) -> bool:
 def _exchange_errors(where: str, value: Any) -> list[str]:
     """Errors of an API's `exchange` block (`auth: exchange`, RFC 8693)."""
     if not isinstance(value, Mapping):
-        return [f"{where}: must be a mapping with audience, and optionally scope and resource"]
+        return [
+            f"{where}: must be a mapping with audience, and optionally scope, resource and "
+            f"{ALLOW_ACTORLESS_KEY}"
+        ]
     errors = [
         f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_EXCHANGE_KEYS), key=str)
     ]
@@ -265,6 +273,12 @@ def _exchange_errors(where: str, value: Any) -> list[str]:
                 f"{where}.resource: must be an absolute URI without a fragment (RFC 8707), "
                 "such as https://orders.example.com"
             )
+    if ALLOW_ACTORLESS_KEY in value and not isinstance(value[ALLOW_ACTORLESS_KEY], bool):
+        errors.append(
+            f"{where}.{ALLOW_ACTORLESS_KEY}: must be true or false (true: accept exchanged "
+            "tokens that name no actor, once the agent behind the API sets "
+            "AUTH_JWT_DIRECT_CLIENTS)"
+        )
     return errors
 
 
@@ -319,7 +333,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         if EXCHANGE_KEY not in api:
             errors.append(
                 f"{where}.{EXCHANGE_KEY}: required when auth is exchange (a mapping with the "
-                "audience the issuer mints the token for, and optionally scope and resource)"
+                "audience the issuer mints the token for, and optionally scope, resource and "
+                f"{ALLOW_ACTORLESS_KEY})"
             )
         else:
             errors.extend(_exchange_errors(f"{where}.{EXCHANGE_KEY}", api[EXCHANGE_KEY]))
@@ -1507,12 +1522,30 @@ def auth_policy_findings(
       sets no per-API credential); with it, a note to prefer ``auth: exchange``.
     * ``custom``: every mode is the policy's to serve (``keep_subject_token`` for
       exchange, ``attributes["credentials"]`` for forward).
+    * ``auth: exchange`` with ``exchange.allow_actorless: true`` (``jwt`` or
+      ``custom``): a note naming what the agent behind the API must set, since
+      the calling agent then sends tokens that name no actor.
     """
     apis = document.get("apis") or {}
     exchange = [str(n) for n, a in apis.items() if a.get("auth") == "exchange"]
     forward = [str(n) for n, a in apis.items() if a.get("auth") == "forward"]
+    actorless = [
+        str(n)
+        for n, a in apis.items()
+        if a.get("auth") == "exchange"
+        and isinstance(a.get(EXCHANGE_KEY), Mapping)
+        and a[EXCHANGE_KEY].get(ALLOW_ACTORLESS_KEY) is True
+    ]
     errors: list[str] = []
     notes: list[str] = []
+    if actorless and auth_policy != "shared-bearer":
+        notes.append(
+            f"auth: exchange (apis: {', '.join(actorless)}) sets exchange.allow_actorless: this "
+            "agent sends exchanged tokens that name no actor, so the agent behind each must set "
+            "AUTH_JWT_DIRECT_CLIENTS to the clients people sign in with and list this agent in "
+            "AUTH_ALLOWED_ACTORS as client:<its client id>; without them it reads this agent's "
+            "calls as the person's own, and this agent could decide the person's approvals there"
+        )
     if auth_policy == "shared-bearer":
         if exchange:
             errors.append(

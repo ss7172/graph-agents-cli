@@ -93,13 +93,17 @@ migration" with the steps to follow.
   Exchange APIs receive the request's `X-Request-ID` and trace context, as `auth: forward` ones
   do (the owner's decision). A call to an agent already in the request's delegation chain, or
   to this agent itself, is refused before anything is sent. New metrics:
-  `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`, `refused`, `unavailable`,
-  `circuit_open`) and `agent_token_exchange_duration_seconds{api}`; one log line per exchange
-  sent and a warning when the breaker opens, never a token. The first exchanged token that
-  names no actor (no `act` claim, or the one `AUTH_JWT_ACTOR_CLAIM` names; some issuers,
-  Keycloak among them, add none) logs a warning: the called agent reads such tokens as the user's
-  own, and could let this agent decide the user's approvals, until it sets
-  `AUTH_JWT_DIRECT_CLIENTS` (KI-149). `jwt` now also keeps the token's
+  `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`, `refused`, `no_actor`,
+  `unavailable`, `circuit_open`) and `agent_token_exchange_duration_seconds{api}`; one log line
+  per exchange sent and a warning when the breaker opens, never a token. **An exchanged token
+  that names no actor is refused, and nothing is sent** (the owner's decision of 2026-09-28): a
+  JWT without the `act` claim (or the one `AUTH_JWT_ACTOR_CLAIM` names; some issuers, Keycloak
+  among them, add none), or a token the agent cannot read as a JWT (opaque, encrypted). The
+  called agent would read such a token as the user's own, and could let this agent decide the
+  user's approvals there. The refusal is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (metric
+  outcome `no_actor`). An API opts in with `exchange.allow_actorless: true`, for a called agent
+  that sets `AUTH_JWT_DIRECT_CLIENTS` and lists this agent as `client:<its client id>` in
+  `AUTH_ALLOWED_ACTORS`; the first such token then logs a warning (KI-149). `jwt` now also keeps the token's
   `exp` for this (`keep_subject_token` takes `exp`). The authentication guide has a Keycloak
   recipe. Existing projects get the runtime from `scaffold upgrade` (a new
   `app_utils/token_exchange.py`; `api_client.py`, `auth.py`, `metrics.py`, `telemetry.py`,
@@ -109,17 +113,18 @@ migration" with the steps to follow.
   with `forward_audience` sends `Bearer <the caller's token>` only when that token's `aud`
   names the audience; a token minted for this agent alone is never replayed at another. Prefer
   `auth: exchange`.
-- **`api add --auth exchange --audience AUD [--scope S] [--resource URI]`** declares an exchange
-  API; `--audience` with `--auth forward` writes `forward_audience`, and `--forward-header`
+- **`api add --auth exchange --audience AUD [--scope S] [--resource URI] [--allow-actorless]`**
+  declares an exchange API (`--allow-actorless` writes `exchange.allow_actorless: true`); `--audience` with `--auth forward` writes `forward_audience`, and `--forward-header`
   goes with either mode. The first exchange API adds `TOKEN_EXCHANGE_CLIENT_SECRET` to the
   manifest's `secrets.keys`, `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID` to
   `.env.example` (the secret commented out) and to the chart's `values.yaml` (a placeholder URL
   and the project's name), and lists what is left: the issuer's permission to exchange for the
-  audience, and the callee's `AUTH_JWT_AUDIENCE` and `AUTH_ALLOWED_ACTORS`, plus, for an issuer
-  whose exchanged tokens carry no `act`, its `AUTH_JWT_DIRECT_CLIENTS` and this agent as
-  `client:<id>` in `AUTH_ALLOWED_ACTORS`. `api remove` takes
+  audience, and the callee's `AUTH_JWT_AUDIENCE` and `AUTH_ALLOWED_ACTORS`; without the opt-in,
+  that the issuer must name this agent in `act` (else calls fail), and what the opt-in needs;
+  with it, the callee's `AUTH_JWT_DIRECT_CLIENTS` and this agent as `client:<id>` in
+  `AUTH_ALLOWED_ACTORS`. `lint` notes the same for every API that opts in. `api remove` takes
   them away with the last exchange API, and `create --api-policy` with an exchange API renders
-  the same. `api show` names the audience, scope and resource. The schema accepts
+  the same. `api show` names the audience, scope and resource, and the opt-in. The schema accepts
   `forward_header` with `exchange` as well as `forward` (both SHARED copies; the messages name
   every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
   `langgraph-server` as they refuse `auth: forward`.

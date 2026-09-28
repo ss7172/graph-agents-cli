@@ -82,7 +82,7 @@ letter (`^[a-z][a-z0-9_]{0,31}$`); tools name it in `get_client("<name>")`.
 | `token_env` | env var name; required with `bearer` | The variable holding the token; valid only with `auth: bearer`. `create` and `api add` add it to the manifest's `secrets.keys`. |
 | `forward_header` | header name; default `Authorization` | The header `auth: forward` or `auth: exchange` sends the credential in; valid only with those. `exchange` sends `Bearer <token>`. |
 | `forward_audience` | an audience; optional | `auth: forward` only: when the caller has no per-API credential, forward the caller's own verified token if its `aud` names this audience (the issuer minted it for the target too). 1-256 characters without spaces, commas or control characters. |
-| [`exchange`](#exchange) | `{audience, scope, resource}`; required with `exchange` | The token to ask the issuer for, in exchange for the caller's own (RFC 8693). Valid only with `auth: exchange`. |
+| [`exchange`](#exchange) | `{audience, scope, resource, allow_actorless}`; required with `exchange` | The token to ask the issuer for, in exchange for the caller's own (RFC 8693). Valid only with `auth: exchange`. |
 | `allowed_methods` | list of methods; required | The methods the API allows: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` (any case), or `["*"]` alone for every method. There is no default access. |
 | `allowed_operations` | list of [operations](#operation-entries); default every operation within `allowed_methods` | When present, a call must also match one entry. An empty list is refused: omit the key instead. |
 | `denied_operations` | list of [operations](#operation-entries); default none | Endpoints refused whatever else allows them. |
@@ -109,6 +109,7 @@ mints for it in exchange for the caller's own verified token (RFC 8693 token exc
 | `audience` | an audience; required | The audience asked for: the target's `AUTH_JWT_AUDIENCE`. 1-256 characters without spaces, commas or control characters. |
 | `scope` | scopes separated by single spaces; optional | The scopes asked for (RFC 6749 scope tokens: printable ASCII without `"` and `\`). |
 | `resource` | an absolute URI without a fragment; optional | The target's resource indicator (RFC 8707). |
+| `allow_actorless` | `true` or `false`; optional, default `false` | Whether an exchanged token that names no actor may be sent. By default the calling agent refuses one (nothing is sent): a JWT without the actor claim (`act`, or the one `AUTH_JWT_ACTOR_CLAIM` names), or a token it cannot read as a JWT (opaque, encrypted). Set `true` only when the agent behind the API sets `AUTH_JWT_DIRECT_CLIENTS` and lists this agent as `client:<its client id>` in `AUTH_ALLOWED_ACTORS`. |
 
 Unknown keys are refused. The request sends `grant_type`
 `urn:ietf:params:oauth:grant-type:token-exchange`, the caller's token as `subject_token` (of
@@ -127,13 +128,15 @@ Validation messages (the same from `lint`, `api` and the running agent):
 | no `audience`, or a bad one | `apis.<name>.exchange.audience: required (...)` / `must be an audience (...)` |
 | a bad `scope` | `apis.<name>.exchange.scope: must be scopes separated by single spaces (...)` |
 | a bad `resource` | `apis.<name>.exchange.resource: must be an absolute URI without a fragment (RFC 8707), ...` |
+| `allow_actorless` not a boolean | `apis.<name>.exchange.allow_actorless: must be true or false (...)` |
 | `forward_audience` with another `auth` | `apis.<name>.forward_audience: only valid with auth: forward` |
 | `forward_header` with `none` or `bearer` | `apis.<name>.forward_header: only valid with auth: forward or exchange` |
 
 `lint` and `api add` also check each mode against the project's auth policy and runtime (the
 [compatibility table](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)):
 `exchange` or `forward` under `shared-bearer`, `forward` under `jwt` without
-`forward_audience`, and either under `langgraph-server` are errors. The app refuses
+`forward_audience`, and either under `langgraph-server` are errors, and an API with
+`allow_actorless: true` gets a note naming what the agent behind it must set. The app refuses
 `exchange` at startup where it cannot work.
 
 ## Operation entries

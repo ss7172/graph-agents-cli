@@ -58,14 +58,19 @@ Behaviour:
   probes the issuer, and its outcome closes or reopens it. During an issuer
   outage a process waits at most one deadline per window, on calls to
   exchange APIs only.
-* The first issued token that is a JWT naming no actor (no `act` claim, or
-  the claim `AUTH_JWT_ACTOR_CLAIM` names) logs one warning: the called agent
-  reads such a token as the user's own unless it sets
+* An issued token that names no actor is refused, and nothing is sent: a JWT
+  without the `act` claim (or the claim `AUTH_JWT_ACTOR_CLAIM` names), and
+  any token that is not a readable signed JWT (opaque, encrypted). The agent
+  behind the API would read it as the user's own unless it sets
   `AUTH_JWT_DIRECT_CLIENTS`, so it could let this agent decide the user's
-  approvals. The claims are read unverified, for this warning only (the
-  called agent verifies the token); an opaque token is not looked at.
+  approvals there. The refusal is remembered for that key like the issuer's
+  own. An API opts in with `exchange.allow_actorless: true` (the agent behind
+  it must then set `AUTH_JWT_DIRECT_CLIENTS` and list this agent as
+  `client:<its client id>` in `AUTH_ALLOWED_ACTORS`); the first such token
+  then logs one warning saying so. The claims are read unverified, for this
+  check only (the called agent verifies the token).
 * Metrics: `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`,
-  `refused`, `unavailable`, `circuit_open`) and
+  `refused`, `no_actor`, `unavailable`, `circuit_open`) and
   `agent_token_exchange_duration_seconds{api}`; one log line per exchange
   sent, one warning when the breaker opens. Neither carries token material or
   the subject's hash; only the issuer's RFC 6749 `error` code and HTTP status.
@@ -132,9 +137,13 @@ ACTOR_CLAIM = "act"
 ISSUED = "issued"
 CACHED = "cached"
 REFUSED = "refused"
+NO_ACTOR = "no_actor"
 UNAVAILABLE = "unavailable"
 CIRCUIT_OPEN = "circuit_open"
-OUTCOMES = (ISSUED, CACHED, REFUSED, UNAVAILABLE, CIRCUIT_OPEN)
+OUTCOMES = (ISSUED, CACHED, REFUSED, NO_ACTOR, UNAVAILABLE, CIRCUIT_OPEN)
+# Kept as a key's refusal when the issued token names no actor: never an RFC 6749 error code
+# (those match `_ERROR_CODE_RE`, which allows no space).
+_NO_ACTOR_CODE = "names no actor"
 
 _TRUE = ("1", "true", "yes", "on")
 _LOOPBACK_HOSTS = ("localhost",)
@@ -145,7 +154,8 @@ _ERROR_CODE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 class TokenExchangeError(Exception):
     """No token for the call: the message is what the tool (and the model) reads.
 
-    `outcome` is the metric's (`refused`, `unavailable`, `circuit_open`), or None
+    `outcome` is the metric's (`refused`, `no_actor`, `unavailable`,
+    `circuit_open`), or None
     when no exchange was attempted (not configured, no or an expiring subject
     token); `reason` is a short fixed phrase for the call's log line.
     """
@@ -480,7 +490,7 @@ class TokenExchanger:
         self._refusals: OrderedDict[tuple[str, ...], tuple[str, float]] = OrderedDict()
         self._inflight: dict[tuple[str, ...], asyncio.Task[str]] = {}
         self._breakers: dict[str, _Breaker] = {}
-        # Whether the warning for an issued token that names no actor was logged.
+        # Whether the warning for an allowed token that names no actor was logged.
         self._warned_no_actor = False
 
     def clear(self) -> None:
@@ -506,10 +516,13 @@ class TokenExchanger:
         resource: str | None = None,
         subject_expires_at: float | None = None,
         settings: ExchangeSettings | None = None,
+        allow_actorless: bool = False,
     ) -> str:
         """A token for `api` exchanged for `subject_token`; `TokenExchangeError` otherwise.
 
         `subject_expires_at` is the subject token's `exp` (epoch seconds), when known.
+        `allow_actorless` (the API's `exchange.allow_actorless`) accepts a token
+        that names no actor; without it such a token is refused (`no_actor`).
         """
         if settings is None:
             try:
@@ -547,6 +560,9 @@ class TokenExchanger:
             audience,
             scope or "",
             resource or "",
+            # A token kept for an API that accepts one naming no actor is never handed to
+            # an API that does not.
+            "allow_actorless" if allow_actorless else "",
         )
         now = self._clock()
         with self._lock:
@@ -562,6 +578,9 @@ class TokenExchanger:
                 del self._refusals[key]
                 refusal = None
         if refusal is not None:
+            if refusal[0] == _NO_ACTOR_CODE:
+                _observe(api, NO_ACTOR)
+                raise self._no_actor_error(api)
             _observe(api, REFUSED)
             raise self._refused_error(api, refusal[0])
 
@@ -573,7 +592,15 @@ class TokenExchanger:
             self._admit(api, settings)  # the breaker: raises while it is open
             task = asyncio.get_running_loop().create_task(
                 self._exchange(
-                    api, key, subject_token, audience, scope, resource, subject_expires_at, settings
+                    api,
+                    key,
+                    subject_token,
+                    audience,
+                    scope,
+                    resource,
+                    subject_expires_at,
+                    settings,
+                    allow_actorless,
                 )
             )
             self._inflight[key] = task
@@ -649,6 +676,18 @@ class TokenExchanger:
             )
 
     @staticmethod
+    def _no_actor_error(api: str) -> TokenExchangeError:
+        return TokenExchangeError(
+            f"token exchange for API {api!r}: the issuer's token names no actor (no "
+            f"{actor_claim()} claim, or not a readable JWT), so the agent behind the API would "
+            "take this agent's call for the user's own; nothing was sent. Have the issuer name "
+            "this agent in the token, or set exchange.allow_actorless: true for the API once "
+            "that agent sets AUTH_JWT_DIRECT_CLIENTS.",
+            outcome=NO_ACTOR,
+            reason="exchanged token names no actor",
+        )
+
+    @staticmethod
     def _refused_error(api: str, code: str) -> TokenExchangeError:
         return TokenExchangeError(
             f"token exchange for API {api!r} was refused ({code}); nothing was sent.",
@@ -666,6 +705,7 @@ class TokenExchanger:
         resource: str | None,
         subject_expires_at: float | None,
         settings: ExchangeSettings,
+        allow_actorless: bool = False,
     ) -> str:
         started = time.perf_counter()
         try:
@@ -707,38 +747,46 @@ class TokenExchanger:
                     breaker.probing = None
             raise
         self._settle(settings, failed=False)
+        claim = actor_claim()
+        try:
+            unnamed = names_no_actor(token, claim)
+        except Exception:  # a bug while reading the claims: judged as naming no actor
+            unnamed = True
+        if unnamed and not allow_actorless:
+            with self._lock:
+                self._refusals[key] = (_NO_ACTOR_CODE, self._clock() + settings.failure_ttl_s)
+                self._refusals.move_to_end(key)
+                while len(self._refusals) > settings.cache_max:
+                    self._refusals.popitem(last=False)
+            self._log(api, audience, "refused (the token names no actor)", started)
+            _observe(api, NO_ACTOR, time.perf_counter() - started)
+            raise self._no_actor_error(api)
         self._keep(key, token, expires_in, subject_expires_at, settings)
         self._log(api, audience, "issued", started)
         _observe(api, ISSUED, time.perf_counter() - started)
-        self._check_actor(api, audience, token, settings)
+        if unnamed:
+            self._warn_actorless(api, audience, claim, settings)
         return token
 
-    def _check_actor(self, api: str, audience: str, token: str, settings: ExchangeSettings) -> None:
-        """Warn once per process when the issuer's tokens name no actor.
+    def _warn_actorless(
+        self, api: str, audience: str, claim: str, settings: ExchangeSettings
+    ) -> None:
+        """Warn once per process when an API that allows it gets a token naming no actor.
 
-        The agent behind the API then reads this agent's calls as the user's own
+        The agent behind the API reads this agent's calls as the user's own
         (it could let this agent decide the user's approvals) unless it sets
-        `AUTH_JWT_DIRECT_CLIENTS`; only the issuer or the called agent can fix it.
+        `AUTH_JWT_DIRECT_CLIENTS`; this agent cannot check that it does.
         """
-        if self._warned_no_actor:
-            return
-        claim = (os.environ.get("AUTH_JWT_ACTOR_CLAIM") or "").strip() or ACTOR_CLAIM
-        try:
-            unnamed = names_no_actor(token, claim)
-        except Exception:  # never fail a call that got its token over a look at it
-            return
-        if not unnamed:
-            return
         with self._lock:
             if self._warned_no_actor:
                 return
             self._warned_no_actor = True
         logger.warning(
             "token exchange: the token the issuer minted for %s (audience %s) names no actor "
-            "(no %s claim), so the agent behind it reads this agent's calls as the user's own "
-            "and may let this agent decide the user's approvals there, unless it sets "
-            "AUTH_JWT_DIRECT_CLIENTS to the clients people sign in with (and lists client:%s "
-            "in AUTH_ALLOWED_ACTORS); or have the issuer name this agent in act",
+            "(no %s claim), and exchange.allow_actorless lets it through: the agent behind it "
+            "reads this agent's calls as the user's own, and may let this agent decide the "
+            "user's approvals there, unless it sets AUTH_JWT_DIRECT_CLIENTS to the clients "
+            "people sign in with and lists client:%s in AUTH_ALLOWED_ACTORS",
             api,
             audience,
             claim,
@@ -857,23 +905,32 @@ def _issued(body: bytes) -> tuple[str, int]:
     return token, expires_in
 
 
-def names_no_actor(token: str, claim: str = ACTOR_CLAIM) -> bool:
-    """Whether `token` is a JWT whose claims hold no `claim` (a dotted path, as `jwt` reads it).
+def actor_claim(env: Mapping[str, str] | None = None) -> str:
+    """The claim naming the agent that presents a token: `AUTH_JWT_ACTOR_CLAIM`, else `act`."""
+    env = os.environ if env is None else env
+    return (env.get("AUTH_JWT_ACTOR_CLAIM") or "").strip() or ACTOR_CLAIM
 
-    The claims are read without verifying the token (the agent it is sent to
-    does): only to tell whether the issuer names the agent presenting it. A
-    token that is not a signed JWT (opaque, or encrypted) is not judged: False.
+
+def names_no_actor(token: str, claim: str = ACTOR_CLAIM) -> bool:
+    """Whether `token` names no actor: it is not a readable signed JWT, or its claims lack `claim`.
+
+    `claim` is a dotted path, read as `jwt` reads it (a top-level claim of that
+    exact name first; a null value counts as present: the called agent refuses
+    it). The claims are read without verifying the token (the agent it is sent
+    to does): only to tell whether the issuer names the agent presenting it. A
+    token that cannot be read (opaque, encrypted, not base64url or JSON) names
+    no actor as far as this agent can tell: True.
     """
     parts = token.split(".")
     if len(parts) != 3 or not parts[1]:
-        return False
+        return True
     try:
         payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
         claims = json.loads(payload)
     except (ValueError, RecursionError):  # not base64url, UTF-8 or JSON; nested too deep
-        return False
+        return True
     if not isinstance(claims, dict):
-        return False
+        return True
     if claim in claims:
         return False
     node: Any = claims

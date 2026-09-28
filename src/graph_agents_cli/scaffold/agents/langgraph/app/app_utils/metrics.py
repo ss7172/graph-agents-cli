@@ -43,7 +43,10 @@ Per process (scrape every replica):
   APIs (`token_exchange.py`) by outcome: `issued` (the issuer minted one),
   `cached` (a kept one, or one another call was exchanging), `refused` (the
   issuer refused, or refused within `TOKEN_EXCHANGE_FAILURE_TTL_S`),
-  `unavailable` (a timeout, connection error, 5xx or unusable answer) and
+  `no_actor` (the issued token names no actor and the API does not set
+  `exchange.allow_actorless`: this agent refused it, and remembers that for
+  `TOKEN_EXCHANGE_FAILURE_TTL_S`), `unavailable` (a timeout, connection
+  error, 5xx or unusable answer) and
   `circuit_open` (failed at once while the issuer's breaker is open);
   `agent_token_exchange_duration_seconds{api}`: the exchanges sent. `api` is
   the API's name in api-policy.yaml.
@@ -100,11 +103,18 @@ APPROVALS = Counter(
 )
 for _event in APPROVAL_EVENTS:
     APPROVALS.labels(_event)  # every series exists from the start, at 0
-TOKEN_EXCHANGE_OUTCOMES = ("issued", "cached", "refused", "unavailable", "circuit_open")
+TOKEN_EXCHANGE_OUTCOMES = (
+    "issued",
+    "cached",
+    "refused",
+    "no_actor",
+    "unavailable",
+    "circuit_open",
+)
 TOKEN_EXCHANGES = Counter(
     "agent_token_exchanges_total",
     "Tokens asked for auth: exchange APIs by API and outcome (issued, cached, refused, "
-    "unavailable, circuit_open).",
+    "no_actor, unavailable, circuit_open).",
     ["api", "outcome"],
     registry=REGISTRY,
 )

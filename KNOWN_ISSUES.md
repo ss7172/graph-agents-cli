@@ -123,25 +123,32 @@ Medium · auth · found in wave 2
 - **Workaround:** Namespace every per-user store item by principal, and keep the store routes
   off the public route. Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
 
-### KI-149: With an issuer whose exchanged tokens name no actor, a called agent reads the calling agent as the user
+### KI-149: A called agent at its defaults reads an exchanged token that names no actor as the user's own
 
 Medium · auth · found in v0.3 (identity propagation)
 
 - **Issue:** `jwt` tells a token another agent presents for a user by its `act` claim. Some
   identity providers put none in exchanged tokens, only `azp` (Keycloak's standard token
   exchange did not add one when this was written). While `AUTH_JWT_DIRECT_CLIENTS` is unset,
-  the default, such a token reads as the user's own: `AUTH_ALLOWED_ACTORS`, the delegated-role
-  filter and the rule that a delegated request never decides an approval do not apply to it.
-- **Impact:** An agent that calls another for a user with `auth: exchange` can, at the called
+  the default, such a token reads as the user's own at the called agent:
+  `AUTH_ALLOWED_ACTORS`, the delegated-role filter and the rule that a delegated request never
+  decides an approval do not apply to it. The calling side fails closed (the owner's decision
+  of 2026-09-28): an agent built from this template refuses to send an exchanged token that
+  names no actor, or that it cannot read as a JWT, unless the API sets
+  `exchange.allow_actorless: true`. The residual is at the called agent: a caller that opts
+  in while the called agent leaves `AUTH_JWT_DIRECT_CLIENTS` unset, or a caller not built
+  from this template.
+- **Impact:** Through such a caller, an agent that calls another for a user can, at the called
   agent, decide that user's `requester` approvals with no person involved, and list the
-  user's own threads there. A fail-closed default (the calling agent refusing such tokens, or
-  the called agent requiring `AUTH_JWT_DIRECT_CLIENTS`) is not decided yet.
+  user's own threads there. The called agent's own default (requiring
+  `AUTH_JWT_DIRECT_CLIENTS` once `AUTH_ALLOWED_ACTORS` is set) is unchanged.
 - **Workaround:** On every called agent, set `AUTH_JWT_DIRECT_CLIENTS` to the clients people
   sign in with, and list each calling agent in `AUTH_ALLOWED_ACTORS` as `client:<its client
-  id>` (see the [Keycloak recipe](website/src/guides/authentication.md#token-exchange-with-keycloak)).
-  `api add --auth exchange` lists these settings, and the calling agent logs a warning the
-  first time its issuer mints it a token that names no actor. Decode one exchanged token to
-  see which kind your issuer mints.
+  id>` (see the [Keycloak recipe](website/src/guides/authentication.md#token-exchange-with-keycloak)),
+  before any caller sets `exchange.allow_actorless: true`. `api add --allow-actorless` and
+  `lint` name these settings for every API that opts in, and the calling agent logs a warning
+  the first time its issuer mints it such a token. Decode one exchanged token to see which
+  kind your issuer mints.
 
 ### KI-004: An allow or deny entry by `operationId` alone pins only the tool's label
 
@@ -818,7 +825,8 @@ Low · api-policy · found in v0.3 (identity propagation)
   the request's delegation chain. The chain holds the calling agents' client ids (`act.sub`,
   or `client:<azp>`), so the check assumes each agent's client id equals its audience. An
   agent registered with a client id other than its audience is not recognised, and an issuer
-  that names no actor in `act` shows only the last agent.
+  that names no actor in `act` (usable only with `exchange.allow_actorless: true`) shows only
+  the last agent.
 - **Impact:** A loop through such an agent is not refused by the caller; each hop's callee
   still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), so the loop ends
   there.

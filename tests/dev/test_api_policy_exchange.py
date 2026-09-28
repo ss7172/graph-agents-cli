@@ -74,6 +74,8 @@ VALID = [
         forward_header="X-Agent-Token",
     ),
     _doc(auth="exchange", exchange={"audience": "urn:example:orders", "resource": "urn:x:y"}),
+    _doc(auth="exchange", exchange={"audience": "orders", "allow_actorless": True}),
+    _doc(auth="exchange", exchange={"audience": "orders", "allow_actorless": False}),
     _doc(auth="forward", forward_audience="orders"),
     _doc(auth="forward", forward_audience="orders", forward_header="X-User-Token"),
 ]
@@ -82,7 +84,7 @@ INVALID = [
     (
         _doc(auth="exchange"),
         "apis.peer.exchange: required when auth is exchange (a mapping with the audience the "
-        "issuer mints the token for, and optionally scope and resource)",
+        "issuer mints the token for, and optionally scope, resource and allow_actorless)",
     ),
     (
         _doc(auth="bearer", token_env="T", exchange={"audience": "x"}),
@@ -90,7 +92,8 @@ INVALID = [
     ),
     (
         _doc(auth="exchange", exchange="orders"),
-        "apis.peer.exchange: must be a mapping with audience, and optionally scope and resource",
+        "apis.peer.exchange: must be a mapping with audience, and optionally scope, resource and "
+        "allow_actorless",
     ),
     (
         _doc(auth="exchange", exchange={}),
@@ -127,6 +130,15 @@ INVALID = [
     (
         _doc(auth="exchange", exchange={"audience": "x", "resource": "https://a/b#frag"}),
         "apis.peer.exchange.resource: must be an absolute URI",
+    ),
+    (
+        _doc(auth="exchange", exchange={"audience": "x", "allow_actorless": "yes"}),
+        "apis.peer.exchange.allow_actorless: must be true or false (true: accept exchanged "
+        "tokens that name no actor, once the agent behind the API sets AUTH_JWT_DIRECT_CLIENTS)",
+    ),
+    (
+        _doc(auth="exchange", exchange={"audience": "x", "allow_actorless": 1}),
+        "apis.peer.exchange.allow_actorless: must be true or false",
     ),
     (
         _doc(auth="bearer", token_env="T", forward_audience="x"),
@@ -179,6 +191,7 @@ EXCHANGE = {
     "exchange": {"audience": "orders"},
     "allowed_methods": ["GET"],
 }
+ACTORLESS = {**EXCHANGE, "exchange": {"audience": "orders", "allow_actorless": True}}
 FORWARD = {"base_url_env": "ME_URL", "auth": "forward", "allowed_methods": ["GET"]}
 AIMED = {**FORWARD, "forward_audience": "me"}
 BEARER = {"base_url_env": "B", "auth": "bearer", "token_env": "B_TOKEN", "allowed_methods": ["GET"]}
@@ -207,6 +220,9 @@ def test_exchange_is_refused_under_langgraph_server() -> None:
         (EXCHANGE, "jwt", None, None),
         (EXCHANGE, "custom", None, None),
         (EXCHANGE, "shared-bearer", "shared-bearer has no user token to exchange", None),
+        (ACTORLESS, "jwt", None, "set AUTH_JWT_DIRECT_CLIENTS to the clients people sign in"),
+        (ACTORLESS, "custom", None, "list this agent in AUTH_ALLOWED_ACTORS as client:<its"),
+        (ACTORLESS, "shared-bearer", "shared-bearer has no user token to exchange", None),
         (FORWARD, "custom", None, None),
         (FORWARD, "shared-bearer", "there is no user credential to forward", None),
         (FORWARD, "jwt", "needs forward_audience with the jwt auth policy", None),
@@ -235,3 +251,10 @@ def test_lint_reports_the_matrix_for_the_projects_auth_policy(tmp_path: Path) ->
     aimed = pc.build_report(tmp_path, "app", auth_policy="jwt")
     assert not aimed.policy_invalid
     assert any("prefer auth: exchange" in n for n in aimed.notes)
+    # The opt-in for tokens that name no actor is explained, naming what the callee sets.
+    (tmp_path / "api-policy.yaml").write_text(yaml.safe_dump({"apis": {"o": ACTORLESS}}))
+    actorless = pc.build_report(tmp_path, "app", auth_policy="jwt")
+    assert not actorless.policy_invalid
+    [note] = [n for n in actorless.notes if "allow_actorless" in n]
+    assert note.startswith("auth: exchange (apis: o) sets exchange.allow_actorless: this agent ")
+    assert "AUTH_JWT_DIRECT_CLIENTS" in note and "client:<its client id>" in note

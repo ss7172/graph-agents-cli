@@ -90,7 +90,7 @@ apis:
     base_url_env: BILLING_AGENT_URL
     auth: exchange
     forward_header: X-Agent-Token
-    exchange: {audience: billing}
+    exchange: {audience: billing, allow_actorless: true}
     allowed_methods: [GET]
   weather:
     base_url_env: WEATHER_URL
@@ -98,6 +98,22 @@ apis:
     token_env: WEATHER_TOKEN
     allowed_methods: [GET]
 """
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _jwt(claims: Any) -> str:
+    """A JWS-shaped token with these claims; the exchanger never verifies it (the callee does)."""
+    header = _b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    return f"{header}.{_b64(json.dumps(claims).encode())}.{_b64(b'signature')}"
+
+
+def exchanged(n: int, audience: str) -> str:
+    """The token `FakeTokenEndpoint` issues for its `n`-th request, for `audience`: a JWT
+    naming this agent in `act`, as an issuer that follows RFC 8693 mints it."""
+    return _jwt({"sub": "alice", "aud": audience, "n": n, "act": {"sub": CLIENT_ID}})
 
 
 class Clock:
@@ -116,7 +132,8 @@ class Clock:
 class FakeTokenEndpoint:
     """An RFC 8693 token endpoint: records every request, answers from `answers` or issues.
 
-    An issued token is `exchanged-<n>-<audience>`, `Bearer`, an access token, with
+    An issued token is `exchanged(<n>, <audience>)` (a JWT naming this agent in `act`),
+    `Bearer`, an access token, with
     `expires_in`. `delay` holds each answer that long (asyncio time); `hang` never
     answers.
     """
@@ -142,7 +159,7 @@ class FakeTokenEndpoint:
         if self.answers:
             return self.answers.pop(0)
         body: dict[str, Any] = {
-            "access_token": f"exchanged-{len(self.requests)}-{form.get('audience')}",
+            "access_token": exchanged(len(self.requests), str(form.get("audience"))),
             "issued_token_type": ACCESS_TOKEN_TYPE,
             "token_type": "Bearer",
         }
@@ -208,7 +225,7 @@ async def test_the_request_is_an_rfc_8693_exchange_with_basic_client_auth(
     endpoint: FakeTokenEndpoint,
 ) -> None:
     token = await _token(scope="orders.read", resource="https://orders.example.com")
-    assert token == "exchanged-1-orders"
+    assert token == exchanged(1, "orders")
     [sent] = endpoint.requests
     assert sent["url"] == TOKEN_URL
     assert sent["form"] == {
@@ -259,7 +276,7 @@ async def test_single_flight_shares_one_exchange(endpoint: FakeTokenEndpoint) ->
     before = _count("sf_api", "issued"), _count("sf_api", "cached")
     tokens = await asyncio.gather(*(_token("sf_api") for _ in range(100)))
     assert endpoint.calls == 1
-    assert set(tokens) == {"exchanged-1-orders"}
+    assert set(tokens) == {exchanged(1, "orders")}
     assert _count("sf_api", "issued") - before[0] == 1
     assert _count("sf_api", "cached") - before[1] == 99
 
@@ -375,7 +392,7 @@ async def test_a_refusal_is_remembered_for_the_failure_ttl(
     assert _count("refused_api", "refused") - before == 2
     await _token("other_user_api", subject="bob")  # another key is not refused
     clock.now += 2
-    assert await _token("refused_api") == "exchanged-3-orders"
+    assert await _token("refused_api") == exchanged(3, "orders")
 
 
 async def test_a_refusal_without_an_error_code_names_the_status(
@@ -402,7 +419,7 @@ async def test_breaker_fails_fast(endpoint: FakeTokenEndpoint, clock: Clock) -> 
     assert endpoint.calls == 3  # the issuer was left alone
     assert _count("breaker_api", "circuit_open") - before == 1
     clock.now += 10  # half open: one call probes, and closes it
-    assert await _token("breaker_api", subject="d") == "exchanged-4-orders"
+    assert await _token("breaker_api", subject="d") == exchanged(4, "orders")
     await _token("breaker_api", subject="e")
     assert endpoint.calls == 5
 
@@ -435,7 +452,7 @@ async def test_while_the_probe_runs_other_calls_fail_fast(
     await asyncio.sleep(0.01)
     with pytest.raises(TokenExchangeError, match=r"retry in \d+ s"):
         await _token(subject="other")
-    assert await probe == "exchanged-4-orders"
+    assert await probe == exchanged(4, "orders")
     assert endpoint.calls == 4
 
 
@@ -489,10 +506,11 @@ async def test_an_unusable_answer_is_not_used(
 
 
 async def test_the_token_type_is_case_insensitive(endpoint: FakeTokenEndpoint) -> None:
+    token = exchanged(1, "orders")
     endpoint.answers.append(
-        httpx.Response(200, json={"access_token": "t1", "token_type": "bearer", "expires_in": 60})
+        httpx.Response(200, json={"access_token": token, "token_type": "bearer", "expires_in": 60})
     )
-    assert await _token() == "t1"
+    assert await _token() == token
 
 
 async def test_not_configured_sends_nothing(
@@ -544,16 +562,6 @@ async def test_no_token_in_logs(
     assert SUBJECT not in rendered and issued not in rendered
 
 
-def _b64(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _jwt(claims: Any) -> str:
-    """A JWS-shaped token with these claims; the exchanger never verifies it (the callee does)."""
-    header = _b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
-    return f"{header}.{_b64(json.dumps(claims).encode())}.{_b64(b'signature')}"
-
-
 def _issue(endpoint: FakeTokenEndpoint, token: str) -> None:
     endpoint.answers.append(
         httpx.Response(200, json={"access_token": token, "token_type": "Bearer", "expires_in": 300})
@@ -562,36 +570,144 @@ def _issue(endpoint: FakeTokenEndpoint, token: str) -> None:
 
 NO_ACTOR = "names no actor"
 
+# Tokens that name no actor as far as the calling agent can tell (`names_no_actor`).
+ACTORLESS_TOKENS = [
+    _jwt({"sub": "alice", "aud": "orders", "azp": CLIENT_ID}),  # no act: Keycloak's shape
+    "opaque-token",  # not a JWT
+    "h.p.s.i.t",  # encrypted (JWE)
+    "h..s",
+    "h.***.s",  # not base64url
+    f"h.{_b64(b'not json')}.s",
+    f"h.{_b64(bytes([0x80, 0x81]))}.s",  # not UTF-8
+    f"h.{_b64(b'[1, 2]')}.s",  # not an object
+    f"h.{_b64(b'[' * 12_000)}.s",  # nested too deep to read
+]
+ACTORLESS_IDS = [
+    "no-act",
+    "opaque",
+    "jwe",
+    "empty-payload",
+    "not-base64url",
+    "not-json",
+    "not-utf8",
+    "not-an-object",
+    "too-deep",
+]
+
 
 def _no_actor_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if NO_ACTOR in r.getMessage()]
+    return [
+        r for r in caplog.records if r.levelno >= logging.WARNING and NO_ACTOR in r.getMessage()
+    ]
 
 
-async def test_an_issued_token_that_names_no_actor_is_warned_once(
-    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize("token", ACTORLESS_TOKENS, ids=ACTORLESS_IDS)
+async def test_an_issued_token_that_names_no_actor_is_refused(
+    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, token: str
 ) -> None:
-    """An issuer whose exchanged tokens carry no `act` (Keycloak's standard token exchange): the
-    called agent reads them as the user's own, and could let this agent decide the user's
-    approvals, unless it sets AUTH_JWT_DIRECT_CLIENTS. Say so once; never log the token."""
+    """An issuer whose exchanged tokens carry no `act` (Keycloak's standard token exchange), or
+    that mints tokens this agent cannot read: the called agent would take them for the user's
+    own, and could let this agent decide the user's approvals. Refused (fail closed); the
+    refusal is remembered like the issuer's own, and the token is never logged."""
     caplog.set_level(logging.DEBUG)
-    actless = _jwt({"sub": "alice", "aud": "orders", "azp": CLIENT_ID})
-    _issue(endpoint, actless)
-    assert await _token(subject="alice") == actless
+    before = _count("orders_agent", "no_actor"), _count("orders_agent", "issued")
+    _issue(endpoint, token)
+    with pytest.raises(TokenExchangeError) as exc:
+        await _token(subject="alice")
+    assert exc.value.outcome == "no_actor"
+    message = str(exc.value)
+    assert "the issuer's token names no actor (no act claim, or not a readable JWT)" in message
+    assert "nothing was sent" in message and "exchange.allow_actorless: true" in message
+    assert "AUTH_JWT_DIRECT_CLIENTS" in message
+    assert token not in message
+    assert _count("orders_agent", "no_actor") - before[0] == 1
+    assert _count("orders_agent", "issued") - before[1] == 0
+    assert exchanger().cached() == 0
+    # Remembered for the failure TTL: the issuer is not asked again, and the breaker is shut.
+    with pytest.raises(TokenExchangeError) as again:
+        await _token(subject="alice")
+    assert again.value.outcome == "no_actor"
+    assert endpoint.calls == 1
+    assert _count("orders_agent", "no_actor") - before[0] == 2
+    refused = (
+        "token exchange for orders_agent (audience orders): refused (the token names no actor)"
+    )
+    assert refused in caplog.text
+    logged = caplog.text + "".join(str(r.__dict__) for r in caplog.records)
+    assert token not in logged
+    if token.count(".") == 2 and len(token.split(".")[1]) > 3:
+        assert token.split(".")[1] not in logged
+    assert _no_actor_warnings(caplog) == []  # a refusal, not a warning
+
+
+async def test_the_refusal_of_a_token_naming_no_actor_is_forgotten_after_the_ttl(
+    endpoint: FakeTokenEndpoint, clock: Clock
+) -> None:
+    _issue(endpoint, _jwt({"sub": "alice", "aud": "orders"}))
+    with pytest.raises(TokenExchangeError):
+        await _token(subject="alice")
+    clock.now += token_exchange.DEFAULT_FAILURE_TTL_S + 1
+    # The issuer now names the agent (say, after its admin fixed the mapper).
+    assert await _token(subject="alice") == exchanged(2, "orders")
+    assert endpoint.calls == 2
+
+
+@pytest.mark.parametrize("token", ACTORLESS_TOKENS, ids=ACTORLESS_IDS)
+async def test_an_api_that_allows_it_takes_a_token_naming_no_actor_and_warns_once(
+    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, token: str
+) -> None:
+    """`exchange.allow_actorless: true`: the token is used; one warning per process says what
+    the called agent must set, naming this agent's client; the token is never logged."""
+    caplog.set_level(logging.DEBUG)
+    _issue(endpoint, token)
+    assert await _token(subject="alice", allow_actorless=True) == token
     [record] = _no_actor_warnings(caplog)
     assert record.levelno == logging.WARNING
     message = record.getMessage()
     assert "the token the issuer minted for orders_agent (audience orders)" in message
-    assert "(no act claim)" in message
+    assert "(no act claim)" in message and "exchange.allow_actorless lets it through" in message
     assert "AUTH_JWT_DIRECT_CLIENTS" in message and f"client:{CLIENT_ID}" in message
     logged = caplog.text + "".join(str(r.__dict__) for r in caplog.records)
-    assert actless not in logged and actless.split(".")[1] not in logged
+    assert token not in logged
     # Once per process: more such tokens, for other users and APIs, add no warning.
     _issue(endpoint, _jwt({"sub": "bob", "aud": "orders", "azp": CLIENT_ID}))
     _issue(endpoint, _jwt({"sub": "bob", "aud": "billing"}))
-    await _token(subject="bob")
-    await _token("billing_agent", subject="bob", audience="billing")
+    await _token(subject="bob", allow_actorless=True)
+    await _token("billing_agent", subject="bob", audience="billing", allow_actorless=True)
     assert endpoint.calls == 3
     assert _no_actor_warnings(caplog) == [record]
+
+
+async def test_a_token_kept_for_an_api_that_allows_it_never_reaches_one_that_does_not(
+    endpoint: FakeTokenEndpoint,
+) -> None:
+    """Two APIs with the same audience, scope and resource share nothing when only one opts in:
+    the token kept for the one that allows a token naming no actor is not the other's."""
+    actless = _jwt({"sub": "alice", "aud": "orders"})
+    _issue(endpoint, actless)
+    assert await _token("lenient_api", subject="alice", allow_actorless=True) == actless
+    assert await _token("lenient_api", subject="alice", allow_actorless=True) == actless
+    assert endpoint.calls == 1  # kept for the lenient API
+    _issue(endpoint, actless)
+    with pytest.raises(TokenExchangeError) as exc:
+        await _token("strict_api", subject="alice")  # its own exchange, refused
+    assert exc.value.outcome == "no_actor"
+    assert endpoint.calls == 2
+    # ... and the strict API's refusal does not reach the lenient one.
+    assert await _token("lenient_api", subject="alice", allow_actorless=True) == actless
+    assert endpoint.calls == 2
+
+
+async def test_calls_sharing_an_exchange_all_get_the_refusal(endpoint: FakeTokenEndpoint) -> None:
+    endpoint.delay = 0.05
+    _issue(endpoint, _jwt({"sub": "alice", "aud": "orders"}))
+    before = _count("sf_actorless", "no_actor")
+    results = await asyncio.gather(
+        *(_token("sf_actorless", subject="alice") for _ in range(20)), return_exceptions=True
+    )
+    assert endpoint.calls == 1
+    assert all(isinstance(r, TokenExchangeError) and r.outcome == "no_actor" for r in results)
+    assert _count("sf_actorless", "no_actor") - before == 20
 
 
 @pytest.mark.parametrize(
@@ -600,17 +716,10 @@ async def test_an_issued_token_that_names_no_actor_is_warned_once(
         (_jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}), None),  # the issuer names the agent
         (_jwt({"sub": "alice", "act": None}), None),  # present: the callee refuses it (401)
         (_jwt({"sub": "alice", "ext": {"actor": {"sub": CLIENT_ID}}}), "ext.actor"),
-        ("opaque-token", None),  # not a JWT: not judged
-        ("h.p.s.i.t", None),  # encrypted (JWE): not judged
-        ("h..s", None),
-        ("h.***.s", None),  # not base64url
-        (f"h.{_b64(b'not json')}.s", None),
-        (f"h.{_b64(bytes([0x80, 0x81]))}.s", None),  # not UTF-8
-        (f"h.{_b64(b'[1, 2]')}.s", None),  # not an object
-        (f"h.{_b64(b'[' * 12_000)}.s", None),  # nested too deep to read: not judged
+        (_jwt({"sub": "alice", "ext.actor": {"sub": CLIENT_ID}}), "ext.actor"),
     ],
 )
-async def test_no_warning_for_a_token_that_names_its_actor_or_cannot_be_read(
+async def test_a_token_that_names_its_actor_is_used_without_a_warning(
     endpoint: FakeTokenEndpoint,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -623,44 +732,57 @@ async def test_no_warning_for_a_token_that_names_its_actor_or_cannot_be_read(
         monkeypatch.delenv("AUTH_JWT_ACTOR_CLAIM", raising=False)
     caplog.set_level(logging.DEBUG)
     _issue(endpoint, token)
-    assert await _token() == token  # looking at the token never fails the call
+    assert await _token() == token
     assert _no_actor_warnings(caplog) == []
 
 
-async def test_a_failure_while_looking_at_the_token_never_fails_the_call(
-    endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+async def test_a_failure_while_looking_at_the_token_refuses_it(
+    endpoint: FakeTokenEndpoint, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken(token: str, claim: str = "act") -> bool:
         raise RuntimeError("a bug while reading the claims")
 
     monkeypatch.setattr(token_exchange, "names_no_actor", broken)
-    caplog.set_level(logging.WARNING)
-    actless = _jwt({"sub": "alice", "aud": "orders"})
-    _issue(endpoint, actless)
-    assert await _token() == actless
-    assert _no_actor_warnings(caplog) == []
+    _issue(endpoint, _jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}))
+    with pytest.raises(TokenExchangeError) as exc:
+        await _token()
+    assert exc.value.outcome == "no_actor"  # fail closed
 
 
 def test_names_no_actor() -> None:
     assert names_no_actor(_jwt({"sub": "alice", "azp": "concierge"})) is True
     assert names_no_actor(_jwt({"sub": "alice", "act": {"sub": "concierge"}})) is False
+    assert names_no_actor(_jwt({"sub": "alice", "act": None})) is False  # jwt refuses it (401)
     # AUTH_JWT_ACTOR_CLAIM's claim, a dotted path, read as jwt reads it.
     assert names_no_actor(_jwt({"act": {"sub": "concierge"}}), "ext.actor") is True
     assert names_no_actor(_jwt({"ext": {"actor": {"sub": "c"}}}), "ext.actor") is False
     assert names_no_actor(_jwt({"ext.actor": {"sub": "c"}}), "ext.actor") is False
     assert names_no_actor(_jwt({"ext": "flat"}), "ext.actor") is True
-    deep = f"h.{_b64(b'[' * 12_000)}.s"  # nested past the JSON reader's recursion limit
-    for unreadable in ("opaque", "h.p.s.i.t", "h..s", "h.***.s", f"h.{_b64(b'[1]')}.s", deep):
-        assert names_no_actor(unreadable) is False
+    # A token this agent cannot read names no actor as far as it can tell.
+    for unreadable in ACTORLESS_TOKENS[1:]:
+        assert names_no_actor(unreadable) is True
 
 
-async def test_the_no_actor_warning_reads_the_configured_actor_claim(
+def test_the_actor_claim_is_the_jwt_policys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AUTH_JWT_ACTOR_CLAIM", raising=False)
+    assert token_exchange.actor_claim() == "act"
+    monkeypatch.setenv("AUTH_JWT_ACTOR_CLAIM", "")  # jwt's 0.2 reading: the caller still asks
+    assert token_exchange.actor_claim() == "act"
+    monkeypatch.setenv("AUTH_JWT_ACTOR_CLAIM", " ext.actor ")
+    assert token_exchange.actor_claim() == "ext.actor"
+
+
+async def test_the_no_actor_check_reads_the_configured_actor_claim(
     endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("AUTH_JWT_ACTOR_CLAIM", "ext.actor")
+    _issue(endpoint, _jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}))
+    with pytest.raises(TokenExchangeError) as exc:
+        await _token()
+    assert "(no ext.actor claim, or not a readable JWT)" in str(exc.value)
     caplog.set_level(logging.WARNING)
     _issue(endpoint, _jwt({"sub": "alice", "act": {"sub": CLIENT_ID}}))
-    await _token()
+    await _token("lenient_api", allow_actorless=True)
     [record] = _no_actor_warnings(caplog)
     assert "(no ext.actor claim)" in record.getMessage()
 
@@ -915,7 +1037,7 @@ async def test_an_exchange_api_gets_a_token_minted_for_its_audience(
     orders = get_client("orders_agent", context=_context(), transport=api.transport)
     assert await orders.get("/orders", operation_id="listOrders") == {"ok": True}
     [sent] = api.requests
-    assert sent.headers["authorization"] == "Bearer exchanged-1-orders"
+    assert sent.headers["authorization"] == f"Bearer {exchanged(1, 'orders')}"
     [asked] = endpoint.requests
     assert asked["form"]["audience"] == "orders"
     assert asked["form"]["scope"] == "orders.read orders.cancel"
@@ -923,7 +1045,7 @@ async def test_an_exchange_api_gets_a_token_minted_for_its_audience(
     assert asked["form"]["subject_token"] == SUBJECT
     billing = get_client("billing_agent", context=_context(), transport=api.transport)
     await billing.get("/balance")
-    assert api.requests[1].headers["x-agent-token"] == "Bearer exchanged-2-billing"
+    assert api.requests[1].headers["x-agent-token"] == f"Bearer {exchanged(2, 'billing')}"
     assert "authorization" not in api.requests[1].headers
     await orders.get("/orders")  # kept: no new exchange
     assert endpoint.calls == 2 and len(api.requests) == 3
@@ -937,7 +1059,7 @@ async def test_the_tool_cannot_set_the_credential_header(api: Api) -> None:
     assert prepared.tool_headers == [("x-tool", "1")]
     assert "authorization" not in prepared.headers
     await orders.get("/orders", headers={"Authorization": "Bearer forged"})
-    assert api.requests[0].headers["authorization"] == "Bearer exchanged-1-orders"
+    assert api.requests[0].headers["authorization"] == f"Bearer {exchanged(1, 'orders')}"
 
 
 async def test_no_user_token_sends_nothing(api: Api, endpoint: FakeTokenEndpoint) -> None:
@@ -1027,7 +1149,7 @@ async def test_no_exchange_while_paused_and_one_after_the_approval(
         assert done["result"] == "{'ok': True}"
         assert endpoint.calls == 1 and ledger.used == ["a1"]
         [sent] = api.requests
-        assert sent.headers["authorization"] == "Bearer exchanged-1-orders"
+        assert sent.headers["authorization"] == f"Bearer {exchanged(1, 'orders')}"
     finally:
         set_approval_ledger(None)
 
@@ -1039,7 +1161,7 @@ async def test_the_exchanged_token_is_redacted_in_error_bodies(api: Api) -> None
         await orders.get("/orders")
     assert exc.value.status_code == 403
     assert exc.value.body == "denied: <redacted>"
-    assert "exchanged-1-orders" not in str(exc.value)
+    assert exchanged(1, "orders") not in str(exc.value)
 
 
 async def test_an_issuer_refusal_sends_nothing(
@@ -1056,6 +1178,32 @@ async def test_an_issuer_refusal_sends_nothing(
         caplog.text
     )
     assert api.requests == []
+
+
+async def test_a_token_naming_no_actor_sends_nothing(
+    api: Api, endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture
+) -> None:
+    _issue(endpoint, _jwt({"sub": "alice", "aud": "orders", "azp": CLIENT_ID}))
+    orders = get_client("orders_agent", context=_context(), transport=api.transport)
+    with caplog.at_level(logging.WARNING), pytest.raises(ApiCallError) as exc:
+        await orders.get("/orders")
+    assert str(exc.value).startswith(
+        "token exchange for API 'orders_agent': the issuer's token names no actor"
+    )
+    not_sent = "api call not sent: orders_agent GET <concrete path>: exchanged token names no actor"
+    assert not_sent in caplog.text
+    assert api.requests == []
+
+
+async def test_an_api_that_allows_it_is_sent_a_token_naming_no_actor(
+    api: Api, endpoint: FakeTokenEndpoint
+) -> None:
+    """billing_agent sets `exchange.allow_actorless: true` (its agent sets AUTH_JWT_DIRECT_CLIENTS)."""
+    actless = _jwt({"sub": "alice", "aud": "billing", "azp": CLIENT_ID})
+    _issue(endpoint, actless)
+    billing = get_client("billing_agent", context=_context(), transport=api.transport)
+    assert await billing.get("/balance") == {"ok": True}
+    assert api.requests[0].headers["x-agent-token"] == f"Bearer {actless}"
 
 
 async def test_trace_headers_go_to_exchange_apis(api: Api) -> None:

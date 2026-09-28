@@ -265,7 +265,8 @@ apis:
     token_env: INCIDENTS_API_TOKEN       # required iff auth: bearer
     # forward_header: Authorization      # auth: forward or exchange only (the default)
     # forward_audience: incidents        # auth: forward only: forward the caller's own token
-    # exchange: {audience: incidents}    # required iff auth: exchange (+ scope, resource)
+    # exchange: {audience: incidents}    # required iff auth: exchange (+ scope, resource,
+                                         #   allow_actorless)
     allowed_methods: [GET, POST]         # required, explicit (no default); ["*"] = every method
     allowed_operations:                  # optional; omit = every operation within allowed_methods
       - operationId: getIncident
@@ -388,7 +389,9 @@ the API's `openapi:` spec), and name `operation_id` on every call.
   the run context, or `get_client(..., context=runtime.context)`) and sends nothing when the
   caller has none; `auth: exchange` sends `Bearer <token>`, a token the issuer mints for
   `exchange.audience` in exchange for the caller's own (RFC 8693, `TOKEN_EXCHANGE_*` settings),
-  asked for just before sending; `forward` and `exchange` are refused at create and lint under
+  asked for just before sending, and refused (nothing sent) when it names no actor (no `act`
+  claim, or not a readable JWT) unless `exchange.allow_actorless: true`, which needs the called
+  agent to set `AUTH_JWT_DIRECT_CLIENTS`; `forward` and `exchange` are refused at create and lint under
   `langgraph-server`, and lint checks them against the auth policy.
 - Every `*.py` under `app/tools/` (subpackages included, the top-level `__init__.py` excluded) declares one module-level **literal**
   `API_CALLS = [{"api": ..., "method": ..., "operation_id": ..., "path": ...}]` (`[]` when it

@@ -187,6 +187,7 @@ apis:
       audience: orders                      # required: the target's AUTH_JWT_AUDIENCE
       scope: "orders.read orders.cancel"    # optional: least privilege
       resource: https://orders.example.com  # optional (RFC 8707): an absolute URI
+      # allow_actorless: true               # optional: see "tokens that name no actor" below
     allowed_methods: [GET, POST]
 ```
 
@@ -198,13 +199,18 @@ which `api add` adds to `secrets.keys` (see
 up an issuer.
 
 The agent you call tells this one from the user by the exchanged token's `act` claim, and
-lists this agent in its `AUTH_ALLOWED_ACTORS`. Some identity providers put no `act` in
-exchanged tokens, only `azp` (Keycloak's standard token exchange did not add one when this was
-written): the called agent must then also set `AUTH_JWT_DIRECT_CLIENTS` to the clients people
-sign in with, and list this agent as `client:<its client id>`. Without it, the called agent
-reads this agent's calls as the person's own, and would let this agent decide the person's
-approvals there. `api add` lists these settings, and the agent logs a warning the first time
-the provider mints it a token that names no actor.
+lists this agent in its `AUTH_ALLOWED_ACTORS`. **Tokens that name no actor are refused.** This
+agent looks at each exchanged token before sending it: a JWT without the actor claim (`act`, or
+the claim `AUTH_JWT_ACTOR_CLAIM` names), or a token it cannot read as a JWT (opaque, encrypted),
+is not sent, and the tool reads why. The called agent would take such a token for the person's
+own, and would let this agent decide the person's approvals there. Some identity providers put
+no `act` in exchanged tokens, only `azp` (Keycloak's standard token exchange did not add one
+when this was written). With such a provider, opt in per API with
+`exchange.allow_actorless: true` (`api add --allow-actorless`), and only once the called agent
+sets `AUTH_JWT_DIRECT_CLIENTS` to the clients people sign in with and lists this agent as
+`client:<its client id>` in `AUTH_ALLOWED_ACTORS`: it then tells this agent by its client.
+`api add` and `lint` say what the called agent needs for every API that opts in, and the agent
+logs a warning the first time the provider mints it such a token.
 
 How the exchange behaves:
 
@@ -216,8 +222,9 @@ How the exchange behaves:
   (never stored, traced or logged), for the token's `expires_in` capped at 300 s and at the
   user's own token's expiry, less 30 s. Concurrent calls share one exchange.
 - **Fails closed, and fast.** No user token (a `shared-bearer` caller, a run resumed by a role
-  approver), a user token with 10 s or less left, or an issuer refusal: nothing is sent and the
-  tool reads why. A refusal is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (10 s). Three
+  approver), a user token with 10 s or less left, an issuer refusal, or a token that names no
+  actor (without `allow_actorless`): nothing is sent and the tool reads why. A refusal is
+  remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (10 s). Three
   issuer failures in a row (a timeout after `TOKEN_EXCHANGE_TIMEOUT_MS`, 2 s; a connection
   error; a 5xx) open a circuit breaker: calls to exchange APIs fail at once for 10 s, then one
   call tries the issuer again. Calls to other APIs are never slowed.

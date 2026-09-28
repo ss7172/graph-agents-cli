@@ -18,7 +18,9 @@
   `client_secret_post` client authentication, audience, scope, resource); the
   token it gets back verifies at the callee as the user presented by this agent
   (`act`); the issuer's refusals (an audience the client may not act for, a
-  service's own token, a wrong secret) reach the call as refusals.
+  service's own token, a wrong secret) reach the call as refusals. An issuer
+  that names no actor: its tokens are refused unless the API sets
+  `exchange.allow_actorless` (then one warning), over `/chat` too.
 * Depth: nested exchanges carry the chain the callee's `AUTH_MAX_DELEGATION_DEPTH`
   reads, hop by hop.
 * An issuer that hangs: each call waits at most the deadline, the breaker then
@@ -80,7 +82,8 @@ from {{cookiecutter.agent_directory}}.app_utils.token_exchange import (
 from {{cookiecutter.agent_directory}}.fast_api_app import app
 
 SECRET = "s3cret"
-# In the warning an exchanged token that names no actor logs (token_exchange._check_actor).
+# In the refusal of an exchanged token that names no actor, and in the warning an API that
+# allows one (exchange.allow_actorless) logs (token_exchange).
 NO_ACTOR = "names no actor"
 CLIENTS = {
     "concierge": (SECRET, {"billing", "orders"}),
@@ -247,20 +250,29 @@ async def test_an_issuer_that_names_no_actor(
     exchange_env: FakeIssuer, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Some issuers (Keycloak's standard token exchange among them) put no `act` in an
-    exchanged token, only `azp`: the callee then tells the agent by its client, and the
-    caller warns that it must."""
+    exchanged token, only `azp`. The caller refuses such a token unless the API opts in
+    (`exchange.allow_actorless`); then it warns once that the callee must tell the agent by
+    its client."""
     issuer = exchange_env
     issuer.act = False
     caplog.set_level(logging.WARNING)
-    token = await exchanger().token(
-        "orders_agent", issuer.login("alice", audience="concierge"), audience="orders"
-    )
+    alice = issuer.login("alice", audience="concierge")
+    with pytest.raises(TokenExchangeError) as exc:
+        await exchanger().token("orders_agent", alice, audience="orders")
+    assert exc.value.outcome == "no_actor"
+    assert "names no actor" in str(exc.value) and "nothing was sent" in str(exc.value)
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    token = await exchanger().token("orders_agent", alice, audience="orders", allow_actorless=True)
     assert "act" not in _claims(token) and _claims(token)["azp"] == "concierge"
-    [warning] = [r.getMessage() for r in caplog.records if NO_ACTOR in r.getMessage()]
+    [warning] = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and NO_ACTOR in r.getMessage()
+    ]
     assert "AUTH_JWT_DIRECT_CLIENTS" in warning and "client:concierge" in warning
     assert token not in caplog.text
-    # Without AUTH_JWT_DIRECT_CLIENTS such a token reads as alice's own (what the warning is
-    # about): list the sign-in clients, and the concierge presenting it is `client:concierge`.
+    # Without AUTH_JWT_DIRECT_CLIENTS such a token reads as alice's own (why the opt-in needs
+    # it): list the sign-in clients, and the concierge presenting it is `client:concierge`.
     assert (await _at(monkeypatch, "orders", token, allowed="")).actor is None
     monkeypatch.setenv("AUTH_JWT_DIRECT_CLIENTS", "web")
     principal = await _at(monkeypatch, "orders", token, allowed="client:concierge")
@@ -516,11 +528,41 @@ async def test_one_exchange_per_user_and_api_in_the_tool_call_only(
     assert {r["sub"] for r in RECEIVED} == {_claims(alice)["sub"], _claims(bob)["sub"]}
 
 
-async def test_the_concierge_warns_once_when_the_issuer_names_no_actor(
+async def test_the_concierge_refuses_an_exchanged_token_that_names_no_actor(
     concierge: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Over /chat, with an issuer that puts no `act` in exchanged tokens: the first exchange
-    logs one warning naming what the called agent needs, and no token is logged."""
+    """Over /chat, with an issuer that puts no `act` in exchanged tokens: the call fails
+    closed, the orders agent receives nothing, the model reads why, and no token is logged."""
+    issuer = ISSUER[0]
+    issuer.act = False
+    caplog.set_level(logging.DEBUG)
+    concierge.use_tools(check_orders)  # type: ignore[attr-defined]
+    alice = issuer.login(f"alice-{uuid.uuid4().hex[:6]}", audience="concierge")
+    before = len(issuer.exchanges)
+    for _ in range(2):
+        events = await _chat(concierge, alice, "Check my orders please")
+        [result] = [data for name, data in events if name == "tool.result"]
+        assert result["is_error"] is True and NO_ACTOR in result["result"], result
+        assert "exchange.allow_actorless" in result["result"]
+    assert RECEIVED == [] and TOKENS == []
+    assert len(issuer.exchanges) - before == 1  # the refusal is remembered
+    logged = caplog.text + "".join(str(record.__dict__) for record in caplog.records)
+    assert alice not in logged and SECRET not in logged
+
+
+async def test_the_concierge_warns_once_when_an_api_allows_tokens_naming_no_actor(
+    concierge: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same issuer, with `exchange.allow_actorless: true` for orders_agent: the calls go
+    through, the first logs one warning naming what the called agent needs, and no token is
+    logged."""
+    Path(os.environ["API_POLICY_PATH"]).write_text(
+        POLICY.replace(
+            "exchange: {audience: orders}", "exchange: {audience: orders, allow_actorless: true}"
+        ),
+        encoding="utf-8",
+    )
+    reset_api_policy()
     issuer = ISSUER[0]
     issuer.act = False
     caplog.set_level(logging.DEBUG)
@@ -531,9 +573,12 @@ async def test_the_concierge_warns_once_when_the_issuer_names_no_actor(
         events = await _chat(concierge, token, "Check my orders please")
         assert any(name == "tool.result" for name, _ in events), events
     assert len(TOKENS) == 2 and all("act" not in _claims(t) for t in TOKENS)
-    warnings = [r for r in caplog.records if NO_ACTOR in r.getMessage()]
+    warnings = [
+        r for r in caplog.records if r.levelno >= logging.WARNING and NO_ACTOR in r.getMessage()
+    ]
     assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
     assert "AUTH_JWT_DIRECT_CLIENTS" in warnings[0].getMessage()
+    assert "exchange.allow_actorless lets it through" in warnings[0].getMessage()
     logged = caplog.text + "".join(str(record.__dict__) for record in caplog.records)
     assert [s for s in (alice, bob, *TOKENS, SECRET) if s in logged] == []
 

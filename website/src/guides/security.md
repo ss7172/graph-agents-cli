@@ -133,7 +133,9 @@ Work through it for staging first, then prod. Each item links to the page that e
       refuses them all) and lend roles through `AUTH_DELEGATED_ROLES` only where a tool needs
       one. If your identity provider's exchanged tokens carry no `act` claim, also list the
       clients people sign in with in `AUTH_JWT_DIRECT_CLIENTS`: without it an agent's token
-      reads as the user's own, and the agent can decide the user's approvals. Under
+      reads as the user's own, and the agent can decide the user's approvals (a calling agent
+      built from this template sends such a token only when its API sets
+      `exchange.allow_actorless: true`). Under
       `shared-bearer` any holder of `API_KEY`, another agent included, decides requester
       gates. [Agents calling agents](authentication.md#agents-calling-agents)
 
@@ -151,8 +153,10 @@ Work through it for staging first, then prod. Each item links to the page that e
 - [ ] Agents that call other agents for users use `auth: exchange`: `TOKEN_EXCHANGE_URL` is
       https, the client secret is in `secrets.keys`, the identity provider lets each agent's
       client exchange only for the audiences it calls and keeps exchanged tokens to 5 minutes
-      or less, and each called agent lists its callers in `AUTH_ALLOWED_ACTORS` (and sets
-      `AUTH_JWT_DIRECT_CLIENTS` when exchanged tokens carry no `act`).
+      or less, and each called agent lists its callers in `AUTH_ALLOWED_ACTORS`. Set
+      `exchange.allow_actorless: true` only for an API whose agent sets
+      `AUTH_JWT_DIRECT_CLIENTS` (the identity provider's exchanged tokens carry no `act`);
+      `lint` names every API that does.
       [Authentication](authentication.md#calling-another-agent-for-the-user)
 - [ ] Decide which writes wait for a human (`graph-agents-cli api approval`): `requester`
       confirmation for writes users make on their own records, `role:` approvers (a second

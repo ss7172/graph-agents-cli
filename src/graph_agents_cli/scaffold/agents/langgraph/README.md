@@ -207,7 +207,8 @@ Each API declares `base_url_env` (the URL may carry a path prefix), `auth` (`non
 `token_env`, `forward`, which sends the caller's own `attributes["credentials"][<api>]` or, with
 `forward_audience`, the caller's own token when it was minted for that audience too, or `exchange`, which
 sends a token the issuer mints for `exchange.audience` in exchange for the caller's own, RFC 8693, set up
-with the `TOKEN_EXCHANGE_*` variables; neither is available under langgraph-server, which would persist
+with the `TOKEN_EXCHANGE_*` variables, and never sends one that names no actor unless
+`exchange.allow_actorless: true`; neither is available under langgraph-server, which would persist
 the caller's credentials), the required `allowed_methods`, and optional
 `allowed_operations` / `denied_operations` (an allowed entry pinning both `operationId` and `path` needs
 both to match), `openapi`, `timeouts_ms`, `pagination` (`max_page_size` is enforced for every spelling of the

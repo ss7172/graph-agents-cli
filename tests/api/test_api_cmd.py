@@ -1738,20 +1738,33 @@ def test_add_exchange_writes_the_block_the_secret_and_the_settings(project: Path
     assert "AUTH_ALLOWED_ACTORS includes this agent's client id" in flat
     assert "let this agent's client exchange users' tokens for audience orders" in flat
     assert "TOKEN_EXCHANGE_CLIENT_SECRET in .env" in flat
-    # An issuer whose exchanged tokens name no actor (act): the callee must list the sign-in
-    # clients, or it reads this agent as the person, and names this agent client:<id>.
-    assert "if the issuer's exchanged tokens carry no act claim" in flat
-    assert "also on the agent behind orders_agent: set AUTH_JWT_DIRECT_CLIENTS=" in flat
+    # An issuer whose exchanged tokens name no actor (act): this agent refuses them, and the
+    # opt-in needs the callee to list the sign-in clients and name this agent client:<id>.
+    assert "this agent refuses a token that names no actor, so calls to orders_agent fail" in flat
+    assert "exchange.allow_actorless: true (api add --allow-actorless) needs" in flat
+    assert "on the agent behind orders_agent, AUTH_JWT_DIRECT_CLIENTS=" in flat
     assert "in AUTH_ALLOWED_ACTORS as client:<its client id>" in flat
+    assert "allow_actorless" not in (project / "api-policy.yaml").read_text()
 
-    # A second exchange API adds nothing more of the shared settings, but the callee's
-    # settings are listed for it too.
+    # A second exchange API, opting in: nothing more of the shared settings, and the callee's
+    # settings for tokens that name no actor are what it must set.
     second = ok(
         *("api", "add", "billing_agent", "--base-url-env", "BILLING_AGENT_URL"),
         *("--auth", "exchange", "--audience", "billing", "--access", "read-only"),
+        "--allow-actorless",
     )
+    assert policy(project)["billing_agent"]["exchange"] == {
+        "audience": "billing",
+        "allow_actorless": True,
+    }
     second_flat = " ".join(second.output.split())
-    assert "also on the agent behind billing_agent: set AUTH_JWT_DIRECT_CLIENTS=" in second_flat
+    assert "on the agent behind billing_agent: AUTH_JWT_AUDIENCE includes billing; set " in (
+        second_flat
+    )
+    assert "AUTH_JWT_DIRECT_CLIENTS=<the clients people sign in with>" in second_flat
+    assert "in AUTH_ALLOWED_ACTORS as client:<its client id>" in second_flat
+    assert "sets exchange.allow_actorless" in second_flat  # the lint note, among the notes
+    assert "refuses a token that names no actor" not in second_flat
     assert "set TOKEN_EXCHANGE_URL" not in second_flat
     assert (project / ".env.example").read_text().count("TOKEN_EXCHANGE_URL=") == 1
     keys = manifest(project)["secrets"]["keys"]
@@ -1772,7 +1785,8 @@ def test_add_exchange_writes_the_block_the_secret_and_the_settings(project: Path
     ("args", "fragment"),
     [
         (["--auth", "exchange"], "--auth exchange needs --audience"),
-        (["--auth", "bearer", "--token-env", "T", "--scope", "x"], "--scope and --resource go"),
+        (["--auth", "bearer", "--token-env", "T", "--scope", "x"], "--scope, --resource and"),
+        (["--auth", "forward", "--allow-actorless"], "--allow-actorless go with --auth exchange"),
         (["--auth", "none", "--audience", "x"], "--audience goes with --auth exchange or forward"),
         (["--auth", "bearer", "--token-env", "T", "--forward-header", "X-A"], "--forward-header"),
     ],
@@ -1835,6 +1849,16 @@ def test_show_and_lint_name_the_exchange(project: Path) -> None:
     assert effective["exchange"] == {"audience": "orders", "scope": "orders.read"}
     assert effective["forward_header"] == "Authorization"
     assert ok("api", "check").exit_code == 0
+    assert "names no actor" not in shown
+    ok(
+        *("api", "add", "billing_agent", "--base-url-env", "BILLING_AGENT_URL"),
+        *("--auth", "exchange", "--audience", "billing", "--access", "read-only"),
+        "--allow-actorless",
+    )
+    lenient = " ".join(ok("api", "show", "billing_agent").output.split())
+    assert "RFC 8693; accepts tokens that name no actor (allow_actorless))" in lenient
+    notes = " ".join(ok("lint", "--policy-only").output.split())
+    assert "auth: exchange (apis: billing_agent) sets exchange.allow_actorless" in notes
     _auth_policy(project, "shared-bearer")
     lint = cli("lint", "--policy-only")
     assert lint.exit_code == 3

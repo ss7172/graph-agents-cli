@@ -34,6 +34,9 @@ sent when the caller has no credential. `auth: exchange` sends `Bearer
 `exchange.audience` in exchange for the caller's own (RFC 8693,
 `token_exchange.py`): asked for just before the call is sent, after every
 check, the approval and the limits, and never for a refused or paused call.
+An exchanged token that names no actor (no `act` claim, or one that is not a
+readable JWT) is refused and nothing is sent, unless the API sets
+`exchange.allow_actorless: true`.
 A call to such an API that would loop back to this agent, or to an agent
 already in the request's delegation chain, is refused before anything else.
 
@@ -154,6 +157,11 @@ AUTH_MODES = ("none", "bearer", "forward", "exchange")
 # exchange for the caller's (RFC 8693, configured by the API's `exchange` block).
 HEADER_AUTH_MODES = ("forward", "exchange")
 EXCHANGE_KEY = "exchange"
+# `exchange.allow_actorless: true` lets an `auth: exchange` API be called with an exchanged
+# token that names no actor (no `act` claim, or one that is not a readable JWT); the calling
+# agent refuses such tokens otherwise, since the agent behind the API would read them as the
+# user's own unless it sets AUTH_JWT_DIRECT_CLIENTS.
+ALLOW_ACTORLESS_KEY = "allow_actorless"
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 ANY_METHOD = "*"
 DEFAULT_FORWARD_HEADER = "Authorization"
@@ -193,7 +201,7 @@ _PAGINATION_KEYS = ("page_size_param", "max_page_size")
 _LIMIT_KEYS = ("max_calls_per_run", "rate_per_minute")
 _APPROVAL_KEYS = ("required_for", "approvers", "timeout_s", "decide_with", "relayers")
 _REQUIRED_FOR_KEYS = ("methods", "operations")
-_EXCHANGE_KEYS = ("audience", "scope", "resource")
+_EXCHANGE_KEYS = ("audience", "scope", "resource", ALLOW_ACTORLESS_KEY)
 # An RFC 6749 scope: space-separated scope tokens (printable ASCII but space, " " and "\").
 _SCOPE_RE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*")
 # An absolute URI (RFC 8707 `resource`): a scheme, then no whitespace and no fragment.
@@ -319,7 +327,10 @@ def _is_audience(value: Any) -> bool:
 def _exchange_errors(where: str, value: Any) -> list[str]:
     """Errors of an API's `exchange` block (`auth: exchange`, RFC 8693)."""
     if not isinstance(value, Mapping):
-        return [f"{where}: must be a mapping with audience, and optionally scope and resource"]
+        return [
+            f"{where}: must be a mapping with audience, and optionally scope, resource and "
+            f"{ALLOW_ACTORLESS_KEY}"
+        ]
     errors = [
         f"{where}: unknown key {key!r}" for key in sorted(set(value) - set(_EXCHANGE_KEYS), key=str)
     ]
@@ -347,6 +358,12 @@ def _exchange_errors(where: str, value: Any) -> list[str]:
                 f"{where}.resource: must be an absolute URI without a fragment (RFC 8707), "
                 "such as https://orders.example.com"
             )
+    if ALLOW_ACTORLESS_KEY in value and not isinstance(value[ALLOW_ACTORLESS_KEY], bool):
+        errors.append(
+            f"{where}.{ALLOW_ACTORLESS_KEY}: must be true or false (true: accept exchanged "
+            "tokens that name no actor, once the agent behind the API sets "
+            "AUTH_JWT_DIRECT_CLIENTS)"
+        )
     return errors
 
 
@@ -401,7 +418,8 @@ def _api_errors(name: Any, api: Any) -> list[str]:
         if EXCHANGE_KEY not in api:
             errors.append(
                 f"{where}.{EXCHANGE_KEY}: required when auth is exchange (a mapping with the "
-                "audience the issuer mints the token for, and optionally scope and resource)"
+                "audience the issuer mints the token for, and optionally scope, resource and "
+                f"{ALLOW_ACTORLESS_KEY})"
             )
         else:
             errors.extend(_exchange_errors(f"{where}.{EXCHANGE_KEY}", api[EXCHANGE_KEY]))
@@ -2219,7 +2237,8 @@ class ApiClient:
         The caller's own token exchanged for one minted for the API's
         `exchange.audience` (`token_exchange.py`: cached, single flight, failures
         remembered briefly). Raises `ApiCallError` (nothing sent) when the run
-        has no user token, it has expired, or the issuer refuses or fails.
+        has no user token, it has expired, the issuer refuses or fails, or the
+        token names no actor and the API does not set `exchange.allow_actorless`.
         """
         if self.settings["auth"] != "exchange":
             return None
@@ -2247,6 +2266,7 @@ class ApiClient:
                 scope=exchange.get("scope"),
                 resource=exchange.get("resource"),
                 subject_expires_at=self._subject.expires_at,
+                allow_actorless=exchange.get(ALLOW_ACTORLESS_KEY) is True,
             )
         except TokenExchangeError as exc:
             raise ApiCallError(str(exc), reason=exc.reason) from None
