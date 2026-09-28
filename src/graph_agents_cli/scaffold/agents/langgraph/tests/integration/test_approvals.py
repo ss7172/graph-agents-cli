@@ -1207,3 +1207,98 @@ async def test_a2a_decision_by_a_requester_the_policy_does_not_list_is_refused(
     note = "".join(p.get("text", "") for p in after["status"]["message"]["parts"])
     assert "not_an_approver" in note
     assert SENT == []
+
+
+# --- A2A: text Postgres cannot store ------------------------------------------------------
+
+NUL = "\x00"
+# A stored A2A task holds U+FFFD in place of a U+0000 on Postgres, which cannot store one.
+STORED_NUL = {"memory": NUL, "postgres": "\ufffd"}
+READINGS: list[str] = []
+
+
+@tool
+async def meter_reading(query: str) -> str:
+    """Read the meter at a place (test-only: the reading holds a U+0000)."""
+    READINGS.append(query)
+    return f"meter at {query}:{NUL}42"
+
+
+def _a2a_message(text: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "message": {
+            "messageId": uuid.uuid4().hex,
+            "role": "ROLE_USER",
+            "parts": [{"text": text}],
+            **fields,
+        }
+    }
+
+
+async def _stored(client: httpx.AsyncClient, user: str, task_id: str) -> dict[str, Any]:
+    got = await _rpc(client, user, "GetTask", {"id": task_id})
+    assert "result" in got, got
+    return got["result"]
+
+
+async def test_an_a2a_task_holding_a_nul_completes_and_is_kept(
+    client, database, use_test_tools
+) -> None:
+    """A U+0000 in a message, streamed or not, or in a tool's output: the task completes.
+
+    On Postgres the save of such a task failed (-32603) while its run, and the
+    tool, went on; the task was then failed as if its process had died.
+    """
+    user = f"nul-{uuid.uuid4().hex[:8]}"
+    stored = STORED_NUL[database]
+
+    sent = await _rpc(client, user, "SendMessage", _a2a_message(f"tell me{NUL} more"))
+    assert sent["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED", sent
+    task = await _stored(client, user, sent["result"]["task"]["id"])
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert task["history"][0]["parts"] == [{"text": f"tell me{stored} more"}]
+
+    r = await client.post(
+        A2A_PATH,
+        json={
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "SendStreamingMessage",
+            "params": _a2a_message(f"stream me{NUL} please"),
+        },
+        headers={**_as(user), "A2A-Version": "1.0"},
+    )
+    events = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+    assert events and all("result" in event for event in events), r.text[-500:]
+    last = events[-1]["result"]["statusUpdate"]
+    assert last["status"]["state"] == "TASK_STATE_COMPLETED"
+    streamed = await _stored(client, user, last["taskId"])
+    assert streamed["status"]["state"] == "TASK_STATE_COMPLETED"
+
+    use_test_tools(meter_reading)
+    READINGS.clear()
+    sent = await _rpc(client, user, "SendMessage", _a2a_message("Take the meter reading for Paris"))
+    assert sent["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED", sent
+    assert READINGS == ["Paris"]
+    task = await _stored(client, user, sent["result"]["task"]["id"])
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    reply = "".join(p.get("text", "") for a in task["artifacts"] for p in a["parts"])
+    assert f"meter at Paris:{stored}42" in reply
+
+
+async def test_an_a2a_id_holding_a_nul_is_answered_like_any_other(client, database) -> None:
+    """A contextId holding a U+0000 fails its task (it is not a valid one); a task id is unknown."""
+    user = f"nul-{uuid.uuid4().hex[:8]}"
+    context = f"ab{NUL}cd"
+    sent = await _rpc(client, user, "SendMessage", _a2a_message("hello", contextId=context))
+    failed = sent["result"]["task"]
+    assert failed["status"]["state"] == "TASK_STATE_FAILED", sent
+    assert "Invalid contextId" in failed["status"]["message"]["parts"][0]["text"]
+    assert (await _stored(client, user, failed["id"]))["status"]["state"] == "TASK_STATE_FAILED"
+    listed = await _rpc(client, user, "ListTasks", {"contextId": context})
+    assert [t["id"] for t in listed["result"]["tasks"]] == [failed["id"]]
+
+    unknown = await _rpc(client, user, "GetTask", {"id": f"no{NUL}such"})
+    assert unknown["error"]["code"] == -32001, unknown
+    named = await _rpc(client, user, "SendMessage", _a2a_message("hi", taskId=f"no{NUL}such"))
+    assert named["error"]["code"] == -32001, named

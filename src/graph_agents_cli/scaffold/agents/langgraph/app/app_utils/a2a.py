@@ -458,8 +458,38 @@ def _status_at(task: Task) -> datetime | None:
     return task.status.timestamp.ToDatetime(tzinfo=UTC)
 
 
+# Postgres stores no U+0000, in a TEXT column or in jsonb (escaped or not). A
+# task can hold one wherever text comes from outside: a user's message, a
+# contextId, a tool's output the reply repeats. Such a string is stored with
+# U+FFFD in its place; the save must not fail, since the run (and whatever
+# its tools did) goes on regardless.
+_NUL, _NUL_STORED = "\x00", "\ufffd"
+
+
+def _text(value: str) -> str:
+    """`value` as a TEXT column holds it (a U+0000 becomes U+FFFD)."""
+    return value.replace(_NUL, _NUL_STORED) if _NUL in value else value
+
+
+def _storable(value: Any) -> Any:
+    """A parsed JSON value with `_text` applied to every string in it, keys included."""
+    if isinstance(value, str):
+        return _text(value)
+    if isinstance(value, dict):
+        return {_text(key): _storable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_storable(item) for item in value]
+    return value
+
+
 def _task_json(task: Task) -> str:
-    return json.dumps(json_format.MessageToDict(task))
+    data = json_format.MessageToDict(task)
+    stored = json.dumps(data)
+    # json.dumps writes a U+0000 as the escape \u0000, so a task without one is
+    # written as is; an escaped backslash followed by "u0000" only costs a walk.
+    if "\\u0000" in stored:
+        stored = json.dumps(_storable(data))
+    return stored
 
 
 def _task_from(value: Any) -> Task:
@@ -486,6 +516,10 @@ class PostgresTaskStore(TaskStore):
     kill, a lost node): a task still `submitted` or `working` whose thread has
     had no live run lease since `chat.RECONCILE_GRACE_S` after its last save is
     failed with a message saying so, instead of looking busy until it expires.
+
+    A U+0000, which Postgres cannot store, is stored (and read back) as U+FFFD,
+    in the task and in the ids a request names (`_text`, `_storable`); the
+    owner is used as it is, so two principals never share a key.
 
     Database failures surface as the app's 503 (`unavailable`, logged with an
     error id), never as the database's own message, which the JSON-RPC layer
@@ -546,9 +580,9 @@ class PostgresTaskStore(TaskStore):
                 """,
                 (
                     owner,
-                    task.id,
-                    task.context_id,
-                    context_key(task.context_id) if task.context_id else "",
+                    _text(task.id),
+                    _text(task.context_id),
+                    _text(context_key(task.context_id)) if task.context_id else "",
                     TaskState.Name(task.status.state),
                     _status_at(task),
                     _task_json(task),
@@ -570,7 +604,7 @@ class PostgresTaskStore(TaskStore):
         row = await self._db(
             self.db.fetchone(
                 f"SELECT task FROM {self.table} WHERE owner = %s AND task_id = %s AND {visible}",
-                (owner, task_id, *ttl),
+                (owner, _text(task_id), *ttl),
             )
         )
         return _task_from(row["task"]) if row else None
@@ -584,7 +618,7 @@ class PostgresTaskStore(TaskStore):
         args: list[Any] = [owner, *ttl]
         if params.context_id:
             where.append("context_id = %s")
-            args.append(params.context_id)
+            args.append(_text(params.context_id))
         if params.status:
             where.append("state = %s")
             args.append(TaskState.Name(params.status))
@@ -598,7 +632,7 @@ class PostgresTaskStore(TaskStore):
         total = int(counted["n"]) if counted else 0
         page_where, page_args = list(where), list(args)
         if params.page_token:
-            start_id = decode_page_token(params.page_token)
+            start_id = _text(decode_page_token(params.page_token))
             start = await self._db(
                 self.db.fetchone(
                     f"SELECT status_at FROM {self.table} "
@@ -639,7 +673,8 @@ class PostgresTaskStore(TaskStore):
         self._written.pop((owner, task_id), None)
         await self._db(
             self.db.execute(
-                f"DELETE FROM {self.table} WHERE owner = %s AND task_id = %s", (owner, task_id)
+                f"DELETE FROM {self.table} WHERE owner = %s AND task_id = %s",
+                (owner, _text(task_id)),
             )
         )
 
@@ -647,7 +682,7 @@ class PostgresTaskStore(TaskStore):
         """Drop every task of the conversation `thread_id` (any owner); how many were dropped."""
         rows = await self.db.fetchall(
             f"DELETE FROM {self.table} WHERE thread_id = %s RETURNING owner, task_id",
-            (context_key(thread_id),),
+            (_text(context_key(thread_id)),),
         )
         for row in rows:
             self._written.pop((row["owner"], row["task_id"]), None)
@@ -664,7 +699,7 @@ class PostgresTaskStore(TaskStore):
             self.db.fetchone(
                 f"SELECT 1 AS held FROM {self.locks_table} "
                 "WHERE thread_id = %s AND expires_at > now()",
-                (thread_id,),
+                (_text(thread_id),),
             )
         )
         return row is not None

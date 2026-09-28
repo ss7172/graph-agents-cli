@@ -25,6 +25,7 @@ across real server processes in `tests/integration/test_resilience_postgres.py`.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -62,6 +63,7 @@ from a2a.types import (
     TaskState,
 )
 from fastapi import HTTPException
+from google.protobuf import json_format
 from starlette.requests import Request
 
 from {{cookiecutter.agent_directory}}.app_utils import a2a as a2a_module
@@ -419,3 +421,50 @@ async def test_database_errors_never_reach_the_caller_as_text() -> None:
     with pytest.raises(a2a_module.InternalError) as internal:
         await broken.get("t1", _ctx("alice"))
     assert "Reference" in str(internal.value) and "secret" not in str(internal.value)
+
+
+def _strings_in(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for key, item in value.items() for s in (key, *_strings_in(item))]
+    if isinstance(value, list):
+        return [s for item in value for s in _strings_in(item)]
+    return []
+
+
+async def test_a_nul_character_never_reaches_the_database() -> None:
+    """Postgres stores no U+0000 (jsonb and TEXT refuse it), so the store writes U+FFFD.
+
+    Everywhere in the task (text, data, metadata, the contextId) and in the ids
+    a caller names. A save that failed on one lost the task while its run, and
+    whatever its tools did, went on. The owner is never changed.
+    """
+    db = RecordingDb()
+    store = PostgresTaskStore(60, db)  # type: ignore[arg-type]
+    task = _task(TaskState.TASK_STATE_COMPLETED, "reading\x00 42, and \\u0000 as text")
+    task.context_id = "ab\x00cd"
+    message = task.history.add()
+    message.message_id = "m1"
+    message.parts.add().text = "tell me\x00 more"
+    json_format.ParseDict({"key\x00": ["value\x00"]}, message.parts.add().data)
+    json_format.ParseDict({"note": "x\x00"}, message.metadata)
+    await store.save(task, _ctx("alice"))
+    await store.get("t\x00", _ctx("alice"))
+    await store.list(ListTasksRequest(context_id="ab\x00cd"), _ctx("alice"))
+    await store.delete("t\x00", _ctx("alice"))
+    sent = [param for _, params in db.statements for param in params if isinstance(param, str)]
+    assert not [param for param in sent if "\x00" in param]
+    (insert,) = [params for sql, params in db.statements if sql.startswith("INSERT")]
+    stored = json.loads(insert[6])
+    assert not [text for text in _strings_in(stored) if "\x00" in text]
+    assert stored["contextId"] == "ab\ufffdcd" and insert[2:4] == ("ab\ufffdcd", "ab\ufffdcd")
+    assert stored["artifacts"][0]["parts"][0]["text"] == "reading\ufffd 42, and \\u0000 as text"
+    assert stored["history"][0]["parts"] == [
+        {"text": "tell me\ufffd more"},
+        {"data": {"key\ufffd": ["value\ufffd"]}},
+    ]
+    assert stored["history"][0]["metadata"] == {"note": "x\ufffd"}
+    lookups = [params for sql, params in db.statements if not sql.startswith("INSERT")]
+    assert ("alice", "t\ufffd") in [tuple(params[:2]) for params in lookups]
+    assert any("ab\ufffdcd" in params for params in lookups)

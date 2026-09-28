@@ -324,7 +324,9 @@ Tasks
     `CHECKPOINTER=memory` they are kept in process memory. A task is dropped `A2A_TASK_TTL_S`
     (3600 s) after its last update (`0`: when its thread is deleted), and deleting a thread
     deletes its tasks. A task whose run ended with its process (a crash, an OOM kill) turns
-    `failed` instead of staying `working`.
+    `failed` instead of staying `working`. Postgres cannot store the character U+0000, so a
+    stored task holds U+FFFD in its place (in a message, a tool's output the reply repeats,
+    or an id); the answer to the request itself, and the memory store, keep it as sent.
 
 Approvals
 :   A gated run moves the task to `input-required`, with a data part

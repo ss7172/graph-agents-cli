@@ -78,7 +78,9 @@ migration" with the steps to follow.
   process turns `failed` instead of staying `working`. A `SubscribeToTask` or `CancelTask`
   that reaches a replica other than the one running the task is refused (-32004, -32002)
   instead of waiting for events that happen elsewhere, or reporting a cancel the run then
-  overwrites. Streamed reply chunks are written at most once a second per task.
+  overwrites. Streamed reply chunks are written at most once a second per task. Postgres
+  cannot store the character U+0000, so a stored task holds U+FFFD in its place (a message,
+  a tool's output or a contextId holding one never fails the task's save).
   `CHECKPOINTER=memory` keeps the in-memory store. The a2a SDK's `DatabaseTaskStore` was
   not used: its Postgres extra is SQLAlchemy on asyncpg (the template uses psycopg only),
   its `context_id` column holds 36 characters where the template accepts 128, and it

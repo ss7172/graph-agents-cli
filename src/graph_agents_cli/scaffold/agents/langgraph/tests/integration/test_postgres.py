@@ -427,3 +427,44 @@ async def test_a2a_tasks_of_a_dead_run_are_failed_not_left_working(
     finally:
         await locks.close()
         await db.close()
+
+
+async def test_a2a_tasks_holding_a_nul_are_saved_with_a_replacement_character(
+    dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Postgres stores no U+0000 (jsonb and TEXT refuse it): the store saves U+FFFD instead.
+
+    A save that failed on one (a tool's output the reply repeats, say) lost the
+    task while its run went on; the sweep then failed it as if its process had died.
+    """
+    monkeypatch.setattr(chat_module, "RECONCILE_GRACE_S", 0.0)
+    db = await _opened(dsn)
+    try:
+        store = PostgresTaskStore(3600, db)
+        task = _a2a_task("t1", "ab\x00cd", TaskState.TASK_STATE_WORKING, text="reading\x00 42")
+        message = task.history.add()
+        message.message_id = "m1"
+        message.parts.add().text = "tell me\x00 more"
+        json_format.ParseDict({"key\x00": ["value\x00"]}, message.parts.add().data)
+        json_format.ParseDict({"note": "x\x00"}, message.metadata)
+        await store.save(task, _ctx("alice"))
+        seen = await store.get("t1", _ctx("alice"))
+        assert seen is not None
+        assert seen.context_id == "ab\ufffdcd"
+        assert seen.artifacts[0].parts[0].text == "reading\ufffd 42"
+        assert seen.history[0].parts[0].text == "tell me\ufffd more"
+        assert json_format.MessageToDict(seen.history[0].parts[1].data) == {
+            "key\ufffd": ["value\ufffd"]
+        }
+        assert json_format.MessageToDict(seen.history[0].metadata) == {"note": "x\ufffd"}
+        # The contextId a caller names finds it; an id holding a U+0000 is not an error.
+        listed = await store.list(ListTasksRequest(context_id="ab\x00cd"), _ctx("alice"))
+        assert [t.id for t in listed.tasks] == ["t1"]
+        assert await store.get("t\x00", _ctx("alice")) is None
+        # Its thread has no run: the sweep fails it, rewriting the stored task.
+        assert await store.sweep() == (0, 1)
+        failed = await store.get("t1", _ctx("alice"))
+        assert failed is not None and failed.status.state == TaskState.TASK_STATE_FAILED
+        assert failed.artifacts[0].parts[0].text == "reading\ufffd 42"
+    finally:
+        await db.close()
