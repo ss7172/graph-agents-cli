@@ -189,6 +189,12 @@ Tool arguments that are not valid JSON
     model again in the same step, at most twice. The client sees a `tool.call` with `args: {}`
     and an error `tool.result`.
 
+Tool output that is not valid Unicode
+:   A tool's result can hold a lone surrogate (an upstream JSON `"\ud800"` escape decodes to
+    one), which UTF-8 cannot encode. It is replaced with U+FFFD as the result leaves the tool
+    (`UntrustedToolResults`), so the thread, the model's next request, `tool.result`, the
+    answer and A2A replies hold U+FFFD in its place, and the run goes on.
+
 Failed tool calls
 :   Outside `APP_ENV=dev` a failed call's `tool.result`, and its message in the thread
     history, carry only the generic text and its `error_id`. The error text (policy rule,

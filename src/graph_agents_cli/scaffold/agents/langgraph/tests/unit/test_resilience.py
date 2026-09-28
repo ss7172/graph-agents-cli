@@ -375,6 +375,55 @@ async def test_one_id_for_two_calls_runs_both_and_the_next_turn_is_accepted(
     assert openai_compatible.refusals == []
 
 
+# --- a tool output UTF-8 cannot encode ---------------------------------------------------
+
+LONE_SURROGATE = "\ud800"  # what an upstream JSON "\ud800" escape decodes to
+
+
+async def test_a_tool_output_holding_a_lone_surrogate_reaches_the_model_as_valid_text(
+    openai_compatible: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model's next request carried the surrogate, and encoding it failed.
+
+    The run ended after the tool had acted (`UnicodeEncodeError: ... surrogates
+    not allowed`), and under the memory checkpointer every later turn of the
+    thread failed the same way.
+    """
+    from langchain_core.tools import tool as as_tool
+
+    runs: list[str] = []
+
+    @as_tool
+    def read_gauge(query: str) -> str:
+        """Test-only tool: the gauge reading for QUERY (it holds a lone surrogate)."""
+        runs.append(query)
+        return f"gauge at {query}:{LONE_SURROGATE}42"
+
+    scripts = {**openai_compatible.SCRIPTS, "GAUGE": [("call_0", '{"query": "Oslo"}')]}
+    monkeypatch.setattr(openai_compatible, "SCRIPTS", scripts)
+    graph = _agent(openai_compatible.model(), [read_gauge])
+    state = await graph.ainvoke({"messages": [{"role": "user", "content": "GAUGE please"}]})
+    assert runs == ["Oslo"]
+    (result,) = [m for m in state["messages"] if isinstance(m, ToolMessage)]
+    assert result.content == "gauge at Oslo:\ufffd42"
+    assert "gauge at Oslo:\ufffd42" in state["messages"][-1].content
+    assert "gauge at Oslo:\ufffd42" in str(openai_compatible.requests[-1]["messages"][-1])
+    state = await graph.ainvoke({"messages": [*state["messages"], HumanMessage("thanks")]})
+    assert state["messages"][-1].content == "ok" and openai_compatible.refusals == []
+    assert runs == ["Oslo"]
+
+
+def test_an_sse_event_holding_a_lone_surrogate_is_sent_as_valid_text() -> None:
+    """A lone surrogate anywhere in an event (the model's tool arguments, say) ended the stream."""
+    event = chat.sse_encode("tool.call", {"args": {"query": f"x{LONE_SURROGATE}y"}})
+    assert event == 'event: tool.call\ndata: {"args": {"query": "x\ufffdy"}}\n\n'
+    event.encode("utf-8")
+    # Any other character is sent as it is (not as a \u escape).
+    text = "caf\u00e9 \u2713 \U0001f600"
+    expected = 'event: message.delta\ndata: {"text": "' + text + '"}\n\n'
+    assert chat.sse_encode("message.delta", {"text": text}) == expected
+
+
 # --- step budget -------------------------------------------------------------------------
 
 

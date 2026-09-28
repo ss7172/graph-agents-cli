@@ -19,8 +19,8 @@ a test tool that cancels an order through `api_client`: a call the test's
 `api-policy.yaml` gates. The JSON body comes from the file named by
 `TEST_APPROVAL_BODY_FILE`, so a test can change the request between the pause
 and the decision. Two more tools place and amend orders, for a policy whose
-approval rules ask other approvers for other calls. Not collected by pytest
-(no `test_` prefix).
+approval rules ask other approvers for other calls, and one reads a gauge whose
+reading holds a lone surrogate. Not collected by pytest (no `test_` prefix).
 """
 
 from __future__ import annotations
@@ -84,11 +84,17 @@ async def amend_order(order_id: str, runtime: ToolRuntime[Any]) -> str:
     return json.dumps({"upstream": data, "acting_as": _principal(context)})
 
 
+@tool
+def gauge_reading(place: str) -> str:
+    """Read the gauge at a place (its reading holds a lone surrogate, which UTF-8 cannot encode)."""
+    return f"gauge at {place}:\ud80042"
+
+
 graph = create_agent(
     model=get_model(),
     # The fake model calls the first tool a message names: "Cancel ..." cancels,
-    # "Place ..." places and "Amend ..." amends.
-    tools=[cancel_order, place_order, amend_order],
+    # "Place ..." places, "Amend ..." amends and "... gauge ..." reads the gauge.
+    tools=[cancel_order, place_order, amend_order, gauge_reading],
     system_prompt=agent.SYSTEM_PROMPT,
     middleware=agent.middleware(),
     context_schema=agent.AgentContext,

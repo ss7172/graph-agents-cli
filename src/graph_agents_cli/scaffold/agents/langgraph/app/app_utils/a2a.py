@@ -167,6 +167,7 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     new_error_id,
     unavailable,
 )
+from {{cookiecutter.agent_directory}}.app_utils.content import valid_text
 from {{cookiecutter.agent_directory}}.app_utils.db import (
     Database,
     StorageNotReady,
@@ -1266,7 +1267,8 @@ class _Reply:
 
     async def _send(self, text: str, *, last: bool) -> None:
         await self._updater.add_artifact(
-            [Part(text=text)],
+            # A lone surrogate (which protobuf cannot encode) is sent as U+FFFD.
+            [Part(text=valid_text(text))],
             artifact_id=self._artifact_id,
             name="response",
             append=self._sent,
@@ -1370,7 +1372,7 @@ class LangGraphAgentExecutor(AgentExecutor):
                     return
                 await updater.failed(
                     updater.new_agent_message(
-                        [Part(text=f"{data.get('code')}: {data.get('message')}")]
+                        [Part(text=valid_text(f"{data.get('code')}: {data.get('message')}"))]
                     )
                 )
                 return

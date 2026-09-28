@@ -18,13 +18,18 @@ results, and what clients see of failed tool calls.
 
 * `content_to_text`: LangChain message content as plain text (SSE deltas, A2A
   parts, traces).
+* `valid_text`: text with each lone surrogate replaced by U+FFFD. A tool's
+  output can hold one (an upstream JSON `"\\ud800"` escape decodes to it), and
+  UTF-8 cannot encode it, so the `/chat` stream, an A2A part, the model
+  provider's request and LangGraph Server's own stream would all fail on it.
 * `UntrustedToolResults`: agent middleware that fences every tool result the
   model reads in `<tool_output ... trust="untrusted">` tags. Tool results
   carry text other people or systems wrote (a customer's note, an upstream
   error body); the fence, with the default system prompt's rule to never
   follow instructions found inside it, keeps that text data rather than
-  instructions. Only the model's request is changed: the thread's state,
-  `tool.result` events and the thread history keep the tool's own output.
+  instructions. Only the model's request is fenced: the thread's state,
+  `tool.result` events and the thread history keep the tool's own output,
+  made valid text (`valid_text`) as it leaves the tool.
 * `AnswerInvalidToolCalls`: agent middleware that answers a tool call whose
   arguments are not valid JSON with an error result, so the model can call
   again and the thread stays valid for the provider.
@@ -51,15 +56,65 @@ from langchain_core.messages import AIMessage, ToolMessage
 logger = logging.getLogger(__name__)
 
 
+# A code point in U+D800-U+DFFF. A Python string can hold one on its own (a JSON
+# "\ud800" escape decodes to it), but it is not a character: UTF-8 cannot encode it.
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+REPLACEMENT_CHARACTER = "\ufffd"
+
+
+def valid_text(text: str) -> str:
+    """`text` with every lone surrogate replaced by U+FFFD, so that it encodes as UTF-8.
+
+    Nothing that sends or stores text accepts a lone surrogate: the `/chat`
+    stream, an A2A part, a model provider's request and LangGraph Server's own
+    stream all fail on one. Every other character is kept; `text` itself is
+    returned when it holds none.
+    """
+    if text.isascii() or not _LONE_SURROGATE.search(text):
+        return text
+    return _LONE_SURROGATE.sub(REPLACEMENT_CHARACTER, text)
+
+
+def _valid_value(value: Any) -> Any:
+    """`value` with `valid_text` applied to every string in it (in lists and dicts, keys
+    included); `value` itself when nothing changes."""
+    if isinstance(value, str):
+        return valid_text(value)
+    if isinstance(value, list):
+        items = [_valid_value(item) for item in value]
+        return value if all(new is old for new, old in zip(items, value, strict=True)) else items
+    if isinstance(value, dict):
+        pairs = [(_valid_value(key), _valid_value(item)) for key, item in value.items()]
+        if all(k is k0 and v is v0 for (k, v), (k0, v0) in zip(pairs, value.items(), strict=True)):
+            return value
+        return dict(pairs)
+    return value
+
+
+def valid_tool_result(result: Any) -> Any:
+    """A tool's result with `valid_text` applied to its content and artifact.
+
+    A `ToolMessage` holding a lone surrogate is copied with U+FFFD in its
+    place; any other result (a `Command`) is returned as it is.
+    """
+    if not isinstance(result, ToolMessage):
+        return result
+    content = _valid_value(result.content)
+    artifact = _valid_value(result.artifact)
+    if content is result.content and artifact is result.artifact:
+        return result
+    return result.model_copy(update={"content": content, "artifact": artifact})
+
+
 def content_to_text(content: object) -> str:
-    """Return a message's ``content`` as plain text.
+    """Return a message's ``content`` as plain text (valid text: see `valid_text`).
 
     LangChain 1.x messages carry ``content`` either as a string or as a list of
     content blocks (e.g. ``[{"type": "text", "text": "hi"}]``). An A2A text ``Part``
     requires a string, so flatten the block form here.
     """
     if isinstance(content, str):
-        return content
+        return valid_text(content)
     if isinstance(content, list):
         out: list[str] = []
         for block in content:
@@ -67,7 +122,7 @@ def content_to_text(content: object) -> str:
                 out.append(str(block.get("text", "")))
             elif isinstance(block, str):
                 out.append(block)
-        return "".join(out)
+        return valid_text("".join(out))
     return ""
 
 
@@ -102,7 +157,7 @@ def _plain_form(text: str) -> str:
 
 
 def _neutralise(text: str) -> str:
-    text = _TAG_IN_TEXT.sub(r"<\1tool-output", text)
+    text = _TAG_IN_TEXT.sub(r"<\1tool-output", valid_text(text))
     plain = _plain_form(text)
     if plain is not text and _TAG_IN_TEXT.search(plain):
         # A look-alike of the tag (full-width brackets, a zero-width space in
@@ -211,6 +266,11 @@ class UntrustedToolResults(AgentMiddleware):
     It lowers the odds that planted text steers the agent; it does not make a
     tool safe to call with a record the user never named (see
     `api_client.require_user_mentioned` and `require_owner`).
+
+    It also makes each tool result valid text as it leaves the tool
+    (`valid_tool_result`): a lone surrogate in it (from an upstream JSON
+    `"\\ud800"` escape, say) becomes U+FFFD in the thread's state, so the
+    run's stream, its checkpoints and the model's next request can carry it.
     """
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
@@ -218,6 +278,12 @@ class UntrustedToolResults(AgentMiddleware):
 
     async def awrap_model_call(self, request: Any, handler: Any) -> Any:
         return await handler(request.override(messages=fence_tool_messages(list(request.messages))))
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return valid_tool_result(handler(request))
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        return valid_tool_result(await handler(request))
 
 
 # ---------------------------------------------------------------------------

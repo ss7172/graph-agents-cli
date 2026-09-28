@@ -642,6 +642,34 @@ def test_the_server_a2a_task_waits_for_input_and_resumes(server: Server) -> None
     assert server.upstream.sent_to("/orders/16/cancel") == [BODY]
 
 
+def test_a_tool_output_holding_a_lone_surrogate_completes_the_run(server: Server) -> None:
+    """UTF-8 cannot encode a lone surrogate: the reply holds U+FFFD in its place.
+
+    The server could not send the tool's update on its own stream: the run
+    failed (`run_failed`) after the tool had acted, over /chat and over A2A.
+    """
+    r = post(server, "/chat", {"message": "Check the gauge for Bergen"}, token("alice"))
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    assert events[-1][0] == "message.end" and events[-1][1]["status"] == "ok", events
+    assert [d["result"] for e, d in events if e == "tool.result"] == ["gauge at Bergen:\ufffd42"]
+    sent = _rpc(
+        server,
+        "SendMessage",
+        {
+            "message": {
+                "messageId": "m-gauge",
+                "role": "ROLE_USER",
+                "parts": [{"text": "Check the gauge for Oslo"}],
+            }
+        },
+    )
+    task = sent["result"]["task"]
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED", task
+    reply = "".join(p.get("text", "") for a in task["artifacts"] for p in a["parts"])
+    assert "gauge at Oslo:\ufffd42" in reply
+
+
 def _wait_until_expired(end: dict[str, Any]) -> None:
     expires = datetime.fromisoformat(end["approval"]["expires_at"])
     wait = expires.timestamp() - time.time() + 1

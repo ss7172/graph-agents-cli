@@ -1302,3 +1302,66 @@ async def test_an_a2a_id_holding_a_nul_is_answered_like_any_other(client, databa
     assert unknown["error"]["code"] == -32001, unknown
     named = await _rpc(client, user, "SendMessage", _a2a_message("hi", taskId=f"no{NUL}such"))
     assert named["error"]["code"] == -32001, named
+
+
+# --- A tool's output that is not valid Unicode ---------------------------------------------
+
+LONE_SURROGATE = "\ud800"  # what an upstream JSON "\ud800" escape decodes to
+GAUGES: list[str] = []
+
+
+@tool
+async def gauge_reading(query: str) -> str:
+    """Read the gauge at a place (test-only: the reading holds a lone surrogate)."""
+    GAUGES.append(query)
+    return f"gauge at {query}:{LONE_SURROGATE}42"
+
+
+async def test_a_tool_output_holding_a_lone_surrogate_completes_the_run(
+    client, database, use_test_tools
+) -> None:
+    """UTF-8 cannot encode a lone surrogate: the reply holds U+FFFD in its place.
+
+    The /chat stream ended at the `tool.result` event, and the A2A task failed
+    with -32603 and the Python exception text, both after the tool had acted.
+    """
+    user = f"surrogate-{uuid.uuid4().hex[:8]}"
+    use_test_tools(gauge_reading)
+    GAUGES.clear()
+    replaced = "gauge at Bergen:\ufffd42"
+
+    r = await client.post(
+        "/chat", json={"message": "Check the gauge for Bergen"}, headers=_as(user)
+    )
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    names = [e for e, _ in events]
+    assert names[0] == "message.start" and names[-1] == "message.end", events
+    assert events[-1][1]["status"] == "ok"
+    assert [d["result"] for e, d in events if e == "tool.result"] == [replaced]
+    assert replaced in "".join(d["text"] for e, d in events if e == "message.delta")
+    thread = events[0][1]["thread_id"]
+    history = await client.get(f"/threads/{thread}/messages", headers=_as(user))
+    assert [m["content"] for m in history.json() if m["role"] == "tool"] == [replaced]
+    assert GAUGES == ["Bergen"]
+
+    sent = await _rpc(client, user, "SendMessage", _a2a_message("Check the gauge for Oslo"))
+    assert sent["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED", sent
+    task = await _stored(client, user, sent["result"]["task"]["id"])
+    reply = "".join(p.get("text", "") for a in task["artifacts"] for p in a["parts"])
+    assert "gauge at Oslo:\ufffd42" in reply
+
+    r = await client.post(
+        A2A_PATH,
+        json={
+            "jsonrpc": "2.0",
+            "id": "1",
+            "method": "SendStreamingMessage",
+            "params": _a2a_message("Check the gauge for Rome"),
+        },
+        headers={**_as(user), "A2A-Version": "1.0"},
+    )
+    events = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+    assert events and all("result" in event for event in events), r.text[-500:]
+    assert events[-1]["result"]["statusUpdate"]["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert GAUGES == ["Bergen", "Oslo", "Rome"]

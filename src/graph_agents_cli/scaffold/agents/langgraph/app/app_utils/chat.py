@@ -143,6 +143,7 @@ from {{cookiecutter.agent_directory}}.app_utils.content import (
     INVALID_TOOL_CALL_RESULT,
     INVALID_TOOL_CALL_TYPE,
     content_to_text,
+    valid_text,
 )
 from {{cookiecutter.agent_directory}}.app_utils.db import (
     RUN_INTERRUPTED,
@@ -310,9 +311,11 @@ def dev_mode() -> bool:
 
 
 def sse_encode(event: str, data: Mapping[str, Any]) -> str:
+    """One SSE event. A lone surrogate anywhere in `data` is sent as U+FFFD
+    (`valid_text`): UTF-8 cannot encode one, and it would end the stream."""
     if event == EVENT_HEARTBEAT:
         return ": keep-alive\n\n"
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    return f"event: {event}\ndata: {valid_text(json.dumps(data, ensure_ascii=False))}\n\n"
 
 
 def new_error_id() -> str:

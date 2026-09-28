@@ -115,6 +115,19 @@ migration" with the steps to follow.
   creates its table on first use, outside the schema lock that replicas share. Existing
   projects get it from `scaffold upgrade` (it changes `app_utils/a2a.py` and
   `app_utils/db.py`); the table is created at the next start.
+- **A tool's output that is not valid Unicode no longer breaks the run.** A lone surrogate
+  in a tool's result (an upstream JSON `"\ud800"` escape decodes to one, and UTF-8 cannot
+  encode it) ended the `/chat` stream at its `tool.result` event, and failed the A2A task
+  with `-32603` and the Python exception text (`'utf-8' codec can't encode character ...:
+  surrogates not allowed`); under `langgraph-server` the run failed (`run_failed`). With a
+  real model provider the model's next request could not be encoded either, and under
+  `CHECKPOINTER=memory` every later turn of that thread failed the same way. Each time, the
+  tool had already acted. The agent middleware `UntrustedToolResults` now replaces each lone
+  surrogate with U+FFFD as the result leaves the tool, and the model's request, the `/chat`
+  events, the thread history and A2A replies are sent as valid text whatever their source.
+  Existing projects get it from `scaffold upgrade` (it changes `app_utils/content.py`,
+  `chat.py` and `a2a.py`); an `agent.py` that builds its own middleware list keeps
+  `UntrustedToolResults` in it.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
