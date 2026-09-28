@@ -23,6 +23,27 @@ Every provider model gets a request timeout and a retry budget:
 provider SDK's own default) and `MODEL_MAX_RETRIES` (default 2). The run as a
 whole is bounded separately by `RUN_TIMEOUT_S` (see `limits.py`).
 
+OpenAI-API models (`openai`, `openai-compatible`) take two more settings,
+checked at startup like the limits:
+
+* `MODEL_REASONING_EFFORT`: `none`, `minimal`, `low`, `medium`, `high` or
+  `xhigh` (what a model accepts varies); unset leaves the model's default.
+  Sent as `reasoning_effort` on Chat Completions and as `reasoning.effort` on
+  the Responses API.
+* `MODEL_USE_RESPONSES_API`: `true` sends every request to the Responses API
+  (`/v1/responses`), `false` to Chat Completions (`/v1/chat/completions`).
+  Unset lets langchain-openai choose: Chat Completions, except for the models
+  its own list says need the Responses API and for requests that use a
+  Responses-only feature. Some models refuse function tools with a reasoning
+  effort on Chat Completions ("use /v1/responses"): set `true` (or
+  `MODEL_REASONING_EFFORT=none`). An OpenAI-compatible server that has no
+  `/v1/responses` needs `false`, or unset.
+
+Either set for another provider stops startup: it would be ignored. The judge
+takes `JUDGE_REASONING_EFFORT` and `JUDGE_USE_RESPONSES_API`; unset, it keeps
+the agent's values when it is an OpenAI-API model too, and drops them when it
+is not.
+
 Provider `fake` is a deterministic in-process chat model for tests and CI. It
 is never offered by `graph-agents-cli create`.
 """
@@ -72,6 +93,15 @@ FAKE_PROVIDER = "fake"
 DEFAULT_MODEL_TIMEOUT_S = 60.0
 DEFAULT_MODEL_MAX_RETRIES = 2
 
+# The providers that speak the OpenAI API (langchain-openai's ChatOpenAI): the only ones
+# the reasoning-effort and Responses-API settings apply to.
+OPENAI_API_PROVIDERS = frozenset({"openai", "openai-compatible"})
+# `MODEL_REASONING_EFFORT` / `JUDGE_REASONING_EFFORT`: what OpenAI's reasoning models accept
+# (each model takes a subset; the API refuses the rest).
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
 
 def model_timeout_s() -> float | None:
     """`MODEL_TIMEOUT_S` (default 60); `0` means the provider SDK's own default."""
@@ -104,6 +134,62 @@ def model_max_retries() -> int:
 def model_limits() -> tuple[float | None, int]:
     """Both limits, validated (startup check)."""
     return model_timeout_s(), model_max_retries()
+
+
+def _effort(name: str) -> str | None:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in REASONING_EFFORTS:
+        raise SettingsError(f"{name}={raw!r} must be one of {', '.join(REASONING_EFFORTS)}.")
+    return raw
+
+
+def _switch(name: str) -> bool | None:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return None
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    raise SettingsError(f"{name}={raw!r} must be true or false (unset: langchain-openai chooses).")
+
+
+def model_api_options(*, judge: bool = False) -> dict[str, Any]:
+    """`{"reasoning_effort", "use_responses_api"}` of the agent's (or the judge's) model.
+
+    Only the options that are set; `SettingsError` for a bad value, or for one
+    set explicitly for a provider that is not an OpenAI-API one (`fake` takes
+    and ignores them). The judge's own `JUDGE_*` values win; unset, it keeps the
+    agent's when its provider is an OpenAI-API one too.
+    """
+    provider = model_settings(judge=judge)["provider"] or ""
+    options: dict[str, Any] = {}
+    for key, variable, read in (
+        ("reasoning_effort", "REASONING_EFFORT", _effort),
+        ("use_responses_api", "USE_RESPONSES_API", _switch),
+    ):
+        own = f"JUDGE_{variable}" if judge else f"MODEL_{variable}"
+        value = read(own)
+        explicit = value is not None
+        if judge and value is None:
+            value = read(f"MODEL_{variable}")
+        if value is None:
+            continue
+        if provider in OPENAI_API_PROVIDERS:
+            options[key] = value
+        elif provider != FAKE_PROVIDER and explicit:
+            raise SettingsError(
+                f"{own} applies to an OpenAI-API model (MODEL_PROVIDER openai or "
+                f"openai-compatible), not {provider!r}: unset it."
+            )
+    return options
+
+
+def model_options() -> tuple[dict[str, Any], dict[str, Any]]:
+    """The agent's and the judge's options, validated (startup check)."""
+    return model_api_options(), model_api_options(judge=True)
 
 
 def model_settings(*, judge: bool = False) -> dict[str, str | None]:
@@ -166,10 +252,15 @@ def build_model(
 
 
 def get_model(**kwargs: Any) -> BaseChatModel:
-    """The agent's chat model, from MODEL_PROVIDER / MODEL_NAME / OPENAI_BASE_URL."""
+    """The agent's chat model, from MODEL_PROVIDER / MODEL_NAME / OPENAI_BASE_URL (and, for an
+    OpenAI-API model, MODEL_REASONING_EFFORT / MODEL_USE_RESPONSES_API)."""
     s = model_settings()
     return build_model(
-        s["provider"] or "", s["name"] or "", base_url=s["base_url"], api_key=s["api_key"], **kwargs
+        s["provider"] or "",
+        s["name"] or "",
+        base_url=s["base_url"],
+        api_key=s["api_key"],
+        **{**model_api_options(), **kwargs},
     )
 
 
@@ -177,7 +268,11 @@ def get_judge_model(**kwargs: Any) -> BaseChatModel:
     """The judge model, from JUDGE_* with the agent's values as defaults."""
     s = model_settings(judge=True)
     return build_model(
-        s["provider"] or "", s["name"] or "", base_url=s["base_url"], api_key=s["api_key"], **kwargs
+        s["provider"] or "",
+        s["name"] or "",
+        base_url=s["base_url"],
+        api_key=s["api_key"],
+        **{**model_api_options(judge=True), **kwargs},
     )
 
 

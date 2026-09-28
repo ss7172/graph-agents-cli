@@ -186,7 +186,7 @@ from {{cookiecutter.agent_directory}}.app_utils.middleware import (
     read_body,
     replay_body,
 )
-from {{cookiecutter.agent_directory}}.app_utils.model import model_limits
+from {{cookiecutter.agent_directory}}.app_utils.model import model_limits, model_options
 from {{cookiecutter.agent_directory}}.app_utils.playground import PLAYGROUND_HTML
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     bind_log_context,
@@ -240,6 +240,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             metrics_enabled,
             pool_sizes,
             model_limits,
+            model_options,
             trace_capture,
             task_ttl_s,
             max_message_chars,

@@ -68,6 +68,24 @@ def model_label(*, judge=False) -> str:  # "<provider>/<model>", recorded in run
 `get_judge_model()` takes no provider or model arguments; `eval grade --judge-provider/--judge-model`
 reach it through `JUDGE_MODEL_PROVIDER` / `JUDGE_MODEL_NAME` in the judge runner's environment.
 
+## OpenAI-API models: reasoning effort and the Responses API
+
+For `openai` and `openai-compatible` only (set for another provider, the app refuses to start):
+
+| Variable | Values | Effect |
+|---|---|---|
+| `MODEL_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; unset = the model's default | `reasoning_effort` on Chat Completions, `reasoning.effort` on the Responses API |
+| `MODEL_USE_RESPONSES_API` | `true`, `false`; unset = langchain-openai chooses | `true`: every request to `/v1/responses`; `false`: `/v1/chat/completions` |
+
+`build_model` passes them to `init_chat_model` as `reasoning_effort` and `use_responses_api`
+(an explicit argument wins). Unset, langchain-openai uses Chat Completions except for the
+models its own list says need the Responses API. A model that refuses function tools with a
+reasoning effort on Chat Completions fails its first call with a 400 naming `/v1/responses`:
+set `MODEL_USE_RESPONSES_API=true` (or `MODEL_REASONING_EFFORT=none`). Keep it `false` or unset
+for an OpenAI-compatible server without `/v1/responses`. The judge reads
+`JUDGE_REASONING_EFFORT` / `JUDGE_USE_RESPONSES_API`, defaulting to the agent's when the judge
+is an OpenAI-API model too. Tools, streaming and token usage work on both APIs.
+
 ## Switching providers
 
 Edit `.env` (locally) and the chart `env:` plus the Secret (deployed):

@@ -130,7 +130,8 @@ ones (see [Secrets](../guides/secrets.md)).
       file; the project's own tests set it.
     - **A value that does not parse stops the app at startup**, naming every bad variable
       at once: the guardrails and limits, the pool sizes, `LOG_LEVEL`, `LOG_FORMAT`,
-      `METRICS_ENABLED`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`, `TRACE_CAPTURE`,
+      `METRICS_ENABLED`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`, `MODEL_REASONING_EFFORT`,
+      `MODEL_USE_RESPONSES_API` (and their `JUDGE_` forms), `TRACE_CAPTURE`,
       `A2A_TASK_TTL_S` and `MAX_MESSAGE_CHARS`. Nothing silently falls back to a default.
     - **`APP_ENV` counts as dev only when it is exactly `dev`.** `DEV`, ` dev`,
       `development` or unset are a deployed environment.
@@ -160,7 +161,14 @@ ones (see [Secrets](../guides/secrets.md)).
 | `OPENAI_BASE_URL` | | The endpoint of an `openai-compatible` server (vLLM, TGI, Ollama). |
 | `MODEL_TIMEOUT_S` | `60` | Timeout of one model request, in seconds; `0` keeps the provider SDK's default. |
 | `MODEL_MAX_RETRIES` | `2` | Retries of a failed model request. |
+| `MODEL_REASONING_EFFORT` | unset (the model's default) | `openai` and `openai-compatible` only: `none`, `minimal`, `low`, `medium`, `high` or `xhigh` (each model accepts some). Sent as `reasoning_effort` on Chat Completions and as `reasoning.effort` on the Responses API. |
+| `MODEL_USE_RESPONSES_API` | unset (langchain-openai chooses) | `openai` and `openai-compatible` only: `true` sends every request to the Responses API (`/v1/responses`), `false` to Chat Completions. Unset: Chat Completions, except for the models langchain-openai knows need the Responses API. A model that refuses function tools with a reasoning effort on Chat Completions ("use /v1/responses") needs `true`, or `MODEL_REASONING_EFFORT=none`; a server without `/v1/responses` needs `false` or unset. |
 | `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL`, `JUDGE_API_KEY` | the agent's provider, model and key | The eval judge. See [Evaluation](../guides/evaluation.md). |
+| `JUDGE_REASONING_EFFORT`, `JUDGE_USE_RESPONSES_API` | the agent's values, when the judge is an OpenAI-API model too | The judge's own reasoning effort and API. |
+
+Either of the two OpenAI settings set for another provider stops startup, since it would be
+ignored (`fake` ignores them). Neither has a `create` flag: like the timeouts, they are
+settings of each environment (`.env`, `.env.<env>`, the chart values), not of the project.
 
 ### Persistence
 

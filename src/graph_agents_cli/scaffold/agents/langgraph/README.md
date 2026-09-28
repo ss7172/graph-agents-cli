@@ -130,7 +130,9 @@ at startup):
   Under postgres the lock is a lease every replica honours: a replica that dies frees its
   threads 30 s later, and a run that can no longer renew its lease stops before it writes.
 - **Guardrails:** a run is cancelled after `RUN_TIMEOUT_S` (300); each model request has
-  `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2). `RECURSION_LIMIT` (50, room for 24
+  `MODEL_TIMEOUT_S` (60) and `MODEL_MAX_RETRIES` (2). OpenAI-API models also take
+  `MODEL_REASONING_EFFORT` and `MODEL_USE_RESPONSES_API` (`true`: the Responses API, which
+  some models need for tools; unset: langchain-openai chooses). `RECURSION_LIMIT` (50, room for 24
   sequential tool calls) caps graph steps: a run that reaches it ends with a reply saying so
   (`message.end` status `step_limit`) and keeps its work in the thread. A client disconnect
   cancels the run. Idle streams get a keep-alive comment every `SSE_HEARTBEAT_S` (15).

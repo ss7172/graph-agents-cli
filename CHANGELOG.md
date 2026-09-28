@@ -133,6 +133,18 @@ migration" with the steps to follow.
   every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
   `langgraph-server` as they refuse `auth: forward`.
 
+- **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
+  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:
+  every request to `/v1/responses`; `false`: Chat Completions; unset: langchain-openai
+  chooses, as before), for `openai` and `openai-compatible`; the judge reads
+  `JUDGE_REASONING_EFFORT` and `JUDGE_USE_RESPONSES_API`, defaulting to the agent's when it is
+  an OpenAI-API model too. A model that refuses function tools with a reasoning effort on Chat
+  Completions (the experiments' finding F15: its first call failed with a 400 naming
+  `/v1/responses`) now works with the switch on, tools, streaming and token usage included. A
+  bad value, or either setting for another provider, stops startup. `.env.example` and, for
+  OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
+  runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
+
 ### Changed
 
 - **`lint` and `api add` check each API's `auth` against the project's auth policy.**

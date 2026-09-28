@@ -34,6 +34,14 @@ env:
 {%- if cookiecutter.model_provider == 'openai-compatible' %}
   OPENAI_BASE_URL: http://CHANGE-ME:11434/v1
 {%- endif %}
+{%- if cookiecutter.model_provider in ['openai', 'openai-compatible'] %}
+  # Reasoning effort (none | minimal | low | medium | high | xhigh) and the API: "true" for
+  # the Responses API, "false" for Chat Completions. Unset: the model's default effort, and
+  # langchain-openai chooses the API. A model that refuses function tools with an effort on
+  # Chat Completions needs MODEL_USE_RESPONSES_API: "true".
+  # MODEL_REASONING_EFFORT: ""
+  # MODEL_USE_RESPONSES_API: ""
+{%- endif %}
 {%- if cookiecutter.runtime == 'fastapi' %}
   CHECKPOINTER: postgres
 {%- endif %}

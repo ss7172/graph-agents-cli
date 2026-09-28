@@ -49,6 +49,7 @@ scaffolding files implement them.
 │   ├── integration/test_runtime_guardrails.py # 409, timeouts, recursion limit, body and metadata caps, /ready, /metrics
 │   ├── integration/test_server_runtime.py     # langgraph-server branch against a fake SDK client
 │   ├── integration/test_postgres.py           # opt-in: TEST_POSTGRES_DSN (a server where the user may create databases)
+│   ├── integration/test_model_apis.py         # MODEL_REASONING_EFFORT / MODEL_USE_RESPONSES_API against a fake OpenAI server (fake_openai.py): both APIs, with a tool
 │   ├── integration/test_chart.py              # kubernetes target: helm template/lint of every environment, expectations read from the values files (needs helm)
 │   ├── eval/datasets/basic-dataset.json, eval/eval_config.yaml   # judges: {} (built-in rubrics); cases pass on the fake model
 │   └── load_test/               # excluded from a plain `pytest`
@@ -102,6 +103,7 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `AUTH_ADMIN_ROLES` | chart | langgraph-server: roles allowed to manage assistants, crons and the store; empty = nobody |
 | `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
 | `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (50) | `.env` / chart | run guardrails |
+| `MODEL_REASONING_EFFORT`, `MODEL_USE_RESPONSES_API` (unset) | `.env` / chart | OpenAI-API models: reasoning effort; `true` = the Responses API (see `langchain-models.md`) |
 | `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
 | `MAX_MESSAGE_CHARS` (32000) | `.env` / chart | longest user message on `/chat` (422) and A2A (invalid params, -32602) |
 | `RETENTION_DAYS` (0) | `.env` / chart | purge threads idle longer than N days, hourly; 0 keeps everything |

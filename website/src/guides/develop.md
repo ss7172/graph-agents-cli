@@ -183,7 +183,18 @@ The model names are `create`'s defaults per provider; any model the provider ser
 |---|---|---|
 | `MODEL_TIMEOUT_S` | `60` | Timeout of one model request, in seconds (`0` = the provider SDK's default) |
 | `MODEL_MAX_RETRIES` | `2` | Retries of a failed model request |
+| `MODEL_REASONING_EFFORT` | the model's default | OpenAI-API models: `none`, `minimal`, `low`, `medium`, `high` or `xhigh` |
+| `MODEL_USE_RESPONSES_API` | langchain-openai chooses | OpenAI-API models: `true` for the Responses API, `false` for Chat Completions |
 | `JUDGE_MODEL_PROVIDER`, `JUDGE_MODEL_NAME`, `JUDGE_BASE_URL`, `JUDGE_API_KEY` | the agent's values | The eval judge ([Evaluation](evaluation.md#judges-and-quality-metrics)) |
+| `JUDGE_REASONING_EFFORT`, `JUDGE_USE_RESPONSES_API` | the agent's, for an OpenAI-API judge | The judge's own |
+
+Some OpenAI models answer on the Responses API only, or refuse function tools with a reasoning
+effort on Chat Completions (the first call fails with a 400 that says "use /v1/responses").
+Set `MODEL_USE_RESPONSES_API=true` for them. Unset, langchain-openai picks the Responses API
+itself only for the models it knows need it, and Chat Completions otherwise, which every
+OpenAI-compatible server (vLLM, Ollama, a gateway) speaks; set `false` to keep a server without
+`/v1/responses` on Chat Completions. Both settings apply to `openai` and `openai-compatible`
+only: set for another provider, the app refuses to start.
 
 To change the provider of an existing project, run `graph-agents-cli scaffold enhance
 --model-provider anthropic` (and `--model`). It records the change in the manifest, swaps the
