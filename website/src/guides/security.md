@@ -56,9 +56,9 @@ The template reduces this risk in layers:
 
 | Layer | What it does |
 |---|---|
-| The fence | `UntrustedToolResults` (in `app_utils.content`, wired into `agent.py`) wraps every tool result the model reads as untrusted data. |
+| The fence | `UntrustedToolResults` (in `app_utils.content`, wired into `agent.py`) wraps every tool result the model reads as untrusted data, and, when another agent asks for the user, that agent's request too, with a note saying who wrote it. |
 | The prompt | The default system prompt says tool output is data, never instructions. |
-| Tool checks | Write tools call `require_user_mentioned` (the id must appear in the user's own message) and, under a per-user policy, `require_owner` (the record belongs to the caller). |
+| Tool checks | Write tools call `require_user_mentioned` (the id must appear in the user's own message; when another agent asks, in the user's own words it forwarded too) and, under a per-user policy, `require_owner` (the record belongs to the caller). `require_direct_caller` keeps a tool for requests the user makes directly. |
 | Per-user upstream authorization | Write-capable APIs use `auth: forward`, so the upstream API authorizes each user itself. |
 | Approval gates | A person sees each concrete write before it is sent. |
 | Eval cases | Cases with planted instructions, where `expect.no_approvals` asserts the planted write never reached a gate. |

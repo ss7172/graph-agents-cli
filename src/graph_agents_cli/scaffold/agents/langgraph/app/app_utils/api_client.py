@@ -2716,13 +2716,41 @@ ANONYMOUS_PRINCIPAL = "anonymous"
 
 @dataclass(frozen=True)
 class Caller:
-    """The principal a run acts for, as tools see it (from the run context)."""
+    """The principal a run acts for, as tools see it (from the run context).
+
+    `principal_id` is the user (the subject). When another agent presents the
+    request for that user, `actor` names that agent and `actor_chain` every
+    agent in between, current first (`delegated`); `roles` are then only
+    those `AUTH_DELEGATED_ROLES` lends to agents.
+    """
 
     principal_id: str
     roles: frozenset[str]
+    actor: str | None = None
+    actor_chain: tuple[str, ...] = ()
 
     def has_role(self, *roles: str) -> bool:
         return bool(self.roles.intersection(roles))
+
+    @property
+    def delegated(self) -> bool:
+        """Whether an agent presents this request for the user (see `actor`)."""
+        return self.actor is not None
+
+
+def _context_attributes(ctx: Any) -> Mapping[str, Any]:
+    attributes = getattr(ctx, "attributes", None)
+    if attributes is None and isinstance(ctx, Mapping):
+        attributes = ctx.get("attributes")
+    return attributes if isinstance(attributes, Mapping) else {}
+
+
+def _context_origin(ctx: Any) -> str | None:
+    """The user's own words the calling agent forwarded (`credentials["@origin"]`), if any."""
+    credentials = _context_attributes(ctx).get("credentials")
+    origin = credentials.get("@origin") if isinstance(credentials, Mapping) else None
+    text = origin.get("text") if isinstance(origin, Mapping) else None
+    return text if isinstance(text, str) else None
 
 
 def current_caller(context: Any = None) -> Caller:
@@ -2742,7 +2770,35 @@ def current_caller(context: Any = None) -> Caller:
             "refused: this run has no authenticated caller, so no tool may act on anyone's behalf."
         )
     names = roles if isinstance(roles, list | tuple | set | frozenset) else ()
-    return Caller(principal_id, frozenset(r for r in names if isinstance(r, str)))
+    actor = _context_attributes(ctx).get("@actor")
+    actor_id = actor.get("id") if isinstance(actor, Mapping) else None
+    chain = actor.get("chain") if isinstance(actor, Mapping) else None
+    if not isinstance(actor_id, str) or not actor_id:
+        actor_id, chain = None, None
+    actor_chain = tuple(str(a) for a in chain) if isinstance(chain, list | tuple) else ()
+    if actor_id and not actor_chain:
+        actor_chain = (actor_id,)
+    return Caller(
+        principal_id,
+        frozenset(r for r in names if isinstance(r, str)),
+        actor=actor_id,
+        actor_chain=actor_chain,
+    )
+
+
+def require_direct_caller(context: Any = None) -> Caller:
+    """Refuse (`ApiPolicyError`) when an agent presents the request for the user.
+
+    For tools only a person may trigger (a transfer, a password reset): the
+    user must ask this agent directly. Returns the caller otherwise.
+    """
+    caller = current_caller(context)
+    if caller.actor is not None:
+        raise ApiPolicyError(
+            f"refused: only the user directly may ask for this, not agent {caller.actor!r} "
+            "acting for them; ask the user to use this agent themselves."
+        )
+    return caller
 
 
 def require_owner(owner: Any, *, context: Any = None, allow_roles: tuple[str, ...] = ()) -> Caller:
@@ -2791,6 +2847,19 @@ def latest_user_message(runtime: Any) -> str:
     return ""
 
 
+def _delegated_mentions() -> str:
+    """`A2A_DELEGATED_MENTIONS`; a bad value (the startup check refuses it) reads as `refuse`."""
+    try:
+        from .auth import delegated_mentions
+    except ImportError:  # loaded outside its package
+        raw = (os.environ.get("A2A_DELEGATED_MENTIONS") or "origin").strip().lower()
+        return raw if raw in ("origin", "refuse", "request") else "refuse"
+    try:
+        return delegated_mentions()
+    except ValueError:  # SettingsError: fail closed
+        return "refuse"
+
+
 def require_user_mentioned(value: Any, runtime: Any) -> None:
     """Refuse (`ApiPolicyError`) unless `value` appears in the user's latest message.
 
@@ -2801,12 +2870,47 @@ def require_user_mentioned(value: Any, runtime: Any) -> None:
     letter case and needs the whole id (letters, digits, `_` and `-` around
     it end it: `ORD-1` does not match `ORD-17`, nor `17` match `ORD-17`).
     `runtime` is the tool's `ToolRuntime`.
+
+    When another agent presents the request for the user, the latest message
+    is that agent's text, which an instruction planted in data it read could
+    have shaped. `A2A_DELEGATED_MENTIONS` decides: `origin` (default) needs
+    the value in the user's own words the calling agent forwarded as well as
+    in its request, and refuses without them; `refuse` always refuses;
+    `request` counts the agent's request as the user's words (the 0.2
+    behaviour).
     """
     token = str(value if value is not None else "").strip()
     text = latest_user_message(runtime)
     pattern = rf"(?<![A-Za-z0-9_-]){re.escape(token)}(?![A-Za-z0-9_-])"
-    if not token or not re.search(pattern, text, re.IGNORECASE):
-        shown = token[:_MENTION_MAX_CHARS]
+    shown = token[:_MENTION_MAX_CHARS]
+
+    def named_in(words: str) -> bool:
+        return bool(token) and re.search(pattern, words, re.IGNORECASE) is not None
+
+    context = getattr(runtime, "context", None)
+    if context is None:
+        context = current_context()
+    actor = _context_attributes(context).get("@actor")
+    agent = actor.get("id") if isinstance(actor, Mapping) else None
+    mode = _delegated_mentions() if isinstance(agent, str) and agent else "request"
+    if mode == "refuse":
+        raise ApiPolicyError(
+            f"refused: {shown!r} was asked for by agent {agent!r} acting for the user; the user "
+            "must ask this agent directly to act on it."
+        )
+    if mode == "origin":
+        origin = _context_origin(context)
+        if origin is None:
+            raise ApiPolicyError(
+                f"refused: {shown!r} was asked for by agent {agent!r}, which forwarded no user "
+                "message to check it against; the user must name it."
+            )
+        if not named_in(origin):
+            raise ApiPolicyError(
+                f"refused: {shown!r} is not named in the user's own words that agent {agent!r} "
+                "forwarded; ask the user to confirm it before acting on it."
+            )
+    if not named_in(text):
         raise ApiPolicyError(
             f"refused: {shown!r} is not named in the user's latest message; ask the user to "
             "confirm it before acting on it."

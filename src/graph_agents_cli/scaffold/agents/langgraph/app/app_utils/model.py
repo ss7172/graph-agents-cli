@@ -45,7 +45,10 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from {{cookiecutter.agent_directory}}.app_utils.content import unfence_tool_output
+from {{cookiecutter.agent_directory}}.app_utils.content import (
+    unfence_agent_request,
+    unfence_tool_output,
+)
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 
 # graph-agents-cli provider name -> LangChain `model_provider`.
@@ -289,7 +292,8 @@ class FakeChatModel(BaseChatModel):
     project's tools change. Replies (all stable across calls and safe under
     concurrency):
       * after a tool result: ``Here is what I found: <tool result>`` (the tool's own
-        text: the `<tool_output>` fence the agent adds is taken off)
+        text: the `<tool_output>` fence the agent adds is taken off; so is the
+        `<agent_request>` fence of a request another agent presents)
       * a judge prompt (mentions "score" and "JSON"): ``{"score": 5, "explanation": ...}``
       * a request that mentions a bound tool (its name, or a distinctive word of
         it: "weather" for `get_weather`, "orders" for `list_orders`): a call of
@@ -339,7 +343,8 @@ class FakeChatModel(BaseChatModel):
             found = unfence_tool_output(_text_of(last))
             text = f"Here is what I found: {found}"
             return AIMessage(content=text, usage_metadata=_usage(found, text))
-        prompt = _text_of(last)
+        # A delegated run's request is fenced as the calling agent's: read the request itself.
+        prompt = unfence_agent_request(_text_of(last))
         lowered = prompt.lower()
         if "score" in lowered and "json" in lowered:
             text = json.dumps({"score": 5, "explanation": "fake judge: deterministic pass"})

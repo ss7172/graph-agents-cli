@@ -1122,3 +1122,25 @@ def test_a_call_declared_by_operation_id_alone_is_gated_by_the_spec_path(tmp_pat
     assert result.status == pc.STATUS_ALLOWED
     assert result.gate.approvers == ("role:ops",) and result.gate.timeout_s == 900
     assert "cannot be ruled out" not in result.gate.rule
+
+
+def test_the_require_user_mentioned_opt_out_is_noted(tmp_path: Path) -> None:
+    """`A2A_DELEGATED_MENTIONS=request` in `.env` or a values file: lint says what it gives up."""
+    assert pc.delegated_mentions_notes(tmp_path) == []
+    (tmp_path / ".env").write_text("A2A_DELEGATED_MENTIONS=origin\n")
+    chart = tmp_path / "deployment" / "helm" / "shop"
+    chart.mkdir(parents=True)
+    (chart / "values.yaml").write_text("env:\n  APP_ENV: prod\n")
+    (chart / "values-prod.yaml").write_text("env:\n  A2A_DELEGATED_MENTIONS: Request\n")
+    notes = pc.delegated_mentions_notes(tmp_path)
+    assert len(notes) == 1
+    assert notes[0].startswith(
+        "deployment/helm/shop/values-prod.yaml sets A2A_DELEGATED_MENTIONS=request"
+    )
+    (tmp_path / ".env").write_text("A2A_DELEGATED_MENTIONS=request\n")
+    assert [n.split(" ", 1)[0] for n in pc.delegated_mentions_notes(tmp_path)] == [
+        ".env",
+        "deployment/helm/shop/values-prod.yaml",
+    ]
+    notes = pc.build_report(tmp_path, "app").notes
+    assert any(n.startswith("deployment/helm/shop/values-prod.yaml sets") for n in notes)

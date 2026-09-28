@@ -137,6 +137,8 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import CODE_APPROVAL_P
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
     authenticate_and_authorize,
+    caller_note_enabled,
+    delegated_mentions,
     delegation_settings,
     require,
 )
@@ -240,6 +242,8 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             task_ttl_s,
             max_message_chars,
             delegation_settings,
+            delegated_mentions,
+            caller_note_enabled,
         )
     )
     if RUNTIME.runtime == FASTAPI:

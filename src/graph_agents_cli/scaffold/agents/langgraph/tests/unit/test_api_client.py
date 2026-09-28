@@ -41,15 +41,22 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     ApiCallError,
     ApiPolicy,
     ApiPolicyError,
+    Caller,
+    current_caller,
     current_context,
     current_run_id,
     end_run,
     get_client,
     render_path,
+    require_direct_caller,
+    require_owner,
+    require_user_mentioned,
     reset_limits,
     reset_policy_cache,
     set_outbound_headers,
 )
+from {{cookiecutter.agent_directory}}.app_utils.auth import caller_note_enabled, delegated_mentions
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 
 POLICY = """
@@ -1107,3 +1114,101 @@ def test_the_project_policy_is_valid() -> None:
         pytest.skip("this project declares no api-policy.yaml")
     assert policy.apis
     assert yaml.safe_load(policy.source.read_text(encoding="utf-8"))["apis"]
+
+
+# --- the caller when another agent asks for the user (0.3) ----------------------------------
+
+_CONCIERGE = {"id": "concierge", "chain": ["concierge", "web-agent"], "client": "concierge"}
+
+
+@dataclass
+class _AgentRun:
+    """A tool's runtime: the run context and the thread state."""
+
+    context: Any
+    state: dict[str, Any]
+
+
+def _context(*, actor: dict[str, Any] | None = None, origin: str | None = None) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    if actor is not None:
+        attributes["@actor"] = actor
+    if origin is not None:
+        attributes["credentials"] = {"@origin": {"text": origin, "truncated": False, "hops": 1}}
+    return {"principal_id": "alice", "roles": [], "attributes": attributes}
+
+
+def _asked(text: str, **context: Any) -> _AgentRun:
+    return _AgentRun(
+        context=_context(**context), state={"messages": [{"type": "human", "content": text}]}
+    )
+
+
+def test_caller_fields() -> None:
+    direct = current_caller(_context())
+    assert (direct.actor, direct.actor_chain, direct.delegated) == (None, (), False)
+    agent = current_caller(_context(actor=_CONCIERGE))
+    assert agent.principal_id == "alice" and agent.delegated
+    assert (agent.actor, agent.actor_chain) == ("concierge", ("concierge", "web-agent"))
+    assert current_caller(_context(actor={"id": "billing"})).actor_chain == ("billing",)
+    assert Caller("bob", frozenset()).actor is None  # the 0.2 constructor still works
+
+
+def test_require_direct_caller() -> None:
+    assert require_direct_caller(_context()).principal_id == "alice"
+    with pytest.raises(ApiPolicyError, match="not agent 'concierge' acting for them"):
+        require_direct_caller(_context(actor=_CONCIERGE))
+    # require_owner still compares the subject: the record is the user's.
+    assert require_owner("alice", context=_context(actor=_CONCIERGE)).actor == "concierge"
+
+
+def test_require_user_mentioned_delegated_uses_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("A2A_DELEGATED_MENTIONS", raising=False)
+    # The user named it, and the agent's request names it: allowed.
+    require_user_mentioned(
+        "ORD-1002", _asked("Cancel ORD-1002", actor=_CONCIERGE, origin="cancel order ORD-1002")
+    )
+    # Only the agent's request names it (an instruction planted in data it read): refused.
+    with pytest.raises(ApiPolicyError, match="not named in the user's own words"):
+        require_user_mentioned(
+            "ORD-1017", _asked("Cancel ORD-1017", actor=_CONCIERGE, origin="cancel ORD-1002")
+        )
+    # The user named it, the agent's request does not: refused as before.
+    with pytest.raises(ApiPolicyError, match="not named in the user's latest message"):
+        require_user_mentioned(
+            "ORD-1002", _asked("Cancel it", actor=_CONCIERGE, origin="cancel ORD-1002")
+        )
+    # No forwarded words: refused, naming the agent.
+    with pytest.raises(ApiPolicyError) as refused:
+        require_user_mentioned("ORD-1002", _asked("Cancel ORD-1002", actor=_CONCIERGE))
+    assert str(refused.value) == (
+        "refused: 'ORD-1002' was asked for by agent 'concierge', which forwarded no user "
+        "message to check it against; the user must name it."
+    )
+    # A direct caller: the user's latest message, as in 0.2 (forwarded words are not read).
+    require_user_mentioned("ORD-1002", _asked("Cancel ORD-1002", origin="nothing"))
+
+
+def test_require_user_mentioned_refuse_and_request_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _asked("Cancel ORD-1002", actor=_CONCIERGE, origin="cancel ORD-1002")
+    monkeypatch.setenv("A2A_DELEGATED_MENTIONS", "refuse")
+    with pytest.raises(ApiPolicyError, match="the user must ask this agent directly"):
+        require_user_mentioned("ORD-1002", run)
+    require_user_mentioned("ORD-1002", _asked("Cancel ORD-1002"))  # a direct caller
+    monkeypatch.setenv("A2A_DELEGATED_MENTIONS", "request")
+    require_user_mentioned("ORD-1017", _asked("Cancel ORD-1017", actor=_CONCIERGE))
+    # A bad value (the startup check refuses it) fails closed: refused.
+    monkeypatch.setenv("A2A_DELEGATED_MENTIONS", "sometimes")
+    with pytest.raises(ApiPolicyError, match="the user must ask this agent directly"):
+        require_user_mentioned("ORD-1002", run)
+
+
+def test_the_delegated_prompt_settings_are_checked() -> None:
+    assert delegated_mentions({}) == "origin"
+    assert delegated_mentions({"A2A_DELEGATED_MENTIONS": "Request"}) == "request"
+    assert caller_note_enabled({}) is True
+    assert caller_note_enabled({"A2A_CALLER_NOTE": "off"}) is False
+    with pytest.raises(SettingsError, match="A2A_DELEGATED_MENTIONS"):
+        delegated_mentions({"A2A_DELEGATED_MENTIONS": "any"})
+    with pytest.raises(SettingsError, match="A2A_CALLER_NOTE"):
+        caller_note_enabled({"A2A_CALLER_NOTE": "false"})

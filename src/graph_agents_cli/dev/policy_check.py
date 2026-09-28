@@ -933,6 +933,7 @@ def build_report(
     else:
         report.notes.append(f"no {policy_file} at the project root: outbound API calls are refused")
 
+    report.notes.extend(delegated_mentions_notes(project_root))
     tools_dir = project_root / agent_dir / TOOLS_SUBDIR
     calls, problems = collect_declared_calls(tools_dir)
     for problem in problems:
@@ -942,6 +943,46 @@ def build_report(
     if not calls and not problems:
         report.notes.append(f"no {CALLS_NAME} declarations under {agent_dir}/{TOOLS_SUBDIR}/")
     return report
+
+
+# `A2A_DELEGATED_MENTIONS=request` turns off the template's check of a record id against the
+# user's own words when another agent asks for the user (an explicit opt-out: lint says so).
+MENTIONS_SETTING = "A2A_DELEGATED_MENTIONS"
+MENTIONS_OPT_OUT = "request"
+
+
+def _settings_files(project_root: Path) -> list[tuple[str, dict[str, Any]]]:
+    """The project's `.env` and chart values `env:` maps, by their path from the root."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    env_file = project_root / ".env"
+    if env_file.is_file():
+        from dotenv import dotenv_values
+
+        try:
+            found.append((".env", dict(dotenv_values(env_file))))
+        except Exception:  # an unreadable file: the app reports it when it loads it
+            pass
+    for values in sorted(project_root.glob("deployment/helm/*/values*.yaml")):
+        try:
+            data = yaml.safe_load(values.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        env = data.get("env") if isinstance(data, Mapping) else None
+        if isinstance(env, Mapping):
+            found.append((values.relative_to(project_root).as_posix(), dict(env)))
+    return found
+
+
+def delegated_mentions_notes(project_root: Path) -> list[str]:
+    """A note for each settings file that sets `A2A_DELEGATED_MENTIONS=request`."""
+    return [
+        f"{where} sets {MENTIONS_SETTING}={MENTIONS_OPT_OUT}: when another agent asks for a user, "
+        "require_user_mentioned counts that agent's request as the user's words (the 0.2 "
+        "behaviour), so an instruction planted in data it read can name the record a write "
+        "tool acts on. Keep the default (origin) unless every calling agent is trusted"
+        for where, settings in _settings_files(project_root)
+        if str(settings.get(MENTIONS_SETTING) or "").strip().lower() == MENTIONS_OPT_OUT
+    ]
 
 
 def print_report(report: PolicyReport, console: Console | None = None) -> None:

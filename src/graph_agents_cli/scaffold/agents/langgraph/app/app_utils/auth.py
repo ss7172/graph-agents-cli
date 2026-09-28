@@ -371,6 +371,40 @@ def delegation_settings(env: Mapping[str, str] | None = None) -> DelegationSetti
     )
 
 
+# How `api_client.require_user_mentioned` treats a request an agent presents for the user
+# (`A2A_DELEGATED_MENTIONS`): `origin` (default) needs the id in the user's own words the
+# calling agent forwarded and in its request; `refuse` always refuses; `request` counts the
+# agent's request as the user's words (the 0.2 behaviour, an explicit opt-out).
+MENTIONS_ORIGIN = "origin"
+MENTIONS_REFUSE = "refuse"
+MENTIONS_REQUEST = "request"
+DELEGATED_MENTIONS_MODES = (MENTIONS_ORIGIN, MENTIONS_REFUSE, MENTIONS_REQUEST)
+DEFAULT_DELEGATED_MENTIONS = MENTIONS_ORIGIN
+# `A2A_CALLER_NOTE`: whether the model is told, in one system note, that an agent wrote
+# the request (`on`, default) or not (`off`; the request stays fenced either way).
+CALLER_NOTE_VALUES = ("on", "off")
+
+
+def delegated_mentions(env: Mapping[str, str] | None = None) -> str:
+    """`A2A_DELEGATED_MENTIONS` (`origin`, `refuse` or `request`); `SettingsError` otherwise."""
+    env = os.environ if env is None else env
+    value = (env.get("A2A_DELEGATED_MENTIONS") or DEFAULT_DELEGATED_MENTIONS).strip().lower()
+    if value not in DELEGATED_MENTIONS_MODES:
+        raise SettingsError(
+            f"A2A_DELEGATED_MENTIONS={value!r} must be one of {', '.join(DELEGATED_MENTIONS_MODES)}."
+        )
+    return value
+
+
+def caller_note_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """`A2A_CALLER_NOTE` (`on`, the default, or `off`); `SettingsError` otherwise."""
+    env = os.environ if env is None else env
+    value = (env.get("A2A_CALLER_NOTE") or "on").strip().lower()
+    if value not in CALLER_NOTE_VALUES:
+        raise SettingsError(f"A2A_CALLER_NOTE={value!r} must be 'on' or 'off'.")
+    return value == "on"
+
+
 def _principal_problem(principal: Principal) -> str | None:
     """Which id of a principal is invalid (`principal` or `actor`), or None."""
     if not _valid_id(principal.id):

@@ -56,6 +56,19 @@ migration" with the steps to follow.
   `decide_with` and `relayers` to a relayed gate. The approvals table gains `decide_with`,
   `relayers`, `decided_via` and `display_digest` at startup, and the `langgraph dev` approvals
   file moves to version 2 (a version-1 file is read, its approvals direct).
+- **Tools and the model know when another agent asks for the user.** `current_caller()`
+  returns the calling agent (`Caller.actor`, `actor_chain`, `delegated`); the new
+  `require_direct_caller()` refuses unless the user asks this agent directly; `require_owner`
+  still compares the user. `require_user_mentioned` follows `A2A_DELEGATED_MENTIONS`: `origin`
+  (the default) also needs the id in the user's own words the calling agent forwarded, and
+  refuses when none were forwarded (so, until the A2A client forwards them, a delegated
+  write the check guards is refused and the user names the record at this agent directly);
+  `refuse` always refuses; `request` keeps the 0.2 reading, and `lint` and `api show` point it
+  out when `.env` or a values file sets it. In a delegated run `UntrustedToolResults` fences
+  each human message the model reads as that agent's (`<agent_request from="...">`) and adds
+  one factual note after the system prompt saying an agent wrote the request, with the user's
+  own words when forwarded; `A2A_CALLER_NOTE=off` drops the note. A bad value of either
+  setting stops startup. The `fake` test model reads the request inside that fence.
 
 ### Changed
 

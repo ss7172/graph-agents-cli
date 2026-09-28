@@ -39,7 +39,7 @@ from fastapi import HTTPException
 errors = pytest.importorskip("langgraph_sdk.errors")
 
 from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module  # noqa: E402
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal  # noqa: E402
+from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal  # noqa: E402
 from {{cookiecutter.agent_directory}}.app_utils.chat import (  # noqa: E402
     LANGGRAPH_SERVER,
     ChatRequest,
@@ -953,3 +953,37 @@ async def test_ready_checks_the_server(server, monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "langgraph_sdk", SimpleNamespace(get_client=broken))
     assert await rt.ready() is False
+
+
+# --- threads an agent starts for the user (0.3) ------------------------------------------------
+
+AGENT_A = Principal(id="A", actor=Actor(id="concierge", chain=("concierge",)))
+OTHER_AGENT_A = Principal(id="A", actor=Actor(id="billing", chain=("billing",)))
+
+
+async def test_an_agents_thread_is_stamped_and_kept_from_other_agents(server) -> None:
+    rt, sdk = server
+    new_thread = "55555555-5555-5555-5555-555555555555"
+    await rt.resolve_thread(AGENT_A, ChatRequest(message="x", thread_id=new_thread))
+    assert sdk.threads_by_id[new_thread]["metadata"]["actor"] == "concierge"
+    assert sdk.threads_by_id[new_thread]["metadata"]["principal_id"] == "A"
+    # The person continues and reads it; another agent of theirs does neither.
+    assert await rt.resolve_thread(OWNER, ChatRequest(message="x", thread_id=new_thread))
+    await rt.messages(OWNER, new_thread)
+    for action in (
+        rt.resolve_thread(OTHER_AGENT_A, ChatRequest(message="x", thread_id=new_thread)),
+        rt.messages(OTHER_AGENT_A, new_thread),
+        rt.delete_thread(OTHER_AGENT_A, new_thread),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await action
+        assert exc.value.status_code == 403
+    # The fixture's thread (no actor: the person's own, or one from before 0.3) is no agent's.
+    with pytest.raises(HTTPException) as exc:
+        await rt.resolve_thread(AGENT_A, ChatRequest(message="x", thread_id=THREAD))
+    assert exc.value.status_code == 403
+    # An agent's listing names its actor; the person's does not.
+    await rt.list_threads(AGENT_A, limit=10, offset=0)
+    assert sdk.searches[-1]["metadata"] == {"principal_id": "A", "actor": "concierge"}
+    await rt.list_threads(OWNER, limit=10, offset=0)
+    assert sdk.searches[-1]["metadata"] == {"principal_id": "A"}

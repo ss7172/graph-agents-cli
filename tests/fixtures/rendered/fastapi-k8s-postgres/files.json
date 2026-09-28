@@ -66,6 +66,7 @@
   "tests/integration/test_approvals_server.py",
   "tests/integration/test_chart.py",
   "tests/integration/test_cross_actor.py",
+  "tests/integration/test_cross_actor_server.py",
   "tests/integration/test_history_repair.py",
   "tests/integration/test_postgres.py",
   "tests/integration/test_resilience_postgres.py",
