@@ -142,8 +142,9 @@ class RequestContextMiddleware:
             await send(message)
 
         # A caller's W3C trace context (another agent's `traceparent`): this request's
-        # spans join its trace (OTLP tracing only; see telemetry.attach_trace_context).
-        trace_token = attach_trace_context(scope.get("headers") or ())
+        # spans join its trace (OTLP tracing only; under PROPAGATE_TRACE_HEADERS=peers, the
+        # default, on the A2A routes only; see telemetry.attach_trace_context).
+        trace_token = attach_trace_context(scope.get("headers") or (), _app_path(scope))
         try:
             await self.app(scope, receive, send_with_id)
         finally:
@@ -154,6 +155,13 @@ class RequestContextMiddleware:
                 status,
                 time.perf_counter() - started,
             )
+
+
+def _app_path(scope: Scope) -> str:
+    """The request's path within the app (`root_path` taken off when the path carries it)."""
+    path = str(scope.get("path") or "")
+    root = str(scope.get("root_path") or "").rstrip("/")
+    return path[len(root) :] if root and path.startswith(root + "/") else path
 
 
 async def read_body(receive: Receive) -> bytes:

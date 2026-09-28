@@ -2246,6 +2246,8 @@ def approval_ledger() -> ApprovalLedger | None:
 
 # Headers that follow a request to the services it calls (see set_outbound_headers).
 _outbound_headers: Callable[[], Mapping[str, str]] | None = None
+# Whether every API receives them, not only those `propagates` names (see set_outbound_headers).
+_outbound_everywhere: Callable[[], bool] | None = None
 
 # The `auth` modes whose APIs receive the correlation headers (see `propagates`): the
 # modes that act for the calling user, `forward` and `exchange` (a token exchanged for the
@@ -2256,7 +2258,10 @@ PROPAGATING_AUTH_MODES = frozenset({"forward", "exchange"})
 PROPAGATING_PROTOCOLS = frozenset({PROTOCOL_A2A})
 
 
-def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> None:
+def set_outbound_headers(
+    provider: Callable[[], Mapping[str, str]] | None,
+    everywhere: Callable[[], bool] | None = None,
+) -> None:
     """Install what adds the correlation headers to the calls that carry them.
 
     The app installs `telemetry.outbound_trace_headers` (this request's
@@ -2266,9 +2271,12 @@ def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> No
     neither. A header the tool sets itself wins, and a header a tool may not set
     (`forbidden_header`) is never added. The headers differ for every request,
     so they are not part of the request an approval binds (`canonical_call`).
+    `everywhere` (the app installs `telemetry.propagate_to_every_api`,
+    `PROPAGATE_TRACE_HEADERS=all`) says when every API receives them.
     """
-    global _outbound_headers
+    global _outbound_headers, _outbound_everywhere
     _outbound_headers = provider
+    _outbound_everywhere = everywhere
 
 
 def propagates(api_settings: Mapping[str, Any]) -> bool:
@@ -2281,8 +2289,8 @@ def propagates(api_settings: Mapping[str, Any]) -> bool:
     reached with the caller's own credential or a token exchanged for it. Any
     other API (`auth: bearer` or `none` over `http` or `jsonrpc`) is a third
     party that never learns this request's id or trace. This is the one place
-    that decides; `PROPAGATE_TRACE_HEADERS=false` turns the headers off for
-    every API.
+    that decides under `PROPAGATE_TRACE_HEADERS=peers` (the default); `all`
+    sends the headers to every API, and `off` to none.
     """
     return (
         api_settings.get("auth") in PROPAGATING_AUTH_MODES
@@ -2293,10 +2301,12 @@ def propagates(api_settings: Mapping[str, Any]) -> bool:
 def outbound_headers(api_settings: Mapping[str, Any]) -> dict[str, str]:
     """The correlation headers for a call to this API made now: empty for an API that
     does not receive them (`propagates`) or without a provider."""
-    provider = _outbound_headers
-    if provider is None or not propagates(api_settings):
+    provider, everywhere = _outbound_headers, _outbound_everywhere
+    if provider is None:
         return {}
     try:
+        if not (propagates(api_settings) or (everywhere is not None and everywhere())):
+            return {}
         headers = {str(name): str(value) for name, value in dict(provider()).items()}
     except Exception as exc:  # correlation never stops a call
         logger.warning("api call: no correlation headers (%s)", type(exc).__name__)

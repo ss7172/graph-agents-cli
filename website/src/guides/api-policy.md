@@ -164,7 +164,7 @@ denials, limits, the approval gate) followed by the same table.
 
 Calls of an `auth: forward` or `auth: exchange` API, and of another agent (`protocol: a2a`,
 whatever its `auth`), also carry the request's `X-Request-ID` and trace context, unless
-`PROPAGATE_TRACE_HEADERS=false`; other APIs never receive them (see
+`PROPAGATE_TRACE_HEADERS=off`; other APIs never receive them, unless it is `all` (see
 [Observability](observability.md#across-agents-and-services)).
 
 ### `auth: exchange`: act for the user at another agent

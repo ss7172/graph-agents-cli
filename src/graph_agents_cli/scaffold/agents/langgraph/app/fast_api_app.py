@@ -193,10 +193,12 @@ from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     log_format,
     log_level,
     outbound_trace_headers,
+    propagate_to_every_api,
     setup_logging,
     setup_server_logging,
     setup_telemetry,
     trace_capture,
+    trace_scope,
 )
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     SCOPE_ALL,
@@ -212,9 +214,9 @@ from {{cookiecutter.agent_directory}}.app_utils.token_exchange import exchange_s
 logger = logging.getLogger(__name__)
 
 # Calls of another agent (`protocol: a2a`) and of `auth: forward` and `auth: exchange` APIs
-# carry this request's id and trace context, unless PROPAGATE_TRACE_HEADERS=false; other
-# APIs receive neither.
-set_outbound_headers(outbound_trace_headers)
+# carry this request's id and trace context (PROPAGATE_TRACE_HEADERS=peers, the default);
+# other APIs receive neither, unless PROPAGATE_TRACE_HEADERS=all; off sends them nowhere.
+set_outbound_headers(outbound_trace_headers, everywhere=propagate_to_every_api)
 
 if detect_runtime() == FASTAPI:
     # Now rather than in the lifespan: what is logged before it (the A2A
@@ -248,6 +250,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             delegated_mentions,
             caller_note_enabled,
             exchange_settings,
+            trace_scope,
         )
     )
     if RUNTIME.runtime == FASTAPI:

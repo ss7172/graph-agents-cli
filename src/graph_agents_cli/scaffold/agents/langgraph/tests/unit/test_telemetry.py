@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
 
 from {{cookiecutter.agent_directory}}.app_utils import telemetry
+from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 
 SECRET = "SECRET-PROMPT-TEXT"
 
@@ -205,7 +207,7 @@ def test_an_incoming_trace_is_continued_and_passed_on(monkeypatch: pytest.Monkey
     monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
     tracer = TracerProvider().get_tracer("test")
     incoming = [(b"traceparent", TRACEPARENT.encode()), (b"baggage", b"user=alice")]
-    token = telemetry.attach_trace_context(incoming)
+    token = telemetry.attach_trace_context(incoming, "/a2a/app")
     assert token is not None
     try:
         with tracer.start_as_current_span("run") as span:
@@ -219,12 +221,23 @@ def test_an_incoming_trace_is_continued_and_passed_on(monkeypatch: pytest.Monkey
     assert (trace_id, parent_id) == (TRACE_ID, format(context.span_id, "016x"))
     assert "baggage" not in outbound  # W3C trace context only
     # Nothing is attached without a traceparent, without OTLP tracing, or when switched off.
-    assert telemetry.attach_trace_context([(b"x-request-id", b"r")]) is None
+    assert telemetry.attach_trace_context([(b"x-request-id", b"r")], "/a2a/app") is None
     monkeypatch.setattr(telemetry, "_otlp_active", False)
-    assert telemetry.attach_trace_context(incoming) is None
+    assert telemetry.attach_trace_context(incoming, "/a2a/app") is None
     monkeypatch.setattr(telemetry, "_otlp_active", True)
-    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "false")
-    assert telemetry.attach_trace_context(incoming) is None
+    for off in ("false", "off", "0"):
+        monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", off)
+        assert telemetry.attach_trace_context(incoming, "/a2a/app") is None
+    # Under peers (the default, and what true reads as), only on the A2A routes.
+    for peers in ("", "peers", "true", "TRUE"):
+        monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", peers)
+        for path in ("/chat", "/threads/t1/runs", "/a2a", "/A2A/app", None):
+            assert telemetry.attach_trace_context(incoming, path) is None
+    # Under all, on every path (a tracing gateway in front of the agent).
+    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "all")
+    token = telemetry.attach_trace_context(incoming, "/chat")
+    assert token is not None
+    telemetry.detach_trace_context(token)
 
 
 async def test_the_request_middleware_continues_the_callers_trace(
@@ -251,17 +264,108 @@ async def test_the_request_middleware_continues_the_callers_trace(
             }
         )
 
-    app = RequestContextMiddleware(Starlette(routes=[Route("/", endpoint)]))
+    routes = [Route("/a2a/app", endpoint, methods=["POST"]), Route("/chat", endpoint)]
+    app = RequestContextMiddleware(Starlette(routes=routes))
+    caller = {"traceparent": TRACEPARENT, "X-Request-ID": "req-7"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
-        body = (
-            await c.get("/", headers={"traceparent": TRACEPARENT, "X-Request-ID": "req-7"})
-        ).json()
-        other = (await c.get("/")).json()
+        body = (await c.post("/a2a/app", headers=caller)).json()
+        other = (await c.post("/a2a/app")).json()
+        public = (await c.get("/chat", headers=caller)).json()
+        monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "all")
+        gateway = (await c.get("/chat", headers=caller)).json()
     assert body["trace_id"] == TRACE_ID
     assert body["out"]["X-Request-ID"] == "req-7"
     assert body["out"]["traceparent"].split("-")[1] == TRACE_ID
     # The context is detached after the request: the next one starts on its own.
     assert other["trace_id"] == "0" * 32 and "traceparent" not in other["out"]
+    # A caller of a public route cannot choose this agent's trace ids (the request id is
+    # still taken and echoed); behind a tracing gateway, `all` continues it there too.
+    assert public["trace_id"] == "0" * 32 and public["out"]["X-Request-ID"] == "req-7"
+    assert gateway["trace_id"] == TRACE_ID
+
+
+@pytest.mark.parametrize(
+    ("value", "scope"),
+    [
+        (None, "peers"),
+        ("", "peers"),
+        ("peers", "peers"),
+        ("true", "peers"),
+        ("1", "peers"),
+        ("Yes", "peers"),
+        ("on", "peers"),
+        ("all", "all"),
+        ("ALL", "all"),
+        ("off", "off"),
+        ("false", "off"),
+        ("0", "off"),
+        ("no", "off"),
+    ],
+)
+def test_the_trace_scope(monkeypatch: pytest.MonkeyPatch, value: str | None, scope: str) -> None:
+    if value is None:
+        monkeypatch.delenv("PROPAGATE_TRACE_HEADERS", raising=False)
+    else:
+        monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", value)
+    assert telemetry.trace_scope() == scope
+    assert telemetry.propagate_trace_headers() is (scope != "off")
+    assert telemetry.propagate_to_every_api() is (scope == "all")
+
+
+def test_true_is_read_as_peers_and_said_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(telemetry, "_said_true_is_peers", False)
+    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "true")
+    with caplog.at_level(logging.INFO, logger=telemetry.__name__):
+        assert telemetry.trace_scope() == telemetry.trace_scope() == "peers"
+    assert caplog.text.count("PROPAGATE_TRACE_HEADERS=true reads as peers") == 1
+
+
+async def test_a_bad_trace_scope_stops_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from {{cookiecutter.agent_directory}} import fast_api_app
+
+    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", "everywhere")
+    with pytest.raises(SettingsError, match="PROPAGATE_TRACE_HEADERS must be peers, all or off"):
+        async with fast_api_app.lifespan(fast_api_app.app):
+            pass
+    # At runtime a value startup refuses propagates nothing.
+    assert not telemetry.propagate_trace_headers() and not telemetry.propagate_to_every_api()
+
+
+@pytest.mark.parametrize(
+    ("value", "receive"),
+    [
+        ("peers", {"peer", "forward", "exchange"}),
+        ("all", {"peer", "forward", "exchange", "bearer", "none", "jsonrpc"}),
+        ("off", set()),
+    ],
+)
+def test_which_apis_get_the_headers(
+    monkeypatch: pytest.MonkeyPatch, value: str, receive: set[str]
+) -> None:
+    from {{cookiecutter.agent_directory}}.app_utils import api_client
+
+    apis = {
+        "peer": {"protocol": "a2a", "auth": "bearer"},
+        "forward": {"auth": "forward"},
+        "exchange": {"auth": "exchange"},
+        "bearer": {"auth": "bearer"},
+        "none": {"auth": "none"},
+        "jsonrpc": {"protocol": "jsonrpc", "auth": "bearer"},
+    }
+    monkeypatch.setattr(telemetry, "_otlp_active", False)
+    monkeypatch.setenv("PROPAGATE_TRACE_HEADERS", value)
+    api_client.set_outbound_headers(
+        telemetry.outbound_trace_headers, everywhere=telemetry.propagate_to_every_api
+    )
+    token = telemetry.LOG_CONTEXT["request_id"].set("req-3")
+    try:
+        got = {name for name, api in apis.items() if api_client.outbound_headers(api)}
+    finally:
+        telemetry.LOG_CONTEXT["request_id"].reset(token)
+        api_client.set_outbound_headers(None)
+    assert got == receive
 
 
 async def test_a_tool_passes_its_own_span_on_without_a_current_otel_span(

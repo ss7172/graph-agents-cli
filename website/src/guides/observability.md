@@ -272,9 +272,22 @@ the calling user, as another agent does when it is reached with the caller's own
 a token exchanged for it; both are part of the same request. Any other `auth: bearer` or `auth:
 none` API is a third party: it never learns this request's id or trace.
 
-On the receiving side, a request that carries a `traceparent` continues that trace: its root
-span is a child of the caller's span, so an agent that asks another agent over A2A and the
-runs it causes there show as one trace in Jaeger, Tempo or any other OTLP backend.
+On the receiving side, a request to the A2A routes (`/a2a/...`) that carries a `traceparent`
+continues that trace: its root span is a child of the caller's span, so an agent that asks
+another agent over A2A and the runs it causes there show as one trace in Jaeger, Tempo or any
+other OTLP backend. A `traceparent` on the public routes (`/chat`, the thread and approval
+routes) is not continued, so a caller there cannot choose this agent's trace ids; its
+`X-Request-ID` is still taken and echoed.
+
+`PROPAGATE_TRACE_HEADERS` sets how far this goes:
+
+| Value | Outbound | Inbound `traceparent` |
+|---|---|---|
+| `peers` (default; `true` reads as it) | other agents, `auth: forward` and `auth: exchange` APIs | continued on `/a2a/...` only |
+| `all` | every API | continued on every path (an agent behind a tracing gateway) |
+| `off` (= `false`) | none | never continued |
+
+Any other value stops startup.
 
 - A header the tool sets itself wins over the propagated one. A tool may still send its own
   `X-Request-ID` to any API.
@@ -282,9 +295,9 @@ runs it causes there show as one trace in Jaeger, Tempo or any other OTLP backen
   the approved call is sent with the headers of the request that resumes it.
 - Only W3C Trace Context is propagated, never baggage. Under LangSmith tracing only the
   request id is passed on, so each agent's run is its own LangSmith trace.
-- `PROPAGATE_TRACE_HEADERS=false` turns both directions off: set it on an agent whose peers
-  or `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or whose
-  callers should not choose its trace ids.
+- `PROPAGATE_TRACE_HEADERS=off` (or `false`) turns both directions off: set it on an agent
+  whose peers or `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or
+  whose A2A callers should not choose its trace ids.
 - `auth: forward` and `auth: exchange` are refused under `langgraph-server`, so under that
   runtime only its peers (`protocol: a2a` with `auth: bearer`) receive these headers.
 

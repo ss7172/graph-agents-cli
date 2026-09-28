@@ -222,6 +222,17 @@ migration" with the steps to follow.
   `lint` names the API). `lint` and `api add` also note a `forward` API with
   `forward_audience` under `jwt` ("prefer auth: exchange").
 
+- **`PROPAGATE_TRACE_HEADERS` takes `peers` (the default), `all` or `off`, and a
+  `traceparent` is continued on the A2A routes only by default.** The owner adopted, for 0.3,
+  that under the peers scope an incoming `traceparent` is continued only on `/a2a/*`: a caller
+  of the public routes (`/chat`, the thread and approval routes) can no longer choose the
+  agent's trace ids (its `X-Request-ID` is still taken and echoed). `peers` sends the request
+  id and trace context to other agents (`protocol: a2a`) and to `auth: forward` and `auth:
+  exchange` APIs, as before; `all` sends them to every API and continues a trace on every path
+  (an agent behind a tracing gateway: set it to keep 0.2's inbound behaviour); `off` neither.
+  `true` (the 0.2 default) reads as `peers` and is logged once; `false` (and `0`, `no`) is
+  `off`; any other value stops startup. Existing projects get it from `scaffold upgrade`
+  (`app_utils/telemetry.py`, `middleware.py`, `api_client.py`, `fast_api_app.py`).
 - **`jwt` reads the `act` claim.** A token carrying it is an agent's for the user, refused
   (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=` (empty) to
   read every token as the user's own, as 0.2 did. A `custom` policy that returns an invalid id

@@ -61,17 +61,21 @@ that reduces a run's `error` to the exception class), to OpenInference (its
 masking config plus an exporter that strips exception messages, stack traces
 and the span status description) and to the run records the app keeps.
 
-Correlation across services (`PROPAGATE_TRACE_HEADERS`, default true): every
-call of the policy client to another agent (`protocol: a2a`), or to an `auth:
-forward` or `auth: exchange` API (reached with the caller's own credential or a
-token exchanged for it), carries this request's `X-Request-ID` and,
-when spans go over OTLP, the W3C trace context of the current span
+Correlation across services (`PROPAGATE_TRACE_HEADERS`, `trace_scope`: `peers`
+by default, `all` or `off`; `true` reads as `peers`, `false` as `off`): under
+`peers` every call of the policy client to another agent (`protocol: a2a`), or
+to an `auth: forward` or `auth: exchange` API (reached with the caller's own
+credential or a token exchanged for it), carries this request's `X-Request-ID`
+and, when spans go over OTLP, the W3C trace context of the current span
 (`outbound_trace_headers`, installed with `api_client.set_outbound_headers`;
 `api_client.propagates` names the APIs), and a call to any other API carries
-neither; an incoming `traceparent` is attached to the request's context
-(`attach_trace_context`, in `middleware.RequestContextMiddleware`), so an agent
-this one calls over A2A logs the same request id and its spans join this
-trace. Under LangSmith tracing only the request id is passed on.
+neither; an incoming `traceparent` on the A2A routes is attached to the
+request's context (`attach_trace_context`, in
+`middleware.RequestContextMiddleware`), so an agent this one calls over A2A
+logs the same request id and its spans join this trace, while a caller of the
+public routes (`/chat`) cannot choose its trace ids. `all` sends them to every
+API and continues a trace on every path (behind a tracing gateway); `off`
+neither. Under LangSmith tracing only the request id is passed on.
 """
 
 from __future__ import annotations
@@ -474,18 +478,73 @@ def _setup_otlp(full: bool) -> None:
 # ---------------------------------------------------------------------------
 
 TRACE_CONTEXT_HEADERS = ("traceparent", "tracestate")
+# `PROPAGATE_TRACE_HEADERS`: how far the request id and the trace context go.
+TRACE_SCOPE_PEERS = "peers"
+TRACE_SCOPE_ALL = "all"
+TRACE_SCOPE_OFF = "off"
+TRACE_SCOPES = (TRACE_SCOPE_PEERS, TRACE_SCOPE_ALL, TRACE_SCOPE_OFF)
+DEFAULT_TRACE_SCOPE = TRACE_SCOPE_PEERS
+# The 0.2 spellings: true (the 0.2 default) reads as peers, false as off.
+_TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
 # Where an incoming `traceparent` is continued under the default scope (0.3:
 # `PROPAGATE_TRACE_HEADERS=peers`): the A2A routes only, so a caller of the public routes
 # (`/chat`) cannot choose this agent's trace ids. `all` continues it on every path.
 PEERS_INBOUND_TRACE_PREFIX = "/a2a/"
+_said_true_is_peers = False
+
+
+def trace_scope() -> str:
+    """`PROPAGATE_TRACE_HEADERS`: `peers` (the default), `all` or `off`.
+
+    `peers`: the request id and trace context go to other agents (`protocol:
+    a2a`) and to `auth: forward` and `auth: exchange` APIs (`api_client.propagates`),
+    and an incoming `traceparent` is continued on the A2A routes only. `all`: to
+    every API, and continued on every path (behind a tracing gateway). `off`:
+    neither. `true` (the 0.2 default) reads as `peers`, logged once at INFO, and
+    `false` as `off`. Anything else raises `SettingsError` (startup refuses it).
+    """
+    global _said_true_is_peers
+    raw = (os.environ.get("PROPAGATE_TRACE_HEADERS") or "").strip().lower()
+    if not raw:
+        return DEFAULT_TRACE_SCOPE
+    if raw in _FALSE:
+        return TRACE_SCOPE_OFF
+    if raw in _TRUE:
+        if not _said_true_is_peers:
+            _said_true_is_peers = True
+            logger.info(
+                "PROPAGATE_TRACE_HEADERS=%s reads as peers: other agents and the APIs that act "
+                "for the user get the request id and trace context, and an incoming trace is "
+                "continued on the A2A routes only (all: every API and path)",
+                raw,
+            )
+        return TRACE_SCOPE_PEERS
+    if raw in TRACE_SCOPES:
+        return raw
+    raise SettingsError(
+        "PROPAGATE_TRACE_HEADERS must be peers, all or off (true reads as peers, false as off)."
+    )
+
+
+def _scope_or_off() -> str:
+    """The scope, or `off` for a value startup would refuse (never propagate on a guess)."""
+    try:
+        return trace_scope()
+    except SettingsError:
+        return TRACE_SCOPE_OFF
 
 
 def propagate_trace_headers() -> bool:
-    """`PROPAGATE_TRACE_HEADERS` (default true): pass the request id and trace context on
-    to other agents (`protocol: a2a`) and `auth: forward` and `auth: exchange` APIs, and
-    continue an incoming trace. false turns both off."""
-    return (os.environ.get("PROPAGATE_TRACE_HEADERS") or "true").strip().lower() not in _FALSE
+    """Whether the request id and trace context go anywhere (`PROPAGATE_TRACE_HEADERS` is
+    not `off`): to the APIs `api_client.propagates` names, or every API under `all`."""
+    return _scope_or_off() != TRACE_SCOPE_OFF
+
+
+def propagate_to_every_api() -> bool:
+    """`PROPAGATE_TRACE_HEADERS=all`: every API gets them, not only other agents and the APIs
+    that act for the user (`api_client.set_outbound_headers` asks it)."""
+    return _scope_or_off() == TRACE_SCOPE_ALL
 
 
 def _trace_context_propagator() -> Any:
@@ -541,15 +600,23 @@ def _current_span_context() -> Any:
     return trace.set_span_in_context(span)
 
 
-def attach_trace_context(headers: Iterable[tuple[bytes, bytes]]) -> Any:
+def attach_trace_context(headers: Iterable[tuple[bytes, bytes]], path: str | None = None) -> Any:
     """Continue the caller's trace: attach the W3C trace context of an incoming request.
 
-    `headers` are the ASGI scope's. Returns the token `detach_trace_context`
-    takes, or None when nothing was attached (no `traceparent`, spans not
-    exported over OTLP, or `PROPAGATE_TRACE_HEADERS=false`). A malformed
+    `headers` are the ASGI scope's, `path` the request's path (without the
+    app's root path). Returns the token `detach_trace_context` takes, or None
+    when nothing was attached: no `traceparent`, spans not exported over
+    OTLP, `PROPAGATE_TRACE_HEADERS=off`, or under `peers` (the default) a
+    path outside the A2A routes (`PEERS_INBOUND_TRACE_PREFIX`), so a caller
+    of the public routes cannot choose this agent's trace ids. A malformed
     `traceparent` starts a new trace, as if there were none.
     """
-    if not (_otlp_active and propagate_trace_headers()):
+    if not _otlp_active:
+        return None
+    scope = _scope_or_off()
+    if scope == TRACE_SCOPE_OFF:
+        return None
+    if scope == TRACE_SCOPE_PEERS and not (path or "").startswith(PEERS_INBOUND_TRACE_PREFIX):
         return None
     carrier: dict[str, str] = {}
     for key, value in headers:
