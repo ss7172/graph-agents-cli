@@ -70,8 +70,8 @@ walks through each step and switches to a real provider.
 
 ## Documentation
 
-The documentation site is built with MkDocs Material from
-[`website/`](https://github.com/ss7172/graph-agents-cli/blob/main/website/mkdocs.yml).
+The [documentation site](https://ss7172.github.io/graph-agents-cli/) is built with MkDocs
+Material from [`website/`](https://github.com/ss7172/graph-agents-cli/blob/main/website/mkdocs.yml).
 
 | Section | Pages |
 |---|---|
@@ -80,8 +80,7 @@ The documentation site is built with MkDocs Material from
 | **Operate** | [Deploy to Kubernetes](https://ss7172.github.io/graph-agents-cli/guides/deploy/) · [CI/CD](https://ss7172.github.io/graph-agents-cli/guides/cicd/) · [Secrets](https://ss7172.github.io/graph-agents-cli/guides/secrets/) · [Observability](https://ss7172.github.io/graph-agents-cli/guides/observability/) · [Upgrading projects](https://ss7172.github.io/graph-agents-cli/guides/upgrading/) · [Offline profile](https://ss7172.github.io/graph-agents-cli/guides/offline/) · [Security & production](https://ss7172.github.io/graph-agents-cli/guides/security/) |
 | **Reference** | [CLI](https://ss7172.github.io/graph-agents-cli/reference/cli/) · [Environment variables](https://ss7172.github.io/graph-agents-cli/reference/environment/) · [HTTP API](https://ss7172.github.io/graph-agents-cli/reference/http-api/) · [api-policy.yaml](https://ss7172.github.io/graph-agents-cli/reference/api-policy-schema/) · [Project manifest](https://ss7172.github.io/graph-agents-cli/reference/manifest/) · [Exit codes](https://ss7172.github.io/graph-agents-cli/reference/exit-codes/) · [Skills](https://ss7172.github.io/graph-agents-cli/reference/skills/) · [Compared with google-agents-cli](https://ss7172.github.io/graph-agents-cli/reference/comparison/) |
 
-**The site is not published yet.** Until GitHub Pages is enabled for it, preview it from a
-checkout:
+To preview the site from a checkout, for example while editing it:
 
 ```bash
 uv run --group docs mkdocs serve -f website/mkdocs.yml    # http://127.0.0.1:8200

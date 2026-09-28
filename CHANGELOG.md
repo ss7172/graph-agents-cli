@@ -14,8 +14,9 @@ migration" with the steps to follow.
   five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
   agent, and a reference whose CLI and Skills pages are generated from the commands and
   `skills/`. `.github/workflows/docs.yml` builds it with `mkdocs build --strict` and checks its
-  links on every pull request; publishing to GitHub Pages stays off until the repository
-  variable `PUBLISH_DOCS` is `true`. Preview it with
+  links on every pull request, and publishes it to GitHub Pages from `main` when the
+  repository variable `PUBLISH_DOCS` is `true`: the site is at
+  <https://ss7172.github.io/graph-agents-cli/>. Preview it with
   `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
 
 ### Changed
@@ -65,6 +66,33 @@ migration" with the steps to follow.
   listing is skipped like the skills version check, and `info` says so ("Installed skills:
   not listed (... skips `npx skills list`)"; `--json` adds `installed_skills_skipped` with the
   reason, null when the listing ran).
+- **`eval grade` works in a project with another agent directory.** The judge runner
+  imported `app.app_utils.model` whatever the project's package was, so in a project created
+  with `create --agent-directory <name>` every judge metric (the default dataset's
+  `response_quality` included) failed with exit 3, "the judge model is unreachable or
+  misconfigured". The runner now imports the judge from the manifest's `agent_directory`.
+- **`deploy` works for a project that needs no Secret key.** An env file that sets none of
+  the allow-listed keys (a keyless project: the `fake` model, a keyless `openai-compatible`
+  endpoint, no `shared-bearer` key) made `deploy` exit 3, "No allow-listed secret values to
+  apply", and only after it had built the image and loaded or pushed it. Such an env file now
+  leaves the Secret as it is, like a missing env file in `dev`, and says so; the decision is
+  made before anything is built. Outside `dev`, where the chart requires the Secret
+  (`secretOptional: false`), a missing Secret stops the deploy (exit 1) before the build.
+  `secrets apply` still exits 3 when there is nothing to apply.
+- **Requests keep one request id and one trace across agents.** An agent that called another
+  agent over A2A (or any API) started a new request id and a new trace there, so a
+  multi-agent request could not be followed from end to end. Every call through the policy
+  client to an `auth: forward` API (another agent, reached with the caller's own credential)
+  now carries the request's `X-Request-ID` and, under OTLP tracing, its W3C trace context
+  (`traceparent`, `tracestate`), and a request that carries a `traceparent` continues that
+  trace. `auth: bearer` and `auth: none` APIs are third parties and never receive these
+  headers. In 0.2 only a custom auth policy gives a caller a credential to forward
+  (`shared-bearer` and `jwt` principals carry none) and `langgraph-server` refuses
+  `auth: forward`, so with the built-in policies, and under `langgraph-server`, no API
+  receives them (KI-146). The headers are not bound by approvals.
+  `PROPAGATE_TRACE_HEADERS=false` turns both off. Existing projects get it from
+  `scaffold upgrade` (it changes `app_utils/telemetry.py`, `middleware.py`, `api_client.py`
+  and `fast_api_app.py`).
 - **A2A tasks are shared by every replica and survive restarts** (KI-024, now Low). The task
   store was in process memory, per replica, while the production values run two replicas:
   `GetTask`, `ListTasks`, `CancelTask` and a message naming a `taskId` (an approval decision)
@@ -87,32 +115,12 @@ migration" with the steps to follow.
   creates its table on first use, outside the schema lock that replicas share. Existing
   projects get it from `scaffold upgrade` (it changes `app_utils/a2a.py` and
   `app_utils/db.py`); the table is created at the next start.
-- **`deploy` works for a project that needs no Secret key.** An env file that sets none of
-  the allow-listed keys (a keyless project: the `fake` model, a keyless `openai-compatible`
-  endpoint, no `shared-bearer` key) made `deploy` exit 3, "No allow-listed secret values to
-  apply", and only after it had built the image and loaded or pushed it. Such an env file now
-  leaves the Secret as it is, like a missing env file in `dev`, and says so; the decision is
-  made before anything is built. Outside `dev`, where the chart requires the Secret
-  (`secretOptional: false`), a missing Secret stops the deploy (exit 1) before the build.
-  `secrets apply` still exits 3 when there is nothing to apply.
-- **`eval grade` works in a project with another agent directory.** The judge runner
-  imported `app.app_utils.model` whatever the project's package was, so in a project created
-  with `create --agent-directory <name>` every judge metric (the default dataset's
-  `response_quality` included) failed with exit 3, "the judge model is unreachable or
-  misconfigured". The runner now imports the judge from the manifest's `agent_directory`.
-- **Requests keep one request id and one trace across agents.** An agent that called another
-  agent over A2A (or any API) started a new request id and a new trace there, so a
-  multi-agent request could not be followed from end to end. Every call through the policy
-  client to an `auth: forward` API (another agent, reached with the caller's own credential)
-  now carries the request's `X-Request-ID` and, under OTLP tracing, its W3C trace context
-  (`traceparent`, `tracestate`), and a request that carries a `traceparent` continues that
-  trace. `auth: bearer` and `auth: none` APIs are third parties and never receive these
-  headers. The headers are not bound by approvals. `PROPAGATE_TRACE_HEADERS=false` turns both
-  off. Existing projects get it from `scaffold upgrade` (it changes `app_utils/telemetry.py`,
-  `middleware.py`, `api_client.py` and `fast_api_app.py`).
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
+- KI-113: the documentation site is published at
+  [ss7172.github.io/graph-agents-cli](https://ss7172.github.io/graph-agents-cli/), so the
+  README's links to it work.
 
 ## [0.2.0] - 2026-09-24
 

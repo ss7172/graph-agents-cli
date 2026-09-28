@@ -7,8 +7,8 @@
 # The CLI reference is generated from the real Click commands (mkdocs-click),
 # the Skills page from skills/*/SKILL.md (hooks/skills_reference.py), and the
 # Known issues and Changelog pages include the repository's KNOWN_ISSUES.md and
-# CHANGELOG.md (pymdownx.snippets). Publishing is off: .github/workflows/docs.yml
-# deploys to GitHub Pages only when the repository variable PUBLISH_DOCS is 'true'.
+# CHANGELOG.md (pymdownx.snippets). .github/workflows/docs.yml deploys to GitHub
+# Pages only when the repository variable PUBLISH_DOCS is 'true' (it is: site_url).
 
 site_name: graph-agents-cli
 site_description: >-
