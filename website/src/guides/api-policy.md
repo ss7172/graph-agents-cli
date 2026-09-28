@@ -323,6 +323,55 @@ about a peer without a `description` and about more than 40 peers. The complete 
 every message, are in
 [the schema reference](../reference/api-policy-schema.md#json-rpc-apis-protocol).
 
+### Ask other agents: `app_utils/a2a_client.py`
+
+The template's A2A client calls a peer through this policy, never around it: every request
+(the agent card, `SendMessage`, `GetTask`, the approvals read, the decision) is a policy
+client call, so the allow-list, the approve gate, the credential (an exchanged token is
+minted just before sending), the limits and the response cap apply to every byte.
+
+`peer_tools(PEERS)` returns the tools a model uses:
+
+- `ask_agent(agent, request)`: its description lists the peers and what each does (their
+  `description`); `agent` is one of their names. The reply is the peer's last `response`
+  artifact (at most `A2A_REPLY_MAX_CHARS`), or `needs_user_approval` with the task id when the
+  peer waits for the person, or `needs_direct_approval` when only the person can approve it
+  at the peer (`decide_with: direct` there). Calls to different peers run in parallel; calls
+  to one peer in one thread wait for each other. A peer whose thread was busy is asked again
+  (3 times at most).
+- `approve_agent_action(agent, task_id)`, for peers this agent relays approvals to: it reads
+  what the peer waits on from the peer itself (`GetTask`, the exact `approval_json`; the
+  peer's approvals ledger when the peer lost the task), then sends one decision message on
+  the conversation. The policy's approve gate pauses the run first, so the person approves
+  here, seeing what will happen at the peer (the approval's `effect` and `nested`, see
+  [Human approval](approvals.md#what-the-person-sees-when-their-agent-relays-a-decision)). The
+  message is built the same on every run, so the resumed run sends exactly what was
+  approved, once; a rejection is sent to the peer at once, so its task ends.
+
+`A2APeerClient(peer, runtime=runtime)` does the same from your own tools (`send`,
+`get_task`, `pending_approvals`, `decide`, `cancel`, `relay`, `card`).
+
+- **The peer is checked first.** Its agent card must offer an A2A 1.x JSON-RPC interface at
+  exactly the URL this agent calls (the base URL variable plus `a2a.path`) and be named after
+  that path's last segment; otherwise nothing is sent ("set the peer's APP_URL"). The card
+  is cached `A2A_CARD_TTL_S` (300 s), and its URL is never dialed.
+- **One conversation per thread, peer and user.** The `contextId` is a UUID keyed with
+  `PRINCIPAL_HASH_SALT`: stable across turns and replicas, not guessable (set the salt; the
+  app warns outside dev without it), and not the thread id itself.
+- **The user's own words travel with the request** when the peer's card declares the origin
+  extension and `A2A_FORWARD_ORIGIN=auto` (the default; `off` never sends them): the user's
+  latest message, or, when an agent asked this one, the words it forwarded, never a model's
+  text. The peer checks record ids against them (`require_user_mentioned`).
+- **No loops.** A call to this agent itself, or to an agent already in the request's chain,
+  is refused before anything is sent.
+- **Errors the model reads**: an unknown agent, a card that is not this peer, `orders
+  refused SendMessage: -32602 ...`, `orders refused the credential (401): check
+  exchange.audience and orders' AUTH_JWT_AUDIENCE`, an answer over the response cap, the
+  exchange's own messages, and a peer that is down.
+
+A relayed approval is decided once: if the peer answers the decision with `thread_busy`, the
+person approves again (the approval is used when the decision is sent).
+
 ## Per-user authorization for writes
 
 The policy decides which endpoints a tool may call, not on whose behalf. For an API the agent

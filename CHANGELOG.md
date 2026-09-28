@@ -239,6 +239,28 @@ migration" with the steps to follow.
   It expires 5 s before the approval it decides at the latest, and the nested calls' and the
   effect's query and body are dropped on decision with the call's own (unless
   `TRACE_CAPTURE=full`).
+- **An A2A client in the template: `app_utils/a2a_client.py`** (B3; replaces the
+  experiment's hand-written peers client). `peer_tools(PEERS)` gives the model
+  `ask_agent(agent, request)` (its description lists the peers and what each does) and, for
+  peers it relays approvals to, `approve_agent_action(agent, task_id)`; `A2APeerClient` does
+  the same from your own tools (`send`, `get_task`, `pending_approvals`, `decide`, `cancel`,
+  `relay`, `card`). Every request goes through the API policy (the allow-list, the approve
+  gate, `auth: exchange`, the limits, the response cap); the SDK's HTTP client is never used.
+  Before the first call a peer's agent card must offer an A2A 1.x JSON-RPC interface at the
+  URL this agent calls, named after `a2a.path` (cached `A2A_CARD_TTL_S`, 300 s; its URL never
+  dialed). The `contextId` is a UUID keyed with `PRINCIPAL_HASH_SALT`, one per thread, peer and
+  user; calls to one peer in a thread are serialized; a busy peer is asked again 3 times, and a
+  cancel another replica runs once. Replies are the last `response` artifact (at most
+  `A2A_REPLY_MAX_CHARS`, 6000). With `A2A_FORWARD_ORIGIN=auto` (default) a peer whose card
+  declares the origin extension gets the user's own words. Calls back to this agent or up the
+  delegation chain are refused. The relay reads what the peer waits on from the peer (its
+  exact `approval_json`, or its approvals ledger when it lost the task), reports a gate the
+  person decides at the peer as `needs_direct_approval`, and otherwise sends one
+  context-addressed decision, the same on every run, through this agent's approve gate: the
+  person approves it here, seeing the peer's call as `effect`; a rejection tells the peer at
+  once. `.env.example` and the environment reference list the new settings, which the startup
+  check validates. The fake test model fills a one-value `Literal` argument (a JSON-schema
+  `const`).
 
 ### Changed
 

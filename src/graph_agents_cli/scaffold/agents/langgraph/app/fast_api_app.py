@@ -132,10 +132,8 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     legacy_request_error,
     task_ttl_s,
 )
-from {{cookiecutter.agent_directory}}.app_utils.api_client import (
-    origin_max_chars,
-    set_outbound_headers,
-)
+from {{cookiecutter.agent_directory}}.app_utils.a2a_client import client_settings
+from {{cookiecutter.agent_directory}}.app_utils.api_client import set_outbound_headers
 from {{cookiecutter.agent_directory}}.app_utils.approvals import CODE_APPROVAL_PENDING, STATUSES
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     Principal,
@@ -254,7 +252,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             caller_note_enabled,
             exchange_settings,
             trace_scope,
-            origin_max_chars,
+            client_settings,
         )
     )
     if RUNTIME.runtime == FASTAPI:

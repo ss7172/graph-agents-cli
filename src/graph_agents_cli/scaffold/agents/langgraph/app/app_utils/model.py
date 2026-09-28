@@ -357,7 +357,9 @@ def _fake_args(parameters: dict[str, Any], prompt: str) -> dict[str, Any]:
     args: dict[str, Any] = {}
     for name in parameters.get("required") or []:
         schema = properties.get(name) or {}
-        if schema.get("enum"):
+        if "const" in schema:  # a Literal of one value
+            args[name] = schema["const"]
+        elif schema.get("enum"):
             args[name] = schema["enum"][0]
         else:
             args[name] = _PLACEHOLDER_BY_TYPE.get(schema.get("type"), _subject(prompt))
@@ -401,8 +403,8 @@ class FakeChatModel(BaseChatModel):
         the first such tool. Every required argument is filled: text with the
         request's subject (what follows its last "in", "for" or "about", else
         the whole request; "Paris" in "What is the weather in Paris?"), an enum
-        with its first value, a number with 1, a flag with false, a list or an
-        object empty
+        with its first value (a constant with its value), a number with 1, a
+        flag with false, a list or an object empty
       * a greeting: ``Hello! How can I help you today?``
       * anything else: ``I am a fake model. I can use these tools: <name> (<first
         sentence of its description>), ... You said: <text>`` (without the tools

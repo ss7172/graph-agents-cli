@@ -403,8 +403,9 @@ work) and `digest`; a direct decider may send the digest too, and it is checked 
 ### What the person sees when their agent relays a decision
 
 An agent that relays a decision to another agent (an A2A message that approves one of that
-agent's approvals, which its policy must gate) sends it through its own gate, so the person
-approves it at that agent first. The approval
+agent's approvals, which its policy must gate; the A2A client's `approve_agent_action` tool,
+see [Ask other agents](api-policy.md#ask-other-agents-app_utilsa2a_clientpy)) sends it through
+its own gate, so the person approves it at that agent first. The approval
 they see there holds two more fields, taken from the other agent's own record of what it
 waits for (not from the model), and bound with the message like the rest of its body:
 

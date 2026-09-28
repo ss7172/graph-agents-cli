@@ -168,6 +168,7 @@ from google.protobuf import json_format, struct_pb2
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from {{cookiecutter.agent_directory}}.app_utils import a2a_client
 from {{cookiecutter.agent_directory}}.app_utils import chat as chat_runtime
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     A2A_ERROR_PART_TYPE,
@@ -237,10 +238,10 @@ DEFAULT_DESCRIPTION = "{{cookiecutter.project_name}}: a LangGraph agent served o
 DEFAULT_SKILL_DESCRIPTION = "Hold a conversation with the agent."
 # Set by the request handler for the executor: whether the caller streams the reply.
 STREAMING_STATE_KEY = "a2a_streaming"
-# Whether this agent's A2A client (0.3) passes the user's own words on to the agents it
-# calls (`A2A_FORWARD_ORIGIN`): `auto` sends them only to a peer whose card declares the
-# origin extension, and `off` never does.
-DEFAULT_A2A_FORWARD_ORIGIN = "auto"
+# Whether this agent's A2A client passes the user's own words on to the agents it calls
+# (`A2A_FORWARD_ORIGIN`, `a2a_client.py`): `auto` sends them only to a peer whose card
+# declares the origin extension, and `off` never does.
+DEFAULT_A2A_FORWARD_ORIGIN = a2a_client.DEFAULT_A2A_FORWARD_ORIGIN
 # The card's description of the origin extension (`api_client.A2A_ORIGIN_EXTENSION`).
 ORIGIN_EXTENSION_DESCRIPTION = (
     "graph-agents-cli origin: an agent calling for a user forwards, in the message metadata "

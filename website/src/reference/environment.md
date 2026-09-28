@@ -276,6 +276,9 @@ See [Observability](../guides/observability.md) for what each mode sends where.
 | `A2A_DESCRIPTION` | a generic description | What the card (and its chat skill) says the agent does. |
 | `A2A_TASK_TTL_S` | `3600` | Seconds a task is kept after its last update; `0` keeps a task until its thread is deleted (in process memory, until restart). |
 | `A2A_ORIGIN_MAX_CHARS` | `4000` | The most of the user's own words an agent forwards to the agents it calls, and reads from one calling it (the origin extension). |
+| `A2A_FORWARD_ORIGIN` | `auto` | Whether the A2A client sends the user's own words to the agents it calls: `auto` (to a peer whose card declares the origin extension) or `off`. |
+| `A2A_CARD_TTL_S` | `300` | Seconds a peer's checked agent card is reused; `0` reads it before every call. |
+| `A2A_REPLY_MAX_CHARS` | `6000` | The most of a peer's reply the model reads (the rest is cut, marked `[truncated]`). |
 
 See [HTTP API](http-api.md#a2a).
 
