@@ -79,7 +79,12 @@ def test_lint_runs_ruff_check_and_format_check_then_policy(
         (
             fake_project.root,
             "app",
-            {"policy_file": "api-policy.yaml", "runtime": "fastapi", "policy_declared": False},
+            {
+                "policy_file": "api-policy.yaml",
+                "runtime": "fastapi",
+                "policy_declared": False,
+                "auth_policy": "shared-bearer",
+            },
         )
     ]
 

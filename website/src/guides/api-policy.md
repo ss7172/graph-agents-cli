@@ -222,9 +222,9 @@ user's token for both agents: the caller's own token is forwarded only when its 
 `forward_audience`, so a token minted for this agent alone is never replayed at another.
 Prefer `auth: exchange`: each token is good for one audience, briefly.
 
-Which modes work with which [auth policy](authentication.md) and runtime (the app refuses
-`exchange` at startup where it cannot work, outside `APP_ENV=dev`, and logs a warning for such
-a `forward` API; `create`, `lint` and `api add` refuse both modes under `langgraph-server`):
+Which modes work with which [auth policy](authentication.md) and runtime (`lint` and `api add`
+refuse the rest; the app refuses `exchange` at startup where it cannot work, outside
+`APP_ENV=dev`, and logs a warning for such a `forward` API):
 
 | `auth` | `shared-bearer` | `jwt` | `custom` | runtime `langgraph-server` |
 |---|---|---|---|---|

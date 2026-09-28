@@ -79,6 +79,7 @@ from graph_agents_cli._api_policy import (
     ApprovalRuleConflict,
     ExampleCall,
     approval_notes,
+    auth_policy_findings,
     denial_match,
     describe_gate,
     forward_runtime_problem,
@@ -887,11 +888,14 @@ def build_report(
     policy_file: str = POLICY_FILENAME,
     runtime: str = "fastapi",
     policy_declared: bool = False,
+    auth_policy: str | None = None,
 ) -> PolicyReport:
     """Run the check for a project and return the report (nothing printed).
 
     ``policy_declared`` is True when the manifest names the policy file: a
-    missing file is then an error rather than a note.
+    missing file is then an error rather than a note. ``auth_policy`` (the
+    project's, from the manifest) checks the APIs that act with the caller's
+    identity against it (``auth_policy_findings``); None skips that check.
     """
     report = PolicyReport()
     document: dict[str, Any] | None = None
@@ -909,6 +913,11 @@ def build_report(
         problem = forward_runtime_problem(summarize(document), runtime)
         if problem:
             report.invalid_policy(policy_file, problem)
+        if auth_policy is not None:
+            errors, notes = auth_policy_findings(document, auth_policy)
+            for error in errors:
+                report.invalid_policy(policy_file, error)
+            report.notes.extend(notes)
         for name, api in document["apis"].items():
             report.notes.extend(approval_notes(name, api))
             openapi_ref = api.get("openapi")
@@ -1054,6 +1063,7 @@ def run_policy_check(
     runtime: str = "fastapi",
     policy_declared: bool = False,
     console: Console | None = None,
+    auth_policy: str | None = None,
 ) -> int:
     """Run the check, print the table, and return the number of violations.
 
@@ -1067,6 +1077,7 @@ def run_policy_check(
         policy_file=policy_file,
         runtime=runtime,
         policy_declared=policy_declared,
+        auth_policy=auth_policy,
     )
     print_report(report, console)
     if report.policy_invalid:

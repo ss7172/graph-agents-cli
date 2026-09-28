@@ -15,8 +15,9 @@
 """`auth: exchange` (RFC 8693) and `forward_audience` in api-policy.yaml, as the CLI checks them.
 
 The schema lives in the SHARED block, so the runtime copy (the template's
-`api_client.py`) must answer every case with the same errors; the secrets
-and the runtime check are CLI-side (`lint`, `api add`, `create`).
+`api_client.py`) must answer every case with the same errors; the
+compatibility matrix and the secrets are CLI-side (`lint`, `api add`,
+`create`).
 """
 
 from __future__ import annotations
@@ -27,14 +28,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from graph_agents_cli import _api_policy as cli
 from graph_agents_cli._api_policy import (
+    auth_policy_findings,
     forward_runtime_problem,
     policy_errors,
     secret_envs,
     summarize,
 )
+from graph_agents_cli.dev import policy_check as pc
 
 TEMPLATE_CLIENT = (
     Path(cli.__file__).parent / "scaffold/agents/langgraph/app/app_utils/api_client.py"
@@ -166,7 +170,7 @@ def test_auth_is_required_naming_every_mode() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Secrets and the runtime (CLI side)
+# Secrets, runtime and the auth policy matrix (CLI side)
 # ---------------------------------------------------------------------------
 
 EXCHANGE = {
@@ -195,3 +199,39 @@ def test_exchange_is_refused_under_langgraph_server() -> None:
     only_forward = forward_runtime_problem(summarize({"apis": {"me": FORWARD}}), "langgraph-server")
     assert only_forward is not None and "forwarded credentials would be stored" in only_forward
     assert forward_runtime_problem(both, "fastapi") is None
+
+
+@pytest.mark.parametrize(
+    ("api", "auth_policy", "error", "note"),
+    [
+        (EXCHANGE, "jwt", None, None),
+        (EXCHANGE, "custom", None, None),
+        (EXCHANGE, "shared-bearer", "shared-bearer has no user token to exchange", None),
+        (FORWARD, "custom", None, None),
+        (FORWARD, "shared-bearer", "there is no user credential to forward", None),
+        (FORWARD, "jwt", "needs forward_audience with the jwt auth policy", None),
+        (AIMED, "jwt", None, "prefer auth: exchange"),
+        (BEARER, "shared-bearer", None, None),
+    ],
+)
+def test_the_compatibility_matrix(
+    api: dict[str, Any], auth_policy: str, error: str | None, note: str | None
+) -> None:
+    errors, notes = auth_policy_findings({"apis": {"x": api}}, auth_policy)
+    assert [error in e for e in errors] == ([True] if error else [])
+    assert [note in n for n in notes] == ([True] if note else [])
+
+
+def test_lint_reports_the_matrix_for_the_projects_auth_policy(tmp_path: Path) -> None:
+    (tmp_path / "app" / "tools").mkdir(parents=True)
+    (tmp_path / "api-policy.yaml").write_text(yaml.safe_dump({"apis": {"o": EXCHANGE}}))
+    jwt = pc.build_report(tmp_path, "app", auth_policy="jwt")
+    assert not jwt.policy_invalid
+    shared = pc.build_report(tmp_path, "app", auth_policy="shared-bearer")
+    assert shared.policy_invalid
+    unknown = pc.build_report(tmp_path, "app")  # no auth policy given: not checked
+    assert not unknown.policy_invalid
+    (tmp_path / "api-policy.yaml").write_text(yaml.safe_dump({"apis": {"me": AIMED}}))
+    aimed = pc.build_report(tmp_path, "app", auth_policy="jwt")
+    assert not aimed.policy_invalid
+    assert any("prefer auth: exchange" in n for n in aimed.notes)

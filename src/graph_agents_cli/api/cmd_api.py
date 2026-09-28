@@ -61,6 +61,7 @@ from graph_agents_cli._api_policy import (
     approval_notes,
     approval_rule_label,
     approval_rules,
+    auth_policy_findings,
     denial_match,
     describe_deciders,
     effective_approval,
@@ -658,6 +659,14 @@ def cmd_add(
         api["limits"] = limits
     document = ch.with_api(project.document, name, api)
     _validate(project, document)
+    matrix_errors, matrix_notes = auth_policy_findings(
+        {"apis": {name: api}}, project.config.auth_policy
+    )
+    if matrix_errors:
+        lines = "\n".join(f"  - {error}" for error in matrix_errors)
+        raise ch.ApiCommandError(
+            f"{name} cannot work in this project; nothing was written:\n{lines}"
+        )
 
     if project.text is None:
         lines = [*_policy_header(project.config), "apis:", *block_lines({name: api}, 2)]
@@ -682,7 +691,10 @@ def cmd_add(
         before=project.document,
         after=document,
         widens=True,
-        notes=[f"{name} allows {ch.describe_methods(allowed_methods)}, every operation."],
+        notes=[
+            f"{name} allows {ch.describe_methods(allowed_methods)}, every operation.",
+            *matrix_notes,
+        ],
     )
 
 
@@ -2014,6 +2026,7 @@ def cmd_show(name: str | None, as_json: bool) -> None:
         project.config.agent_directory,
         runtime=project.config.runtime,
         policy_declared=bool(project.config.api_policy_file),
+        auth_policy=project.config.auth_policy,
     )
     results = [r for r in report.results if name in (None, r.call.api)]
     if as_json:

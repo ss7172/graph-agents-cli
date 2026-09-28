@@ -65,6 +65,7 @@ def cmd_lint(fix: bool, policy_only: bool) -> None:
         policy_file=cfg.api_policy_file or POLICY_FILENAME,
         runtime=cfg.runtime,
         policy_declared=bool(cfg.api_policy_file),
+        auth_policy=cfg.auth_policy,
     )
     if violations:
         raise click.ClickException(

@@ -1492,6 +1492,57 @@ def forward_runtime_problem(
     )
 
 
+def auth_policy_findings(
+    document: Mapping[str, Any], auth_policy: str
+) -> tuple[list[str], list[str]]:
+    """The APIs that act with the caller's identity against the project's auth policy.
+
+    Returns ``(errors, notes)``, the compatibility matrix of `lint` and `api add`:
+
+    * ``auth: exchange`` under ``shared-bearer``: an error (there is no user token
+      to exchange).
+    * ``auth: forward`` under ``shared-bearer``: an error (there is no user
+      credential to forward: every caller is the one principal ``shared``).
+    * ``auth: forward`` under ``jwt`` without ``forward_audience``: an error (jwt
+      sets no per-API credential); with it, a note to prefer ``auth: exchange``.
+    * ``custom``: every mode is the policy's to serve (``keep_subject_token`` for
+      exchange, ``attributes["credentials"]`` for forward).
+    """
+    apis = document.get("apis") or {}
+    exchange = [str(n) for n, a in apis.items() if a.get("auth") == "exchange"]
+    forward = [str(n) for n, a in apis.items() if a.get("auth") == "forward"]
+    errors: list[str] = []
+    notes: list[str] = []
+    if auth_policy == "shared-bearer":
+        if exchange:
+            errors.append(
+                f"auth: exchange (apis: {', '.join(exchange)}) is not supported with the "
+                "shared-bearer auth policy: shared-bearer has no user token to exchange; use "
+                "auth: bearer with the peer's agent key"
+            )
+        if forward:
+            errors.append(
+                f"auth: forward (apis: {', '.join(forward)}) is not supported with the "
+                "shared-bearer auth policy: there is no user credential to forward (every "
+                "caller is the one principal `shared`); use auth: bearer or none"
+            )
+    elif auth_policy == "jwt":
+        unaimed = [n for n in forward if "forward_audience" not in apis[n]]
+        aimed = [n for n in forward if "forward_audience" in apis[n]]
+        if unaimed:
+            errors.append(
+                f"auth: forward (apis: {', '.join(unaimed)}) needs forward_audience with the jwt "
+                "auth policy: jwt sets no per-API credential, and forwards the caller's own "
+                "token only to an audience the issuer minted it for; prefer auth: exchange"
+            )
+        if aimed:
+            notes.append(
+                f"auth: forward (apis: {', '.join(aimed)}): prefer auth: exchange; forward sends "
+                "the caller's own token and needs one minted for both audiences"
+            )
+    return errors, notes
+
+
 def legacy_findings(project_dir: str | Path) -> list[str]:
     """What still uses the retired product API policy in ``project_dir``."""
     root = Path(project_dir)

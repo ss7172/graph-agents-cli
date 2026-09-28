@@ -130,9 +130,11 @@ Validation messages (the same from `lint`, `api` and the running agent):
 | `forward_audience` with another `auth` | `apis.<name>.forward_audience: only valid with auth: forward` |
 | `forward_header` with `none` or `bearer` | `apis.<name>.forward_header: only valid with auth: forward or exchange` |
 
-`create`, `lint` and `api add` refuse `exchange` and `forward` under the `langgraph-server`
-runtime; the app refuses `exchange` at startup where it cannot work (the
-[compatibility table](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)).
+`lint` and `api add` also check each mode against the project's auth policy and runtime (the
+[compatibility table](../guides/api-policy.md#auth-exchange-act-for-the-user-at-another-agent)):
+`exchange` or `forward` under `shared-bearer`, `forward` under `jwt` without
+`forward_audience`, and either under `langgraph-server` are errors. The app refuses
+`exchange` at startup where it cannot work.
 
 ## Operation entries
 

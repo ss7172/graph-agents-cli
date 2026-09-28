@@ -120,6 +120,13 @@ migration" with the steps to follow.
 
 ### Changed
 
+- **`lint` and `api add` check each API's `auth` against the project's auth policy.**
+  `auth: exchange` or `auth: forward` under `shared-bearer`, and `auth: forward` under `jwt`
+  without `forward_audience`, are errors (exit 3): such an API never had a credential to send,
+  so every call to it failed with "the caller has no credential". The running app only logs a
+  warning at startup for such a `forward` API, and still starts. `lint` and `api add` also note
+  a `forward` API with `forward_audience` under `jwt` ("prefer auth: exchange").
+
 - **`jwt` reads the `act` claim.** A token carrying it is an agent's for the user, refused
   (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=` (empty) to
   read every token as the user's own, as 0.2 did. A `custom` policy that returns an invalid id

@@ -1778,6 +1778,9 @@ def test_add_exchange_usage_errors(project: Path, args: list[str], fragment: str
 def test_add_exchange_refuses_what_cannot_work(project: Path) -> None:
     bad = cli(*EXCHANGE_ADD, "--resource", "not a uri")
     assert bad.exit_code == 3 and "exchange.resource: must be an absolute URI" in bad.output
+    shared = cli(*EXCHANGE_ADD)  # the project's auth policy is shared-bearer
+    assert shared.exit_code == 3
+    assert "shared-bearer has no user token to exchange" in " ".join(shared.output.split())
     _auth_policy(project, "jwt")
     manifest_path = project / "graph-agents-cli-manifest.yaml"
     manifest_path.write_text(
@@ -1791,14 +1794,28 @@ def test_add_exchange_refuses_what_cannot_work(project: Path) -> None:
     assert not (project / "api-policy.yaml").exists()
 
 
-def test_forward_audience_is_written_with_audience(project: Path) -> None:
+def test_forward_under_jwt_needs_its_audience(project: Path) -> None:
     _auth_policy(project, "jwt")
     add = [*("api", "add", "me", "--base-url-env", "ME_URL", "--auth", "forward")]
-    ok(*add, "--audience", "me-api", "--access", "read-only")
+    refused = cli(*add, "--access", "read-only")
+    assert refused.exit_code == 3
+    assert "needs forward_audience with the jwt auth policy" in " ".join(refused.output.split())
+    result = ok(*add, "--audience", "me-api", "--access", "read-only")
     assert policy(project)["me"]["forward_audience"] == "me-api"
+    assert "prefer auth: exchange" in " ".join(result.output.split())
 
 
-def test_show_names_the_exchange(project: Path) -> None:
+def test_forward_under_shared_bearer_is_refused(project: Path) -> None:
+    result = cli(
+        *("api", "add", "me", "--base-url-env", "ME_URL", "--auth", "forward"),
+        "--access",
+        "read-only",
+    )
+    assert result.exit_code == 3
+    assert "there is no user credential to forward" in " ".join(result.output.split())
+
+
+def test_show_and_lint_name_the_exchange(project: Path) -> None:
     _auth_policy(project, "jwt")
     ok(*EXCHANGE_ADD, "--scope", "orders.read")
     shown = " ".join(ok("api", "show", "orders_agent").output.split())
@@ -1809,6 +1826,10 @@ def test_show_names_the_exchange(project: Path) -> None:
     assert effective["exchange"] == {"audience": "orders", "scope": "orders.read"}
     assert effective["forward_header"] == "Authorization"
     assert ok("api", "check").exit_code == 0
+    _auth_policy(project, "shared-bearer")
+    lint = cli("lint", "--policy-only")
+    assert lint.exit_code == 3
+    assert "shared-bearer has no user token to exchange" in " ".join(lint.output.split())
 
 
 def test_create_with_an_exchange_api_records_the_secret_and_the_settings(
