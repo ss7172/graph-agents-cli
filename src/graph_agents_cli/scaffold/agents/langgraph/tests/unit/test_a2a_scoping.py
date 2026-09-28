@@ -545,20 +545,46 @@ def test_the_task_owner_is_the_owner_key() -> None:
     assert PolicyContextBuilder().build_user(request).user_name == "alice"  # as in 0.2
 
 
+def _store_keys_of(task_id: str) -> list[str]:
+    """The owner keys the (in-memory) task stores of the mounted A2A routes hold `task_id` under."""
+    return [
+        key
+        for store in a2a_module._STORES
+        for key, tasks in store.memory._saved_at.items()
+        if task_id in tasks
+    ]
+
+
 async def test_other_actor_cannot_get_list_continue_cancel(agents: dict[str, Any]) -> None:
-    concierge, billing = agents["concierge"], agents["billing"]
+    concierge, billing, person = agents["concierge"], agents["billing"], agents["direct"]
     task = await _send(concierge, _message("my pin is 9876"))
     assert task.status.state == TaskState.TASK_STATE_COMPLETED
     assert [t.id for t in (await concierge.list_tasks(ListTasksRequest())).tasks] == [task.id]
-    for other in (billing, agents["direct"]):
-        # Another agent for the same user, and the user directly: other owner keys.
-        assert (await other.list_tasks(ListTasksRequest())).total_size == 0
-        with pytest.raises(Exception, match="not found"):
-            await other.get_task(GetTaskRequest(id=task.id))
-        with pytest.raises(Exception, match="not found"):
-            await other.cancel_task(CancelTaskRequest(id=task.id))
-        with pytest.raises(Exception, match="not found"):
-            await _send(other, _message("hi", task_id=task.id))
+    # Another agent for the same user: another owner key, nothing to see.
+    assert (await billing.list_tasks(ListTasksRequest())).total_size == 0
+    with pytest.raises(Exception, match="not found"):
+        await billing.get_task(GetTaskRequest(id=task.id))
+    with pytest.raises(Exception, match="not found"):
+        await billing.cancel_task(CancelTaskRequest(id=task.id))
+    with pytest.raises(Exception, match="not found"):
+        await _send(billing, _message("hi", task_id=task.id))
+    # The person reads and lists the task their agent started for them (the owner's decision
+    # of 2026-09-28) ...
+    assert [t.id for t in (await person.list_tasks(ListTasksRequest())).tasks] == [task.id]
+    got = await person.get_task(GetTaskRequest(id=task.id))
+    assert got.id == task.id and got.status.state == TaskState.TASK_STATE_COMPLETED
+    # Found (billing's cancel is "not found"); it has ended, so it stays as it is, as for its owner.
+    ended = await person.cancel_task(CancelTaskRequest(id=task.id))
+    assert (ended.id, ended.status.state) == (task.id, TaskState.TASK_STATE_COMPLETED)
+    # ... but continuing it (a message naming it) stays with the concierge.
+    with pytest.raises(Exception, match="not found"):
+        await _send(person, _message("hi", task_id=task.id))
+    # The billing agent sees none of the person's own tasks either.
+    own = await _send(person, _message("hello"))
+    with pytest.raises(Exception, match="not found"):
+        await billing.get_task(GetTaskRequest(id=own.id))
+    assert (await billing.list_tasks(ListTasksRequest())).total_size == 0
+    assert (await concierge.list_tasks(ListTasksRequest())).total_size == 1
     # The conversation: another agent is refused (no oracle beyond the thread rule) ...
     refused = await _send(billing, _message("hi", context_id=task.context_id))
     assert refused.status.state == TaskState.TASK_STATE_FAILED
@@ -566,6 +592,125 @@ async def test_other_actor_cannot_get_list_continue_cancel(agents: dict[str, Any
     # ... while the person, who owns every thread of theirs, may continue it.
     continued = await _send(agents["direct"], _message("hi", context_id=task.context_id))
     assert continued.status.state == TaskState.TASK_STATE_COMPLETED
+
+
+async def test_the_person_cancels_a_task_their_agent_started(
+    agents: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cancel runs under the task's own owner key: the concierge's task is canceled where it
+    is, and no copy appears under the person's key. The agent's live stream stays its own."""
+    original = chat_module.ChatRuntime.stream
+
+    async def stream(self: Any, principal: Any, req: Any, thread_id: str) -> Any:
+        if "slow" in req.message:  # keeps working for 30 s, as in the `users` fixture
+            yield chat_module.EVENT_DELTA, {"text": "working..."}
+            await asyncio.sleep(30)
+        async for item in original(self, principal, req, thread_id):
+            yield item
+
+    monkeypatch.setattr(chat_module.ChatRuntime, "stream", stream)
+    user = agents["http"]["direct"].headers["x-user"]
+    request = _message("slow job")
+    request.configuration.CopyFrom(SendMessageConfiguration(return_immediately=True))
+    task = await _send(agents["concierge"], request)
+    await asyncio.sleep(0.2)
+    with pytest.raises(Exception, match="not found"):
+        await agents["billing"].cancel_task(CancelTaskRequest(id=task.id))
+    r = await agents["http"]["direct"].post(
+        A2A_PATH,
+        json={"jsonrpc": "2.0", "id": "2", "method": "SubscribeToTask", "params": {"id": task.id}},
+        headers={"A2A-Version": "1.0"},
+    )
+    assert "not found" in r.text.lower() and "working..." not in r.text
+    working = await agents["direct"].get_task(GetTaskRequest(id=task.id))
+    assert working.status.state == TaskState.TASK_STATE_WORKING
+
+    canceled = await agents["direct"].cancel_task(CancelTaskRequest(id=task.id))
+    assert canceled.status.state == TaskState.TASK_STATE_CANCELED
+    seen = await agents["concierge"].get_task(GetTaskRequest(id=task.id))
+    assert seen.status.state == TaskState.TASK_STATE_CANCELED
+    assert _store_keys_of(task.id) == [f"{user}\x1fconcierge"]
+    listed = await agents["direct"].list_tasks(ListTasksRequest())
+    assert [(t.id, t.status.state) for t in listed.tasks] == [
+        (task.id, TaskState.TASK_STATE_CANCELED)
+    ]
+
+
+async def test_the_persons_list_pages_over_their_own_and_their_agents_tasks(
+    agents: dict[str, Any],
+) -> None:
+    sent = [
+        await _send(agents[name], _message(f"hello from {name}"))
+        for name in ("direct", "concierge", "billing", "direct")
+    ]
+    person = agents["direct"]
+    whole = await person.list_tasks(ListTasksRequest())
+    assert whole.total_size == 4 and {t.id for t in whole.tasks} == {t.id for t in sent}
+    # Newest status first, as the SDK's store orders one owner's tasks.
+    stamps = [t.status.timestamp.ToJsonString() for t in whole.tasks]
+    assert stamps == sorted(stamps, reverse=True)
+    pages, token = [], ""
+    while True:
+        page = await person.list_tasks(ListTasksRequest(page_size=1, page_token=token))
+        assert page.total_size == 4 and len(page.tasks) == 1
+        pages.append(page.tasks[0].id)
+        token = page.next_page_token
+        if not token:
+            break
+    assert pages == [t.id for t in whole.tasks]
+    # Filters apply across the keys: one conversation.
+    concierges = sent[1]
+    by_context = await person.list_tasks(ListTasksRequest(context_id=concierges.context_id))
+    assert [t.id for t in by_context.tasks] == [concierges.id]
+    with pytest.raises(Exception, match="Invalid page token"):
+        await person.list_tasks(ListTasksRequest(page_token="bm90LWEtdGFzaw"))
+    # Each agent still lists only its own.
+    for name, task in (("concierge", sent[1]), ("billing", sent[2])):
+        assert [t.id for t in (await agents[name].list_tasks(ListTasksRequest())).tasks] == [
+            task.id
+        ]
+
+
+async def test_another_person_sees_none_of_them(agents: dict[str, Any]) -> None:
+    task = await _send(agents["concierge"], _message("hello"))
+    user = agents["http"]["direct"].headers["x-user"]
+    for other in (f"{user}x", user[:-1], f"carol-{uuid.uuid4().hex[:8]}"):
+        # Neither a longer nor a shorter id, nor another subject, is this person.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers={"X-User": other},
+            timeout=30,
+        ) as http:
+            client = await create_client(A2A_URL, ClientConfig(streaming=False, httpx_client=http))
+            assert (await client.list_tasks(ListTasksRequest())).total_size == 0
+            with pytest.raises(Exception, match="not found"):
+                await client.get_task(GetTaskRequest(id=task.id))
+            with pytest.raises(Exception, match="not found"):
+                await client.cancel_task(CancelTaskRequest(id=task.id))
+
+
+def test_a_subject_owns_its_own_and_its_agents_keys_only() -> None:
+    assert a2a_module.subject_owns("alice", "alice")
+    assert a2a_module.subject_owns("alice", "alice\x1fconcierge")
+    assert a2a_module.subject_owns("alice", "alice\x1fclient:web")
+    assert not a2a_module.subject_owns("alice", "alicex")
+    assert not a2a_module.subject_owns("alice", "alicex\x1fconcierge")
+    assert not a2a_module.subject_owns("alice", "alic")
+    assert not a2a_module.subject_owns("alice", "bob\x1falice")
+
+
+def test_only_a_direct_caller_reaches_its_agents_tasks() -> None:
+    request = Request({"type": "http", "method": "POST", "path": A2A_PATH, "headers": []})
+    request.state.principal = Principal(id="alice")
+    user = PolicyContextBuilder().build_user(request)
+    assert (user.user_name, user.subject) == ("alice", "alice")
+    request.state.principal = Principal(id="alice", actor=Actor(id="concierge"))
+    user = PolicyContextBuilder().build_user(request)
+    assert (user.user_name, user.subject) == ("alice\x1fconcierge", None)
+    assert a2a_module.task_subject(ServerCallContext(user=user)) is None
+    owner = a2a_module.owner_context(ServerCallContext(user=PrincipalUser("alice")), "a\x1fb")
+    assert (task_owner(owner), a2a_module.task_subject(owner)) == ("a\x1fb", None)
 
 
 async def test_a_delegated_caller_is_refused_until_listed(

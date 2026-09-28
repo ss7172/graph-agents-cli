@@ -30,9 +30,13 @@ migration" with the steps to follow.
   agents (default 3; else 401), only the agents `AUTH_ALLOWED_ACTORS` lists (default none;
   else 403), and only the roles `AUTH_DELEGATED_ROLES` lends. Threads, A2A tasks and approvals
   are owned by the subject and the actor: an agent reaches only what it started for that
-  user, while the user owns everything done for them. A delegated principal's roles never read
-  across, administer or decide as a `role:` approver, and it never decides an approval (403
-  `approval_direct_only`: the person decides with their own credentials). The actor reaches
+  user, while the user owns everything done for them: with their own token they read,
+  continue and delete the threads their agents started, decide their approvals, and read,
+  list and cancel the A2A tasks those agents started for them (the owner's decision of
+  2026-09-28; continuing or subscribing to such a task stays with its agent). A delegated
+  principal's roles never read across, administer or decide as a `role:` approver, and it
+  never decides an approval (403 `approval_direct_only`: the person decides with their own
+  credentials). The actor reaches
   tools in `attributes["@actor"]`, is recorded with each approval (`requester_actor`), and is
   logged (`actor`), kept in run records and named in trace metadata. `auth dev-token` mints
   such tokens locally (`--act`, repeatable, and `--azp`). The database gains

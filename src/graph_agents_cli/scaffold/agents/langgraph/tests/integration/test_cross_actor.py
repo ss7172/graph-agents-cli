@@ -29,6 +29,8 @@ those agents would, with their exchanged tokens, over A2A JSON-RPC and HTTP.
   the approval records `decided_via`.
 * With `decide_with: direct` (the default), the concierge's relay is refused
   with `approval_direct_only`, and alice's own token decides.
+* alice's own token reads, lists and cancels the concierge's task (canceled in
+  place: one row, the concierge's); continuing it stays the concierge's.
 
 Every test runs with the in-memory checkpointer, and on Postgres when
 `TEST_POSTGRES_DSN` is set.
@@ -61,6 +63,7 @@ os.environ.update(
 )
 
 import httpx
+import jwt
 import pytest
 from fake_issuer import FakeIssuer
 from langchain.tools import ToolRuntime
@@ -443,4 +446,52 @@ async def test_an_unlisted_agent_is_refused_before_anything_runs(
     assert r.json() == {
         "detail": "Delegated caller billing is not allowed here (AUTH_ALLOWED_ACTORS)."
     }
+    assert SENT == []
+
+
+async def _task_rows(database: str, task_id: str) -> list[tuple[str, str]]:
+    """(owner, state) of every stored row of `task_id` (Postgres); [] under memory."""
+    if database != "postgres":
+        return []
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(os.environ["POSTGRES_DSN"]) as conn:
+        cursor = await conn.execute(
+            "SELECT owner, state FROM a2a_tasks WHERE task_id = %s ORDER BY owner", (task_id,)
+        )
+        return [(str(owner), str(state)) for owner, state in await cursor.fetchall()]
+
+
+async def test_the_person_reads_lists_and_cancels_their_agents_task(
+    direct: httpx.AsyncClient, tokens: dict[str, str], database: str
+) -> None:
+    """The owner's decision of 2026-09-28: with their own token, the person reads, lists and
+    cancels the task the concierge started for them; continuing it stays the concierge's, and
+    billing (another agent for the same person) still sees nothing."""
+    client = direct
+    task, _approval = await _paused_by_concierge(client, tokens)
+    alice = tokens["alice"]
+    subject = jwt.decode(alice, options={"verify_signature": False})["sub"]
+    got = await _rpc(client, alice, "GetTask", {"id": task["id"]})
+    assert got["result"]["id"] == task["id"]
+    assert got["result"]["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+    listed = await _rpc(client, alice, "ListTasks", {})
+    assert [t["id"] for t in listed["result"]["tasks"]] == [task["id"]]
+    continued = await _rpc(client, alice, "SendMessage", _message(task, text="hello"))
+    assert continued["error"]["code"] == -32001
+    for method in ("GetTask", "CancelTask"):
+        assert (await _rpc(client, tokens["billing"], method, {"id": task["id"]}))["error"][
+            "code"
+        ] == -32001
+    assert (await _rpc(client, tokens["billing"], "ListTasks", {}))["result"].get("tasks", []) == []
+
+    canceled = await _rpc(client, alice, "CancelTask", {"id": task["id"]})
+    assert canceled["result"]["status"]["state"] == "TASK_STATE_CANCELED", canceled
+    seen = await _rpc(client, tokens["concierge"], "GetTask", {"id": task["id"]})
+    assert seen["result"]["status"]["state"] == "TASK_STATE_CANCELED"
+    if database == "postgres":
+        # One row, the concierge's, canceled where it is: no copy under the person's key.
+        assert await _task_rows(database, task["id"]) == [
+            (f"{subject}\x1fconcierge", "TASK_STATE_CANCELED")
+        ]
     assert SENT == []

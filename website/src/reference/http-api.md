@@ -334,8 +334,11 @@ Errors
 Tasks
 :   A task belongs to the principal that created it: another principal's task id reads as
     not found. For an agent calling for a user, the owner is the user and the agent together,
-    so another agent acting for the same user (or the user calling directly) cannot read,
-    list, continue or cancel it. Under `CHECKPOINTER=postgres` (and under `langgraph-server` with a Postgres
+    so another agent acting for the same user cannot read, list, continue or cancel it. The
+    user, calling directly (not delegated), reads (`GetTask`), lists (`ListTasks`) and
+    cancels (`CancelTask`) the tasks their agents started for them as well as their own;
+    continuing one (a message naming its `taskId`) and `SubscribeToTask` stay with the agent
+    that started it. Under `CHECKPOINTER=postgres` (and under `langgraph-server` with a Postgres
     `DATABASE_URI`) tasks are kept in the database, in table `a2a_tasks` (`agent_a2a_tasks`):
     every replica sees them and they survive restarts and rollouts, so `GetTask`, `ListTasks`
     and a decision naming a `taskId` work whichever pod they reach. Under

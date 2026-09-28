@@ -379,6 +379,76 @@ async def test_a2a_task_listing_matches_the_in_memory_store(dsn: str) -> None:
         await db.close()
 
 
+async def test_a_persons_listing_spans_their_agents_keys_as_the_in_memory_store_does(
+    dsn: str,
+) -> None:
+    """A person (a direct caller) lists their own tasks and those their agents started for
+    them, filtered, ordered and paged as the in-memory store does; no other subject's keys
+    (a longer or shorter id, an agent named like the person) come in."""
+    db = await _opened(dsn)
+    try:
+        postgres = PostgresTaskStore(0, db)
+        memory = ExpiringTaskStore(0)
+        rows = [
+            ("alice", _a2a_task("t1", "c1", TaskState.TASK_STATE_COMPLETED, second=10)),
+            ("alice\x1fconcierge", _a2a_task("t2", "c1", TaskState.TASK_STATE_WORKING, second=30)),
+            ("alice\x1fbilling", _a2a_task("t3", "c2", TaskState.TASK_STATE_COMPLETED, second=20)),
+            ("alice\x1fclient:web", _a2a_task("t4", "c2", TaskState.TASK_STATE_FAILED)),
+            (
+                "alice\x1fconcierge",
+                _a2a_task("t5", "c1", TaskState.TASK_STATE_COMPLETED, second=30),
+            ),
+            ("alicex", _a2a_task("x1", "c1", second=40)),
+            ("alicex\x1fconcierge", _a2a_task("x2", "c1", second=40)),
+            ("alic", _a2a_task("x3", "c1", second=40)),
+            ("bob\x1falice", _a2a_task("x4", "c1", second=40)),
+        ]
+        for owner, task in rows:
+            for store in (postgres, memory):
+                await store.save(task, _ctx(owner))
+        person = ServerCallContext(user=PrincipalUser("alice", subject="alice"))
+        after = _a2a_task("x", second=20).status.timestamp
+        requests = [
+            ListTasksRequest(),
+            ListTasksRequest(context_id="c1"),
+            ListTasksRequest(status=TaskState.TASK_STATE_COMPLETED),
+            ListTasksRequest(status_timestamp_after=after),
+        ]
+        for request in requests:
+            for page_size in (1, 2, 50):
+                pages: dict[str, list[list[str]]] = {}
+                for name, store in (("postgres", postgres), ("memory", memory)):
+                    got: list[list[str]] = []
+                    token = ""
+                    while True:
+                        page_request = ListTasksRequest()
+                        page_request.CopyFrom(request)
+                        page_request.page_size = page_size
+                        page_request.page_token = token
+                        page = await store.list(page_request, person)
+                        got.append([t.id for t in page.tasks] + [f"total={page.total_size}"])
+                        token = page.next_page_token
+                        if not token:
+                            break
+                    pages[name] = got
+                assert pages["postgres"] == pages["memory"], (request, page_size)
+        whole = await postgres.list(ListTasksRequest(), person)
+        assert [t.id for t in whole.tasks] == ["t5", "t2", "t3", "t1", "t4"]
+        # The same key without the person's scope: its own tasks only, as before.
+        assert [t.id for t in (await postgres.list(ListTasksRequest(), _ctx("alice"))).tasks] == [
+            "t1"
+        ]
+        # Whose task is it, among the person's keys (their own first)?
+        for store in (postgres, memory):
+            assert await store.owner_for_subject("t2", "alice") == "alice\x1fconcierge"
+            assert await store.owner_for_subject("t1", "alice") == "alice"
+            for other in ("x1", "x2", "x3", "x4", "missing"):
+                assert await store.owner_for_subject(other, "alice") is None
+            assert await store.owner_for_subject("t2", "alicex") is None
+    finally:
+        await db.close()
+
+
 async def test_a2a_tasks_expire_and_go_with_their_thread(dsn: str) -> None:
     db = await _opened(dsn)
     try:

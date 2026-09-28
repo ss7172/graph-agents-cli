@@ -18,7 +18,8 @@ routes, the A2A card and JSON-RPC, and the LangGraph Server API under `langgraph
 the probes, `/metrics` (unless `METRICS_TOKEN` is set) and the dev-only pages are outside it.
 An unknown or misconfigured policy fails closed at startup.
 
-Threads and A2A tasks belong to the principal that created them. Roles in
+Threads and A2A tasks belong to the principal that created them (a person also reaches
+what their agents did for them). Roles in
 `AUTH_READ_ACROSS_ROLES` may read other principals' threads, never continue or delete them.
 An agent calling for a user (a delegated request) is refused until `AUTH_ALLOWED_ACTORS` lists
 it, reaches only the work it started for that user, holds none of the user's roles and never

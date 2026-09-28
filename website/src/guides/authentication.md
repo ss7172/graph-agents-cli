@@ -22,7 +22,9 @@ own, configure it, and run it locally with the same credentials a client would s
 | `GET /metrics` | no, unless `METRICS_TOKEN` is set ([Observability](observability.md)) |
 | `/playground`, `/docs`, `/openapi.json` | no; they exist only under `APP_ENV=dev` |
 
-Threads and A2A tasks belong to the principal that created them, whatever the policy.
+Threads and A2A tasks belong to the principal that created them, whatever the policy; a
+person also reaches the work their agents did for them ([Agents calling
+agents](#agents-calling-agents)).
 
 ## Choose a policy
 
@@ -294,8 +296,12 @@ What a delegated principal reaches:
   for the same user gets the usual answers for something that is not theirs (403 `This thread
   belongs to another principal.`, A2A -32001 task not found).
 - **The person owns everything done for them.** The user, calling directly, reads, continues
-  and deletes the threads their agents started, and decides their approvals. (A2A tasks stay
-  with the principal that created them.)
+  and deletes the threads their agents started, and decides their approvals. They also read
+  (`GetTask`), list (`ListTasks`) and cancel (`CancelTask`) the A2A tasks their agents started
+  for them, with their own (not delegated) token: the task is canceled where it is, and the
+  agent sees it canceled. Continuing such a task (a message naming its `taskId`) and
+  subscribing to it stay with the agent that started it (-32001 for the person); the
+  conversation itself is the person's thread, which they continue by its `contextId`.
 - **No privileged roles.** A delegated principal's roles never read across
   (`AUTH_READ_ACROSS_ROLES`), administer (`AUTH_ADMIN_ROLES`) or decide as a `role:` approver,
   whatever `AUTH_DELEGATED_ROLES` lends; a lent role is visible to tools only.

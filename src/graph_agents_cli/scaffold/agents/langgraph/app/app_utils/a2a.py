@@ -28,7 +28,13 @@ is the authenticated principal, and the task store keys every task by that
 principal's owner key (its id; for an agent calling for a user, the user's id
 and the agent's, `Principal.owner_key`), so ListTasks, GetTask, CancelTask
 and SubscribeToTask only ever see the caller's own tasks (another principal's
-task id, or another agent's for the same user, reads as "not found"). Where the chat runtime has a Postgres database (`CHECKPOINTER=postgres`,
+task id, or another agent's for the same user, reads as "not found"). The one
+exception is the person themselves: a direct (non-delegated) caller also
+reads (`GetTask`), lists (`ListTasks`) and cancels (`CancelTask`) the tasks
+their agents started for them, the owner keys that begin with their id
+(`SUBJECT_TASKS`). Continuing such a task (a message naming its `taskId`)
+and subscribing to it stay with the agent that started it, and an agent never
+sees another agent's tasks. Where the chat runtime has a Postgres database (`CHECKPOINTER=postgres`,
 or a Postgres `DATABASE_URI` under langgraph-server) the tasks are kept there
 (`PostgresTaskStore`): every replica sees them and they survive restarts and
 rollouts, so `GetTask`, `ListTasks`, `CancelTask` and a message naming a
@@ -117,6 +123,7 @@ from a2a.types import (
 )
 from a2a.types.a2a_pb2 import (
     CancelTaskRequest,
+    GetTaskRequest,
     ListTasksRequest,
     ListTasksResponse,
     SendMessageRequest,
@@ -152,6 +159,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
     CUSTOM,
     JWT,
+    OWNER_KEY_SEPARATOR,
     Principal,
     authorize_action,
     check_startup,
@@ -254,6 +262,11 @@ def task_ttl_s() -> int:
     return value
 
 
+# The A2A operations through which a person (a direct caller) reaches the tasks their
+# agents started for them, besides their own (the owner decision of 2026-09-28).
+SUBJECT_TASKS = ("GetTask", "ListTasks", "CancelTask")
+
+
 class PrincipalUser(User):
     """The authenticated principal as an A2A user: its owner key is the task owner.
 
@@ -261,10 +274,15 @@ class PrincipalUser(User):
     actor for an agent calling for a user (`Principal.owner_key`): an agent's
     tasks are its own, and another agent acting for the same user never sees
     them. Direct callers' keys are their ids, as before 0.3.
+
+    `subject` is set for a direct caller only (its id): the person, who also
+    reads, lists and cancels the tasks their agents started for them
+    (`SUBJECT_TASKS`, the owner keys `subject_owns`).
     """
 
-    def __init__(self, principal_id: str) -> None:
+    def __init__(self, principal_id: str, *, subject: str | None = None) -> None:
         self._principal_id = principal_id
+        self.subject = subject
 
     @property
     def is_authenticated(self) -> bool:
@@ -273,6 +291,38 @@ class PrincipalUser(User):
     @property
     def user_name(self) -> str:
         return self._principal_id
+
+
+def subject_owns(subject: str, owner: str) -> bool:
+    """Whether the task owner key `owner` is `subject`'s own, or one of its agents' for it.
+
+    An agent's key is the subject, the separator (which no id holds) and the
+    agent: so a subject never matches another subject's keys, whatever they are.
+    """
+    return owner == subject or owner.startswith(f"{subject}{OWNER_KEY_SEPARATOR}")
+
+
+def task_subject(context: ServerCallContext) -> str | None:
+    """The person a call context reaches their agents' tasks for, or None (an agent's call)."""
+    user = context.user
+    if not isinstance(user, PrincipalUser) or not user.subject:
+        return None
+    return user.subject
+
+
+def owner_context(context: ServerCallContext, owner: str) -> ServerCallContext:
+    """`context` acting on the tasks of the owner key `owner` (the call's state is shared).
+
+    What a person's GetTask and CancelTask run under for a task their agent
+    started: every read and write of the store is then that task's own, so a
+    canceled task is saved where it is, never copied under the person's key.
+    """
+    return ServerCallContext(
+        state=context.state,
+        user=PrincipalUser(owner),
+        tenant=context.tenant,
+        requested_extensions=context.requested_extensions,
+    )
 
 
 def task_owner(context: ServerCallContext) -> str:
@@ -305,7 +355,9 @@ class PolicyContextBuilder(DefaultServerCallContextBuilder):
         if not isinstance(principal, Principal) or not principal.id:
             # The middleware authenticates every A2A request before it gets here.
             raise PermissionError("A2A request without an authenticated principal")
-        return PrincipalUser(principal.owner_key())
+        return PrincipalUser(
+            principal.owner_key(), subject=None if principal.delegated else principal.id
+        )
 
 
 def context_key(context_id: str) -> str:
@@ -429,10 +481,37 @@ class ExpiringTaskStore(TaskStore):
         return await self._inner.get(task_id, context)
 
     async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
+        """The caller's tasks; for a person (a direct caller), their agents' for them too."""
         owner = task_owner(context)
         await self._maybe_sweep()
-        await self._evict_expired(owner)
-        return await self._inner.list(params, context)
+        subject = task_subject(context)
+        if subject is None:
+            await self._evict_expired(owner)
+            return await self._inner.list(params, context)
+        # Every owner key of the subject's, filtered as the SDK's store filters one owner's
+        # tasks, then ordered and paged together as it orders and pages them.
+        every = ListTasksRequest()
+        every.CopyFrom(params)
+        every.ClearField("page_token")
+        every.page_size = _EVERY_TASK
+        tasks: list[Task] = []
+        for key in [key for key in list(self._saved_at) if subject_owns(subject, key)]:
+            await self._evict_expired(key)
+            tasks.extend((await self._inner.list(every, self._context_for(key))).tasks)
+        return _page(tasks, params)
+
+    async def owner_for_subject(self, task_id: str, subject: str) -> str | None:
+        """The owner key of `task_id` among `subject`'s own and its agents' keys, or None."""
+        await self._maybe_sweep()
+        keys = sorted(
+            (key for key in list(self._saved_at) if subject_owns(subject, key)),
+            key=lambda key: key != subject,  # the person's own task first
+        )
+        for key in keys:
+            await self._evict_expired(key)
+            if task_id in self._saved_at.get(key, {}):
+                return key
+        return None
 
     async def delete(self, task_id: str, context: ServerCallContext) -> None:
         owner = task_owner(context)
@@ -446,6 +525,38 @@ class ExpiringTaskStore(TaskStore):
             await self._inner.delete(task_id, self._context_for(owner))
             self._forget(owner, task_id)
         return len(members)
+
+
+# A page size no store call reaches: every task of an owner, for `_page` to page them.
+_EVERY_TASK = 2**31 - 1
+
+
+def _task_order(task: Task) -> tuple[bool, str, str]:
+    """The SDK in-memory store's ListTasks order key (sorted in reverse: newest status first)."""
+    stamped = task.HasField("status") and task.status.HasField("timestamp")
+    return (stamped, task.status.timestamp.ToJsonString() if stamped else "", task.id)
+
+
+def _page(tasks: list[Task], params: ListTasksRequest) -> ListTasksResponse:
+    """Filtered `tasks` ordered and paged as the SDK's in-memory store pages one owner's."""
+    tasks = sorted(tasks, key=_task_order, reverse=True)
+    start = 0
+    if params.page_token:
+        start_id = decode_page_token(params.page_token)
+        for index, task in enumerate(tasks):
+            if task.id == start_id:
+                start = index
+                break
+        else:
+            raise InvalidParamsError(f"Invalid page token: {params.page_token}")
+    page_size = params.page_size or DEFAULT_LIST_TASKS_PAGE_SIZE
+    end = start + page_size
+    return ListTasksResponse(
+        next_page_token=encode_page_token(tasks[end].id) if end < len(tasks) else None,
+        tasks=tasks[start:end],
+        total_size=len(tasks),
+        page_size=page_size,
+    )
 
 
 # Task states whose run is still going (or about to start). A task left in one of
@@ -623,13 +734,27 @@ class PostgresTaskStore(TaskStore):
         )
         return _task_from(row["task"]) if row else None
 
+    @staticmethod
+    def _owned(owner: str, subject: str | None) -> tuple[str, list[Any]]:
+        """The SQL condition (and its parameters) of the tasks a caller lists: its owner key's,
+        and for a person (`subject`) also their agents' (the keys that begin with the subject
+        and the separator; compared exactly, never with LIKE or a collation's range)."""
+        if subject is None:
+            return "owner = %s", [owner]
+        prefix = f"{subject}{OWNER_KEY_SEPARATOR}"
+        return "(owner = %s OR left(owner, %s) = %s)", [subject, len(prefix), prefix]
+
     async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
-        """The owner's tasks, newest status first, as the SDK's stores order and page them."""
+        """The owner's tasks, newest status first, as the SDK's stores order and page them.
+
+        For a person (a direct caller), their agents' tasks for them too.
+        """
         owner = task_owner(context)
         await self._maybe_sweep()
         visible, ttl = self._visible()
-        where = ["owner = %s", visible]
-        args: list[Any] = [owner, *ttl]
+        owned, owned_args = self._owned(owner, task_subject(context))
+        where = [owned, visible]
+        args: list[Any] = [*owned_args, *ttl]
         if params.context_id:
             where.append("context_id = %s")
             args.append(_text(params.context_id))
@@ -650,8 +775,8 @@ class PostgresTaskStore(TaskStore):
             start = await self._db(
                 self.db.fetchone(
                     f"SELECT status_at FROM {self.table} "
-                    f"WHERE owner = %s AND task_id = %s AND {visible}",
-                    (owner, start_id, *ttl),
+                    f"WHERE {owned} AND task_id = %s AND {visible}",
+                    (*owned_args, start_id, *ttl),
                 )
             )
             if start is None:
@@ -681,6 +806,20 @@ class PostgresTaskStore(TaskStore):
             next_page_token=next_token,
             page_size=page_size,
         )
+
+    async def owner_for_subject(self, task_id: str, subject: str) -> str | None:
+        """The owner key of `task_id` among `subject`'s own and its agents' keys, or None."""
+        await self._maybe_sweep()
+        visible, ttl = self._visible()
+        owned, owned_args = self._owned(subject, subject)
+        row = await self._db(
+            self.db.fetchone(
+                f"SELECT owner FROM {self.table} WHERE task_id = %s AND {owned} AND {visible} "
+                "ORDER BY (owner = %s) DESC LIMIT 1",
+                (_text(task_id), *owned_args, *ttl, subject),
+            )
+        )
+        return str(row["owner"]) if row else None
 
     async def delete(self, task_id: str, context: ServerCallContext) -> None:
         owner = task_owner(context)
@@ -827,6 +966,9 @@ class RuntimeTaskStore(TaskStore):
 
     async def list(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
         return await self._store().list(params, context)
+
+    async def owner_for_subject(self, task_id: str, subject: str) -> str | None:
+        return await self._store().owner_for_subject(task_id, subject)
 
     async def delete(self, task_id: str, context: ServerCallContext) -> None:
         await self._store().delete(task_id, context)
@@ -1166,7 +1308,34 @@ class PolicyRequestHandler(DefaultRequestHandler):
     is refused (-32002 not cancelable, -32004 unsupported): the SDK would mark
     the task canceled here while its run goes on there and overwrites that, or
     wait here for events that only happen there.
+
+    A person (a direct caller) reads (`GetTask`) and cancels (`CancelTask`) the
+    tasks their agents started for them as well as their own: the request then
+    runs under the task's own owner key (`owner_context`), so the canceled task
+    is saved where it is. `ListTasks` lists them all (the stores widen a
+    person's list). A message naming such a task, and `SubscribeToTask`, stay
+    with its owner: "not found" for the person.
     """
+
+    async def _task_context(self, task_id: str, context: ServerCallContext) -> ServerCallContext:
+        """The context a GetTask or CancelTask of `task_id` runs under.
+
+        The caller's own, unless the caller is a person and the task is one their
+        agent started for them: then that task's owner key's (`owner_context`).
+        """
+        subject = task_subject(context)
+        finder = getattr(self.task_store, "owner_for_subject", None)
+        if subject is None or finder is None:
+            return context
+        owner = await finder(task_id, subject)
+        if owner is None or owner == task_owner(context):
+            return context
+        return owner_context(context, owner)
+
+    async def on_get_task(  # type: ignore[override]
+        self, params: GetTaskRequest, context: ServerCallContext
+    ) -> Any:
+        return await super().on_get_task(params, await self._task_context(params.id, context))
 
     async def on_message_send(  # type: ignore[override]
         self, params: SendMessageRequest, context: ServerCallContext
@@ -1186,6 +1355,7 @@ class PolicyRequestHandler(DefaultRequestHandler):
     async def on_cancel_task(  # type: ignore[override]
         self, params: CancelTaskRequest, context: ServerCallContext
     ) -> Any:
+        context = await self._task_context(params.id, context)
         task = await self.task_store.get(params.id, context)
         if task is None:
             raise TaskNotFoundError
