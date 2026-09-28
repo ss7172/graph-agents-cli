@@ -21,8 +21,8 @@
 - every ``references/<file>.md`` a SKILL.md mentions exists, and every reference
   file is mentioned;
 - Google Cloud product names appear only under a "Migration note" heading;
-- the rules the SkillOpt experiment added to the workflow and scaffold skills
-  (reviewed and approved text) are still there;
+- the rules the SkillOpt experiment added to the workflow, scaffold and observability
+  skills (reviewed and approved text) are still there;
 - ``skills/`` and ``src/graph_agents_cli/skills/data/`` are byte-identical.
 
 No network, no cluster, no model key.
@@ -222,6 +222,29 @@ SCAFFOLD_RULES = (
 )
 
 
+# The observability rules the SkillOpt experiment found with Codex (tools/skillopt, round 3b),
+# as reviewed and approved: the salt is configuration only, and the commands still to run are
+# named verbatim.
+OBSERVABILITY_RULES = (
+    "## Procedure: salt the hashed principal id",
+    "Add `PRINCIPAL_HASH_SALT` to `secrets.keys` in `graph-agents-cli-manifest.yaml` and keep the "
+    "existing keys. This is configuration only.",
+    "do not change code, chart templates or `values-*.yaml`, and never put the value in a values "
+    "file.",
+    "`graph-agents-cli secrets apply --env <env>`, then `graph-agents-cli deploy --restart --env "
+    "<env>`.",
+    "Repeat both steps for every deployed environment.",
+    "the final answer must list these commands verbatim, with the real environment name "
+    "substituted",
+    'To set the salt or rotate a leaked one, follow "Procedure: salt the hashed principal id"',
+    "For a change to one environment, edit only that environment's `values-<env>.yaml` or "
+    "`.env.<env>`;",
+    "Locally: edit only the project's `.env` (no chart values, no code).",
+    "Do not add the LangSmith SDK's own switches (`LANGSMITH_TRACING`, `LANGCHAIN_TRACING_V2`): "
+    "`TRACING_ENABLED` is the switch",
+)
+
+
 @pytest.mark.parametrize("rule", WORKFLOW_RULES)
 def test_workflow_skill_keeps_the_approved_skillopt_rules(rule: str) -> None:
     assert rule in _flat_text("graph-agents-cli-workflow")
@@ -235,6 +258,18 @@ def test_workflow_skill_does_not_claim_tools_must_be_a_literal() -> None:
 @pytest.mark.parametrize("rule", SCAFFOLD_RULES)
 def test_scaffold_skill_keeps_the_approved_skillopt_rules(rule: str) -> None:
     assert rule in _flat_text("graph-agents-cli-scaffold")
+
+
+@pytest.mark.parametrize("rule", OBSERVABILITY_RULES)
+def test_observability_skill_keeps_the_approved_skillopt_rules(rule: str) -> None:
+    assert rule in _flat_text("graph-agents-cli-observability")
+
+
+def test_observability_skill_keeps_the_trace_header_rule() -> None:
+    """The write-back kept what the skill said about trace headers across agents."""
+    text = _flat_text("graph-agents-cli-observability")
+    assert "an incoming `traceparent` continues the caller's trace" in text
+    assert "`PROPAGATE_TRACE_HEADERS=false` turns both directions off" in text
 
 
 def test_scaffold_examples_keep_the_default_guidance_file() -> None:

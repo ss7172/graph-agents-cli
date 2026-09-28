@@ -86,9 +86,11 @@ characters of sha256 of the policy's `Principal.id`, or of HMAC-SHA256 keyed wit
 the same identity, so a support engineer can correlate a trace with a conversation without the
 trace revealing who the user is. Set `PRINCIPAL_HASH_SALT` (and add it to `secrets.keys`) when ids
 are guessable, such as email addresses: without a salt anyone holding a trace can confirm a guess
-by hashing it. Changing the salt changes every hash. Under `shared-bearer` every caller is
-`shared`. Under `langgraph-server`, runs started through the server's native API carry the raw id
-in checkpoint metadata (the server injects it); `/chat` runs carry only the hash.
+by hashing it. Changing the salt changes every hash, so older logs and run records no longer match
+new ones. To set the salt or rotate a leaked one, follow "Procedure: salt the hashed principal id"
+below (no code or values change). Under `shared-bearer` every caller is `shared`. Under
+`langgraph-server`, runs started through the server's native API carry the raw id in checkpoint
+metadata (the server injects it); `/chat` runs carry only the hash.
 
 ## Run records
 
@@ -164,8 +166,42 @@ the run's 30 s lease expiring, so crashes can be counted and audited.
 4. Send one request with `graph-agents-cli run --url ... "hello"` and find the trace by
    `thread_id` / `run_id` from the `message.end` event.
 
-Locally: set `TRACING_ENABLED=true` and either key or endpoint in `.env`; `playground` and `run`
-pick it up.
+For a change to one environment, edit only that environment's `values-<env>.yaml` or
+`.env.<env>`; `values.yaml` and the other environments stay as they are. When told not to deploy,
+or when the user runs cluster commands, end your answer with the exact commands still to run, and
+do not run them yourself:
+- `graph-agents-cli secrets apply --env <env>`, whenever a value goes into `.env.<env>` (even one
+  the user fills in).
+- Then the deploy (`deploy --restart --env <env>` after a Secret-only change).
+
+Locally: edit only the project's `.env` (no chart values, no code). Set `TRACING_ENABLED=true` plus
+either `LANGSMITH_API_KEY` or `OTEL_EXPORTER_OTLP_ENDPOINT=<collector URL>`; for OTLP leave the
+LangSmith key unset so the OTLP path is selected. Keep `TRACE_CAPTURE=metadata` unless the user
+explicitly asked for `full`. Do not add the LangSmith SDK's own switches (`LANGSMITH_TRACING`,
+`LANGCHAIN_TRACING_V2`): `TRACING_ENABLED` is the switch, and the app sets `LANGSMITH_TRACING`
+itself when LangSmith is the destination. Leave the other `.env` entries (model provider,
+API key) as they are. `playground` and `run` pick the settings up. If the collector is not running
+yet, say so in your answer; the configuration is still correct.
+
+## Procedure: salt the hashed principal id
+
+Use this when principal ids are guessable (emails, phone numbers, account numbers).
+
+1. Add `PRINCIPAL_HASH_SALT` to `secrets.keys` in `graph-agents-cli-manifest.yaml` and keep the
+   existing keys. This is configuration only. The app already uses HMAC for the hash whenever the
+   variable is set, so do not change code, chart templates or `values-*.yaml`, and never put the
+   value in a values file.
+2. The user puts a long random value (for example
+   `python -c "import secrets; print(secrets.token_hex(32))"`) in `.env.<env>` and keeps it stable.
+3. `graph-agents-cli secrets apply --env <env>`, then `graph-agents-cli deploy --restart --env
+   <env>`. Pods read a changed Secret only when they start. Repeat both steps for every deployed
+   environment.
+4. Every hash changes once: older traces, logs and run records keep the old hashes and no longer
+   match new ones.
+
+When the user runs cluster commands themselves, the final answer must list these commands
+verbatim, with the real environment name substituted (for example `--env prod`). A phrase such as
+"apply your secrets and roll out" is not enough.
 
 ## Troubleshooting
 

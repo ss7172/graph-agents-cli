@@ -161,6 +161,15 @@ migration" with the steps to follow.
   (8 of 8 sessions, against 4 of 8), its examples no longer pass
   `--agent-guidance-filename CLAUDE.md`, and it has the agent read `create_params` before
   `scaffold enhance` and after `create`.
+- **The observability skill has a procedure for salting the hashed principal id**, found by
+  the SkillOpt experiment with Codex sessions and reviewed by hand before it was adopted: add
+  `PRINCIPAL_HASH_SALT` to `secrets.keys` (configuration only: no code, chart template or
+  values change), put the value in `.env.<env>`, then `secrets apply --env <env>` and
+  `deploy --restart --env <env>` for every deployed environment, and name those commands
+  verbatim when the user runs them. Codex followed it in 6 of 6 sessions of the benchmark's
+  salt task, against 1 of 9 with the old text. Tracing for one environment now edits only
+  that environment's files and ends with the commands still to run; local tracing edits
+  only `.env` and adds none of the LangSmith SDK's own switches.
 
 ### Fixed
 
