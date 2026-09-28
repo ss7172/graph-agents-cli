@@ -1082,7 +1082,120 @@ def test_the_resumed_run_keeps_the_requesters_actor() -> None:
     alice = Principal(id="alice", attributes={"credentials": {"x": "alice's"}})
     assert resume_principal(record, CONCIERGE_THREAD, alice) is alice
     # The same owner key: the principal of this request.
-    assert resume_principal(record, CONCIERGE_THREAD, ALICE_VIA_CONCIERGE) is ALICE_VIA_CONCIERGE
+    assert resume_principal(record, CONCIERGE_THREAD, ALICE_VIA_CONCIERGE) == ALICE_VIA_CONCIERGE
+
+
+# --- the user's words of the request that paused (the origin extension) ----------------------
+
+ASKED = {"text": "please cancel order 7", "truncated": False, "hops": 1}
+
+
+def _asked_record(**overrides: Any) -> ApprovalRecord:
+    """An approval of a call the concierge's request paused, with the user's words it forwarded."""
+    fields = {"interrupt_id": "i1", "thread_id": "t1", "run_id": "r1"}
+    value_overrides = {k: v for k, v in overrides.items() if k not in fields}
+    fields.update({k: v for k, v in overrides.items() if k in fields})
+    return record_from_interrupt(
+        _interrupt_value(**value_overrides), requester=ALICE_VIA_CONCIERGE, origin=ASKED, **fields
+    )
+
+
+def test_the_users_words_are_kept_with_the_approval_and_never_shown() -> None:
+    record = _asked_record()
+    assert record.payload["origin"] == ASKED
+    shown = json.dumps(
+        [record.public(), approval_view(record), decision_value(record, "approve")], default=str
+    )
+    assert "origin" not in record.public() and ASKED["text"] not in shown
+    # What the approver sees, and so the digest a relayed decision names, is the same.
+    plain = record_from_interrupt(
+        _interrupt_value(),
+        interrupt_id="i1",
+        thread_id="t1",
+        run_id="r1",
+        requester=ALICE_VIA_CONCIERGE,
+    )
+    assert "origin" not in plain.payload and record.display_digest == plain.display_digest
+
+
+def test_the_resumed_run_acts_on_the_words_of_the_request_that_paused() -> None:
+    record = _asked_record()
+    relayed = {"text": "yes, go ahead", "truncated": False, "hops": 1}
+    relayer = Principal(
+        id="alice",
+        attributes={
+            "@actor": CONCIERGE_ACTOR.public(),
+            "credentials": {"@subject_token": "fresh", "@origin": relayed},
+        },
+        actor=CONCIERGE_ACTOR,
+    )
+    # The agent delivering the person's decision: its fresh token, the request's words (not
+    # the words the person said when approving at the agent that asked).
+    acting = resume_principal(record, CONCIERGE_THREAD, relayer, origin=ASKED)
+    assert acting.id == "alice" and acting.actor == CONCIERGE_ACTOR
+    assert acting.attributes["credentials"] == {"@subject_token": "fresh", "@origin": ASKED}
+    assert relayer.attributes["credentials"]["@origin"] == relayed  # the decider's own: untouched
+    # No words kept with the approval (the request forwarded none): the decision's are not
+    # taken instead.
+    bare = resume_principal(record, CONCIERGE_THREAD, relayer, origin=None)
+    assert bare.attributes["credentials"] == {"@subject_token": "fresh"}
+    # A role approver: the requester rebuilt, with the request's words and no credential.
+    carol = Principal(id="carol", roles=["ops"], attributes={"credentials": {"x": "c"}})
+    rebuilt = resume_principal(record, CONCIERGE_THREAD, carol, origin=ASKED)
+    assert rebuilt.id == "alice" and rebuilt.actor == CONCIERGE_ACTOR
+    assert rebuilt.attributes["credentials"] == {"@origin": ASKED}
+    assert "credentials" not in resume_principal(record, CONCIERGE_THREAD, carol).attributes
+    # The person deciding at this agent acts with their own words.
+    alice = Principal(id="alice", attributes={"credentials": {"x": "alice's"}})
+    assert resume_principal(record, CONCIERGE_THREAD, alice, origin=ASKED) is alice
+
+
+async def test_the_users_words_go_once_the_approval_is_decided_or_expired(
+    store: ApprovalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRACE_CAPTURE", "full")  # the call is kept; the words never are
+    pending, _, _ = await store.add(_asked_record())
+    assert (await store.get(pending.approval_id)).payload["origin"] == ASKED
+    decided = await store.decide(pending.approval_id, APPROVED, "x", None)
+    assert decided is not None and "origin" not in decided.payload
+    assert decided.payload["body"] == {"reason": "asked"}
+    assert "origin" not in (await store.get(pending.approval_id)).payload
+    if store.path is not None:
+        assert ASKED["text"] not in store.path.read_text(encoding="utf-8")
+    # Expired: one the run no longer waits for, one past its time, one superseded.
+    gone, _, _ = await store.add(_asked_record(interrupt_id="i2"))
+    await store.expire(gone.approval_id)
+    first, _, _ = await store.add(_asked_record(interrupt_id="i3"))
+    later, _, _ = await store.add(_asked_record(interrupt_id="i3", call_hash="h2"))
+    store._clock = lambda: later.expires_at + timedelta(seconds=1)
+    assert [r.approval_id for r in await store.expire_due()] == [later.approval_id]
+    for record in (gone, first, later):
+        kept = await store.get(record.approval_id)
+        assert kept.status == EXPIRED and "origin" not in kept.payload, kept
+    if store.path is not None:
+        assert ASKED["text"] not in store.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("runtime", "kept"), [("fastapi", True), ("langgraph-server", False)])
+async def test_the_words_are_kept_only_where_the_resumed_run_can_use_them(
+    runtime: str, kept: bool
+) -> None:
+    """LangGraph Server never passes credentials (the words among them) to tools."""
+    from {{cookiecutter.agent_directory}}.app_utils import chat
+
+    rt = chat.ChatRuntime()
+    rt.runtime = runtime
+    rt.approvals = ApprovalStore(Database("memory"))
+    asking = Principal(
+        id="alice",
+        attributes={"@actor": CONCIERGE_ACTOR.public(), "credentials": {"@origin": ASKED}},
+        actor=CONCIERGE_ACTOR,
+    )
+    [record] = await rt._record_approvals(
+        asking, "t1", "r1", [{"id": "i1", "value": _interrupt_value()}]
+    )
+    assert (record.payload.get("origin") == ASKED) is kept
+    assert ("origin" in record.payload) is kept
 
 
 async def test_listing_follows_the_owner_key(store: ApprovalStore) -> None:

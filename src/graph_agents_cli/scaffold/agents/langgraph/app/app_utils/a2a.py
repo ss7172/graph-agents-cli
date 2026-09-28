@@ -91,8 +91,10 @@ calling for a user may send the user's own words in the message metadata under
 its URI (`{"origin": {"text", "truncated", "hops"}}`; in a decision it relays,
 `approving` too). For a delegated principal only, they go to the run's private
 credentials (`@origin`), capped at `A2A_ORIGIN_MAX_CHARS`; more `hops` than
-`AUTH_MAX_DELEGATION_DEPTH` fails the task. `RuntimeTaskStore.save` takes them
-out of every message before a task is stored.
+`AUTH_MAX_DELEGATION_DEPTH` fails the task. A run a decision resumes acts on
+the words of the request that paused it, which its approval keeps until it is
+decided (`approvals.resume_principal`), not on the words the decision carries.
+`RuntimeTaskStore.save` takes them out of every message before a task is stored.
 
 The card's description (and its one skill's) is `A2A_DESCRIPTION`, its
 version `AGENT_VERSION`, its name the mount name `A2A_NAME`.
@@ -184,16 +186,15 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     DIGEST_MAX_CHARS,
 )
 from {{cookiecutter.agent_directory}}.app_utils.auth import (
-    CREDENTIALS_KEY,
     CUSTOM,
     JWT,
-    ORIGIN_CREDENTIAL,
     OWNER_KEY_SEPARATOR,
     Principal,
     authorize_action,
     check_startup,
     delegation_settings,
     policy_name,
+    with_origin,
 )
 from {{cookiecutter.agent_directory}}.app_utils.chat import (
     EVENT_DELTA,
@@ -1167,22 +1168,6 @@ def read_origin(message: Message | None, principal: Principal) -> tuple[dict[str
     return {"text": text[:cap], "truncated": truncated, "hops": max(hops, 1)}, max(hops, 1)
 
 
-def with_origin(principal: Principal, origin: dict[str, Any]) -> Principal:
-    """`principal` with the forwarded origin in its credentials (private: never persisted)."""
-    attributes = dict(principal.attributes)
-    credentials = attributes.get(CREDENTIALS_KEY)
-    kept = dict(credentials) if isinstance(credentials, dict) else {}
-    kept[ORIGIN_CREDENTIAL] = origin
-    attributes[CREDENTIALS_KEY] = kept
-    return Principal(
-        id=principal.id,
-        roles=list(principal.roles),
-        permissions=set(principal.permissions),
-        attributes=attributes,
-        actor=principal.actor,
-    )
-
-
 def _max_depth() -> int:
     try:
         return delegation_settings().max_depth
@@ -1859,7 +1844,9 @@ class LangGraphAgentExecutor(AgentExecutor):
             )
             return
         # An agent calling for a user may forward the user's own words (the origin
-        # extension): kept with this request's credentials only, never stored.
+        # extension): kept with this request's credentials only, never stored. The run
+        # a decision resumes acts on the words of the request that paused it instead
+        # (kept with the approval: `resume_principal`), not on the decision's.
         origin, hops = read_origin(context.message, principal)
         depth = _max_depth()
         if hops > depth:

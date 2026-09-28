@@ -313,6 +313,45 @@ def keep_subject_token(
     return principal
 
 
+def origin_of(principal: Principal) -> dict[str, Any] | None:
+    """The user's own words a calling agent forwarded (`credentials["@origin"]`), or None.
+
+    A copy holding `text`, `truncated` and `hops` (the origin extension's
+    fields, as `a2a.read_origin` keeps them); None without a text.
+    """
+    credentials = principal.attributes.get(CREDENTIALS_KEY)
+    origin = credentials.get(ORIGIN_CREDENTIAL) if isinstance(credentials, Mapping) else None
+    if not isinstance(origin, Mapping) or not isinstance(origin.get("text"), str):
+        return None
+    return {key: origin[key] for key in ("text", "truncated", "hops") if key in origin}
+
+
+def with_origin(principal: Principal, origin: Mapping[str, Any] | None) -> Principal:
+    """`principal` with `origin` as the user's forwarded words (private: never persisted).
+
+    A new principal, its credentials otherwise the same; `origin` None removes
+    any it had.
+    """
+    attributes = dict(principal.attributes)
+    credentials = attributes.get(CREDENTIALS_KEY)
+    kept = dict(credentials) if isinstance(credentials, Mapping) else {}
+    if origin is None:
+        kept.pop(ORIGIN_CREDENTIAL, None)
+    else:
+        kept[ORIGIN_CREDENTIAL] = dict(origin)
+    if kept:
+        attributes[CREDENTIALS_KEY] = kept
+    else:
+        attributes.pop(CREDENTIALS_KEY, None)
+    return Principal(
+        id=principal.id,
+        roles=list(principal.roles),
+        permissions=set(principal.permissions),
+        attributes=attributes,
+        actor=principal.actor,
+    )
+
+
 def subject_token_needed() -> bool:
     """Whether the loaded api-policy has an API that acts with the caller's own token.
 

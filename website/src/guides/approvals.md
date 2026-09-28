@@ -396,6 +396,14 @@ agent that presented the request is recorded with each approval it pauses for
   decides, the run continues as that principal of this request; when a `role:` approver
   decides, it continues as the requester rebuilt from the approval, its agent included, with
   no credentials.
+- **It acts on the user's words of the request that paused it.** When an agent's request
+  paused (fastapi runtime), the approval keeps the user's own words that agent forwarded
+  (the origin extension; never shown, dropped once decided or expired, whatever
+  `TRACE_CAPTURE` says). The run a relayed or `role:` decision resumes checks those words
+  again (`require_user_mentioned`), not the words a relayed decision carries (what the person
+  said when approving at their agent), so the check that passed before the pause passes
+  again, and an agent relaying the approval one level further rebuilds the very call the
+  person approved.
 
 The approval object carries `decide_with` (so a caller knows at once whether a relay can
 work) and `digest`; a direct decider may send the digest too, and it is checked when sent.

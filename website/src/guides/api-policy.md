@@ -436,7 +436,9 @@ minted just before sending), the limits and the response cap apply to every byte
 - **The user's own words travel with the request** when the peer's card declares the origin
   extension and `A2A_FORWARD_ORIGIN=auto` (the default; `off` never sends them): the user's
   latest message, or, when an agent asked this one, the words it forwarded, never a model's
-  text. The peer checks record ids against them (`require_user_mentioned`).
+  text. The peer checks record ids against them (`require_user_mentioned`). The run a
+  relayed decision resumes there checks the words of the request that paused it, which its
+  approval keeps, not the words the decision carries.
 - **No loops.** A call to this agent itself, or to an agent already in the request's chain,
   is refused before anything is sent.
 - **Errors the model reads**: an unknown agent, a card that is not this peer, `orders
@@ -527,9 +529,11 @@ text, which an instruction planted in data the agent read may have shaped. The h
   refuses when none were forwarded ("'ORD-1002' was asked for by agent 'concierge', which
   forwarded no user message to check it against; the user must name it"); `refuse` always
   refuses; `request` counts the agent's request as the user's words (the 0.2 behaviour, an
-  opt-out that `lint` and `api show` point out). Until the A2A client forwards the user's
-  words, `origin` refuses every delegated call such a tool makes: the user names the record at
-  this agent directly.
+  opt-out that `lint` and `api show` point out). The A2A client forwards the user's words to
+  a peer whose card declares the origin extension (`A2A_FORWARD_ORIGIN=auto`, see [Ask other
+  agents](#ask-other-agents-app_utilsa2a_clientpy)); without them, `origin` refuses every
+  delegated call such a tool makes, and the user names the record at this agent directly. A
+  run resumed by a decision checks the words of the request that paused it.
 
 The model is told as well: in a delegated run, `UntrustedToolResults` fences each human
 message as the agent's (`<agent_request from="concierge">`) and adds one factual note after the

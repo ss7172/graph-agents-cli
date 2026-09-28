@@ -23,7 +23,9 @@ HTTP.
 
 * The origin extension: the card declares it; the user's own words an agent
   forwards reach the run (never a direct caller's metadata), and are never
-  stored with the task; too many hops fail the task.
+  stored with the task; too many hops fail the task. The run a relayed decision
+  resumes acts on the words of the request that paused it, whatever words (if
+  any) the decision carries.
 * The approval request: `approval_json` keeps exact values, the text shows the body.
 * A failed or refused task names why in an error part (`thread_busy`).
 * Tasks waiting on an approval follow its outcome (KI-025): a decision sent on the
@@ -73,6 +75,7 @@ from {{cookiecutter.agent_directory}}.app_utils import chat as chat_module
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     A2A_ORIGIN_EXTENSION,
     get_client,
+    require_user_mentioned,
 )
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     reset_policy_cache as reset_api_policy,
@@ -117,6 +120,27 @@ def _backend(request: httpx.Request) -> httpx.Response:
 async def cancel_order(order_id: str, runtime: ToolRuntime[Any]) -> str:
     """Cancel an order by its id."""
     context = getattr(runtime, "context", None)
+    client = get_client("shop", context=context, transport=httpx.MockTransport(_backend))
+    data = await client.post(
+        "/orders/{order_id}/cancel",
+        operation_id="cancelOrder",
+        path_params={"order_id": order_id},
+        json_body=BODY,
+    )
+    return json.dumps(data)
+
+
+# The user's words each run of `cancel_checked` was given (its `@origin`), in order.
+SEEN_ORIGINS: list[Any] = []
+
+
+@tool
+async def cancel_checked(order_id: str, runtime: ToolRuntime[Any]) -> str:
+    """Cancel an order, once the user's own words name it (`require_user_mentioned`)."""
+    context = getattr(runtime, "context", None)
+    attributes = getattr(context, "attributes", None) or {}
+    SEEN_ORIGINS.append((attributes.get("credentials") or {}).get("@origin"))
+    require_user_mentioned(order_id, runtime)
     client = get_client("shop", context=context, transport=httpx.MockTransport(_backend))
     data = await client.post(
         "/orders/{order_id}/cancel",
@@ -286,6 +310,17 @@ async def _stored_tasks(orders: dict[str, Any]) -> list[str]:
         return [str(row[0]) for row in await cursor.fetchall()]
 
 
+async def _stored_approvals(orders: dict[str, Any]) -> list[str]:
+    """Every stored approval's payload as JSON text (Postgres); [] under memory."""
+    if orders["database"] != "postgres":
+        return []
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(os.environ["POSTGRES_DSN"]) as conn:
+        cursor = await conn.execute("SELECT payload::text FROM approvals")
+        return [str(row[0]) for row in await cursor.fetchall()]
+
+
 # --- the origin extension --------------------------------------------------------------------
 
 
@@ -348,6 +383,47 @@ async def test_words_forwarded_through_too_many_agents_fail_the_task(
     assert "delegation chain too deep (AUTH_MAX_DELEGATION_DEPTH=3)" in _note(task)
     assert _data_parts(task, "error") == [{"type": "error", "code": "delegation_too_deep"}]
     assert SENT == []
+
+
+@pytest.mark.parametrize("approving_words", ["yes, go ahead", None])
+async def test_the_run_a_decision_resumes_acts_on_the_words_of_the_request_that_paused(
+    orders: dict[str, Any], use_test_tools: Any, approving_words: str | None
+) -> None:
+    """A decision an agent relays carries the words the person said when approving there
+    ("yes, go ahead"), or none at all; the run it resumes still acts on the words of the
+    request that paused it. So a check against them holds on the resumed run too, and an
+    agent that relays an approval one level further rebuilds the very call the person saw.
+    The words are kept with the approval while it waits, and dropped once it is decided."""
+    use_test_tools(cancel_checked)
+    SEEN_ORIGINS.clear()
+    asked = {"text": "please cancel order 7", "truncated": False, "hops": 1}
+    sent = await _rpc(
+        orders["concierge"],
+        "SendMessage",
+        _message({"text": PROMPT}, metadata={A2A_ORIGIN_EXTENSION: {"origin": asked}}),
+    )
+    task = sent["result"]["task"]
+    assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED", task
+    [request] = _data_parts(task, "approval_request")
+    [approval] = json.loads(request["approval_json"])
+    assert "origin" not in approval and asked["text"] not in json.dumps(request)
+    listed = await orders["concierge"].get(f"/threads/{task['contextId']}/approvals")
+    assert listed.status_code == 200 and asked["text"] not in listed.text
+    fields: dict[str, Any] = {"contextId": task["contextId"], "referenceTaskIds": [task["id"]]}
+    if approving_words is not None:
+        said = {"text": approving_words, "truncated": False, "hops": 1}
+        fields["metadata"] = {A2A_ORIGIN_EXTENSION: {"origin": said}}
+    decided = await _rpc(
+        orders["concierge"], "SendMessage", _message(_decision(approval), **fields)
+    )
+    carrier = decided["result"]["task"]
+    assert carrier["status"]["state"] == "TASK_STATE_COMPLETED", carrier
+    assert [(r.method, r.url.path) for r in SENT] == [("POST", "/orders/7/cancel")]
+    assert SEEN_ORIGINS == [asked, asked]
+    stored = await _stored_approvals(orders)
+    assert all(asked["text"] not in payload for payload in stored)
+    if orders["database"] == "postgres":
+        assert len(stored) == 1
 
 
 # --- what an agent reads: exact values, and why a task failed ---------------------------------

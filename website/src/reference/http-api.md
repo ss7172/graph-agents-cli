@@ -400,7 +400,10 @@ The origin extension
     them and the model's note quotes them. They are read for delegated principals only (a
     person's own message is their words), capped at `A2A_ORIGIN_MAX_CHARS`, never stored with
     the task (every task is saved without them) and never traced. `hops` over
-    `AUTH_MAX_DELEGATION_DEPTH` fails the task: `delegation chain too deep`. This agent trusts
+    `AUTH_MAX_DELEGATION_DEPTH` fails the task: `delegation chain too deep`. The run a
+    decision resumes acts on the words of the request that paused it, not on those the
+    decision carries: the approval keeps them while it waits (never shown; dropped once it is
+    decided or expired). This agent trusts
     the calling agent's code to relay the words faithfully: it guards against an injected
     model, not a compromised agent.
 

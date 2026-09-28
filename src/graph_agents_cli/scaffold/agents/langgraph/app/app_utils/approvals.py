@@ -51,9 +51,13 @@ decider's hashed id, the decision time and comment, when the approval was
 used, and when it expires (`approval.timeout_s` after it was requested). A
 decision relayed to another agent also keeps, in `payload`, the approval it
 decides there (`nested`) and the call that will then happen (`effect`), and
-expires 5 s before that approval at the latest. Once
+expires 5 s before that approval at the latest. A call an agent's request
+paused (under the fastapi runtime) also keeps the user's own words that agent
+forwarded (`origin`, never shown): the run a decision resumes acts on them
+(`resume_principal`). Once
 decided or expired the query and body (and those of every nested call and of
-the effect) are dropped from the record unless `TRACE_CAPTURE=full`. A pending approval past its expiry is expired (=
+the effect) are dropped from the record unless `TRACE_CAPTURE=full`, and the
+user's words whatever it says. A pending approval past its expiry is expired (=
 rejected): the runtime's sweep marks it every `SWEEP_INTERVAL_S` seconds and
 every read treats it so. Deleting a thread deletes its approvals.
 
@@ -132,6 +136,7 @@ from {{cookiecutter.agent_directory}}.app_utils.auth import (
     actor_of_attributes,
     owner_key_of,
     read_across_roles,
+    with_origin,
 )
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, StorageNotReady, capture_full
 from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadRecord
@@ -171,6 +176,11 @@ MEMORY_APPROVALS_CAP = 10_000
 COMMENT_MAX_CHARS = 1000
 # Payload keys dropped once an approval is decided or expired (unless TRACE_CAPTURE=full).
 CALL_CONTENT_KEYS = ("query", "body")
+# The user's own words the request that paused carried (`credentials["@origin"]`, which an
+# agent calling for them forwarded): kept in the payload while the approval waits, so the run
+# it resumes acts on them whoever delivers the decision (`resume_principal`); dropped once it
+# is decided or expired, whatever TRACE_CAPTURE says, and never shown.
+ORIGIN_PAYLOAD_KEY = "origin"
 # A decision relayed to another agent: the approval it decides there (`nested`, recursive:
 # its `call`, and the approval that one relays in turn) and the call that will then happen
 # (`effect`). Their query and body go with the call's once decided.
@@ -418,8 +428,13 @@ def record_from_interrupt(
     run_id: str,
     requester: Principal,
     now: datetime | None = None,
+    origin: Mapping[str, Any] | None = None,
 ) -> ApprovalRecord:
-    """A pending approval for the interrupt a gated call raised (`is_approval_interrupt`)."""
+    """A pending approval for the interrupt a gated call raised (`is_approval_interrupt`).
+
+    `origin` is the user's own words the paused request carried (`auth.origin_of`),
+    kept until the approval is decided so the resumed run acts on them.
+    """
     now = now or utcnow()
     raw_timeout = value.get("timeout_s")
     timeout = (
@@ -443,6 +458,8 @@ def record_from_interrupt(
     payload.update(
         {key: value[key] for key in (NESTED_KEY, EFFECT_KEY) if isinstance(value.get(key), dict)}
     )
+    if origin is not None and isinstance(origin.get("text"), str):
+        payload[ORIGIN_PAYLOAD_KEY] = dict(origin)
     expires_at = now + timedelta(seconds=timeout)
     downstream = _nested_expiry(payload.get(NESTED_KEY))
     if downstream is not None:
@@ -636,7 +653,12 @@ def sees_call(principal: Principal, owner: ThreadOwner, approvers: Iterable[str]
     )
 
 
-def resume_principal(record: ApprovalRecord, owner: ThreadOwner, decider: Principal) -> Principal:
+def resume_principal(
+    record: ApprovalRecord,
+    owner: ThreadOwner,
+    decider: Principal,
+    origin: Mapping[str, Any] | None = None,
+) -> Principal:
     """Who the resumed run acts as: always the requester, never another decider.
 
     When the requester decides (the same subject and actor, or the subject
@@ -646,20 +668,28 @@ def resume_principal(record: ApprovalRecord, owner: ThreadOwner, decider: Princi
     attributes and actor the run had when it paused; credentials are never
     stored, so an `auth: forward` call approved by someone else has none and
     is not sent.
+
+    An agent's run acts on the user's words of the request that paused it
+    (`origin`, which the approval kept: `ORIGIN_PAYLOAD_KEY`), never on those
+    a decision it relays carries (the person's words when approving, at the
+    agent that asked): its tools check the same words again, and a relay it
+    makes in turn rebuilds the very call the person approved. The person
+    deciding directly acts with their own words.
     """
     subject, actor = thread_owner(owner)
-    if decider.owner_key() == owner_key_of(subject, actor) or (
-        decider.actor is None and decider.id == subject
-    ):
+    if decider.actor is None and decider.id == subject:
         return decider
+    if decider.owner_key() == owner_key_of(subject, actor):
+        return with_origin(decider, origin)
     context = record.requester_context or {}
     attributes = dict(context.get("attributes") or {})
-    return Principal(
+    rebuilt = Principal(
         id=subject,
         roles=[str(r) for r in context.get("roles") or []],
         attributes=attributes,
         actor=actor_of_attributes(attributes),
     )
+    return with_origin(rebuilt, origin) if origin is not None else rebuilt
 
 
 # ---------------------------------------------------------------------------
@@ -668,9 +698,10 @@ def resume_principal(record: ApprovalRecord, owner: ThreadOwner, decider: Princi
 
 
 def _without_call(payload: Mapping[str, Any]) -> dict[str, Any]:
+    kept = {k: v for k, v in payload.items() if k != ORIGIN_PAYLOAD_KEY}
     if capture_full():
-        return dict(payload)
-    return without_nested_call({k: v for k, v in payload.items() if k not in CALL_CONTENT_KEYS})
+        return kept
+    return without_nested_call({k: v for k, v in kept.items() if k not in CALL_CONTENT_KEYS})
 
 
 _COLUMNS = (
@@ -684,14 +715,18 @@ _COLUMNS = (
 def _cleared_payload() -> str:
     """The SQL of the payload with the call cleared, unless the first parameter is true
     (TRACE_CAPTURE=full): its query and body, those of the relayed approvals' calls at
-    every level (as `without_nested_call`), and those of its `effect`."""
+    every level (as `without_nested_call`), and those of its `effect`. The user's words
+    (`ORIGIN_PAYLOAD_KEY`) go whatever the parameter says."""
     paths = ["'{effect,query}'", "'{effect,body}'"]
     for depth in range(1, NESTED_MAX_DEPTH + 1):
         prefix = ",".join([NESTED_KEY] * depth)
         # A text[] literal such as '{nested,call,body}' (built without doubled braces).
         paths += ["'{" + prefix + ",call," + key + "}'" for key in CALL_CONTENT_KEYS]
     cleared = " ".join(f"#- {path}" for path in paths)
-    return f"CASE WHEN %s THEN payload ELSE (payload - 'query' - 'body') {cleared} END"
+    return (
+        f"(CASE WHEN %s THEN payload ELSE (payload - 'query' - 'body') {cleared} END)"
+        f" - '{ORIGIN_PAYLOAD_KEY}'"
+    )
 
 
 # Clears the call from the payload unless the first parameter is true (TRACE_CAPTURE=full).

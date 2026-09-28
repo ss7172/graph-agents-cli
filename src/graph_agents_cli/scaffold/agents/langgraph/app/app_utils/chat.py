@@ -122,6 +122,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     DECISIONS,
     DIGEST_MISMATCH_DETAIL,
     EXPIRED,
+    ORIGIN_PAYLOAD_KEY,
     PENDING,
     REJECTED,
     SWEEP_INTERVAL_S,
@@ -137,7 +138,7 @@ from {{cookiecutter.agent_directory}}.app_utils.approvals import (
     resume_principal,
     sees_call,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, run_context_of
+from {{cookiecutter.agent_directory}}.app_utils.auth import Principal, origin_of, run_context_of
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import (
     checkpointer_kind,
     get_checkpointer,
@@ -1637,6 +1638,9 @@ class ChatRuntime:
         self._check_decidable(record)
         if digest_refusal(principal, record, digest):
             raise ApprovalError(409, CODE_DIGEST_MISMATCH, DIGEST_MISMATCH_DETAIL)
+        # The user's words of the request that paused (the resumed run acts on them), read
+        # before the decision drops them from the record.
+        paused_origin = record.payload.get(ORIGIN_PAYLOAD_KEY)
         relayed_by = principal.actor.id if principal.actor is not None else None
         lease = await self.acquire_thread(thread_id)
         try:
@@ -1691,7 +1695,12 @@ class ChatRuntime:
             f" (relayed by {relayed_by})" if relayed_by else "",
             extra={"thread_id": thread_id, "approval_id": approval_id},
         )
-        acting = resume_principal(decided, thread, principal)
+        acting = resume_principal(
+            decided,
+            thread,
+            principal,
+            origin=paused_origin if isinstance(paused_origin, dict) else None,
+        )
         return lease, Resume(values=values, approval=decided, decision=decision), acting
 
     @staticmethod
@@ -1727,9 +1736,14 @@ class ChatRuntime:
     async def _record_approvals(
         self, principal: Principal, thread_id: str, run_id: str, interrupts: list[dict[str, Any]]
     ) -> list[ApprovalRecord]:
-        """A pending approval per interrupt of a paused run (one already pending is kept)."""
+        """A pending approval per interrupt of a paused run (one already pending is kept).
+
+        Under the fastapi runtime each keeps the user's words the request carried
+        (the resumed run acts on them); LangGraph Server never passes them to tools.
+        """
         assert self.approvals is not None
         records: list[ApprovalRecord] = []
+        origin = origin_of(principal) if self.runtime != LANGGRAPH_SERVER else None
         for item in interrupts:
             record, created, superseded = await self.approvals.add(
                 record_from_interrupt(
@@ -1739,6 +1753,7 @@ class ChatRuntime:
                     run_id=run_id,
                     requester=principal,
                     now=self.approvals.now(),
+                    origin=origin,
                 )
             )
             if created:

@@ -74,7 +74,10 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a_client import (
     peer_tools,
     reset_a2a_client,
 )
-from {{cookiecutter.agent_directory}}.app_utils.api_client import get_client
+from {{cookiecutter.agent_directory}}.app_utils.api_client import (
+    get_client,
+    require_user_mentioned,
+)
 from {{cookiecutter.agent_directory}}.app_utils.api_client import (
     reset_policy_cache as reset_api_policy,
 )
@@ -131,6 +134,8 @@ PEERS = {
 
 # What the backend received.
 SENT: list[httpx.Request] = []
+# When it holds True, orders cancels only an order the user's own words name.
+CHECK_MENTION: list[bool] = []
 
 
 def _backend(request: httpx.Request) -> httpx.Response:
@@ -141,6 +146,8 @@ def _backend(request: httpx.Request) -> httpx.Response:
 @tool
 async def cancel_order(order_id: int, runtime: ToolRuntime[Any]) -> str:
     """Cancel an order by its number."""
+    if CHECK_MENTION:
+        require_user_mentioned(order_id, runtime)
     context = getattr(runtime, "context", None)
     client = get_client("shop", context=context, transport=httpx.MockTransport(_backend))
     data = await client.post(
@@ -217,6 +224,7 @@ async def _agents(
     reset_a2a_client()
     token_exchange.reset_token_exchange()
     SENT.clear()
+    CHECK_MENTION.clear()
     issuer.requests.clear()
     user = f"alice-{uuid.uuid4().hex[:8]}"
     async with app.router.lifespan_context(app):
@@ -296,9 +304,11 @@ def _results(events: list[tuple[str, dict[str, Any]]]) -> str:
     return json.dumps([data for event, data in events if event == "tool.result"])
 
 
-async def _ask(agents: dict[str, Any], status: str) -> tuple[str, str]:
+async def _ask(
+    agents: dict[str, Any], status: str, message: str = "Ask orders about cancelling the order"
+) -> tuple[str, str]:
     """alice asks the concierge to cancel; orders waits for approval. (thread, orders task)"""
-    events = await _chat(agents, "Ask orders about cancelling the order")
+    events = await _chat(agents, message)
     end = _end(events)
     assert end["status"] == "ok", events
     assert f'\\"status\\": \\"{status}\\"' in _results(events), _results(events)
@@ -358,6 +368,37 @@ async def test_the_concierge_relays_the_persons_approval(relayed: dict[str, Any]
     # and the decision all went out with it).
     exchanges = [r for r in agents["issuer"].requests if r["form"].get("audience") == "orders"]
     assert len(exchanges) == 1
+
+
+async def _approve_relayed(agents: dict[str, Any], thread: str, task_id: str) -> list[Any]:
+    """alice has the concierge relay orders' approval, and approves it there: the resumed run."""
+    paused = _end(await _chat(agents, f"approve_agent_action for {task_id}", thread))
+    assert paused["status"] == "awaiting_approval", paused
+    r = await agents["http"].post(
+        f"/threads/{thread}/approvals/{paused['approval']['approval_id']}",
+        json={"decision": "approve"},
+        headers={"Authorization": f"Bearer {agents['at_concierge']}"},
+    )
+    assert r.status_code == 200, r.text
+    return _events(r.text)
+
+
+async def test_the_run_alice_approves_checks_the_words_she_asked_with(
+    relayed: dict[str, Any],
+) -> None:
+    """orders cancels only an order the user's own words name (`require_user_mentioned`).
+    alice's words reach it with the request; when she approves at the concierge, having
+    said "approve_agent_action for <task>" there, the run the relayed decision resumes at
+    orders checks the words she asked with, and the order is cancelled once."""
+    agents = relayed
+    CHECK_MENTION.append(True)
+    thread, task_id = await _ask(
+        agents, "needs_user_approval", "Ask orders about cancelling order 1"
+    )
+    resumed = await _approve_relayed(agents, thread, task_id)
+    assert _end(resumed)["status"] == "ok", resumed
+    assert "refused" not in _results(resumed), _results(resumed)
+    assert [(s.method, s.url.path) for s in SENT] == [("POST", "/orders/1/cancel")]
 
 
 async def test_under_direct_the_concierge_relays_nothing_and_alice_approves_at_orders(

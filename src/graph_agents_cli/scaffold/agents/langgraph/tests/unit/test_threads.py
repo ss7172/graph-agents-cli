@@ -222,9 +222,8 @@ def test_a_record_without_an_actor_reads_as_direct() -> None:
 # for, so a new site fails this test until it is reviewed and added here.
 REVIEWED_PRINCIPAL_SITES = sorted(
     [
-        # A2A: the forwarded words added to the caller (its actor kept); a task owner key's
-        # subject hashed to compare it with an approval's requester (the actor compared apart).
-        ("app_utils/a2a.py", "with_origin", True),
+        # A2A: a task owner key's subject hashed to compare it with an approval's requester
+        # (the actor compared apart).
         ("app_utils/a2a.py", "owner_is_requester", False),
         ("app_utils/approvals.py", "resume_principal", True),  # the requester's @actor
         ("app_utils/auth.py", "authenticate", False),  # shared-bearer: one direct principal
@@ -232,6 +231,8 @@ REVIEWED_PRINCIPAL_SITES = sorted(
         ("app_utils/auth.py", "finalize_principal", True),
         ("app_utils/auth.py", "on_threads_create_run", False),  # hashes the subject only
         ("app_utils/auth.py", "principal_from_claims", True),  # jwt: act / azp
+        # The forwarded words added to (or taken from) a principal, its actor kept.
+        ("app_utils/auth.py", "with_origin", True),
         ("app_utils/threads.py", "owner_hash", False),  # hashes the subject only
         ("app_utils/threads.py", "own_view", True),
     ]

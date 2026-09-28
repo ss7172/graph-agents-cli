@@ -217,8 +217,14 @@ migration" with the steps to follow.
   under that URI (`origin`: `text`, `truncated`, `hops`), and for a delegated caller only they
   reach the run's private credentials (`@origin`, where `require_user_mentioned` and the
   model's note read them), capped at `A2A_ORIGIN_MAX_CHARS` (4000). They are never stored:
-  every task is saved without them. More `hops` than `AUTH_MAX_DELEGATION_DEPTH` fails the
-  task (`delegation chain too deep`). A task waiting for approval carries `approval_json`, the
+  every task is saved without them. The run a decision resumes acts on the words of the
+  request that paused it, whatever words the decision carries (the person's "yes, go ahead"
+  at the agent that relays it, or none): the approval keeps them while it waits (never shown,
+  and dropped once it is decided or expired, whatever `TRACE_CAPTURE` says; fastapi runtime
+  only, as LangGraph Server passes no credentials to tools), so `require_user_mentioned`
+  holds again on the resumed run and an agent relaying the approval one level further
+  rebuilds the very call the person approved. More `hops` than `AUTH_MAX_DELEGATION_DEPTH`
+  fails the task (`delegation chain too deep`). A task waiting for approval carries `approval_json`, the
   approvals as exact JSON text, and its text shows each call's body (up to 2,000 characters)
   (KI-026). A failed task, or a refused decision, carries a data part
   `{"type": "error", "code": ...}` (`thread_busy`, `approval_direct_only`, ...). A decision may
