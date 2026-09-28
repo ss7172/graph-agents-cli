@@ -28,8 +28,11 @@ The port is ``--port`` (``run``) or ``GRAPH_AGENTS_CLI_RUN_PORT`` when given
 port counts as busy when anything answers on 127.0.0.1 or it cannot be bound on
 127.0.0.1 and on all interfaces: on macOS a loopback bind succeeds next to a
 wildcard listener and would silently shadow it. A server idle for 30 minutes
-is replaced. A live server started for a different runtime is a hard error
-(never terminated silently). Readiness is ``GET /health`` answering 200.
+is replaced; one the operating system will not let this command stop (a
+sandbox that lets a command signal only its own processes) is reused with a
+warning instead, so it never blocks later runs. A live server started for a
+different runtime is a hard error (never terminated silently). Readiness is
+``GET /health`` answering 200.
 
 The pid file is written as soon as the process is started (``"state":
 "starting"``) and completed once it is ready, so a CLI killed during startup
@@ -192,16 +195,29 @@ class ServerStopError(click.ClickException):
     """A running local server could not be stopped (exit 2, a tool failure).
 
     Its record is kept, so ``run --stop-server`` can try again and later runs
-    reuse the server instead of colliding with its port.
+    reuse the server while it still answers, instead of colliding with its port.
+    ``reason`` says what is still running and why; ``kill_command`` stops it
+    from a shell that may signal it.
     """
 
     exit_code = EXIT_SERVER_START_FAILED
 
-    def __init__(self, message: str, *, pid: int, port: int | None, left: list[int]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        pid: int,
+        port: int | None,
+        left: list[int],
+        reason: str = "",
+        kill_command: str = "",
+    ) -> None:
         super().__init__(message)
         self.pid = pid
         self.port = port
         self.left = left
+        self.reason = reason or message
+        self.kill_command = kill_command
 
 
 class UnsupportedRuntimeError(click.ClickException):
@@ -279,7 +295,10 @@ def ensure_server(
     A recorded server is reused when its process is alive, its port answers,
     it was started for the same ``runtime``, and it has been active within
     ``idle_timeout`` seconds. A stale pid file is cleaned up; an idle server is
-    stopped and replaced. A live server for a different runtime is a hard
+    stopped and replaced. When the operating system refuses to stop it, a
+    warning names what is still running and the server is reused while it
+    still answers (else a fresh one starts beside it): see
+    :func:`_clear_for_restart`. A live server for a different runtime is a hard
     error and is left running so the user can decide.
 
     ``checkpointer`` is the manifest value; the value recorded in the pid file
@@ -354,9 +373,9 @@ def _ensure_server_locked(
                     f"{existing_runtime!r} runtime, but the project now uses {runtime!r}.\n"
                     "  Run 'graph-agents-cli run --stop-server' first, then retry."
                 )
-            if _is_idle(info, idle_timeout):
-                _cleanup(project_root, info)
-            else:
+            if not _is_idle(info, idle_timeout) or not _clear_for_restart(
+                project_root, info, idle_timeout=idle_timeout
+            ):
                 _update_activity(project_root)
                 return ServerInfo(
                     port=info["port"],
@@ -367,7 +386,7 @@ def _ensure_server_locked(
                 )
         else:
             # Stale pid file: clean up before starting fresh.
-            _cleanup(project_root, info)
+            _clear_for_restart(project_root, info)
 
     if pinned_port is not None:
         problem = port_problem(pinned_port)
@@ -445,6 +464,60 @@ def _ensure_server_locked(
     return ServerInfo(
         port=port, started=True, pid=pid, runtime=runtime, checkpointer=live_checkpointer
     )
+
+
+def _clear_for_restart(
+    project_root: Path, info: dict[str, Any], *, idle_timeout: int | None = None
+) -> bool:
+    """Stop the recorded server, idle or no longer answering, so a fresh one can start.
+
+    Returns False when it could not be stopped and still serves: the caller
+    reuses it. A sandbox may let a command signal only the processes it started
+    itself, so a server an earlier command started can survive every later
+    command's attempt; failing each of them would block all runs until someone
+    stops the server by hand. So the survivor is reported as a warning (what is
+    still running, why, and the ``kill`` command) and then reused while it still
+    serves, or left to its own devices when it no longer does: its port is closed
+    then, so the fresh server cannot collide with it.
+
+    ``idle_timeout``: the record is replaced for being idle that long (seconds);
+    None when its server no longer answers.
+    """
+    try:
+        _cleanup(project_root, info)
+        return True
+    except ServerStopError as exc:
+        pid, port = info.get("pid", 0), info.get("port", 0)
+        serving = _is_server_alive(pid, port, info.get("create_time"))
+        where = f"PID {pid}, port {port}"
+        if idle_timeout is not None:
+            why = f"The local server ({where}) has been idle for more than {_span(idle_timeout)}"
+        else:
+            why = f"The recorded local server ({where}) no longer answers on its port"
+        if serving:
+            then = (
+                "Reusing it; to have the next run start a fresh one, stop it from a shell "
+                f"that may signal it (`{exc.kill_command}`)."
+            )
+        else:
+            then = (
+                "Starting a fresh local server; stop the old one from a shell that may "
+                f"signal it (`{exc.kill_command}`), such as the one that started it."
+            )
+        click.secho(
+            f"Warning: {why}, but it could not be stopped: {exc.reason}. {then}",
+            fg="yellow",
+            err=True,
+        )
+        return not serving
+
+
+def _span(seconds: int) -> str:
+    """``seconds`` in words: "30 minutes", "1 minute", "45 seconds"."""
+    if seconds >= 60 and seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds} second{'s' if seconds != 1 else ''}"
 
 
 def stop_server(project_root: Path, pid: int | None = None) -> bool:
@@ -1007,21 +1080,32 @@ def _terminate_process(
         left.append(pid)
     group_left = group is not None and _group_alive(group)
     if left or group_left:
-        raise ServerStopError(
-            _stop_failure(
-                pid, port=port, left=left, group=group if group_left else None, refused=refused
-            ),
-            pid=pid,
+        raise _stop_failure(
+            pid,
+            create_time=create_time,
             port=port,
             left=left,
+            group=group if group_left else None,
+            refused=refused,
         )
     return True
 
 
 def _stop_failure(
-    pid: int, *, port: int | None, left: list[int], group: int | None, refused: bool
-) -> str:
-    """The one-paragraph message of a :class:`ServerStopError`."""
+    pid: int,
+    *,
+    create_time: float | None,
+    port: int | None,
+    left: list[int],
+    group: int | None,
+    refused: bool,
+) -> ServerStopError:
+    """The :class:`ServerStopError` for a server that survived SIGTERM and SIGKILL.
+
+    ``port`` is known for the recorded server only (its record is kept then).
+    Later runs reuse it only while it is still that server and answers on it,
+    so the message promises that only then.
+    """
     where = f"PID {pid}, port {port}" if port else f"PID {pid}"
     what = []
     if left:
@@ -1033,13 +1117,24 @@ def _stop_failure(
         if refused
         else "they did not exit after SIGKILL"
     )
-    kill_cmd = f"kill {' '.join(map(str, left))}" if left else f"kill -- -{group}"
-    return (
-        f"Could not stop the local server ({where}): {' and '.join(what)} still "
-        f"running; {why}. Its record is kept: later runs reuse the server, and "
-        "`graph-agents-cli run --stop-server` tries again. Stop it from a shell that may "
-        f"signal it (`{kill_cmd}`), such as the one that started it or one outside the "
-        "sandbox this command runs in."
+    reason = f"{' and '.join(what)} still running; {why}"
+    kill_command = f"kill {' '.join(map(str, left))}" if left else f"kill -- -{group}"
+    if not port:
+        kept = ""
+    elif _is_server_alive(pid, port, create_time):
+        kept = (
+            " Its record is kept: later runs reuse the server, and "
+            "`graph-agents-cli run --stop-server` tries again."
+        )
+    else:
+        kept = " Its record is kept, and `graph-agents-cli run --stop-server` tries again."
+    message = (
+        f"Could not stop the local server ({where}): {reason}.{kept} Stop it from a shell "
+        f"that may signal it (`{kill_command}`), such as the one that started it or one "
+        "outside the sandbox this command runs in."
+    )
+    return ServerStopError(
+        message, pid=pid, port=port, left=left, reason=reason, kill_command=kill_command
     )
 
 

@@ -1254,7 +1254,9 @@ def cmd_run(
     under langgraph-server) and shuts it down when it finishes; pass
     --start-server to keep it running. Later plain runs reuse a running
     server. Stop it with --stop-server. After 30 minutes idle, the next
-    request restarts it. The server listens on the first free port of
+    request restarts it, or reuses it with a warning when the operating
+    system refuses to stop it (a sandbox may let a command signal only what
+    it started itself). The server listens on the first free port of
     18080-18089, or on --port / GRAPH_AGENTS_CLI_RUN_PORT when given.
 
     \b

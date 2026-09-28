@@ -427,6 +427,9 @@ def test_a_refused_signal_is_never_reported_as_stopped(
     assert f"Could not stop the local server (PID {pid}, port 18867)" in message
     assert "permission denied" in message
     assert f"`kill {pid}`" in message
+    # Nothing answers on its port, so no later run can reuse it: the message must not say so.
+    assert "Its record is kept, and `graph-agents-cli run --stop-server` tries again." in message
+    assert "later runs reuse" not in message
     assert "Local server stopped." not in capsys.readouterr().out
     assert unrelated_process.poll() is None  # still running
     assert ls.read_pid_file(tmp_path)["pid"] == pid  # and still recorded
@@ -442,12 +445,147 @@ def test_a_server_this_run_started_is_reported_when_it_cannot_be_stopped(
     _write_pid(tmp_path, pid=111)  # another invocation's record: left alone
     _refuse_signals(monkeypatch)
     try:
-        with pytest.raises(click.ClickException, match=f"PID {pid}"):
+        with pytest.raises(click.ClickException, match=f"PID {pid}") as excinfo:
             ls.stop_server(tmp_path, pid=pid)
     finally:
         ls._STARTED.pop(pid, None)
+    assert "record is kept" not in excinfo.value.format_message()  # it has no record
     assert unrelated_process.poll() is None
     assert ls.read_pid_file(tmp_path)["pid"] == 111
+
+
+# The real teardown, for tests whose `started` fixture replaced it.
+_REAL_TERMINATE = ls._terminate_process
+
+
+@pytest.fixture
+def listening_process():
+    """A live process of this user listening on a loopback port: (process, port)."""
+    import subprocess
+
+    code = (
+        "import socket, time\n"
+        "s = socket.socket()\n"
+        "s.bind(('127.0.0.1', 0))\n"
+        "s.listen()\n"
+        "print(s.getsockname()[1], flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        port = int(proc.stdout.readline())
+        yield proc, port
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        proc.stdout.close()
+
+
+def test_an_idle_server_that_cannot_be_stopped_is_reused_with_a_warning(
+    started, listening_process, monkeypatch, capsys
+):
+    """Every `run` and `eval run` exited 2 ("Could not stop the local server") once a server
+    an earlier sandboxed command started had been idle for 30 minutes: the idle restart could
+    not stop it, and nothing stops it later either, so the runs failed until a human did."""
+    import psutil
+
+    proc, port = listening_process
+    created = psutil.Process(proc.pid).create_time()
+    idle = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    _write_pid(started.root, pid=proc.pid, port=port, create_time=created, last_activity=idle)
+    monkeypatch.setattr(ls, "_terminate_process", _REAL_TERMINATE)
+    _refuse_signals(monkeypatch)
+
+    info = ls.ensure_server(started.root, "app", runtime="fastapi")
+
+    assert info == ls.ServerInfo(
+        port=port, started=False, pid=proc.pid, runtime="fastapi", checkpointer="memory"
+    )
+    assert not started.popen_calls
+    assert proc.poll() is None
+    record = ls.read_pid_file(started.root)
+    assert record["pid"] == proc.pid and record["last_activity"] > idle
+    err = capsys.readouterr().err
+    assert (
+        f"Warning: The local server (PID {proc.pid}, port {port}) has been idle for more "
+        "than 30 minutes, but it could not be stopped:"
+    ) in err
+    assert "permission denied" in err and f"`kill {proc.pid}`" in err
+    assert "Reusing it" in err
+
+    # Stamped: the next run reuses it without trying (and warning) again.
+    assert not ls.ensure_server(started.root, "app", runtime="fastapi").started
+    assert capsys.readouterr().err == ""
+    # The record is kept and the server answers, so reuse is what --stop-server promises.
+    with pytest.raises(ls.ServerStopError) as excinfo:
+        ls.stop_server(started.root)
+    assert "Its record is kept: later runs reuse the server" in excinfo.value.format_message()
+
+
+def test_a_server_that_no_longer_answers_and_cannot_be_stopped_is_left_with_a_warning(
+    started, unrelated_process, monkeypatch, capsys
+):
+    """The same failure for a recorded server whose process lives on with its port closed."""
+    import socket
+
+    import psutil
+
+    pid = unrelated_process.pid
+    with socket.socket() as probe:  # a port nothing listens on
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    _write_pid(started.root, pid=pid, port=closed, create_time=psutil.Process(pid).create_time())
+    monkeypatch.setattr(ls, "_terminate_process", _REAL_TERMINATE)
+    _refuse_signals(monkeypatch)
+
+    info = ls.ensure_server(started.root, "app", runtime="fastapi")
+
+    assert info.started and info.pid == 4242
+    assert len(started.popen_calls) == 1
+    assert ls.read_pid_file(started.root)["pid"] == 4242
+    assert unrelated_process.poll() is None
+    err = capsys.readouterr().err
+    assert (
+        f"Warning: The recorded local server (PID {pid}, port {closed}) no longer answers on "
+        "its port, but it could not be stopped:"
+    ) in err
+    assert (
+        f"Starting a fresh local server; stop the old one from a shell that may signal it (`kill {pid}`)"
+        in err
+    )
+
+
+def test_an_idle_server_left_half_stopped_is_replaced_with_a_warning(started, monkeypatch, capsys):
+    """A partial stop (the leader gone, a child refused) leaves nothing to reuse: start afresh."""
+    idle = (datetime.now(UTC) - timedelta(minutes=31)).isoformat()
+    _write_pid(started.root, last_activity=idle)
+    answers = iter([True, False])
+    monkeypatch.setattr(ls, "_is_server_alive", lambda *a, **k: next(answers))
+
+    def half_stopped(pid, **_):
+        raise ls.ServerStopError(
+            "Could not stop",
+            pid=pid,
+            port=18081,
+            left=[112],
+            reason="PID 112 still running",
+            kill_command="kill 112",
+        )
+
+    monkeypatch.setattr(ls, "_terminate_process", half_stopped)
+    info = ls.ensure_server(started.root, "app", runtime="fastapi")
+    assert info.started and info.pid == 4242
+    err = capsys.readouterr().err
+    assert "idle for more than 30 minutes, but it could not be stopped: PID 112" in err
+    assert "Starting a fresh local server" in err and "`kill 112`" in err
+
+
+def test_span_words():
+    assert ls._span(1800) == "30 minutes"
+    assert ls._span(60) == "1 minute"
+    assert ls._span(45) == "45 seconds"
+    assert ls._span(90) == "90 seconds"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")

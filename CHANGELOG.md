@@ -54,7 +54,10 @@ migration" with the steps to follow.
   next `eval run` then failed with "something is already listening". It now exits 2, names
   the processes still running and how to stop them, and keeps the record, so later runs reuse
   that server. A server that `run`, `approvals` or `eval generate` cannot stop after their
-  work is a warning that never replaces their own result or error.
+  work is a warning that never replaces their own result or error. Neither does a server a
+  command would replace (idle for 30 minutes, or no longer answering) but may not stop: a
+  warning names it and the `kill` command, then the command reuses it while it still answers,
+  or starts a fresh one beside it.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
