@@ -888,7 +888,7 @@ def test_actor_settings_are_checked() -> None:
     assert "AUTH_JWT_CLIENT_CLAIM" in " ".join(_settings(AUTH_JWT_CLIENT_CLAIM=" ").problems)
 
 
-async def test_the_delegated_principal_keeps_only_lent_roles(jwt_env) -> None:
+async def test_delegated_roles_filtered(jwt_env) -> None:
     jwt_env.setenv("AUTH_ALLOWED_ACTORS", "concierge")
     token = _token(RSA_A, act={"sub": "concierge"}, roles=["viewer", "support", "ops"])
     principal = await require("chat.send")(_request(token))

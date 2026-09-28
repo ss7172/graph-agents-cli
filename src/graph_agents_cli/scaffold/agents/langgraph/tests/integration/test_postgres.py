@@ -40,7 +40,8 @@ from {{cookiecutter.agent_directory}}.app_utils.a2a import (
     PostgresTaskStore,
     PrincipalUser,
 )
-from {{cookiecutter.agent_directory}}.app_utils.auth import Principal
+from {{cookiecutter.agent_directory}}.app_utils.approvals import ApprovalStore, may_decide
+from {{cookiecutter.agent_directory}}.app_utils.auth import Actor, Principal
 from {{cookiecutter.agent_directory}}.app_utils.checkpointer import POSTGRES, get_checkpointer
 from {{cookiecutter.agent_directory}}.app_utils.db import Database, RunRecord, RunStore
 from {{cookiecutter.agent_directory}}.app_utils.threads import ThreadBusy, ThreadLocks, ThreadStore
@@ -466,5 +467,101 @@ async def test_a2a_tasks_holding_a_nul_are_saved_with_a_replacement_character(
         failed = await store.get("t1", _ctx("alice"))
         assert failed is not None and failed.status.state == TaskState.TASK_STATE_FAILED
         assert failed.artifacts[0].parts[0].text == "reading\ufffd 42"
+    finally:
+        await db.close()
+
+
+# --- agents calling agents (0.3): the tables upgraded in place, owner-keyed tasks ----------
+
+# The approvals table as 0.2 created it.
+APPROVALS_02 = """
+CREATE TABLE approvals (
+    approval_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL,
+    interrupt_id TEXT NOT NULL, requester_hash TEXT NOT NULL, requester_context JSONB,
+    api TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL, operation_id TEXT,
+    call_hash TEXT NOT NULL, tool_call_id TEXT, message_id TEXT, approvers JSONB NOT NULL,
+    payload JSONB NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_at TIMESTAMPTZ,
+    comment TEXT, used_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+)
+"""
+
+
+async def test_a_02_schema_gains_the_actor_columns_in_place(dsn: str) -> None:
+    """0.2 tables with rows: after the upgrade the rows read as direct, and the pending
+    approval is decided exactly as before."""
+    import psycopg
+
+    alice = Principal(id="alice")
+    async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
+        await conn.execute(APPROVALS_02)
+        await conn.execute(
+            "INSERT INTO approvals (approval_id, thread_id, run_id, interrupt_id, "
+            "requester_hash, api, method, path, call_hash, approvers, payload, status, "
+            "expires_at) VALUES ('a1', 't1', 'r1', 'i1', %s, 'shop', 'POST', '/orders/7/cancel', "
+            "'h1', '[\"requester\"]', '{\"query\": {}, \"body\": {}}', 'pending', "
+            "now() + interval '1 hour')",
+            (alice.hashed_id(),),
+        )
+        await conn.execute(
+            "CREATE TABLE threads (thread_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL, "
+            "tenant TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        await conn.execute("INSERT INTO threads (thread_id, principal_id) VALUES ('t1', 'alice')")
+        await conn.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, "
+            "principal_hash TEXT NOT NULL, model TEXT, status TEXT NOT NULL, "
+            "input_tokens INTEGER, output_tokens INTEGER, latency_ms INTEGER, "
+            "error_type TEXT, metadata JSONB, payload JSONB, "
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+    db = await _opened(dsn)
+    try:
+        thread = await ThreadStore(db).get("t1")
+        assert thread is not None and thread.actor == ""
+        store = ApprovalStore(db)
+        record = await store.get("a1")
+        assert record is not None
+        assert (record.decide_with, record.relayers, record.requester_actor) == ("direct", [], "")
+        assert record.decided_via is None and record.display_digest is None
+        assert may_decide(alice, thread, record.approvers)
+        agent = Principal(id="alice", actor=Actor(id="concierge"))
+        assert not may_decide(agent, thread, record.approvers)
+        decided = await store.decide("a1", "approved", alice.hashed_id(), None)
+        assert decided is not None and decided.status == "approved" and decided.decided_via is None
+        runs = RunStore(db)
+        await runs.start(
+            RunRecord(
+                run_id="r2",
+                thread_id="t1",
+                principal_hash="h",
+                model="m",
+                status="ok",
+                actor="concierge",
+            )
+        )
+        stored = await runs.get("r2")
+        assert stored is not None and stored.actor == "concierge"
+    finally:
+        await db.close()
+
+
+async def test_a2a_tasks_are_keyed_by_the_owner_key(dsn: str) -> None:
+    """A delegated owner key (subject, U+001F, actor) is its own owner; direct keys are as
+    in 0.2."""
+    db = await _opened(dsn)
+    try:
+        store = PostgresTaskStore(3600, db)
+        agent_key = Principal(id="alice", actor=Actor(id="concierge")).owner_key()
+        assert agent_key == "alice\x1fconcierge"
+        await store.save(_a2a_task("t-agent", "ctx-agent", second=1), _ctx(agent_key))
+        await store.save(_a2a_task("t-alice", "ctx-alice", second=2), _ctx("alice"))
+        assert await store.get("t-agent", _ctx(agent_key)) is not None
+        assert await store.get("t-agent", _ctx("alice")) is None
+        assert await store.get("t-agent", _ctx("alice\x1fbilling")) is None
+        assert await store.get("t-alice", _ctx(agent_key)) is None
+        listed = await store.list(ListTasksRequest(), _ctx(agent_key))
+        assert [t.id for t in listed.tasks] == ["t-agent"]
     finally:
         await db.close()
