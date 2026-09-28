@@ -65,15 +65,15 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
 | runtime | 11 | 6 | 17 |
-| a2a | 2 | 12 | 14 |
+| a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 1 | 18 | 19 |
+| cli | 2 | 21 | 23 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **44** | **96** | **140** |
+| **Total** | **46** | **100** | **146** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -488,6 +488,26 @@ Medium · a2a · found in the A2A multi-agent experiment (fix review)
   warning, and delete leftover rows from `a2a_tasks` (`agent_a2a_tasks` under
   `langgraph-server`) by `thread_id`.
 
+### KI-152: An agent that relays an approval keeps the user's words in its stored A2A task
+
+Medium · a2a · found in v0.3 P4
+
+- **Issue:** When an agent (billing) is asked for the user by another agent (the concierge)
+  and relays an approval of a third one (orders), its own approval is of an A2A message
+  whose body carries, in the origin extension's metadata, the user's words it forwards and
+  the `approving` copy of orders' approval. The approval request its A2A task shows the
+  concierge renders that body (the text part, `approval_json` and the `Struct`), and the
+  task is stored with it; `RuntimeTaskStore.save` strips the extension only from message
+  metadata. The task's history keeps it after the decision too (with the nested call's
+  body, which the approvals ledger drops on decision), until `A2A_TASK_TTL_S`.
+- **Impact:** The user's words and the nested call's body stay at rest in the intermediate
+  agent's `a2a_tasks` for up to `A2A_TASK_TTL_S` (1 hour by default), against the rule that
+  the words are never stored with a task. Only the task's owner (the calling agent, or the
+  person with their own token) can read it; no token is stored.
+- **Workaround:** Keep `A2A_TASK_TTL_S` short on agents that relay approvals for other
+  agents, or turn the words off at the front agent (`A2A_FORWARD_ORIGIN=off`), at the cost
+  of `require_user_mentioned` refusing delegated calls downstream.
+
 ### KI-027: `eval generate` can leave an approval pending after more than 20 gated calls
 
 Medium · eval · found in wave 6b
@@ -651,6 +671,19 @@ Medium · cli · found in wave 7
 - **Workaround:** Check for the answer and the thread footer, or use `eval` for scripted
   checks.
 
+### KI-153: `peer list` and `peer show` print a secret when `--url-env` names one
+
+Medium · cli · found in v0.3 P4
+
+- **Issue:** `peer add NAME --url-env VAR` accepts any variable, one listed in the
+  manifest's `secrets.keys` included (`TOKEN_EXCHANGE_CLIENT_SECRET`, say); `peer list` and
+  `peer show --json` then print that variable's value from `.env` as the peer's URL. `api add
+  --base-url-env` accepts a secret's variable the same way (since 0.2).
+- **Impact:** A typo or a copied command puts a secret on the terminal or in a CI log; the
+  guide says those commands print URLs only.
+- **Workaround:** Name the peer's own URL variable (the default, `<NAME>_AGENT_URL`); check
+  `peer list` output before sharing it.
+
 ### KI-040: `scaffold upgrade` keeps an edited chart `values.yaml` whole, dropping new settings
 
 Medium · upgrade · found in wave 7
@@ -803,11 +836,14 @@ Low · api-policy · found in v0.3 (identity propagation)
   agent registered with a client id other than its audience is not recognised, and an issuer
   that names no actor in `act` (usable only with `exchange.allow_actorless: true`) shows only
   the last agent.
+  The A2A client (`app_utils/a2a_client.py`, v0.3 P4) checks a peer the same way before
+  anything is sent, comparing its name and audience with the chain, so an agent whose client
+  id is not its A2A name (`A2A_NAME`, the peer name) is not recognised there either.
 - **Impact:** A loop through such an agent is not refused by the caller; each hop's callee
-  still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), so the loop ends
-  there.
-- **Workaround:** Give each agent's client the same id as its audience (the Keycloak recipe
-  does), and keep `AUTH_MAX_DELEGATION_DEPTH` low.
+  still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), or origin `hops`
+  past it (the task fails), so the loop ends there, after model calls.
+- **Workaround:** Give each agent's client the same id as its audience and its A2A name (the
+  Keycloak recipe does), and keep `AUTH_MAX_DELEGATION_DEPTH` low.
 
 ### KI-049: `approvals` output misleads viewers who cannot see the body or decide
 
@@ -1103,6 +1139,18 @@ Low · a2a · found in v0.3 P4
 - **Impact:** A rare race asks the person to approve twice.
 - **Workaround:** Ask the agent to relay the approval again (`approve_agent_action`); the
   person approves once more.
+
+### KI-156: A running agent needs a restart after `peer add` or `peer remove`
+
+Low · a2a · found in v0.3 P4
+
+- **Issue:** `peer add|remove|sync` rewrite `api-policy.yaml` and `tools/a2a_peers.py`. A
+  running agent re-reads the policy but keeps the tools it imported at startup, so until it
+  is restarted a removed peer's tools answer "API '<name>_agent' is not declared" and an
+  added peer has no tool.
+- **Impact:** Confusing errors during local development; it fails closed.
+- **Workaround:** Restart the agent (or let `langgraph dev`'s reload do it) after changing
+  its peers.
 
 ### KI-065: Every eval case runs as one identity
 
@@ -1529,6 +1577,38 @@ Low · cli · found in v0.3 P4
   regenerated module names the peer after its API (without `_agent`, else the API's name).
 - **Impact:** The model then asks that peer under another name; `lint` passes.
 - **Workaround:** Keep the generated module, or use the default API name (`<NAME>_agent`).
+
+### KI-154: `peer add --card` refuses a card whose description holds a control character
+
+Low · cli · found in v0.3 P4
+
+- **Issue:** `peer add NAME --card URL|FILE` takes the peer's description from its agent
+  card, joining whitespace but keeping other control characters; the policy check then
+  refuses it ("must be text of 1-300 characters without control characters", exit 3) instead
+  of stripping them as it does for length.
+- **Impact:** A peer with such a card needs a hand-written `--description`.
+- **Workaround:** Pass `--description` explicitly.
+
+### KI-155: `lint` says nothing when the generated peers module is missing
+
+Low · cli · found in v0.3 P4
+
+- **Issue:** `lint` compares `tools/a2a_peers.py` with the policy's `protocol: a2a` APIs,
+  but when the file does not exist while the policy has peers it reports nothing to check
+  (exit 0).
+- **Impact:** The agent starts without its peer tools, and the model cannot ask the peers.
+- **Workaround:** Run `peer sync`, which writes the module again; `peer list` shows the
+  peers the policy declares.
+
+### KI-157: `peer show --check` compares the card's endpoint URL letter for letter
+
+Low · cli · found in v0.3 P4
+
+- **Issue:** `peer show --check` refuses a card whose A2A interface URL differs from the URL
+  the agent calls only in the letter case of its scheme or host (or a default port written
+  out), which the template's client accepts (it normalises both).
+- **Impact:** A false "foreign endpoint" report (exit 1) for a peer the agent calls fine.
+- **Workaround:** Write the peer's `APP_URL` and this agent's URL variable the same way.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 

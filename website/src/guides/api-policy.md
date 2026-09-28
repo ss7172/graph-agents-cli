@@ -377,8 +377,10 @@ at orders with their own token.
 
 The other commands:
 
-- `peer list [--json]`: each peer's API, URL (from the environment or `.env`: URLs only,
-  never secrets), auth, audience, approvals and limits.
+- `peer list [--json]`: each peer's API, URL (from the environment or `.env`; name the
+  peer's own URL variable with `--url-env`, never a secret's: it prints whatever that
+  variable holds, [KI-153](../reference/known-issues.md#ki-153-peer-list-and-peer-show-print-a-secret-when-url-env-names-one)),
+  auth, audience, approvals and limits.
 - `peer show NAME [--json] [--check]`: its entry and what is left; `--check` reads its agent
   card without a credential (reachable, or reachable with a 401), checks that the card names
   the endpoint this agent calls (the peer's `APP_URL`), and says whether it reads the user's
@@ -389,6 +391,10 @@ The other commands:
   `tools/`, and the `api` commands edit the policy only: after either, run `peer sync`.
   `lint` fails while the module and the policy differ (`tools/a2a_peers.py: out of sync with
   api-policy.yaml`), and notes a tool module of your own that calls a peer directly.
+
+Restart a running agent after `peer add`, `remove` or `sync`: it re-reads the policy but keeps
+the tools it imported at startup
+([KI-156](../reference/known-issues.md#ki-156-a-running-agent-needs-a-restart-after-peer-add-or-peer-remove)).
 
 `peer add` refuses a 0.2 runtime (run `scaffold upgrade` first), a name that is this agent's
 own, an API name already taken (`--api-name`), a peer that exists with other settings (change
