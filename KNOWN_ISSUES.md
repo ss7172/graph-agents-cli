@@ -57,7 +57,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | auth | 3 | 2 | 5 |
 | api-policy | 4 | 6 | 10 |
 | approvals | 7 | 5 | 12 |
-| runtime | 9 | 6 | 15 |
+| runtime | 10 | 6 | 16 |
 | a2a | 3 | 5 | 8 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 7 | 11 |
@@ -66,7 +66,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 1 | 11 | 12 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **41** | **78** | **119** |
+| **Total** | **42** | **78** | **120** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -379,6 +379,26 @@ Medium · runtime · found in wave 5
 - **Impact:** Internal error text reaches thread owners through those routes (information
   disclosure, hence Medium).
 - **Workaround:** Do not publish the native routes (see KI-034). Also documented as a limitation in [HTTP API](website/src/reference/http-api.md#under-langgraph-server).
+
+### KI-132: A generated agent's HTTP clients fail when a SOCKS proxy is in its environment
+
+Medium · runtime · found in the skill-optimisation experiment
+
+- **Issue:** A generated project depends on `httpx` without its `socks` extra, and httpx builds
+  a transport for every proxy variable when a client is created. With `ALL_PROXY=socks5h://...`
+  in the environment (coding-agent sandboxes such as Codex's network proxy set it), every
+  client the app creates raises `ImportError: Using SOCKS proxy, but the 'socksio' package is
+  not installed`, whatever host it calls and even when `NO_PROXY` lists it: the outbound API
+  client (`app/app_utils/api_client.py`), the JWKS fetch of the `jwt` policy
+  (`app/app_utils/auth.py`) and model clients built on httpx (a `ChatOpenAI` model stops the
+  server at startup: seen in a Codex rollout). The project's own unit test
+  `test_every_allowed_method_reaches_a_real_server` (a loopback server) fails the same way.
+  The CLI itself was fixed for this (it depends on `httpx[socks]` and never proxies loopback).
+- **Impact:** In an agent sandbox, the project's tests fail until the proxy variables are
+  unset. A service deployed with a SOCKS `ALL_PROXY` would fail every outbound API call and
+  JWKS fetch.
+- **Workaround:** Unset `ALL_PROXY`/`all_proxy` for the project's processes, use an HTTP proxy
+  in `HTTP(S)_PROXY` instead, or add `socksio` to the project's dependencies.
 
 ### KI-024: A2A tasks live in process memory; a restart drops tasks waiting for approval
 
