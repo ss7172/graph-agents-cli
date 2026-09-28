@@ -118,10 +118,11 @@ the run's 30 s lease expiring, so crashes can be counted and audited.
 - **Logs** are JSON lines by default outside `APP_ENV=dev` (`LOG_FORMAT=json|text`, `LOG_LEVEL`),
   each with the request id (`X-Request-ID`, echoed to the client), run id, thread id and hashed
   principal. Client-facing errors carry an `error_id`; the exception is logged under that id. The
-  app does not log credentials, messages or tool arguments. Calls through the policy client pass
-  the request id on (and, under OTLP, the W3C `traceparent`), and an incoming `traceparent`
-  continues the caller's trace, so agents that call each other share one request id and trace
-  (`PROPAGATE_TRACE_HEADERS=false` turns it off).
+  app does not log credentials, messages or tool arguments. Calls of `auth: forward` APIs
+  through the policy client pass the request id on (and, under OTLP, the W3C `traceparent`), and
+  an incoming `traceparent` continues the caller's trace, so agents that call each other with the
+  caller's credential share one request id and trace. `auth: bearer` and `auth: none` APIs never
+  receive them (`PROPAGATE_TRACE_HEADERS=false` turns both directions off).
 - **Metrics:** `GET /metrics` serves Prometheus text (`METRICS_ENABLED`, default true):
   `http_requests_total` and `http_request_duration_seconds` (by method, route, status),
   `agent_runs_total` (by status; `interrupted` also counts the dead processes' runs a replica

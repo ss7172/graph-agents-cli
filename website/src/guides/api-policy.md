@@ -161,6 +161,10 @@ denials, limits, the approval gate) followed by the same table.
 | `bearer` | `Authorization: Bearer $<token_env>`: one service token, from the app Secret |
 | `forward` | the caller's own credential, `attributes["credentials"][<api name>]` of the principal, in `forward_header` (default `Authorization`); nothing when the caller has none. Refused under `langgraph-server`, which would persist it |
 
+Calls of an `auth: forward` API also carry the request's `X-Request-ID` and trace context,
+unless `PROPAGATE_TRACE_HEADERS=false`; other APIs never receive them (see
+[Observability](observability.md#across-agents-and-services)).
+
 The policy's credential always overrides a header the tool passes. A tool cannot reroute a
 request or change its method: `Host`, method-override headers (`X-HTTP-Method-Override`,
 `X-HTTP-Method`, `X-Method-Override`), `X-Forwarded-*`, `Forwarded`, `X-Original-URL`,

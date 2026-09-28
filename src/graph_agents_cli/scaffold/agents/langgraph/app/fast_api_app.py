@@ -207,8 +207,8 @@ from {{cookiecutter.agent_directory}}.app_utils.threads import (
 
 logger = logging.getLogger(__name__)
 
-# Outbound API calls carry this request's id and trace context to the services they reach
-# (another agent's A2A endpoint, say), unless PROPAGATE_TRACE_HEADERS=false.
+# Calls of `auth: forward` APIs (another agent's A2A endpoint, say) carry this request's id
+# and trace context, unless PROPAGATE_TRACE_HEADERS=false; other APIs receive neither.
 set_outbound_headers(outbound_trace_headers)
 
 if detect_runtime() == FASTAPI:

@@ -761,9 +761,11 @@ Low · approvals · found in wave 6
   can never send it: the request that resumes the run differs, and the refusal ("differs
   from the request that was approved") does not say that a header is why.
 - **Impact:** An approver cannot review them; such a gated call is refused after approval.
-- **Workaround:** Keep decision-relevant data in the path, query or body, and leave
-  correlation headers to the app, which adds `X-Request-ID` and `traceparent` outside the
-  approval (found again by the A2A multi-agent experiment).
+- **Workaround:** Keep decision-relevant data in the path, query or body. For an
+  `auth: forward` API, leave correlation headers to the app, which adds `X-Request-ID` and
+  `traceparent` outside the approval (found again by the A2A multi-agent experiment). The app
+  sends them to no other API, so a gated call to an `auth: bearer` or `auth: none` API cannot
+  carry a per-request header at all.
 
 ### KI-052: No policy-level redaction list for approval bodies
 

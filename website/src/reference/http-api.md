@@ -55,8 +55,9 @@ curl -N http://127.0.0.1:8000/chat \
 
 Every response carries `X-Request-ID`; a valid one sent by the caller is echoed, and it is on
 every log line of the request. The agent passes it on, with the W3C trace context under OTLP
-tracing, to the APIs its tools call, and a `traceparent` from the caller continues the caller's
-trace ([Observability](../guides/observability.md#across-agents-and-services)).
+tracing, to the `auth: forward` APIs its tools call (never to other APIs), and a `traceparent`
+from the caller continues the caller's trace
+([Observability](../guides/observability.md#across-agents-and-services)).
 
 ## `POST /chat`
 

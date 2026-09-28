@@ -62,10 +62,12 @@ masking config plus an exporter that strips exception messages, stack traces
 and the span status description) and to the run records the app keeps.
 
 Correlation across services (`PROPAGATE_TRACE_HEADERS`, default true): every
-outbound call of the policy client carries this request's `X-Request-ID` and,
+call of the policy client to an `auth: forward` API (another agent, reached
+with the caller's own credential) carries this request's `X-Request-ID` and,
 when spans go over OTLP, the W3C trace context of the current span
-(`outbound_trace_headers`, installed with `api_client.set_outbound_headers`);
-an incoming `traceparent` is attached to the request's context
+(`outbound_trace_headers`, installed with `api_client.set_outbound_headers`;
+`api_client.propagates` names the APIs), and a call to any other API carries
+neither; an incoming `traceparent` is attached to the request's context
 (`attach_trace_context`, in `middleware.RequestContextMiddleware`), so an agent
 this one calls over A2A logs the same request id and its spans join this
 trace. Under LangSmith tracing only the request id is passed on.
@@ -473,8 +475,8 @@ _FALSE = ("0", "false", "no", "off")
 
 
 def propagate_trace_headers() -> bool:
-    """`PROPAGATE_TRACE_HEADERS` (default true): pass the request id and trace context on,
-    and continue an incoming trace. false turns both off (at a trust boundary, say)."""
+    """`PROPAGATE_TRACE_HEADERS` (default true): pass the request id and trace context on
+    to `auth: forward` APIs, and continue an incoming trace. false turns both off."""
     return (os.environ.get("PROPAGATE_TRACE_HEADERS") or "true").strip().lower() not in _FALSE
 
 
@@ -486,13 +488,14 @@ def _trace_context_propagator() -> Any:
 
 
 def outbound_trace_headers() -> dict[str, str]:
-    """The headers that carry this request's correlation to the services it calls.
+    """The headers that carry this request's correlation to the agents it calls.
 
     `X-Request-ID`, the id every log record of this request carries (a service
     built from this template takes a caller's id as its own), and, when spans are
     exported over OTLP, the W3C trace context of the current span (`traceparent`,
-    `tracestate`), so the callee's spans join this trace. Empty under
-    `PROPAGATE_TRACE_HEADERS=false`.
+    `tracestate`), so the callee's spans join this trace. The policy client adds
+    them only to calls of `auth: forward` APIs (`api_client.propagates`). Empty
+    under `PROPAGATE_TRACE_HEADERS=false`.
     """
     if not propagate_trace_headers():
         return {}

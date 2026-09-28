@@ -32,9 +32,10 @@ sets for the graph run, and nothing is sent when the caller has no credential.
 Every method the policy allows can be sent (`request()`, or `get`, `head`,
 `post`, `put`, `patch`, `delete`, `options`), with a JSON body, query
 parameters and extra headers. The app adds its correlation headers to every
-call (`set_outbound_headers`: the request id and, under OTLP tracing, the W3C
-trace context), unless the tool sets the same header; they differ per request,
-so an approval does not bind them. An API's optional `limits` cap the calls before
+call of an `auth: forward` API, and of no other (`set_outbound_headers`: the
+request id and, under OTLP tracing, the W3C trace context; `propagates`),
+unless the tool sets the same header; they differ per request, so an approval
+does not bind them. An API's optional `limits` cap the calls before
 they are sent: `max_calls_per_run` counts the calls to that API within one
 agent run (the run id of the LangGraph run, else the request's; calls made
 outside any run share one count), and `rate_per_minute` is a token bucket per
@@ -1484,14 +1485,18 @@ def approval_ledger() -> ApprovalLedger | None:
 # Headers that follow a request to the services it calls (see set_outbound_headers).
 _outbound_headers: Callable[[], Mapping[str, str]] | None = None
 
+# The `auth` modes whose APIs receive the correlation headers (see `propagates`).
+PROPAGATING_AUTH_MODES = frozenset({"forward"})
+
 
 def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> None:
-    """Install what adds the correlation headers to every outbound call.
+    """Install what adds the correlation headers to the calls that carry them.
 
     The app installs `telemetry.outbound_trace_headers` (this request's
     `X-Request-ID` and, under OTLP tracing, its W3C trace context), so an agent
-    or service this call reaches logs the same request id and continues the same
-    trace. A header the tool sets itself wins, and a header a tool may not set
+    this call reaches logs the same request id and continues the same trace.
+    Only the APIs `propagates` names receive them; any other API receives
+    neither. A header the tool sets itself wins, and a header a tool may not set
     (`forbidden_header`) is never added. The headers differ for every request,
     so they are not part of the request an approval binds (`canonical_call`).
     """
@@ -1499,10 +1504,24 @@ def set_outbound_headers(provider: Callable[[], Mapping[str, str]] | None) -> No
     _outbound_headers = provider
 
 
-def outbound_headers() -> dict[str, str]:
-    """The correlation headers for a call made now (empty without a provider)."""
+def propagates(api_settings: Mapping[str, Any]) -> bool:
+    """Whether calls to this API carry the request's correlation headers.
+
+    Only `auth: forward` APIs do: they act for the calling user, as another
+    agent does when it is reached with the caller's own credential, so they are
+    part of the same request. Any other API (`auth: bearer` or `none`) is a
+    third party that never learns this request's id or trace. This is the one
+    place that decides; `PROPAGATE_TRACE_HEADERS=false` turns the headers off
+    for every API.
+    """
+    return api_settings.get("auth") in PROPAGATING_AUTH_MODES
+
+
+def outbound_headers(api_settings: Mapping[str, Any]) -> dict[str, str]:
+    """The correlation headers for a call to this API made now: empty for an API that
+    does not receive them (`propagates`) or without a provider."""
     provider = _outbound_headers
-    if provider is None:
+    if provider is None or not propagates(api_settings):
         return {}
     try:
         headers = {str(name): str(value) for name, value in dict(provider()).items()}
@@ -2161,7 +2180,7 @@ class ApiClient:
             for name, value in request_headers.multi_items()
             if name.lower() not in {c.lower() for c in credentials}
         ]
-        for name, value in outbound_headers().items():
+        for name, value in outbound_headers(self.settings).items():
             if name not in request_headers:  # the tool's own header wins
                 request_headers[name] = value  # not in tool_headers: no approval binds it
         for name, value in credentials.items():

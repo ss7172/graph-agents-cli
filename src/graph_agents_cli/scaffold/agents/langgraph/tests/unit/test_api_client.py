@@ -281,28 +281,66 @@ async def test_allowed_call_is_sent_with_the_bearer_token(policy_file: Path) -> 
     assert calls[0].extensions["timeout"]["connect"] == 1.5
 
 
+TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+CORRELATION_HEADERS = ("x-request-id", "traceparent", "tracestate")
+
+
+def _forwarding_caller() -> _Context:
+    return _Context(attributes={"credentials": {"directory": "user-token-1"}})
+
+
 async def test_correlation_headers_are_sent_but_not_bound_by_an_approval(
     policy_file: Path,
 ) -> None:
     calls: list[httpx.Request] = []
-    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     set_outbound_headers(
-        lambda: {"X-Request-ID": "req-1", "traceparent": traceparent, "Host": "elsewhere.test"}
+        lambda: {"X-Request-ID": "req-1", "traceparent": TRACEPARENT, "Host": "elsewhere.test"}
     )
     try:
-        client = get_client("items", transport=_transport(calls))
+        client = get_client("directory", context=_forwarding_caller(), transport=_transport(calls))
         await client.get("/listing")
         await client.get("/listing", headers={"X-Request-ID": "tool-own"})
         prepared = client._prepare("GET", "/listing", None, None, None, None, {"X-Tool": "t"})
     finally:
         set_outbound_headers(None)
     assert calls[0].headers["x-request-id"] == "req-1"
-    assert calls[0].headers["traceparent"] == traceparent
-    assert calls[0].headers["host"] == "items.test"  # a header a tool may not set is never added
+    assert calls[0].headers["traceparent"] == TRACEPARENT
+    # A header a tool may not set is never added.
+    assert calls[0].headers["host"] == "directory.test"
     assert calls[1].headers["x-request-id"] == "tool-own"  # the tool's own header wins
     # They differ per request, so the request an approval binds leaves them out.
     assert prepared.tool_headers == [("x-tool", "t")]
-    assert prepared.headers["traceparent"] == traceparent
+    assert prepared.headers["traceparent"] == TRACEPARENT
+
+
+async def test_correlation_headers_go_only_to_forward_apis(policy_file: Path) -> None:
+    """The request id and trace context reach the APIs that act for the caller (another
+    agent, reached with the caller's credential), never a third party's bearer or open API."""
+    calls: list[httpx.Request] = []
+    set_outbound_headers(
+        lambda: {"X-Request-ID": "req-1", "traceparent": TRACEPARENT, "tracestate": "k=v"}
+    )
+    try:
+        await get_client("items", transport=_transport(calls)).get("/listing")
+        await get_client("public", transport=_transport(calls)).post("/search", json_body={})
+        forward = get_client("directory", context=_forwarding_caller(), transport=_transport(calls))
+        await forward.get("/me")
+        # A tool may still send its own header to any API: that is the tool's choice.
+        await get_client("items", transport=_transport(calls)).get(
+            "/listing", headers={"X-Request-ID": "tool-own"}
+        )
+    finally:
+        set_outbound_headers(None)
+    bearer, open_api, peer, own = calls
+    for third_party in (bearer, open_api):
+        assert not [h for h in CORRELATION_HEADERS if h in third_party.headers]
+    assert bearer.headers["authorization"] == "Bearer tok"
+    assert peer.headers["x-user-token"] == "user-token-1"
+    assert (peer.headers["x-request-id"], peer.headers["traceparent"]) == ("req-1", TRACEPARENT)
+    assert peer.headers["tracestate"] == "k=v"
+    assert own.headers["x-request-id"] == "tool-own" and "traceparent" not in own.headers
+    modes = ("forward", "bearer", "none")
+    assert [api_client.propagates({"auth": mode}) for mode in modes] == [True, False, False]
 
 
 async def test_a_failing_correlation_provider_does_not_stop_the_call(policy_file: Path) -> None:
@@ -313,7 +351,8 @@ async def test_a_failing_correlation_provider_does_not_stop_the_call(policy_file
 
     set_outbound_headers(broken)
     try:
-        await get_client("items", transport=_transport(calls)).get("/listing")
+        client = get_client("directory", context=_forwarding_caller(), transport=_transport(calls))
+        await client.get("/me")
     finally:
         set_outbound_headers(None)
     assert len(calls) == 1 and "x-request-id" not in calls[0].headers

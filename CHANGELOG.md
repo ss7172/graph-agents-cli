@@ -73,11 +73,13 @@ migration" with the steps to follow.
 - **Requests keep one request id and one trace across agents.** An agent that called another
   agent over A2A (or any API) started a new request id and a new trace there, so a
   multi-agent request could not be followed from end to end. Every call through the policy
-  client now carries the request's `X-Request-ID` and, under OTLP tracing, its W3C trace
-  context (`traceparent`, `tracestate`), and a request that carries a `traceparent` continues
-  that trace. The headers are not bound by approvals. `PROPAGATE_TRACE_HEADERS=false` turns
-  both off. Existing projects get it from `scaffold upgrade` (it changes
-  `app_utils/telemetry.py`, `middleware.py`, `api_client.py` and `fast_api_app.py`).
+  client to an `auth: forward` API (another agent, reached with the caller's own credential)
+  now carries the request's `X-Request-ID` and, under OTLP tracing, its W3C trace context
+  (`traceparent`, `tracestate`), and a request that carries a `traceparent` continues that
+  trace. `auth: bearer` and `auth: none` APIs are third parties and never receive these
+  headers. The headers are not bound by approvals. `PROPAGATE_TRACE_HEADERS=false` turns both
+  off. Existing projects get it from `scaffold upgrade` (it changes `app_utils/telemetry.py`,
+  `middleware.py`, `api_client.py` and `fast_api_app.py`).
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.
