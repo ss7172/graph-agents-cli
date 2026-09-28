@@ -46,6 +46,13 @@ gate; wave 7, a regression review of the upgraded deployment; wave 8, the fixes 
 high-priority issues (build identity and upgrades between builds of one version, and approval
 rules for other approvers on other calls of one API) and their reviews.
 
+After 0.2.0, "found in" can also name one of two experiments run on this repository: the
+skill-optimisation experiment (the bundled skills run by Claude Code and Codex in their
+sandboxes) and the A2A multi-agent experiment (a system of six agents built with
+graph-agents-cli, deployed to a local cluster). "Fix review" marks an issue found while
+verifying that experiment's fixes; those entries were checked against the integration of the
+fixes, by the reproduction or code reading the entry describes.
+
 <!-- --8<-- [start:summary] -->
 ## Summary
 
@@ -56,24 +63,21 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 |---|---:|---:|---:|
 | auth | 3 | 2 | 5 |
 | api-policy | 4 | 7 | 11 |
-| approvals | 7 | 5 | 12 |
-| runtime | 10 | 6 | 16 |
-| a2a | 2 | 9 | 11 |
+| approvals | 8 | 5 | 13 |
+| runtime | 11 | 6 | 17 |
+| a2a | 4 | 11 | 15 |
 | eval | 1 | 7 | 8 |
-| deploy | 4 | 7 | 11 |
+| deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 1 | 11 | 12 |
+| cli | 1 | 17 | 18 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **41** | **83** | **124** |
+| **Total** | **45** | **92** | **137** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
 
-- **Publish the documentation site** before (or with) any PyPI release: in the repository's
-  Settings, set Pages to deploy from GitHub Actions, and set the repository variable
-  `PUBLISH_DOCS` to `true`. The README's links point to the published site (KI-113).
 - Optional, for PyPI (0.2.0 is released on GitHub with the tags `v0.1.0` and `v0.2.0`):
   register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
@@ -269,6 +273,19 @@ Medium · approvals · found in wave 8
   the new rule above the broader one by hand, and check with `graph-agents-cli api show`
   which rule each declared call waits for.
 
+### KI-133: On Postgres, a decision whose comment holds U+0000 fails with a driver error
+
+Medium · approvals · found in the A2A multi-agent experiment (fix review; present in 0.2.0)
+
+- **Issue:** Under `CHECKPOINTER=postgres`, a decision whose comment contains the character
+  U+0000 cannot be stored: Postgres text columns refuse it. Over A2A the database driver's
+  message ("PostgreSQL text fields cannot contain NUL (0x00) bytes") reaches the caller as a
+  `-32603` error and the task shows `failed`; over HTTP the answer is a generic 500 with an
+  error reference. Nothing is sent. `CHECKPOINTER=memory` stores the comment.
+- **Impact:** A database error message reaches an A2A client, and the decision is not made.
+- **Workaround:** Strip control characters from decision comments in the client, and decide
+  again over HTTP or with `graph-agents-cli approvals`.
+
 ### KI-015: Some look-alike closing tags get past the untrusted-output fence
 
 Medium · runtime · found in wave 5b
@@ -396,17 +413,36 @@ Medium · runtime · found in the skill-optimisation experiment
   The CLI itself was fixed for this (it depends on `httpx[socks]` and never proxies loopback).
 - **Impact:** In an agent sandbox, the project's tests fail until the proxy variables are
   unset. A service deployed with a SOCKS `ALL_PROXY` would fail every outbound API call and
-  JWKS fetch.
+  JWKS fetch. `eval run` runs its judge in the project's environment too, so a judge model
+  built on httpx fails the same way there (from the code; not run with a real model).
 - **Workaround:** Unset `ALL_PROXY`/`all_proxy` for the project's processes, use an HTTP proxy
   in `HTTP(S)_PROXY` instead, or add `socksio` to the project's dependencies.
 
+### KI-134: The first request during a frozen Postgres hangs
+
+Medium · runtime · found in the A2A multi-agent experiment (fix review; present in 0.2.0)
+
+- **Issue:** Pooled database connections have no statement or socket timeout. When Postgres
+  stops answering without closing its connections (a paused container, a network partition),
+  the first request that uses one hangs: in the experiment the client's 60 s timeout expired
+  first. Later requests get 503 "Database unavailable" after a few seconds.
+- **Impact:** During a database outage some requests hang instead of failing fast, holding
+  the client and the ingress for up to their timeouts.
+- **Workaround:** Keep client and ingress timeouts short so such a request fails at the edge.
+  libpq connection parameters in `DATABASE_URI`, such as `tcp_user_timeout`, may bound the
+  wait (not verified).
+
 ### KI-025: A2A tasks waiting for approval do not follow the approval's outcome
 
-Medium · a2a · found in wave 7
+Medium · a2a · found in wave 7; extended by the A2A multi-agent experiment
 
 - **Issue:** A task stays `input-required` after its approval expires or is decided over
   HTTP, until a new message arrives on it. Role-gated calls cannot be completed over A2A at
-  all, since only the requester decides there.
+  all, since only the requester decides there. A decision sent on the `contextId` alone (no
+  `taskId`) completes a new task and leaves the old one `input-required` too, as does a
+  caller that asks again on the context (it opens a second task). With the Postgres task
+  store such a task is visible from every replica until `A2A_TASK_TTL_S`, and with
+  `A2A_TASK_TTL_S=0` until its thread is deleted.
 - **Impact:** An A2A client never learns the outcome from the task.
 - **Workaround:** Decide over HTTP or with `graph-agents-cli approvals`, and have A2A clients
   check the approval routes or send a new message.
@@ -422,6 +458,36 @@ Medium · a2a · found in waves 6 and 7
   the request that is bound and sent.
 - **Workaround:** Review exact numeric values over HTTP or with `approvals list`, which show
   the request as it will be sent. The `1.0` display is documented as a limitation.
+
+### KI-135: A cross-replica `CancelTask` just after a task starts can report a false cancel
+
+Medium · a2a · found in the A2A multi-agent experiment
+
+- **Issue:** A replica recognises a task as running elsewhere by its thread's live run lease.
+  Between the moment the task is saved as `working` and the moment its run takes the lease
+  (usually milliseconds), a `CancelTask` that reaches another replica is not refused: that
+  replica marks the task `canceled`, and the replica running it then overwrites the state and
+  finishes the run.
+- **Impact:** In that window a client is told a task was canceled while its run goes on.
+- **Workaround:** Check the task with `GetTask` after a cancel, and give A2A clients that
+  cancel session affinity.
+
+### KI-136: A2A tasks can outlive their deleted thread
+
+Medium · a2a · found in the A2A multi-agent experiment (fix review)
+
+- **Issue:** Deleting a thread tells its listeners, and the A2A task store then deletes the
+  thread's tasks. A listener that fails is logged ("a thread-delete listener failed") and
+  ignored, and the store's delete fails on a database error (or with 503 while the app
+  starts), so the thread is gone but its tasks stay readable by their owner through `GetTask`
+  and `ListTasks` until `A2A_TASK_TTL_S`, and for good with `A2A_TASK_TTL_S=0`. Under
+  `langgraph-server` only the app's `DELETE` route removes tasks; threads the server removes
+  by other means keep theirs.
+- **Impact:** Messages and tool output stored with a task outlive the thread, which matters
+  where deleting a thread is how a user's data is erased.
+- **Workaround:** Keep `A2A_TASK_TTL_S` above 0 so leftovers expire, watch the logs for that
+  warning, and delete leftover rows from `a2a_tasks` (`agent_a2a_tasks` under
+  `langgraph-server`) by `thread_id`.
 
 ### KI-027: `eval generate` can leave an approval pending after more than 20 gated calls
 
@@ -968,6 +1034,32 @@ Low · a2a · found in the A2A multi-agent experiment
 - **Workaround:** Set `OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false` (the SDK's documented
   switch; not verified by the experiment) in the chart `env`.
 
+### KI-137: The stored copy of an A2A data part can merge two keys
+
+Low · a2a · found in the A2A multi-agent experiment (fix review)
+
+- **Issue:** Postgres cannot store U+0000, so the task store writes U+FFFD in its place, in
+  keys too. A data part with both a key `k` + U+0000 and a key `k` + U+FFFD is stored with
+  only one of them (the last).
+- **Impact:** `GetTask` returns one value where the message had two. Only the stored copy of
+  the caller's own task is affected, not the answer to the request or the run.
+- **Workaround:** None needed; keep control characters out of data-part keys.
+
+### KI-138: A task whose replica died reads `working` for about two minutes
+
+Low · a2a · found in the A2A multi-agent experiment (fix review)
+
+- **Issue:** A task whose run ended with its process is failed by a sweep that runs on A2A
+  requests, at most once a minute, for runs whose lease is older than a minute: such a task
+  reads `working` for about two minutes, and longer when no A2A requests arrive. During the
+  first rollout after the upgrade that adds the Postgres task store, tasks created on the old
+  pods (kept in memory) are not visible to the new pods, and are lost with the old pods. The
+  documentation promises no timing.
+- **Impact:** A client that polls a task can wait about two minutes to learn it failed; tasks
+  started during that one rollout can be lost.
+- **Workaround:** Poll with a timeout and send the message again after it; roll out the
+  upgrade while no A2A tasks are in flight.
+
 ### KI-065: Every eval case runs as one identity
 
 Low · eval · found in wave 4
@@ -1107,6 +1199,23 @@ Low · deploy · found in wave 0
 - **Impact:** More one-time setup work.
 - **Workaround:** Follow the deploy skill's GitHub settings reference. See [Where it is
   behind](website/src/reference/comparison.md#where-it-is-behind).
+
+### KI-139: `deploy`'s Secret check follows `secretOptional`, not the environment
+
+Low · deploy · found in the A2A multi-agent experiment (fix review)
+
+- **Issue:** The deploy guide, the exit-codes page and the deploy skill say that, outside
+  `dev`, a missing Secret stops a deploy whose env file sets no allow-listed key. The check
+  reads `secretOptional` in the environment's values file instead, so a `dev` values file
+  without `secretOptional: true` is refused too. With no env file at all, `deploy` does not
+  check that the Secret exists and rolls out pods that cannot start (as in 0.2.0). A string
+  `secretOptional: "true"` passes the CLI's check, but the chart refuses it when rendering,
+  after the image is built (exit 2).
+- **Impact:** The docs mislead for custom values files; a wasted build, or pods that never
+  start.
+- **Workaround:** Write `secretOptional` as a YAML boolean (the scaffolded `values-dev.yaml`
+  sets `true`), and create the Secret with `secrets apply` before deploying with a values
+  file that requires it.
 
 ### KI-079: Post-deploy verification in the generated workflows is thin
 
@@ -1290,6 +1399,81 @@ Low · cli · found in the skill-optimisation experiment
   for the template locks. Fixed upstream in uv 0.9.29 (astral-sh/uv#17829).
 - **Impact:** A coding agent in a sandbox cannot run the project's checks with an older uv.
 - **Workaround:** Put uv 0.9.29 or later on the agent's `PATH`; the locks stay valid.
+
+### KI-140: `NO_PROXY=*` does not stop the CLI's proxy check
+
+Low · cli · found in the skill-optimisation experiment (fix review)
+
+- **Issue:** Before a request to another machine (`run --url`, `eval generate --url`, the
+  pull request `deploy` opens, `login`'s check), the CLI refuses a proxy setting httpx cannot
+  use, such as a `socks4://` `ALL_PROXY`, with exit 3. It checks every proxy variable without
+  applying `NO_PROXY=*`, which tells httpx to use no proxy at all, so such a request is
+  refused although httpx would send it directly. Requests to this machine are not affected.
+- **Impact:** With an unusable proxy variable and `NO_PROXY=*`, remote requests exit 3.
+- **Workaround:** Unset the unusable proxy variable for the command.
+
+### KI-141: With httpx 0.27, a `socks5h` proxy makes remote requests print a traceback
+
+Low · cli · found in the skill-optimisation experiment (fix review)
+
+- **Issue:** graph-agents-cli accepts `httpx[socks]>=0.27`, but httpx supports `socks5h://`
+  proxies (Codex's sandbox sets one in `ALL_PROXY`) only from 0.28. httpx 0.27 raises
+  `ValueError: Unknown scheme for proxy URL`, which the CLI does not turn into its one-line
+  proxy error, so a request to another machine ends with a traceback (exit 2). The lock pins
+  httpx 0.28.1: only an installation that resolves an older httpx is affected.
+- **Impact:** A traceback instead of a one-line error naming the variable.
+- **Workaround:** Upgrade httpx to 0.28 or later in the CLI's environment.
+
+### KI-142: A local server that starts answering while a command fails to stop it is replaced
+
+Low · cli · found in the skill-optimisation experiment (fix review)
+
+- **Issue:** When the recorded local server no longer answers on its port, `run`, `eval run`
+  and the other commands stop it before starting a fresh one. If the operating system
+  refuses the signal (a sandbox that lets a command signal only its own processes) and the
+  server starts answering during the stop attempt (one whose starting command was killed
+  while it was still starting), the warning says "Reusing it", but the command starts a
+  fresh server anyway: on a pinned port (`--port`, `GRAPH_AGENTS_CLI_RUN_PORT`) it exits 3,
+  "something is already listening", and otherwise it starts a second server on another port
+  and loses the record of the first, which keeps running.
+- **Impact:** A false warning, and an exit 3 whose hint names the wrong remedy, or an orphaned
+  local server. The next run on the pinned port reuses the server.
+- **Workaround:** Stop the old server from the shell that started it (the warning prints the
+  `kill` command), then run again.
+
+### KI-143: A local server the command may not stop costs about 5 seconds each time
+
+Low · cli · found in the skill-optimisation experiment (fix review)
+
+- **Issue:** When the operating system refuses to stop a local server, the stop still waits
+  for the SIGTERM (3 s) and the SIGKILL (2 s) to take effect before it gives up. So
+  `run --stop-server` on such a server always takes about 5 s, and so does the first command
+  after every 30 idle minutes, which then reuses the server.
+- **Impact:** Slower commands in sandboxes.
+- **Workaround:** Stop the server from a shell that may signal it (the warning prints the
+  `kill` command).
+
+### KI-144: `CI=false` counts as CI, and `info` then says "(CI)" twice
+
+Low · cli · found in the skill-optimisation experiment (fix review)
+
+- **Issue:** Any non-empty CI marker (`CI`, `GITHUB_ACTIONS` and the others) counts as CI, so
+  `CI=false` or `CI=0` also skips the skills version check and `info`'s skills listing, and
+  `info` gives the reason as "CI is set (CI)".
+- **Impact:** No skills listing where a CI variable is set to a false value; odd wording.
+- **Workaround:** Unset the variable instead of setting it to a false value.
+
+### KI-145: `uv tool install --from` a git worktree can install an earlier build
+
+Low · cli · found in the skill-optimisation experiment
+
+- **Issue:** `pyproject.toml` makes uv rebuild the package when the checkout's commit changes
+  (`cache-keys`), but installing from a git worktree with uv 0.9.2 twice installed the wheel
+  of an earlier commit. The cause is thought to be uv not following a worktree's `.git` file
+  (not traced in uv).
+- **Impact:** A contributor installing from a worktree can test an earlier build unknowingly.
+- **Workaround:** Add `--refresh-package graph-agents-cli` (or `--reinstall`) to the install,
+  and check the commit that `graph-agents-cli --version` names.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 
@@ -1482,17 +1666,6 @@ Low · docs · found in wave 3b
 - **Impact:** An opaque reference for contributors; not shipped in the package.
 - **Workaround:** None needed.
 
-### KI-113: The documentation site is not published yet
-
-Low · docs · found in wave 0
-
-- **Issue:** The site's sources are in `website/` and CI builds and link-checks them, but
-  GitHub Pages publishing is off until the repository variable `PUBLISH_DOCS` is `true`, so
-  the README's links to the site (and a PyPI page built from the README) return 404.
-- **Impact:** Readers of the README cannot follow its documentation links yet.
-- **Workaround:** Read the pages under `website/src/` on GitHub, or preview the site locally
-  (`uv run --group docs mkdocs serve -f website/mkdocs.yml`). See Owner actions.
-
 ### KI-115: A few statements on the docs site do not match the code
 
 Low · docs · found in the docs-site review
@@ -1547,5 +1720,22 @@ Low · docs · found in the docs-site review
   than one page. They agree today but can drift apart.
 - **Impact:** A future change can update one copy and miss the other.
 - **Workaround:** None needed; the fix is to keep each fact on one page and link to it.
+
+### KI-146: The docs do not say that the built-in auth policies send no correlation headers
+
+Low · docs · found in the A2A multi-agent experiment (fix review)
+
+- **Issue:** Only `auth: forward` APIs receive `X-Request-ID` and the trace context. Such an
+  API gets the caller's own credential, which only a custom auth policy provides
+  (`shared-bearer` and `jwt` principals carry none, so a forward call is refused), and it is
+  refused under `langgraph-server`. So with the built-in policies, and under
+  `langgraph-server`, no API receives these headers, an A2A peer reached with `auth: bearer`
+  included. The observability guide says so only for `langgraph-server`, and a
+  `langgraph-server` project's `.env.example` describes forward propagation for a runtime
+  that refuses it.
+- **Impact:** A reader can expect correlation across agents that the built-in setups do not
+  provide.
+- **Workaround:** Correlate by time and hashed principal, or use a custom auth policy that
+  forwards the caller's credential to peer agents.
 
 <!-- --8<-- [end:entries] -->
