@@ -63,7 +63,7 @@ contributor tooling in `tools/`, never shipped).
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 4 | 2 | 6 |
-| api-policy | 4 | 8 | 12 |
+| api-policy | 4 | 9 | 13 |
 | approvals | 8 | 6 | 14 |
 | runtime | 11 | 7 | 18 |
 | a2a | 3 | 13 | 16 |
@@ -75,7 +75,7 @@ contributor tooling in `tools/`, never shipped).
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
 | tooling | 0 | 1 | 1 |
-| **Total** | **46** | **104** | **150** |
+| **Total** | **46** | **105** | **151** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -846,6 +846,22 @@ Low · api-policy · found in v0.3 (identity propagation)
   past it (the task fails), so the loop ends there, after model calls.
 - **Workaround:** Give each agent's client the same id as its audience and its A2A name (the
   Keycloak recipe does), and keep `AUTH_MAX_DELEGATION_DEPTH` low.
+
+### KI-163: On a JSON-RPC API, an allow entry without `rpc_method` admits every method, and `api revoke` cannot remove it alone
+
+Low · api-policy · found in v0.3 (gac-bench tasks for the agent-to-agent features)
+
+- **Issue:** On a `protocol: jsonrpc` (or `a2a`) API, `api allow NAME --method POST --path P`
+  without `--rpc-method` writes an entry that allows every JSON-RPC method sent to `P`.
+  Neither the command (which reports the new list as narrowing), `api show` nor `lint` says
+  so. Once `--rpc-method` entries for the same endpoint exist, `api revoke NAME --method POST
+  --path P` matches them too: it removes them all with the path-only entry, or refuses when
+  they are the list's last entries. No option names only the entry without `rpc_method`.
+- **Impact:** A policy meant to allow a few methods at an endpoint can allow all of them there
+  without `lint` noticing, and the CLI cannot narrow it back entry by entry. The client still
+  enforces the file as written, and denials by `rpc_method` still win.
+- **Workaround:** On JSON-RPC APIs allow calls with `--rpc-method M --method POST --path P`
+  only, and remove a path-only entry by editing `api-policy.yaml` in a reviewed pull request.
 
 ### KI-049: `approvals` output misleads viewers who cannot see the body or decide
 

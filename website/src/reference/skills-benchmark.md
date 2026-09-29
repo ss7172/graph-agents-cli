@@ -25,6 +25,10 @@ propose edits to a skill's text. It lives in the repository under
 | `gac_skillopt` | The SkillOpt environment: it installs a candidate `SKILL.md` as the only skill of Claude Code or Codex, runs a task in an isolated, sandboxed workspace, scores it and writes the trajectory SkillOpt reflects on; plus the runner, baseline and preflight commands |
 | Results | `tools/skillopt/results/`: every measurement and human review so far |
 
+The tasks cover every skill, including 0.3's agents that call agents: `peer add`, relayed
+approval gates, `auth: exchange` APIs, `rpc_method` rules on JSON-RPC APIs, and `system apply`
+over several projects.
+
 The [README](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/README.md)
 is how to run it; [DESIGN.md](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/DESIGN.md)
 records the decisions, the isolation evidence for both harnesses and the budget rules.

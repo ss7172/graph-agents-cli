@@ -341,8 +341,10 @@ migration" with the steps to follow.
   the residuals (LangGraph Server's own pool in SC10, a local environment's `.env` unchecked);
   KI-158 (SC14 on the deprecated Endpoints API) was fixed before release.
 - **gac-bench, contributor tooling for the skills** (`tools/skillopt/`): a benchmark of
-  realistic graph-agents-cli tasks for each of the six skills, each with a deterministic
-  verifier and scripted gold and broken solutions, in frozen train, val and test splits; and
+  realistic graph-agents-cli tasks for each of the six skills, 101 of them, including this
+  release's agent-to-agent features (`peer add`, relayed approval gates, `auth: exchange`,
+  `rpc_method` rules and `system apply`), each with a deterministic verifier and scripted gold
+  and broken solutions, in frozen train, val and test splits; and
   `gac_skillopt`, an environment in which [SkillOpt](https://github.com/microsoft/SkillOpt)
   runs a candidate skill in Claude Code or Codex, isolated so that the session sees only that
   skill, scores it and proposes edits. It found the skill rules this release adopts after

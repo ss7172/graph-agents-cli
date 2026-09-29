@@ -6,7 +6,7 @@ generated project; an optimised skill replaces a shipped one only after a person
 [`DESIGN.md`](DESIGN.md) explains the decisions and the isolation evidence; this page is how to
 run it.
 
-- **gac-bench**: 86 realistic tasks (`tasks/<skill>/<id>/`) across all six skills, each with a
+- **gac-bench**: 101 realistic tasks (`tasks/<skill>/<id>/`) across all six skills, each with a
   fixture, a prompt, a deterministic verifier, a scripted gold solution the verifier accepts and a
   scripted broken solution it rejects. Frozen train/val/test splits per skill are in `splits/`.
 - **`gac_skills`**: a SkillOpt environment (`gac_skillopt/adapter.py`) that installs a candidate
@@ -56,8 +56,9 @@ uv run pytest tools/skillopt/tests -q                        # from the reposito
 
 `selfcheck` runs, for every task, the scripted gold solution (must score `hard=1`, `soft=1.0` and
 exit 0), the scripted broken solution (must score `hard=0` and fail exactly the mandatory checks
-the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). All 86
-tasks pass it; a run takes about 11 minutes at 8 slots.
+the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). All 101
+tasks pass it against a CLI built from v0.3 (commit dbf2ddd); a run takes about 15 minutes at 8
+slots.
 
 ## Running agents
 
@@ -118,6 +119,19 @@ skill copies outside the workspace. See
 **Round 3d:** that text with generic examples in its scope rule, so that they no longer name
 benchmark task types. It is re-checked on Claude Code (the same Claude Code and model as round
 3c, pinned). See [`results/review-r3d-workflow.md`](results/review-r3d-workflow.md).
+
+**v0.3 features (round 3d):** 15 tasks in five new families of three variants each (one in
+train, one in val, one in test), for the agent-to-agent features of 0.3:
+
+- langgraph-code:
+  - `code-peer-wiring`: `peer add`;
+  - `code-relay-gate`: relayed approval gates (`decide_with: relayed`, `relayers`);
+  - `code-exchange-api`: `auth: exchange` APIs (audience, scope, resource);
+  - `code-jsonrpc-policy`: `rpc_method` allows and denials on JSON-RPC APIs.
+- deploy: `deploy-system-wiring`, `system apply` and `system check` over several projects.
+
+No model has run them yet; `selfcheck` proves their verifiers. The structured final-answer mode
+has no task until it is merged into this branch.
 
 In training configs, `env.val_reps` (2 in `configs/claude.yaml`) runs each selection item k times,
 and the gate sees the mean.
@@ -221,7 +235,10 @@ optimizer's sessions (DESIGN section 8 has the formula).
 
 - `fixture.kind`: `project` (created with `create <name> <create_args>`) or `empty` (the agent
   creates it; `name` is where the checks look). `fixture/` files are copied in first (`dot_x`
-  becomes `.x`), then `setup` commands run in the project, then `install`.
+  becomes `.x`), then `setup` commands run in the project, then `install`. An `empty` fixture's
+  files and `setup` commands go to the workspace instead, so they can create several projects
+  under `name` (the `deploy-system-*` tasks do); checks then name files below it
+  (`front-desk/api-policy.yaml`) or set `cwd`.
 - Check types (`gac_skillopt/verify.py`): `cmd`, `file`, `json`/`yaml`/`dotenv` (a Python
   expression over `data`), `unchanged` (against the fixture), `pyfile` (a script in `hidden/`,
   run with the project's interpreter; `hidden/_toolkit.py` calls a tool the way the runtime does,
