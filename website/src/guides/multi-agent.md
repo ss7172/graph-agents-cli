@@ -104,8 +104,11 @@ Two projects, `concierge-agent` (it asks) and `orders-agent` (it is asked), both
    concierge calls).
 8. **Evaluate at the entry agent.** With orders running, run `graph-agents-cli eval run --url
    <the concierge's URL>` from the concierge. A case that reaches the relay decides it like any
-   approval; its `match` names the relay by its API (`{"api": "orders_agent"}`). See
-   [Evaluation](evaluation.md#cases-that-reach-an-approval-gate).
+   approval. A relay has no `operation_id`, so its `match` names the relay's API, method and
+   path:
+   `{"api": "orders_agent", "method": "POST", "path": "/a2a/orders"}`.
+   The gate `peer add` writes holds only the messages that approve, so this match names the
+   relay and no other call. See [Evaluation](evaluation.md#cases-that-reach-an-approval-gate).
 
 Restart a running agent after `peer add`, `peer remove` or `peer sync`
 ([KI-156](../reference/known-issues.md#ki-156-a-running-agent-needs-a-restart-after-peer-add-or-peer-remove)).

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -595,3 +597,70 @@ def test_a_concrete_path_approves_only_that_record(fake_chat, fake_decide) -> No
     assert trace["status"] == "error" and "unexpected approval gate" in trace["error"]
     # Not approved: rejected, so it does not stay pending.
     assert [c["decision"] for c in decide.calls] == ["reject"]
+
+
+# ---------------------------------------------------------------------------
+# A relay: the match the multi-agent guide documents
+# ---------------------------------------------------------------------------
+
+MULTI_AGENT_GUIDE = (
+    Path(__file__).resolve().parents[2] / "website" / "src" / "guides" / "multi-agent.md"
+)
+
+# What the concierge pauses with when its model approves one of orders' pending approvals:
+# the `approval` of the run's message.end, as the rendered template's relay test produces it
+# (its ids, digests and JSON-RPC body left out). `peer add orders` declares the endpoint
+# /a2a/orders; the relay is a SendMessage there, so it has no operation_id.
+RELAY = {
+    "approval_id": "a-relay",
+    "api": "orders_agent",
+    "method": "POST",
+    "path": "/a2a/orders",
+    "query": {},
+    "operation_id": None,
+    "rpc_method": "SendMessage",
+    "a2a_operation": "approve",
+    "reason": "approve_agent_action",
+    "tool": "approve_agent_action",
+    "approvers": ["requester"],
+    "decide_with": "direct",
+    "effect": {
+        "agent": "orders",
+        "via": ["orders"],
+        "api": "shop",
+        "method": "POST",
+        "path": "/orders/ORD-1002/cancel",
+        "operation_id": "cancelOrder",
+    },
+}
+
+
+def _guide_relay_match() -> dict[str, Any]:
+    """The `match` that step 8 of `guides/multi-agent.md` gives for a relay, word for word."""
+    text = MULTI_AGENT_GUIDE.read_text(encoding="utf-8")
+    marker = "**Evaluate at the entry agent.**"
+    assert marker in text, f"{MULTI_AGENT_GUIDE.name} lost its eval step ({marker!r})"
+    step = " ".join(text.split(marker, 1)[1].split("\n\n", 1)[0].split())
+    spans = [span for span in re.findall(r"`([^`]*)`", step) if span.startswith("{")]
+    assert len(spans) == 1, f"expected one JSON match in the eval step, found {spans}"
+    return json.loads(spans[0])
+
+
+def test_the_multi_agent_guides_relay_match_decides_the_relay(fake_chat, fake_decide) -> None:
+    """The guide's `match` for a relay loads as `eval run` loads a dataset, and decides the
+    gate the concierge pauses on when it relays a person's approval to orders."""
+    relay_case = case([{"decision": "approve", "match": _guide_relay_match()}])
+    fake_chat({"cancel it": paused(RELAY)})
+    decide = fake_decide()
+    trace = run_case("http://x", relay_case, headers={})
+    assert trace["status"] == "ok", trace["error"]
+    (decision,) = decide.calls
+    assert decision["decision"] == "approve" and decision["approval_id"] == "a-relay"
+    (gate,) = trace["approvals"]
+    assert gate["status"] == "approved"
+    assert (gate["api"], gate["method"], gate["path"], gate["operation_id"]) == (
+        "orders_agent",
+        "POST",
+        "/a2a/orders",
+        None,
+    )
