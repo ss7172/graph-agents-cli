@@ -12,7 +12,8 @@ The next release (0.3) lets agents call other agents for the user they serve, ov
 Each agent knows the user and the agent in between, a person's approvals stay with that
 person, `peer add` declares the agents one asks, and `graph-agents-cli system` checks, wires
 and deploys several projects as one. It also keeps A2A tasks in Postgres so that replicas
-share them, adds reasoning effort and the Responses API for OpenAI-API models, a
+share them, adds structured final answers (an agent that answers in a JSON shape the
+project declares), reasoning effort and the Responses API for OpenAI-API models, a
 documentation site, skill rules found with the SkillOpt experiment and the benchmark that
 measured them, and fixes. What an upgrade from 0.2.0 changes, and the order to do it in, is
 in [Upgrading projects](website/src/guides/upgrading.md#02-to-03-unreleased); the guide to
@@ -416,13 +417,14 @@ change in behaviour.
   for a best-effort schema), else a `final_answer` tool the model must call (`tool_choice`
   forces a call at every step); `provider` and `tool` force one. Anthropic's client refuses a
   type list and a schema with no `type` (an `enum` alone) before any request, so `auto` uses
-  the tool for such a schema and `provider` stops startup naming why. LangChain returns a raw JSON-schema answer unchecked, so
-  the new `StructuredAnswer` middleware (last in `middleware()`) checks every answer against
-  the schema: one that does not fit, a reply that is not JSON, a plain-text final reply, or an
-  answer given beside other tool calls (none of which runs, so a gated call never runs after
-  an answer already given) goes back to the model with what is wrong, up to 3 tries in the
-  same step (the failed tries stay out of the thread; their tokens count in the answer's
-  usage), then the run ends with the new `error` code `invalid_structured_response`. The checker supports a documented JSON
+  the tool for such a schema and `provider` stops startup naming why. LangChain returns a raw
+  JSON-schema answer unchecked, so the new `StructuredAnswer` middleware (last in
+  `middleware()`) checks every answer against the schema: one that does not fit, a reply that
+  is not JSON, a plain-text final reply, or an answer given beside other tool calls (none of
+  which runs, so a gated call never runs after an answer already given) goes back to the model
+  with what is wrong, up to 3 tries in the same step (the failed tries stay out of the thread;
+  their tokens count in the answer's usage), then the run ends with the new `error` code
+  `invalid_structured_response`. The checker supports a documented JSON
   Schema subset and refuses a schema that uses anything else at startup (`lint` and
   `create --response-schema` apply the same rules, a SHARED block kept byte-identical with the
   template's). Delivery: a completed `/chat` run's only `message.delta` is the answer's JSON
@@ -444,7 +446,12 @@ change in behaviour.
   `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns about
   either). The runtime checks every answer again before delivering it, so an answer that
   never went through `StructuredAnswer` and does not fit ends the run with
-  `invalid_structured_response`; it is never delivered.
+  `invalid_structured_response`; it is never delivered. Documented in
+  [Develop your agent](website/src/guides/develop.md#structured-final-answers), the HTTP API
+  and environment references, the upgrading guide (0.2 to 0.3) and the multi-agent guide (a
+  peer that answers in JSON); the langgraph-code, workflow, scaffold and eval skills teach it
+  (declare the shape, never parse JSON out of a reply, wire a 0.2 `agent.py` by hand); and
+  gac-bench has a task family for it. KI-165 to KI-171 park its remaining minor issues.
 - **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
   five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
   agent, and a reference whose CLI and Skills pages are generated from the commands and
@@ -454,10 +461,11 @@ change in behaviour.
   <https://ss7172.github.io/graph-agents-cli/>. Preview it with
   `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
 - **gac-bench, contributor tooling for the skills** (`tools/skillopt/`): a benchmark of
-  realistic graph-agents-cli tasks for each of the six skills, 101 of them, including this
+  realistic graph-agents-cli tasks for each of the six skills, 104 of them, including this
   release's agent-to-agent features (`peer add`, relayed approval gates, `auth: exchange`,
-  `rpc_method` rules and `system apply`), each with a deterministic verifier and scripted gold
-  and broken solutions, in frozen train, val and test splits; and
+  `rpc_method` rules and `system apply`) and structured final answers, each with a
+  deterministic verifier and scripted gold and broken solutions, in frozen train, val and
+  test splits; and
   `gac_skillopt`, an environment in which [SkillOpt](https://github.com/microsoft/SkillOpt)
   runs a candidate skill in Claude Code or Codex, isolated so that the session sees only that
   skill, scores it and proposes edits. It found the skill rules this release adopts after
