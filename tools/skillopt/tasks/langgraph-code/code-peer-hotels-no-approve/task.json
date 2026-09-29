@@ -1,0 +1,69 @@
+{
+  "id": "code-peer-hotels-no-approve",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-peer-wiring",
+  "task_type": "code/peer",
+  "fixture": {
+    "kind": "project",
+    "name": "trip-planner",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In trip-planner/, let the agent ask our hotels agent about room availability. The hotels agent is another graph-agents-cli agent: it serves A2A at /a2a/hotels, and its URL goes in HOTELS_AGENT_URL. The agent may send it questions and check on their status, but it must never approve anything at the hotels agent for the user: people approve their bookings there themselves.",
+  "checks": [
+    {
+      "id": "peer",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('protocol') == 'a2a' and get(a, 'a2a.path') == '/a2a/hotels' and a.get('base_url_env') == 'HOTELS_AGENT_URL' and a.get('auth') == 'exchange' and bool(get(a, 'exchange.audience')) for a in (get(data, 'apis') or {}).values())",
+      "why": "another agent is a protocol: a2a API at its A2A endpoint, reached for the user with a token exchanged for theirs (`graph-agents-cli peer add`)"
+    },
+    {
+      "id": "never-approves",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and get(a, 'a2a.path') == '/a2a/hotels' and any(isinstance(d, dict) and d.get('a2a_operation') == 'approve' for d in (a.get('denied_operations') or [])) for a in (get(data, 'apis') or {}).values())",
+      "why": "messages that approve the peer's pending approvals are denied (`peer add --approvals deny`), not relayed through a gate here"
+    },
+    {
+      "id": "ask-and-status",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and get(a, 'a2a.path') == '/a2a/hotels' and {'SendMessage', 'GetTask'} <= {o.get('rpc_method') for o in (a.get('allowed_operations') or []) if isinstance(o, dict)} for a in (get(data, 'apis') or {}).values())",
+      "why": "the agent may send the peer messages (SendMessage) and read their tasks (GetTask)"
+    },
+    {
+      "id": "generated-module",
+      "type": "file",
+      "path": "app/tools/a2a_peers.py",
+      "regex": "HOTELS|hotels",
+      "why": "`peer add` generates tools/a2a_peers.py (ask_agent) from the policy"
+    },
+    {
+      "id": "no-hand-written-client",
+      "type": "cmd",
+      "run": "test -z \"$(/usr/bin/grep -rlE --include='*.py' 'SendMessage|message/send|a2a/hotels' app | /usr/bin/grep -vE '^(app/tools/a2a_peers\\.py|app/app_utils/.*)$')\"",
+      "why": "never hand-write A2A client code: the generated module and the template's a2a_client call the peer through the policy"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils"
+      ],
+      "why": "the template's A2A client (app_utils/a2a_client.py) is used as it is, never edited"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "never-approves"
+  ],
+  "reference": "`graph-agents-cli peer add hotels --approvals deny --description \"...\"` (with --dry-run first): the API hotels_agent (protocol a2a, a2a.path /a2a/hotels, base_url_env HOTELS_AGENT_URL, auth exchange for audience hotels under the jwt policy), SendMessage and GetTask allowed, and messages that approve the hotels agent's pending approvals denied (denied_operations: a2a_operation approve) instead of relayed; tools/a2a_peers.py generated. No hand-written A2A client code. `lint` passes. Report what peer add leaves to set (HOTELS_AGENT_URL, the token-exchange settings, AUTH_ALLOWED_ACTORS on the hotels agent)."
+}

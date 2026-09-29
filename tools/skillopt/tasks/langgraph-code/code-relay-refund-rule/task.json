@@ -1,0 +1,79 @@
+{
+  "id": "code-relay-refund-rule",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-relay-gate",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "payments-hub",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ],
+    "setup": [
+      "graph-agents-cli api add payments --base-url-env PAYMENTS_API_BASE_URL --auth bearer --token-env PAYMENTS_API_TOKEN --access read-write",
+      "graph-agents-cli api allow payments getPayment --method GET --path '/payments/{payment_id}'",
+      "graph-agents-cli api allow payments refundPayment --method POST --path '/payments/{payment_id}/refund'",
+      "graph-agents-cli api allow payments voidPayment --method POST --path '/payments/{payment_id}/void'",
+      "graph-agents-cli api approval payments --operations refundPayment --approvers requester",
+      "graph-agents-cli api approval payments --add-rule --operations voidPayment --approvers role:finance"
+    ]
+  },
+  "prompt": "In payments-hub/, our helpdesk agent (client id `helpdesk`) collects people's decisions in its chat. Let it deliver the requester's own decision on refunds. Voids stay exactly as they are: the finance team approves them here, directly.",
+  "checks": [
+    {
+      "id": "refund-relayed",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(r, dict) and [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] == ['refundPayment'] and (r.get('approvers') or []) == ['requester'] and r.get('decide_with') == 'relayed' and r.get('relayers') == ['helpdesk'] for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.payments.approval')))",
+      "why": "the refund rule (approval[0]) gains decide_with: relayed with relayers [helpdesk] (`api approval payments --rule 0 ...`)"
+    },
+    {
+      "id": "void-direct",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(r, dict) and [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] == ['voidPayment'] and (r.get('approvers') or []) == ['role:finance'] and r.get('decide_with', 'direct') == 'direct' and not r.get('relayers') for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.payments.approval')))",
+      "why": "the finance rule stays a direct decision by role:finance (a role approver is never relayed)"
+    },
+    {
+      "id": "rules-kept",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "isinstance(get(data, 'apis.payments.approval'), list) and len(get(data, 'apis.payments.approval')) == 2 and [[o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] for r in get(data, 'apis.payments.approval')] == [['refundPayment'], ['voidPayment']]",
+      "why": "the two rules stay, in their order (the first rule that covers a call applies)"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.payments.allowed_methods') or []) == sorted(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) and sorted(o.get('operationId') for o in (get(data, 'apis.payments.allowed_operations') or [])) == ['getPayment', 'refundPayment', 'voidPayment'] and not get(data, 'apis.payments.denied_operations')",
+      "why": "a relay never changes what the API allows"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "allowed-actor",
+      "type": "cmd",
+      "run": "/usr/bin/grep -qsE '^[[:space:]]*AUTH_ALLOWED_ACTORS[[:space:]]*[=:].*helpdesk' .env .env.example",
+      "mandatory": false,
+      "why": "a relayer must also be in AUTH_ALLOWED_ACTORS, or its calls are refused"
+    }
+  ],
+  "broken_fails": [
+    "refund-relayed",
+    "void-direct",
+    "rules-kept"
+  ],
+  "reference": "The approval block is a list of two rules: `graph-agents-cli api show payments` names them. `graph-agents-cli api approval payments --rule 0 --decide-with relayed --relayers helpdesk` (with --dry-run first) changes the refund rule only; the void rule (role:finance) stays direct (the CLI refuses relayed for a rule without requester). List helpdesk in AUTH_ALLOWED_ACTORS too. Access and code stay; `lint` passes."
+}

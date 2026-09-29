@@ -1,0 +1,69 @@
+{
+  "id": "code-peer-inventory-audience",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-peer-wiring",
+  "task_type": "code/peer",
+  "fixture": {
+    "kind": "project",
+    "name": "concierge",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In concierge/, add our inventory agent as an agent this one can ask about stock. It is a graph-agents-cli agent served at /a2a/stock (its URL goes in INVENTORY_AGENT_URL), and it accepts only tokens minted for the audience `inventory-api`. This agent may ask it questions, check a task's status and cancel a task it started there; people's approvals at the inventory agent are relayed through this agent.",
+  "checks": [
+    {
+      "id": "target",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('protocol') == 'a2a' and get(a, 'a2a.path') == '/a2a/stock' and a.get('base_url_env') == 'INVENTORY_AGENT_URL' and a.get('auth') == 'exchange' and get(a, 'exchange.audience') == 'inventory-api' for a in (get(data, 'apis') or {}).values())",
+      "why": "the exchanged token is minted for the audience the peer accepts (`peer add --audience`); the default is the peer's name"
+    },
+    {
+      "id": "calls",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and get(a, 'a2a.path') == '/a2a/stock' and {'SendMessage', 'GetTask', 'CancelTask'} <= {o.get('rpc_method') for o in (a.get('allowed_operations') or []) if isinstance(o, dict)} for a in (get(data, 'apis') or {}).values())",
+      "why": "asking, reading and cancelling tasks are SendMessage, GetTask and CancelTask (`peer add --calls ask,status,cancel`)"
+    },
+    {
+      "id": "relay-gate",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and get(a, 'a2a.path') == '/a2a/stock' and not any(isinstance(d, dict) and d.get('a2a_operation') == 'approve' for d in (a.get('denied_operations') or [])) and any(isinstance(r, dict) and 'requester' in (r.get('approvers') or []) and any(isinstance(o, dict) and o.get('a2a_operation') == 'approve' for o in (get(r, 'required_for.operations') or [])) for r in (lambda x: x if isinstance(x, list) else [x])(a.get('approval'))) for a in (get(data, 'apis') or {}).values())",
+      "why": "a message that approves the peer's pending approval waits for the person here, so the agent relays their decision"
+    },
+    {
+      "id": "generated-module",
+      "type": "file",
+      "path": "app/tools/a2a_peers.py",
+      "regex": "CancelTask",
+      "why": "`peer add` generates tools/a2a_peers.py from the policy, cancel included"
+    },
+    {
+      "id": "no-hand-written-client",
+      "type": "cmd",
+      "run": "test -z \"$(/usr/bin/grep -rlE --include='*.py' 'SendMessage|message/send|a2a/stock' app | /usr/bin/grep -vE '^(app/tools/a2a_peers\\.py|app/app_utils/.*)$')\"",
+      "why": "never hand-write A2A client code"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils"
+      ],
+      "why": "the template's A2A client (app_utils/a2a_client.py) is used as it is, never edited"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "target"
+  ],
+  "reference": "`graph-agents-cli peer add inventory --path /a2a/stock --audience inventory-api --calls ask,status,cancel --description \"...\"` (with --dry-run first): the API inventory_agent (protocol a2a, a2a.path /a2a/stock, base_url_env INVENTORY_AGENT_URL, auth exchange for audience inventory-api), SendMessage, GetTask and CancelTask allowed, and the default approve gate for the requester (relay); tools/a2a_peers.py generated. `lint` passes. Report what is left to set, including AUTH_JWT_AUDIENCE and AUTH_ALLOWED_ACTORS on the inventory agent."
+}

@@ -1,0 +1,49 @@
+{
+  "id": "code-exchange-leave-api",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-exchange-api",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "hr-assistant",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In hr-assistant/, the agent needs to read people's leave balances from the leave service (its base URL is in LEAVE_API_URL). The service authorizes each user itself, so the agent must call it as the user who is asking: never with a shared service key, and never by passing on the user's own token. The service accepts tokens minted for the audience `leave-service`. The agent only reads there. Set up the API; no tool yet.",
+  "checks": [
+    {
+      "id": "exchange",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'LEAVE_API_URL' and a.get('auth') == 'exchange' and get(a, 'exchange.audience') == 'leave-service' and not get(a, 'exchange.allow_actorless') for a in (get(data, 'apis') or {}).values())",
+      "why": "`auth: exchange` asks the issuer for a token minted for that API alone, in the user's name (RFC 8693); forward replays the user's own token, bearer is a shared key"
+    },
+    {
+      "id": "read-only",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'LEAVE_API_URL' and a.get('allowed_methods') and set(a.get('allowed_methods')) <= {'GET', 'HEAD'} for a in (get(data, 'apis') or {}).values())",
+      "why": "reading only: --access read-only"
+    },
+    {
+      "id": "exchange-secret",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'TOKEN_EXCHANGE_CLIENT_SECRET' in (get(data, 'secrets.keys') or [])",
+      "why": "the agent's client secret at the issuer is a secret key of the project (`api add` adds it)"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "exchange",
+    "exchange-secret"
+  ],
+  "reference": "`graph-agents-cli api add leave --base-url-env LEAVE_API_URL --auth exchange --audience leave-service --access read-only` (--dry-run first): the token exchange (RFC 8693) mints a token for leave-service in the user's name, naming this agent as the actor; `api add` adds TOKEN_EXCHANGE_CLIENT_SECRET to secrets.keys and the TOKEN_EXCHANGE_* settings to .env.example. Not `auth: forward` (it replays the user's token) and not `bearer`; no allow_actorless. `lint` passes. Report what is left: TOKEN_EXCHANGE_URL, TOKEN_EXCHANGE_CLIENT_ID and the secret, and the issuer letting this client exchange for leave-service."
+}

@@ -1,0 +1,46 @@
+{
+  "id": "code-exchange-ledger-resource",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-exchange-api",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "ledger-agent",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In ledger-agent/, add the ledger API (base URL in LEDGER_API_URL), read only, called as the user who is asking. Our identity provider mints its tokens for the audience `ledger` and identifies the API by the resource indicator https://ledger.internal.example. Don't send a shared key or the user's own token. Only the API, no tool.",
+  "checks": [
+    {
+      "id": "exchange-target",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'LEDGER_API_URL' and a.get('auth') == 'exchange' and get(a, 'exchange.audience') == 'ledger' and str(get(a, 'exchange.resource') or '').rstrip('/') == 'https://ledger.internal.example' and not get(a, 'exchange.allow_actorless') for a in (get(data, 'apis') or {}).values())",
+      "why": "the audience and the resource indicator (RFC 8707) are separate exchange settings (`--audience ledger --resource https://...`)"
+    },
+    {
+      "id": "read-only",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'LEDGER_API_URL' and a.get('allowed_methods') and set(a.get('allowed_methods')) <= {'GET', 'HEAD'} for a in (get(data, 'apis') or {}).values())"
+    },
+    {
+      "id": "exchange-secret",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'TOKEN_EXCHANGE_CLIENT_SECRET' in (get(data, 'secrets.keys') or [])"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "exchange-target"
+  ],
+  "reference": "`graph-agents-cli api add ledger --base-url-env LEDGER_API_URL --auth exchange --audience ledger --resource https://ledger.internal.example --access read-only` (--dry-run first). TOKEN_EXCHANGE_CLIENT_SECRET goes into secrets.keys. `lint` passes. Report the token-exchange settings still to set."
+}

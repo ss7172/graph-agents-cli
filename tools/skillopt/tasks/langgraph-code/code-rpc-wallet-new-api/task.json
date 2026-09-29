@@ -1,0 +1,54 @@
+{
+  "id": "code-rpc-wallet-new-api",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-jsonrpc-policy",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "wallet-helper",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "In wallet-helper/, the tools in app/tools/wallet.py call our wallet service over JSON-RPC, but its API is not declared yet, so lint refuses them. Its URL is in WALLET_RPC_URL and it takes a bearer token from WALLET_RPC_TOKEN. Declare it so the agent can send exactly the methods those tools use and nothing else. Don't change the tools.",
+  "checks": [
+    {
+      "id": "declared",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "get(data, 'apis.wallet_rpc.protocol') == 'jsonrpc' and get(data, 'apis.wallet_rpc.base_url_env') == 'WALLET_RPC_URL' and get(data, 'apis.wallet_rpc.auth') == 'bearer' and get(data, 'apis.wallet_rpc.token_env') == 'WALLET_RPC_TOKEN' and get(data, 'apis.wallet_rpc.allowed_methods') == ['POST']",
+      "why": "a JSON-RPC API is declared as one (`api add NAME --protocol jsonrpc`), so each POST is judged by the method in its body; the tools' API_CALLS name the API wallet_rpc"
+    },
+    {
+      "id": "only-tool-methods",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "(lambda ops: bool(ops) and all(isinstance(o, dict) and o.get('rpc_method') in ('wallet.balance', 'wallet.history') and o.get('path') == '/rpc' and [str(m).upper() for m in (o.get('methods') or [])] == ['POST'] for o in ops) and {o.get('rpc_method') for o in ops} == {'wallet.balance', 'wallet.history'})(get(data, 'apis.wallet_rpc.allowed_operations') or [])",
+      "why": "on a JSON-RPC API every call is a POST to one endpoint: an entry without rpc_method allows every method there (`api allow NAME --rpc-method M --method POST --path /rpc`)"
+    },
+    {
+      "id": "tools-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "token-allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'WALLET_RPC_TOKEN' in (get(data, 'secrets.keys') or [])",
+      "mandatory": false,
+      "why": "`api add` puts a bearer token_env into secrets.keys"
+    }
+  ],
+  "broken_fails": [
+    "only-tool-methods"
+  ],
+  "reference": "`graph-agents-cli api add wallet_rpc --protocol jsonrpc --base-url-env WALLET_RPC_URL --auth bearer --token-env WALLET_RPC_TOKEN --access custom --methods POST` (--dry-run first), then `graph-agents-cli api allow wallet_rpc --rpc-method wallet.balance --method POST --path /rpc` and the same for wallet.history, the two methods app/tools/wallet.py declares in API_CALLS. An allow entry by path alone would let every JSON-RPC method through; declaring the API as plain HTTP makes lint refuse the tools' rpc_method calls. Tools unchanged; `lint` passes."
+}

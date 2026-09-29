@@ -5,7 +5,11 @@
     "code-temperature-tool",
     "code-api-limits-recursion",
     "code-approval-role-finance",
-    "code-update-ticket-status"
+    "code-update-ticket-status",
+    "code-peer-hotels-no-approve",
+    "code-relay-orders-concierge",
+    "code-exchange-leave-api",
+    "code-rpc-deny-accounts"
   ],
   "val": [
     "code-api-tool-list-orders",
@@ -13,11 +17,19 @@
     "code-api-allow-new-op",
     "code-approval-refund-requester",
     "code-api-new-billing",
-    "code-create-ticket-body"
+    "code-create-ticket-body",
+    "code-peer-billing-path",
+    "code-relay-refund-rule",
+    "code-exchange-claims-scope",
+    "code-rpc-wallet-new-api"
   ],
   "test": [
     "code-remove-checkpointer",
-    "code-write-tool-guard"
+    "code-write-tool-guard",
+    "code-peer-inventory-audience",
+    "code-relay-add-relayer",
+    "code-exchange-ledger-resource",
+    "code-rpc-allow-inventory"
   ],
   "hashes": {
     "code-api-tool-get-item": "111cc22f4b6d7a62",
@@ -26,13 +38,25 @@
     "code-api-limits-recursion": "df2e629748f6c802",
     "code-approval-role-finance": "e47610365f76ad29",
     "code-update-ticket-status": "ac12c2b21b8a0920",
+    "code-peer-hotels-no-approve": "e5c056cd44c75ce5",
+    "code-relay-orders-concierge": "5b63fba09faa0622",
+    "code-exchange-leave-api": "f0770f2d47eeb46a",
+    "code-rpc-deny-accounts": "4fbc146de05d251c",
     "code-api-tool-list-orders": "96c63267fb48c2da",
     "code-system-prompt-preserve": "b416ca4aa590855c",
     "code-api-allow-new-op": "bbf4395b5e705de5",
     "code-approval-refund-requester": "ff8430dca9f3e58a",
     "code-api-new-billing": "0532d94b4166897e",
     "code-create-ticket-body": "81c6e7ade52e7519",
+    "code-peer-billing-path": "b2e0f339fa8228b4",
+    "code-relay-refund-rule": "2840fa3dc50205e1",
+    "code-exchange-claims-scope": "47c700a5613197fd",
+    "code-rpc-wallet-new-api": "e7fc5379bd357c25",
     "code-remove-checkpointer": "98a6f1fd88ec1b05",
-    "code-write-tool-guard": "ba49b2dcb8c5d5dd"
+    "code-write-tool-guard": "ba49b2dcb8c5d5dd",
+    "code-peer-inventory-audience": "38f8235aebe86c5d",
+    "code-relay-add-relayer": "89aeea969d3e14c0",
+    "code-exchange-ledger-resource": "3ec461ef68bf2c5d",
+    "code-rpc-allow-inventory": "5bca0fb5d4afa4e7"
   }
 }

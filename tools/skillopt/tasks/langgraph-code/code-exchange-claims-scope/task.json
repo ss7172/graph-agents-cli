@@ -1,0 +1,54 @@
+{
+  "id": "code-exchange-claims-scope",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-exchange-api",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "claims-bot",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In claims-bot/, connect the claims API (base URL in CLAIMS_API_URL) so the agent can look up claims (GET) and file new ones (POST) as the person it is talking to. Our identity provider mints tokens for that API with the audience `claims-api`; ask only for the scopes `claims.read claims.submit`, nothing broader. Just the API for now, no tools.",
+  "checks": [
+    {
+      "id": "exchange",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'CLAIMS_API_URL' and a.get('auth') == 'exchange' and get(a, 'exchange.audience') == 'claims-api' and not get(a, 'exchange.allow_actorless') for a in (get(data, 'apis') or {}).values())",
+      "why": "acting as the person at another service is `auth: exchange` for that service's audience"
+    },
+    {
+      "id": "scope",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'CLAIMS_API_URL' and sorted(str(get(a, 'exchange.scope') or '').split()) == ['claims.read', 'claims.submit'] for a in (get(data, 'apis') or {}).values())",
+      "why": "least privilege: the exchange asks for exactly these scopes (`api add --scope`)"
+    },
+    {
+      "id": "methods",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('base_url_env') == 'CLAIMS_API_URL' and sorted(a.get('allowed_methods') or []) == ['GET', 'POST'] for a in (get(data, 'apis') or {}).values())",
+      "why": "look up and file: GET and POST only (--access custom --methods GET,POST)"
+    },
+    {
+      "id": "exchange-secret",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'TOKEN_EXCHANGE_CLIENT_SECRET' in (get(data, 'secrets.keys') or [])"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "scope"
+  ],
+  "reference": "`graph-agents-cli api add claims --base-url-env CLAIMS_API_URL --auth exchange --audience claims-api --scope \"claims.read claims.submit\" --access custom --methods GET,POST` (--dry-run first). The exchange asks for exactly those scopes; TOKEN_EXCHANGE_CLIENT_SECRET goes into secrets.keys. `lint` passes. Report the token-exchange settings still to set and the issuer permission for audience claims-api."
+}

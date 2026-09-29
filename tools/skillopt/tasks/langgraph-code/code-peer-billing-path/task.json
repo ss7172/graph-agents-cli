@@ -1,0 +1,64 @@
+{
+  "id": "code-peer-billing-path",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-peer-wiring",
+  "task_type": "code/peer",
+  "fixture": {
+    "kind": "project",
+    "name": "support-desk",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ]
+  },
+  "prompt": "In support-desk/, the agent should be able to ask our billing agent about invoices, and to pass people's approvals on to it: a refund there waits for the person, who approves it through this agent. The billing agent is a graph-agents-cli agent whose A2A endpoint is /a2a/invoices; its URL goes in BILLING_AGENT_URL.",
+  "checks": [
+    {
+      "id": "endpoint",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and a.get('protocol') == 'a2a' and get(a, 'a2a.path') == '/a2a/invoices' and a.get('base_url_env') == 'BILLING_AGENT_URL' and a.get('auth') == 'exchange' for a in (get(data, 'apis') or {}).values())",
+      "why": "the peer's A2A endpoint is the path its owners give (`peer add --path`), not the default /a2a/<name>"
+    },
+    {
+      "id": "relay-gate",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(a, dict) and get(a, 'a2a.path') == '/a2a/invoices' and not any(isinstance(d, dict) and d.get('a2a_operation') == 'approve' for d in (a.get('denied_operations') or [])) and any(isinstance(r, dict) and 'requester' in (r.get('approvers') or []) and any(isinstance(o, dict) and o.get('a2a_operation') == 'approve' for o in (get(r, 'required_for.operations') or [])) for r in (lambda x: x if isinstance(x, list) else [x])(a.get('approval'))) for a in (get(data, 'apis') or {}).values())",
+      "why": "a message that approves the peer's pending approval waits for the person here (an approve gate for the requester), so the agent relays their decision, never its own"
+    },
+    {
+      "id": "generated-module",
+      "type": "file",
+      "path": "app/tools/a2a_peers.py",
+      "regex": "a2a/invoices",
+      "why": "`peer add` generates tools/a2a_peers.py (ask_agent, approve_agent_action) from the policy"
+    },
+    {
+      "id": "no-hand-written-client",
+      "type": "cmd",
+      "run": "test -z \"$(/usr/bin/grep -rlE --include='*.py' 'SendMessage|message/send|a2a/invoices' app | /usr/bin/grep -vE '^(app/tools/a2a_peers\\.py|app/app_utils/.*)$')\"",
+      "why": "never hand-write A2A client code: the generated module and the template's a2a_client call the peer through the policy"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils"
+      ],
+      "why": "the template's A2A client (app_utils/a2a_client.py) is used as it is, never edited"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "endpoint",
+    "relay-gate",
+    "generated-module"
+  ],
+  "reference": "`graph-agents-cli peer add billing --path /a2a/invoices --description \"...\"` (with --dry-run first): the API billing_agent (protocol a2a, a2a.path /a2a/invoices, base_url_env BILLING_AGENT_URL, auth exchange for audience billing), SendMessage and GetTask allowed, and with the default --approvals relay an approve gate (a2a_operation approve, approvers requester) so people's approvals are relayed; tools/a2a_peers.py generated. `lint` passes. Report what is left to set, including the `api approval ... --decide-with relayed --relayers <this agent>` line the billing agent's owners must run for a relay to reach its gates."
+}

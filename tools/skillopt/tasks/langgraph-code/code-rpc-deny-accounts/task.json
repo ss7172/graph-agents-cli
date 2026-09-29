@@ -1,0 +1,49 @@
+{
+  "id": "code-rpc-deny-accounts",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-jsonrpc-policy",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "account-desk",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add accounts_rpc --protocol jsonrpc --base-url-env ACCOUNTS_RPC_URL --auth bearer --token-env ACCOUNTS_RPC_TOKEN --access custom --methods POST"
+    ]
+  },
+  "prompt": "In account-desk/, the agent must never close accounts. Make the accounts JSON-RPC API refuse the account.close method, whatever path or label a call gives it. Keep everything else as it is.",
+  "checks": [
+    {
+      "id": "close-denied",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(d, dict) and str(d.get('rpc_method', '')).lower() == 'account.close' and not d.get('path') and not d.get('operationId') and not d.get('methods') for d in (get(data, 'apis.accounts_rpc.denied_operations') or []))",
+      "why": "the client reads the JSON-RPC method from the request body: a denial by rpc_method alone (`api deny NAME --rpc-method account.close`) refuses it whatever the path or label"
+    },
+    {
+      "id": "rest-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "get(data, 'apis.accounts_rpc.allowed_methods') == ['POST'] and not get(data, 'apis.accounts_rpc.allowed_operations') and get(data, 'apis.accounts_rpc.protocol') == 'jsonrpc' and len(get(data, 'apis.accounts_rpc.denied_operations') or []) == 1",
+      "why": "only the one denial is added; everything else the API allows stays"
+    },
+    {
+      "id": "tools-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "close-denied"
+  ],
+  "reference": "`graph-agents-cli api deny accounts_rpc --rpc-method account.close` (--dry-run first): one denied_operations entry {rpc_method: account.close}, which refuses the method whatever path or operation label a call gives it. A denial by operationId (closeAccount) only refuses calls that carry that label: account.close sent under another label gets past it. Nothing else changes; `lint` passes."
+}

@@ -1,0 +1,70 @@
+{
+  "id": "code-relay-add-relayer",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-relay-gate",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "warehouse-agent",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ],
+    "setup": [
+      "graph-agents-cli api add shipping --base-url-env SHIPPING_API_BASE_URL --auth bearer --token-env SHIPPING_API_TOKEN --access read-write",
+      "graph-agents-cli api allow shipping getShipment --method GET --path '/shipments/{shipment_id}'",
+      "graph-agents-cli api allow shipping releaseShipment --method POST --path '/shipments/{shipment_id}/release'",
+      "graph-agents-cli api approval shipping --operations releaseShipment --approvers requester --timeout-s 1800",
+      "graph-agents-cli api approval shipping --decide-with relayed --relayers dispatcher",
+      "sed -i '' 's/^AUTH_ALLOWED_ACTORS=.*/AUTH_ALLOWED_ACTORS=dispatcher/' .env .env.example"
+    ]
+  },
+  "prompt": "In warehouse-agent/, the dispatcher agent already passes on people's decisions about releasing shipments. Our new returns agent (client id `returns_bot`) should be able to pass them on too. Keep everything else as it is.",
+  "checks": [
+    {
+      "id": "relayers",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(r, dict) and 'releaseShipment' in [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] and r.get('decide_with') == 'relayed' and sorted(r.get('relayers') or []) == ['dispatcher', 'returns_bot'] for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.shipping.approval')))",
+      "why": "--relayers replaces the list: name every agent that may relay (dispatcher,returns_bot)"
+    },
+    {
+      "id": "gate-kept",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(r, dict) and [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] == ['releaseShipment'] and (r.get('approvers') or []) == ['requester'] and r.get('timeout_s') == 1800 for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.shipping.approval')))",
+      "why": "the requester still decides, on the same calls, within the same timeout"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.shipping.allowed_methods') or []) == sorted(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) and sorted(o.get('operationId') for o in (get(data, 'apis.shipping.allowed_operations') or [])) == ['getShipment', 'releaseShipment'] and not get(data, 'apis.shipping.denied_operations')",
+      "why": "a relay never changes what the API allows"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "allowed-actors",
+      "type": "cmd",
+      "run": "/usr/bin/grep -qsE '^[[:space:]]*AUTH_ALLOWED_ACTORS[[:space:]]*=.*dispatcher.*returns_bot|^[[:space:]]*AUTH_ALLOWED_ACTORS[[:space:]]*=.*returns_bot.*dispatcher' .env",
+      "mandatory": false,
+      "why": "both relayers must be in AUTH_ALLOWED_ACTORS, or the new one's calls are refused"
+    }
+  ],
+  "broken_fails": [
+    "relayers"
+  ],
+  "reference": "`graph-agents-cli api approval shipping --relayers dispatcher,returns_bot` (--dry-run first; the option replaces the list, so keep dispatcher): decide_with stays relayed, approvers [requester] and timeout_s 1800 stay. Add returns_bot to AUTH_ALLOWED_ACTORS beside dispatcher (.env here). Access and code stay; `lint` passes."
+}

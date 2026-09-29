@@ -1,0 +1,70 @@
+{
+  "id": "code-relay-orders-concierge",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-relay-gate",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "orders-agent",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ],
+    "setup": [
+      "graph-agents-cli api add orders --base-url-env ORDERS_API_BASE_URL --auth bearer --token-env ORDERS_API_TOKEN --access read-write",
+      "graph-agents-cli api allow orders getOrder --method GET --path '/orders/{order_id}'",
+      "graph-agents-cli api allow orders cancelOrder --method POST --path '/orders/{order_id}/cancel'",
+      "graph-agents-cli api approval orders --operations cancelOrder --approvers requester"
+    ]
+  },
+  "prompt": "In orders-agent/, our concierge agent (its client id is `concierge`) talks to customers and passes their decisions on to this agent. Let it deliver the customer's own decision on order cancellations. The customer who asked still decides, and nothing else about the gate changes.",
+  "checks": [
+    {
+      "id": "relayed",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(r, dict) and 'cancelOrder' in [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] and r.get('decide_with') == 'relayed' and r.get('relayers') == ['concierge'] for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.orders.approval')))",
+      "why": "`graph-agents-cli api approval orders --decide-with relayed --relayers concierge`: the concierge may deliver the requester's decision"
+    },
+    {
+      "id": "requester-decides",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "all((r.get('approvers') or []) == ['requester'] for r in (lambda x: x if isinstance(x, list) else [x])(get(data, 'apis.orders.approval')) if isinstance(r, dict) and 'cancelOrder' in [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])]) and get(data, 'apis.orders.approval') is not None",
+      "why": "a relay delivers the requester's own decision; an agent is never an approver (no role for it)"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.orders.allowed_methods') or []) == sorted(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) and sorted(o.get('operationId') for o in (get(data, 'apis.orders.allowed_operations') or [])) == ['cancelOrder', 'getOrder'] and not get(data, 'apis.orders.denied_operations')",
+      "why": "letting an agent relay a decision never changes what the API allows"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ],
+      "why": "the relay is a policy setting; no tool code changes"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "allowed-actor",
+      "type": "cmd",
+      "run": "/usr/bin/grep -qsE '^[[:space:]]*AUTH_ALLOWED_ACTORS[[:space:]]*[=:].*concierge' .env .env.example",
+      "mandatory": false,
+      "why": "a relayer must also be in AUTH_ALLOWED_ACTORS, or its calls are refused"
+    }
+  ],
+  "broken_fails": [
+    "relayed",
+    "requester-decides"
+  ],
+  "reference": "`graph-agents-cli api approval orders --decide-with relayed --relayers concierge` (with --dry-run first; the user asked for this reviewed loosening): the cancelOrder rule keeps approvers [requester] and gains decide_with: relayed, relayers: [concierge]. The concierge must also be listed in AUTH_ALLOWED_ACTORS (in .env for local runs, and wherever the agent is configured). Access, the operations and the tool code stay as they are; `lint` passes. Never make the concierge an approver (role:concierge)."
+}

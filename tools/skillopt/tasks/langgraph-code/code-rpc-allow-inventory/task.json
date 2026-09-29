@@ -1,0 +1,49 @@
+{
+  "id": "code-rpc-allow-inventory",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-jsonrpc-policy",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "stock-bot",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add inventory_rpc --protocol jsonrpc --base-url-env INVENTORY_RPC_URL --auth bearer --token-env INVENTORY_RPC_TOKEN --access custom --methods POST"
+    ]
+  },
+  "prompt": "In stock-bot/, the inventory JSON-RPC API must accept only the two methods our tools use, item.get and item.search, at POST /rpc. item.delete must be refused outright, whatever path or label a call gives it. Don't change the tools.",
+  "checks": [
+    {
+      "id": "only-listed",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "(lambda ops: bool(ops) and all(isinstance(o, dict) and o.get('rpc_method') in ('item.get', 'item.search') and o.get('path') == '/rpc' and [str(m).upper() for m in (o.get('methods') or [])] == ['POST'] for o in ops) and {o.get('rpc_method') for o in ops} == {'item.get', 'item.search'})(get(data, 'apis.inventory_rpc.allowed_operations') or [])",
+      "why": "on a JSON-RPC API every call is a POST to one endpoint: an entry without rpc_method allows every method there (`api allow NAME --rpc-method M --method POST --path /rpc`)"
+    },
+    {
+      "id": "delete-denied",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(isinstance(d, dict) and str(d.get('rpc_method', '')).lower() == 'item.delete' and not d.get('path') and not d.get('operationId') and not d.get('methods') for d in (get(data, 'apis.inventory_rpc.denied_operations') or []))",
+      "why": "a denial by rpc_method alone refuses the method whatever the path or label (`api deny NAME --rpc-method item.delete`)"
+    },
+    {
+      "id": "tools-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "only-listed"
+  ],
+  "reference": "`graph-agents-cli api allow inventory_rpc --rpc-method item.get --method POST --path /rpc`, the same for item.search, and `graph-agents-cli api deny inventory_rpc --rpc-method item.delete` (each with --dry-run first). The client reads the JSON-RPC method from the request body, so the entries judge the call by it; an allow entry by path alone would allow every method at /rpc. Tools unchanged; `lint` passes."
+}
