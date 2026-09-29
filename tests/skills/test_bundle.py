@@ -293,6 +293,37 @@ def test_observability_skill_states_the_trace_header_rule() -> None:
     assert "an incoming `traceparent` continues the caller's trace" not in text
 
 
+# What the skills say about agents calling agents (0.3): the generated client, never a
+# hand-written one; the callee's allow list; relays as a reviewed loosening; the system view.
+A2A_RULES = (
+    (
+        "graph-agents-cli-workflow",
+        "Declare each agent this one asks with `graph-agents-cli peer add <name>`",
+    ),
+    ("graph-agents-cli-workflow", "Never hand-write A2A client code or edit `tools/a2a_peers.py`."),
+    ("graph-agents-cli-workflow", "`graph-agents-cli system deploy --env <env>`"),
+    ("graph-agents-cli-langgraph-code", "## 5a. Agents calling agents"),
+    (
+        "graph-agents-cli-langgraph-code",
+        "never write to an id taken from it unless the user named that id.",
+    ),
+    ("graph-agents-cli-langgraph-code", "`require_direct_caller(runtime.context)` refuses"),
+    (
+        "graph-agents-cli-langgraph-code",
+        "it loosens the gate, so propose it, never add it unasked.",
+    ),
+    ("graph-agents-cli-deploy", "## Agents calling agents"),
+    ("graph-agents-cli-deploy", "`graph-agents-cli system delegations`"),
+    ("graph-agents-cli-deploy", "the callers' client ids in `AUTH_ALLOWED_ACTORS`"),
+    ("graph-agents-cli-scaffold", "`graph-agents-cli peer add` writes the policy entries"),
+)
+
+
+@pytest.mark.parametrize(("skill", "rule"), A2A_RULES)
+def test_skills_keep_the_agents_calling_agents_guidance(skill: str, rule: str) -> None:
+    assert rule in _flat_text(skill)
+
+
 def test_scaffold_examples_keep_the_default_guidance_file() -> None:
     """No example picks a guidance file for a user who named no coding agent."""
     assert "--agent-guidance-filename CLAUDE.md" not in _flat_text("graph-agents-cli-scaffold")

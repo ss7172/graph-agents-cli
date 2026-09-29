@@ -107,7 +107,9 @@ keyless. The runtime stays excluded from the disconnected profile. Thread ids mu
 under this runtime, and `DELETE /threads/{id}` is the server's own route. Under the in-memory
 `langgraph dev` a one-off `run` advertises `--thread-id` resume, but the thread is gone once the
 temporary server stops; use `--start-server` to keep it. Choose `fastapi` unless the team wants
-the native Assistants/Threads/Runs API.
+the native Assistants/Threads/Runs API. No credential of the user reaches tools under this
+runtime, so `create`, `lint` and `api add` refuse `auth: exchange` and `auth: forward`: it can
+call other agents only with `auth: bearer`.
 
 ---
 
@@ -332,7 +334,9 @@ Copy the files you need (Dockerfile, chart, workflows), then delete the referenc
 - **Respect the combination table**; do not work around a refusal by editing the manifest.
 - **`--process` when the project has a governing process**; it makes the workflow skill defer.
 - **Start with `--prototype`** for quick iteration; add deployment later with `enhance`.
-- **NEVER hand-write the A2A surface**; it is built into the scaffolded app.
+- **NEVER hand-write the A2A surface**; it is built into the scaffolded app. Nor A2A client code
+  or a delegating auth policy: `graph-agents-cli peer add` writes the policy entries and
+  `tools/a2a_peers.py` for each agent this one asks.
 - **NEVER change `api-policy.yaml` on your own**; it is the project's reviewed security boundary.
   When the user asks, use `graph-agents-cli api ...` with `--dry-run` first and show the diff;
   ask which access (read-only, read-write, custom methods) rather than choosing one.

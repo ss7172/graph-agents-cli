@@ -184,7 +184,11 @@ access, per-user identity and roles, safety-critical) gets the full treatment in
 - Disconnected or air-gapped cluster: the **disconnected profile** (`openai-compatible` model and
   judge on-network, runtime `fastapi`, tracing off or OTLP in-cluster, `cd: skip` unless an
   on-network GitHub Enterprise Server exists). See `/graph-agents-cli-deploy`.
-- Other agents must call this one: A2A is built into every scaffolded app; scaffold normally.
+- **Agents calling agents?** Does this agent ask other agents, or do other agents call it for
+  their users? Being called needs no scaffold choice (A2A is built into every scaffolded app),
+  but under `jwt` it refuses a calling agent until `AUTH_ALLOWED_ACTORS` lists it. Which agents
+  it asks, the credential (`jwt`: a token exchanged for the user's) and whether it relays the
+  person's approvals to them are the user's decisions (Phase 2, step 7).
 - CI/CD wanted: does a GitHub repository exist? Creating one (public or private) needs the user's
   say-so.
 
@@ -240,6 +244,15 @@ combinations, prototype semantics, and what `upgrade` never touches.
    (every operation within its methods), `allow` the operations the agent already calls
    before the new one: the first `allow` creates the list and refuses every call not on it,
    and `access` alone would open a new method to every operation of the API.
+7. **Agents calling agents.** Declare each agent this one asks with `graph-agents-cli peer add
+   <name>` (`--dry-run` first): it writes the `protocol: a2a` API, the gate on relayed
+   approvals and `tools/a2a_peers.py`. For several projects, list them in
+   `graph-agents-system.yaml` and run `graph-agents-cli system apply`. Never hand-write A2A
+   client code or edit `tools/a2a_peers.py`. Pass on what the command prints is left (the
+   issuer, the peer's `AUTH_ALLOWED_ACTORS`, and the peer owners' `api approval ...
+   --decide-with relayed` line, a loosening they review), then run `graph-agents-cli lint`,
+   `graph-agents-cli peer show <name> --check` or `graph-agents-cli system check`. Evaluate at
+   the entry agent: `eval run --url` with the agents it asks running.
 
 Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
 their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
@@ -312,7 +325,8 @@ Once the user agrees the eval gate is met:
    helm from a CI runner, or a pull request that Argo CD reconciles). Outside `dev` the kube
    context must be recorded in the manifest or passed with `--context`; never pass `--yes` to
    accept the current context without showing it to the user. `--dry-run` prints every command
-   and the rendered manifests without running them.
+   and the rendered manifests without running them. Agents that call each other:
+   `graph-agents-cli system deploy --env <env>` deploys the agents called first.
 
 **IMPORTANT: never deploy without explicit human approval.** In `argocd` mode a production change
 is a PR that a code owner merges; the merge is the single gate and you never merge it yourself.

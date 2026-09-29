@@ -172,6 +172,32 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
    under `jwt`; kept out of argv and shell history), or `--header` / `--cookie` under `custom`.
    Readiness is `/ready` (probed inside the cluster; not published on the route).
 
+## Agents calling agents
+
+- **One project:** `peer add` writes the peer's URL into each `values-<env>.yaml` from a
+  template with `{env}`:
+  `graph-agents-cli peer add orders --cluster-url 'http://orders-agent.orders-agent-{env}.svc.cluster.local'`.
+- **Several projects:** `graph-agents-system.yaml` names them, the agents each calls, the
+  issuer and the environments. `graph-agents-cli system apply --dry-run`, then without it,
+  writes both sides of every edge per environment: the callers' peer URLs,
+  `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID`; the called agents' `appUrl` (the URL
+  callers dial, which their card advertises: SC05), `AUTH_JWT_AUDIENCE` when empty and the
+  callers' client ids in `AUTH_ALLOWED_ACTORS` (under `jwt` an agent not listed gets 403); and
+  NetworkPolicy `egressTo`/`ingressFrom` rules. It never writes gates, secrets or `.env`.
+  `graph-agents-cli system check --env <env>` (add `--live` after a deploy), then
+  `graph-agents-cli system deploy --env <env>` (the agents called first, `--parallel` at
+  once; outside dev every project records its kube context). Give the issuer's admin
+  `graph-agents-cli system delegations`: what each client may exchange for.
+- **Callers** keep `TOKEN_EXCHANGE_CLIENT_SECRET` and `PRINCIPAL_HASH_SALT` in `secrets.keys`;
+  outside dev `deploy` refuses a peer credential over plain http (except loopback,
+  single-label and `.svc` hosts) and an exchange API without the issuer settings.
+- **Keep A2A internal:** when only agents call an agent, drop `/a2a/<agent>` from
+  `route.publicPaths` (SC13) and turn on `networkPolicy`.
+- **Sizing:** replicas share A2A tasks only on Postgres (more than one replica with in-memory
+  tasks is SC06). Agents sharing one database server open replicas x (`DB_POOL_MAX_SIZE` + 1)
+  connections each: set `database.max_connections` in the file (SC10), and above about 120
+  connections give agents their own databases or a session-mode PgBouncer.
+
 ## Secrets and rotation (summary)
 
 - Only variables in the manifest's `secrets.keys` are exported: the provider key
@@ -295,6 +321,8 @@ disconnected" (this profile).
 | `secrets apply` exit 3 "must be single-line" | put the value on one line (for example base64) or create the Secret with kubectl directly |
 | "API_KEY in <file> differs from the live Secret; the live key is kept" | intended; pass `--rotate-api-key` to replace it, then `deploy --restart` |
 | A2A client dials `127.0.0.1:8000` after fetching the card | `APP_URL` is unset in the pod: set `appUrl` or a gateway/ingress hostname in the values file |
+| An agent's calls to another agent fail with 403 "Delegated caller ... is not allowed here (AUTH_ALLOWED_ACTORS)" | list the caller's client id in the called agent's `AUTH_ALLOWED_ACTORS` (`system apply` does), then `deploy` it |
+| "<peer>'s agent card names <url> as its A2A endpoint, not the URL this agent calls" | set the called agent's `appUrl` to the URL the caller dials (`system apply` does); `graph-agents-cli system check --env <env>` (SC05) or `peer show <name> --check` finds it |
 | `deploy` exit 2 "missing in charts/ directory" or `helm dependency build` failed (429) | `registry-1.docker.io` is unreachable or rate-limited; retry, authenticate, or vendor the charts under `deployment/helm/<name>/charts/` |
 | `deploy` exit 2 naming a tool | helm, kubectl, docker, git or gh is not on `PATH` |
 | Staging PR opened by CI never runs `pr_checks` | PRs opened with `GITHUB_TOKEN` do not trigger workflows; store a PAT or App token as `GH_PR_TOKEN` |

@@ -352,6 +352,18 @@ migration" with the steps to follow.
   the CLI or of a generated project and is in neither the wheel nor the sdist (a fast test
   guards the build configuration); CI runs its unit tests. CONTRIBUTING.md and the site's
   [Skills benchmark](website/src/reference/skills-benchmark.md) page say how to run it.
+- **The skills cover agents calling agents.** The workflow skill asks in Phase 0 whether the
+  agent asks other agents or is called by them, declares peers with `peer add` or `system
+  apply` (never a hand-written client), runs `lint`, `peer show --check` or `system check`,
+  evaluates at the entry agent and deploys with `system deploy`. The langgraph-code skill has
+  a section on the generated `tools/a2a_peers.py` and `A2APeerClient`, what tools see when an
+  agent asks for the user (`current_caller`, `require_direct_caller`, `require_owner`,
+  `require_user_mentioned` under `A2A_DELEGATED_MENTIONS`) and relays (`decide_with`). The
+  deploy skill covers `system apply|check|deploy|delegations`, `AUTH_ALLOWED_ACTORS`, `appUrl`
+  per environment, keeping A2A paths internal and sizing a shared database; the scaffold skill
+  says `peer add` writes the client side and that `langgraph-server` calls other agents only
+  with `auth: bearer`. Each changed skill passes gac-bench's fact-check (every command and
+  option exists; within 1.25 times the 0.2.0 text).
 
 ### Changed
 
