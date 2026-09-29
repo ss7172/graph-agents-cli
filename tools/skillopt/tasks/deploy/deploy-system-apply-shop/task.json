@@ -1,0 +1,56 @@
+{
+  "id": "deploy-system-apply-shop",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-system-wiring",
+  "task_type": "deploy/system",
+  "fixture": {
+    "kind": "empty",
+    "name": "shop",
+    "setup": [
+      "graph-agents-cli create front-desk -o shop -y --skip-checks --registry ghcr.io/acme --auth-policy jwt",
+      "graph-agents-cli create billing-agent -o shop -y --skip-checks --registry ghcr.io/acme --auth-policy jwt"
+    ]
+  },
+  "prompt": "shop/ holds two agents made with graph-agents-cli, front-desk and billing-agent, and shop/graph-agents-system.yaml describes them as one system: front-desk asks billing-agent about invoices for the signed-in user. Nothing is wired yet. Set up both projects so that front-desk can call billing-agent in the dev environment. Our identity provider is https://issuer.example.com.",
+  "checks": [
+    {
+      "id": "edge-kept",
+      "type": "yaml",
+      "file": "graph-agents-system.yaml",
+      "expr": "'billing' in [c if isinstance(c, str) else c.get('agent') for c in (get(data, 'agents.frontdesk.calls') or [])]",
+      "why": "the system file is the spec of who calls whom: wire the edge it names, don't remove it"
+    },
+    {
+      "id": "caller-endpoint",
+      "type": "yaml",
+      "file": "front-desk/api-policy.yaml",
+      "expr": "any(get(a, 'a2a.path') == '/a2a/app' and a.get('auth') == 'exchange' for a in (lambda apis: [a for a in apis.values() if isinstance(a, dict) and a.get('protocol') == 'a2a' and a.get('base_url_env') == 'BILLING_AGENT_URL'])(get(data, 'apis') or {}))",
+      "why": "the caller dials the called agent's A2A mount (/a2a/<its A2A_NAME>, app here), which `system apply` reads from the called project; `peer add`'s default /a2a/<name> is a guess"
+    },
+    {
+      "id": "callee-actors",
+      "type": "yaml",
+      "file": "billing-agent/deployment/helm/billing-agent/values.yaml",
+      "expr": "'frontdesk' in [s.strip() for s in str(get(data, 'env.AUTH_ALLOWED_ACTORS') or '').split(',')]",
+      "why": "the called agent refuses delegated callers it does not list: the caller's client id goes into its AUTH_ALLOWED_ACTORS (`system apply` writes both sides)"
+    },
+    {
+      "id": "system-check",
+      "type": "cmd",
+      "run": "graph-agents-cli system check --env dev",
+      "why": "`graph-agents-cli system check` finds what keeps the agents from calling each other (the path, audience, issuer, allowed actors, appUrl); fix every error it reports"
+    },
+    {
+      "id": "caller-policy",
+      "type": "cmd",
+      "cwd": "shop/front-desk",
+      "run": "graph-agents-cli api check"
+    }
+  ],
+  "broken_fails": [
+    "caller-endpoint",
+    "callee-actors",
+    "system-check"
+  ],
+  "reference": "From shop/: `graph-agents-cli system check`, then `graph-agents-cli system apply` (--dry-run first), which writes both sides of frontdesk -> billing: in front-desk the peer billing_agent (protocol a2a at billing-agent's A2A mount /a2a/app, auth exchange, audience billing), BILLING_AGENT_URL and TOKEN_EXCHANGE_URL for dev, TOKEN_EXCHANGE_CLIENT_ID frontdesk, tools/a2a_peers.py; in billing-agent AUTH_JWT_AUDIENCE billing, AUTH_ALLOWED_ACTORS frontdesk and appUrl for dev. `system check` then reports SC04 (billing-agent's AUTH_JWT_ISSUER in dev is empty): set env.AUTH_JWT_ISSUER: https://issuer.example.com in its values-dev.yaml. `system check --env dev` exits 0. `peer add` in the caller alone guesses the path (/a2a/billing) and leaves the called agent refusing the caller. Report the issuer registration (`system delegations`), the client secret, and the relay line billing-agent's owners must review."
+}

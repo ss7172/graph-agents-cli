@@ -1,0 +1,67 @@
+{
+  "id": "deploy-system-add-edge-retail",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-system-wiring",
+  "task_type": "deploy/system",
+  "fixture": {
+    "kind": "empty",
+    "name": "retail",
+    "setup": [
+      "graph-agents-cli create storefront -o retail -y --skip-checks --registry ghcr.io/acme --auth-policy jwt",
+      "graph-agents-cli create orders-agent -o retail -y --skip-checks --registry ghcr.io/acme --auth-policy jwt",
+      "cd retail && graph-agents-cli system apply",
+      "cd retail/orders-agent && python3 -c \"import pathlib, re; p = pathlib.Path('deployment/helm/orders-agent/values-dev.yaml'); p.write_text(re.sub(r'^env:\\n', 'env:\\n  AUTH_JWT_ISSUER: https://login.retail.example\\n', p.read_text(), count=1, flags=re.M))\"",
+      "cd retail && graph-agents-cli system check --env dev",
+      "graph-agents-cli create loyalty-agent -o retail -y --skip-checks --registry ghcr.io/acme --auth-policy jwt"
+    ]
+  },
+  "prompt": "retail/ is a system of agents made with graph-agents-cli (retail/graph-agents-system.yaml): storefront already asks orders-agent for the signed-in user, in dev. loyalty-agent is a new agent in retail/, just created: storefront should also ask it about points for the user, check a task's status and cancel a task it started there, in dev. Wire it in. The orders wiring stays as it is.",
+  "checks": [
+    {
+      "id": "loyalty-edge",
+      "type": "yaml",
+      "file": "graph-agents-system.yaml",
+      "expr": "(lambda names: bool(names.get('loyalty-agent')) and any(a == names.get('loyalty-agent') and {'ask', 'status', 'cancel'} <= set(c or []) for a, c in [(c if isinstance(c, str) else c.get('agent'), None if isinstance(c, str) else c.get('calls')) for v in (get(data, 'agents') or {}).values() if str((v or {}).get('project', '')).strip('./') == 'storefront' for c in ((v or {}).get('calls') or [])]) and any(a == names.get('orders-agent') for a, _ in [(c if isinstance(c, str) else c.get('agent'), None if isinstance(c, str) else c.get('calls')) for v in (get(data, 'agents') or {}).values() if str((v or {}).get('project', '')).strip('./') == 'storefront' for c in ((v or {}).get('calls') or [])]))({str((v or {}).get('project', '')).strip('./'): k for k, v in (get(data, 'agents') or {}).items()})",
+      "why": "the system file is the spec: the new agent and storefront's edge to it (`{agent: NAME, calls: [ask, status, cancel]}`) go there, then `system apply` writes both sides"
+    },
+    {
+      "id": "loyalty-actors",
+      "type": "yaml",
+      "file": "loyalty-agent/deployment/helm/loyalty-agent/values.yaml",
+      "expr": "'web-storefront' in [s.strip() for s in str(get(data, 'env.AUTH_ALLOWED_ACTORS') or '').split(',')]",
+      "why": "the called agent lists its callers by the client id they exchange tokens as (the file's client_id: web-storefront), not by their names"
+    },
+    {
+      "id": "loyalty-peer",
+      "type": "yaml",
+      "file": "storefront/api-policy.yaml",
+      "expr": "len([a for a in (get(data, 'apis') or {}).values() if isinstance(a, dict) and a.get('protocol') == 'a2a']) == 2 and all(get(a, 'a2a.path') == '/a2a/app' for a in [a for a in (get(data, 'apis') or {}).values() if isinstance(a, dict) and a.get('protocol') == 'a2a']) and sum(1 for a in [a for a in (get(data, 'apis') or {}).values() if isinstance(a, dict) and a.get('protocol') == 'a2a'] if 'CancelTask' in [o.get('rpc_method') for o in (a.get('allowed_operations') or []) if isinstance(o, dict)]) == 1",
+      "why": "storefront dials each called agent's A2A mount (/a2a/app here, read from the called project by `system apply`), and may cancel tasks only at loyalty-agent"
+    },
+    {
+      "id": "orders-kept",
+      "type": "yaml",
+      "file": "orders-agent/deployment/helm/orders-agent/values.yaml",
+      "expr": "[s.strip() for s in str(get(data, 'env.AUTH_ALLOWED_ACTORS') or '').split(',') if s.strip()] == ['web-storefront'] and get(data, 'env.AUTH_JWT_AUDIENCE') == 'orders'",
+      "why": "the existing edge's wiring stays as it is"
+    },
+    {
+      "id": "system-check",
+      "type": "cmd",
+      "run": "graph-agents-cli system check --env dev",
+      "why": "`graph-agents-cli system check` finds what keeps the agents from calling each other; fix every error it reports"
+    },
+    {
+      "id": "caller-policy",
+      "type": "cmd",
+      "cwd": "retail/storefront",
+      "run": "graph-agents-cli api check"
+    }
+  ],
+  "broken_fails": [
+    "loyalty-edge",
+    "loyalty-actors",
+    "loyalty-peer"
+  ],
+  "reference": "Edit retail/graph-agents-system.yaml: add the agent loyalty (project loyalty-agent) and, under storefront's calls, `{agent: loyalty, calls: [ask, status, cancel]}` beside orders. Then `graph-agents-cli system apply` (--dry-run first): storefront gets the loyalty_agent peer at loyalty-agent's A2A mount /a2a/app with SendMessage, GetTask and CancelTask (exchange, audience loyalty); loyalty-agent gets AUTH_JWT_AUDIENCE loyalty, AUTH_ALLOWED_ACTORS web-storefront (storefront's client_id in the file, not its name) and appUrl for dev. Set AUTH_JWT_ISSUER https://login.retail.example in loyalty-agent's values-dev.yaml (SC04) until `system check --env dev` exits 0. The orders edge is unchanged. `peer add` in storefront alone guesses the path (/a2a/loyalty) and leaves loyalty-agent refusing storefront."
+}

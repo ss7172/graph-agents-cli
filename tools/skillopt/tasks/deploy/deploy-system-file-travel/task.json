@@ -1,0 +1,56 @@
+{
+  "id": "deploy-system-file-travel",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-system-wiring",
+  "task_type": "deploy/system",
+  "fixture": {
+    "kind": "empty",
+    "name": "travel",
+    "setup": [
+      "graph-agents-cli create itinerary -o travel -y --skip-checks --registry ghcr.io/acme --auth-policy jwt",
+      "graph-agents-cli create flights-agent -o travel -y --skip-checks --registry ghcr.io/acme --auth-policy jwt",
+      "graph-agents-cli create hotels-agent -o travel -y --skip-checks --registry ghcr.io/acme --auth-policy jwt"
+    ]
+  },
+  "prompt": "travel/ holds three agents made with graph-agents-cli: itinerary, flights-agent and hotels-agent. itinerary should ask flights-agent and hotels-agent for the signed-in user. It must never approve anything at hotels-agent for them: people approve their bookings there themselves. Wire the three as one system for the dev environment, described in a file in travel/ that the team can review and re-apply. Our identity provider is https://id.example.org; its token endpoint in dev is http://id.identity.svc.cluster.local/token.",
+  "checks": [
+    {
+      "id": "system-file",
+      "type": "yaml",
+      "file": "graph-agents-system.yaml",
+      "expr": "(lambda names: bool(names.get('flights-agent')) and bool(names.get('hotels-agent')) and {names.get('flights-agent'), names.get('hotels-agent')} <= {a for a, _ in (lambda ag, names: [((c if isinstance(c, str) else c.get('agent')), ('relay' if isinstance(c, str) else c.get('approvals', 'relay'))) for v in ag.values() if str((v or {}).get('project', '')).strip('./') == 'itinerary' for c in ((v or {}).get('calls') or [])])(get(data, 'agents') or {}, names)})({str((v or {}).get('project', '')).strip('./'): k for k, v in (get(data, 'agents') or {}).items()})",
+      "why": "graph-agents-system.yaml (`graph-agents-cli system`) names each agent's project and the agents it calls; `system apply` writes both sides of every edge from it"
+    },
+    {
+      "id": "hotels-deny",
+      "type": "yaml",
+      "file": "graph-agents-system.yaml",
+      "expr": "(lambda names: dict((lambda ag, names: [((c if isinstance(c, str) else c.get('agent')), ('relay' if isinstance(c, str) else c.get('approvals', 'relay'))) for v in ag.values() if str((v or {}).get('project', '')).strip('./') == 'itinerary' for c in ((v or {}).get('calls') or [])])(get(data, 'agents') or {}, names)).get(names.get('hotels-agent')) == 'deny' and dict((lambda ag, names: [((c if isinstance(c, str) else c.get('agent')), ('relay' if isinstance(c, str) else c.get('approvals', 'relay'))) for v in ag.values() if str((v or {}).get('project', '')).strip('./') == 'itinerary' for c in ((v or {}).get('calls') or [])])(get(data, 'agents') or {}, names)).get(names.get('flights-agent')) == 'relay')({str((v or {}).get('project', '')).strip('./'): k for k, v in (get(data, 'agents') or {}).items()})",
+      "why": "an edge whose caller must never approve at the called agent is `{agent: NAME, approvals: deny}`; a bare name relays the person's approvals"
+    },
+    {
+      "id": "hotels-denied-in-caller",
+      "type": "yaml",
+      "file": "itinerary/api-policy.yaml",
+      "expr": "sum(1 for a in (get(data, 'apis') or {}).values() if isinstance(a, dict) and a.get('protocol') == 'a2a' and any(isinstance(d, dict) and d.get('a2a_operation') == 'approve' for d in (a.get('denied_operations') or []))) == 1",
+      "why": "the caller's policy denies messages that approve at hotels-agent (written by `system apply` from the edge)"
+    },
+    {
+      "id": "system-check",
+      "type": "cmd",
+      "run": "graph-agents-cli system check --env dev",
+      "why": "`graph-agents-cli system check` finds what keeps the agents from calling each other; fix every error it reports"
+    },
+    {
+      "id": "caller-policy",
+      "type": "cmd",
+      "cwd": "travel/itinerary",
+      "run": "graph-agents-cli api check"
+    }
+  ],
+  "broken_fails": [
+    "hotels-deny",
+    "hotels-denied-in-caller"
+  ],
+  "reference": "Write travel/graph-agents-system.yaml: version 1, agents itinerary (project itinerary, calls flights and {agent: hotels, approvals: deny}), flights (project flights-agent), hotels (project hotels-agent); identity issuer https://id.example.org with token_url for dev; environments dev. Then `graph-agents-cli system check`, `system apply` (--dry-run first): peers in itinerary at each agent's A2A mount /a2a/app (exchange, audiences flights and hotels; the hotels peer denies approve messages), and in the called agents AUTH_JWT_AUDIENCE, AUTH_ALLOWED_ACTORS itinerary and appUrl. Set AUTH_JWT_ISSUER https://id.example.org in both called agents' values-dev.yaml (SC04) until `system check --env dev` exits 0. A bare `hotels` in calls relays the person's approvals instead of denying them."
+}

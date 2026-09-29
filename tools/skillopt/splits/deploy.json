@@ -5,7 +5,8 @@
     "deploy-kube-contexts",
     "deploy-api-url-prod",
     "deploy-prod-gateway-tls",
-    "deploy-helmpush-rotate-key"
+    "deploy-helmpush-rotate-key",
+    "deploy-system-apply-shop"
   ],
   "val": [
     "deploy-secret-key",
@@ -13,11 +14,13 @@
     "deploy-helmpush-values-rerun",
     "deploy-ingress-staging",
     "deploy-jwt-staging",
-    "deploy-argocd-secrets-not-git"
+    "deploy-argocd-secrets-not-git",
+    "deploy-system-file-travel"
   ],
   "test": [
     "deploy-troubleshoot-secret",
-    "deploy-argocd-prod-flow"
+    "deploy-argocd-prod-flow",
+    "deploy-system-add-edge-retail"
   ],
   "hashes": {
     "deploy-dry-run-plan": "4b3285570c43e0b2",
@@ -26,13 +29,16 @@
     "deploy-api-url-prod": "d7fb62608300b4d5",
     "deploy-prod-gateway-tls": "0dbcea2ffac034fe",
     "deploy-helmpush-rotate-key": "d78169c90c2e29cd",
+    "deploy-system-apply-shop": "679158dee43144b3",
     "deploy-secret-key": "eeab1e71e2117646",
     "deploy-placeholder-url": "2e0d10e7cab4888a",
     "deploy-helmpush-values-rerun": "16066f760f28b227",
     "deploy-ingress-staging": "ebc0a0b985be6526",
     "deploy-jwt-staging": "1d223b6393af1963",
     "deploy-argocd-secrets-not-git": "d54a83f468f72435",
+    "deploy-system-file-travel": "2c27f11100d65b61",
     "deploy-troubleshoot-secret": "f5a38327fa761086",
-    "deploy-argocd-prod-flow": "44cb56cf3fa47f09"
+    "deploy-argocd-prod-flow": "44cb56cf3fa47f09",
+    "deploy-system-add-edge-retail": "d151fbef205b665b"
   }
 }

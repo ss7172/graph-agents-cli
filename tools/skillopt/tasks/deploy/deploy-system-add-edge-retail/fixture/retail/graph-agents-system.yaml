@@ -1,0 +1,15 @@
+# The retail agents and the agents each one calls (graph-agents-cli system).
+version: 1
+name: retail
+agents:
+  storefront:
+    project: storefront
+    client_id: web-storefront
+    calls: [orders]
+  orders:
+    project: orders-agent
+identity:
+  issuer: https://login.retail.example
+  token_url: {dev: "http://login.identity.svc.cluster.local/oauth2/token"}
+environments:
+  dev: {}

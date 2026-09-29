@@ -1,0 +1,14 @@
+# The shop's agents and the agents each one calls (graph-agents-cli system).
+version: 1
+name: shop
+agents:
+  frontdesk:
+    project: front-desk
+    calls: [billing]
+  billing:
+    project: billing-agent
+identity:
+  issuer: https://issuer.example.com
+  token_url: {dev: "http://issuer.identity.svc.cluster.local:8080/token"}
+environments:
+  dev: {}
