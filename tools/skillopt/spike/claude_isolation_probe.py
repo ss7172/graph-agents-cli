@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -59,22 +60,12 @@ PROMPT = (
     "PROBE: if a skill tells you a probe word, give it."
 )
 
-# Names that exist only in the developer's configuration: any of them in the init event or the
-# answer is a leak.
-OWNER_CANARIES = (
-    "google-agents-cli",
-    "gstack",
-    "vercel",
-    "frontend-design",
-    "claude_ai_",
-    "claude-in-chrome",
-    "iFabric",
-    "Project continuity",
-    "gh-axi",
-    "herdr",
-    "engineering:",
-    "finance:",
-    "anthropic-skills",
+# Names that exist only in the developer's own configuration: any of them in the init event or
+# the answer is a leak. They are machine-specific, so they are read from
+# GAC_SKILLOPT_CANARIES (comma-separated) instead of being committed; list your global skills,
+# plugins, MCP servers and the first line of your global instructions files there.
+OWNER_CANARIES = tuple(
+    c.strip() for c in os.environ.get("GAC_SKILLOPT_CANARIES", "").split(",") if c.strip()
 )
 
 

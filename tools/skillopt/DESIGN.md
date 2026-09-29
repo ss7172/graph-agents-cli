@@ -854,7 +854,10 @@ weaker model.
 
 All scripts take `--scratch <dir>` (evidence JSON is written there); Codex scripts need
 `GAC_SKILLOPT_OPENAI_KEY_FILE` pointing to a file with one `OPENAI_API_KEY=` line, and every
-Codex run's spend goes into the programme ledger.
+Codex run's spend goes into the programme ledger. The isolation probes flag a leak when a name
+from your own configuration shows up in the isolated session: list those names (your global
+skills, plugins, MCP servers, the first line of your global instructions files) in
+`GAC_SKILLOPT_CANARIES`, comma-separated. They are machine-specific and not committed.
 
 ```bash
 S=<scratch>/iso

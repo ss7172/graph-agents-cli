@@ -30,7 +30,7 @@
         "graph-agents-cli-workflow"
        ]
       },
-      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/final",
+      "body_dir": "<scratch>/r3c/bodies/final",
       "splits": [
        "val"
       ],
@@ -215,16 +215,16 @@
          "infra": false,
          "leftovers": 12,
          "leftover_notes": [
-          "stopped leftover pid 36337: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/approvals-server0/langgraph.json --port 52898 --no-browser --no-reload",
-          "stopped leftover pid 36799: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 53034 --no-browser",
+          "stopped leftover pid 36337: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-3/approvals-server0/langgraph.json --port 52898 --no-browser --no-reload",
+          "stopped leftover pid 36799: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 53034 --no-browser",
           "stopped leftover pid 36803: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 36804: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 37109: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 53344 --no-browser --no-reload",
-          "stopped leftover pid 38154: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 53795 --no-browser",
-          "stopped leftover pid 38155: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/approvals-server0/langgraph.json --port 53797 --no-browser --no-reload",
+          "stopped leftover pid 37109: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-5/approvals-server0/langgraph.json --port 53344 --no-browser --no-reload",
+          "stopped leftover pid 38154: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 53795 --no-browser",
+          "stopped leftover pid 38155: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-6/approvals-server0/langgraph.json --port 53797 --no-browser --no-reload",
           "stopped leftover pid 38157: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 38158: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 38978: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 54035 --no-browser",
+          "stopped leftover pid 38978: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 54035 --no-browser",
           "stopped leftover pid 39014: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 39015: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
          ],
@@ -250,12 +250,12 @@
          "infra": false,
          "leftovers": 8,
          "leftover_notes": [
-          "stopped leftover pid 44787: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-1/approvals-server0/langgraph.json --port 57503 --no-browser --no-reload",
-          "stopped leftover pid 46092: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 59006 --no-browser --no-reload",
-          "stopped leftover pid 46135: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-1/test_the_dev_server_keeps_the_0/langgraph.json --port 59039 --no-browser",
+          "stopped leftover pid 44787: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-1/approvals-server0/langgraph.json --port 57503 --no-browser --no-reload",
+          "stopped leftover pid 46092: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/approvals-server0/langgraph.json --port 59006 --no-browser --no-reload",
+          "stopped leftover pid 46135: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-1/test_the_dev_server_keeps_the_0/langgraph.json --port 59039 --no-browser",
           "stopped leftover pid 46141: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 46142: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 46579: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 59404 --no-browser",
+          "stopped leftover pid 46579: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 59404 --no-browser",
           "stopped leftover pid 46590: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 46591: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
          ],
@@ -695,15 +695,15 @@
          "infra": false,
          "leftovers": 9,
          "leftover_notes": [
-          "stopped leftover pid 50455: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 60278 --no-browser --no-reload",
-          "stopped leftover pid 50902: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 60529 --no-browser",
+          "stopped leftover pid 50455: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/approvals-server0/langgraph.json --port 60278 --no-browser --no-reload",
+          "stopped leftover pid 50902: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 60529 --no-browser",
           "stopped leftover pid 50903: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 50905: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 51199: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/approvals-server0/langgraph.json --port 60659 --no-browser --no-reload",
-          "stopped leftover pid 51606: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 60837 --no-browser",
+          "stopped leftover pid 51199: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-3/approvals-server0/langgraph.json --port 60659 --no-browser --no-reload",
+          "stopped leftover pid 51606: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 60837 --no-browser",
           "stopped leftover pid 51609: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 51610: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 53641: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 61615 --no-browser --no-reload"
+          "stopped leftover pid 53641: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-5/approvals-server0/langgraph.json --port 61615 --no-browser --no-reload"
          ],
          "permission_denials": 0,
          "usd": 0.37185,
@@ -786,8 +786,8 @@
          "infra": false,
          "leftovers": 4,
          "leftover_notes": [
-          "stopped leftover pid 61249: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 49987 --no-browser --no-re",
-          "stopped leftover pid 61589: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 50115 --no-b",
+          "stopped leftover pid 61249: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/approvals-server0/langgraph.json --port 49987 --no-browser --no-re",
+          "stopped leftover pid 61589: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 50115 --no-b",
           "stopped leftover pid 61602: W/orders-support-agent/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 61603: W/orders-support-agent/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
          ],
@@ -994,7 +994,7 @@
         "graph-agents-cli-workflow"
        ]
       },
-      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/r2",
+      "body_dir": "<scratch>/r3c/bodies/r2",
       "splits": [
        "val"
       ],
@@ -1189,12 +1189,12 @@
          "infra": false,
          "leftovers": 8,
          "leftover_notes": [
-          "stopped leftover pid 50380: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 60246 --no-browser --no-reload",
-          "stopped leftover pid 50824: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 60500 --no-browser",
+          "stopped leftover pid 50380: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-5/approvals-server0/langgraph.json --port 60246 --no-browser --no-reload",
+          "stopped leftover pid 50824: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 60500 --no-browser",
           "stopped leftover pid 50835: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 50836: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
-          "stopped leftover pid 50912: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/approvals-server0/langgraph.json --port 60543 --no-browser --no-reload",
-          "stopped leftover pid 51353: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 60740 --no-browser",
+          "stopped leftover pid 50912: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-6/approvals-server0/langgraph.json --port 60543 --no-browser --no-reload",
+          "stopped leftover pid 51353: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-<user>/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 60740 --no-browser",
           "stopped leftover pid 51362: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
           "stopped leftover pid 51363: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
          ],
@@ -1481,7 +1481,7 @@
         "graph-agents-cli-workflow"
        ]
       },
-      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/final",
+      "body_dir": "<scratch>/r3c/bodies/final",
       "splits": [
        "val"
       ],
@@ -2559,7 +2559,7 @@
         "graph-agents-cli-workflow"
        ]
       },
-      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/r2",
+      "body_dir": "<scratch>/r3c/bodies/r2",
       "splits": [
        "val"
       ],

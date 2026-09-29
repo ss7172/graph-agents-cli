@@ -106,7 +106,7 @@
         "graph-agents-cli-workflow"
        ]
       },
-      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3d/bodies/g1",
+      "body_dir": "<scratch>/r3d/bodies/g1",
       "splits": [
        "val"
       ],
