@@ -37,8 +37,8 @@ auth, an outbound API policy, human approval of risky calls and an eval gate CI 
 <div class="gac-terminal" markdown>
 
 ```bash
-# install the CLI from its release tag, then the skills
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+# install the CLI from PyPI, then the skills
+uv tool install graph-agents-cli
 graph-agents-cli setup
 
 # create an agent and ask it a question: the fake model needs no key
@@ -64,8 +64,8 @@ Everything runs on your machine first; a model key and a cluster come later.
 
 -   **Install the CLI and the skills**
 
-    One `uv tool install` from the release tag, then `setup` adds the skills to the coding
-    agents it finds.
+    One `uv tool install graph-agents-cli` from PyPI, then `setup` adds the skills to the
+    coding agents it finds.
 
     [Installation & setup](getting-started/installation.md)
 

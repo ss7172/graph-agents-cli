@@ -90,8 +90,7 @@ contributor tooling in `tools/`, never shipped).
 
 ## Owner actions
 
-- Optional, for PyPI: register the trusted publisher, create the `pypi` environment and set
-  `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
+None.
 
 <!-- --8<-- [start:entries] -->
 ## Medium

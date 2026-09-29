@@ -24,7 +24,7 @@ metadata:
 
 # Project scaffolding guide
 
-> **Requires:** `graph-agents-cli` (`uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0`).
+> **Requires:** `graph-agents-cli` (`uv tool install graph-agents-cli`, or the release tag: `uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0`).
 > [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md) first if needed.
 
 Use `graph-agents-cli create`, `scaffold enhance`, and `scaffold upgrade` to create a LangGraph

@@ -59,6 +59,8 @@ sets it up, and [`login --profile disconnected`](#check-it) and
 - [ ] **The CLI from a mirror.** Set `GRAPH_AGENTS_CLI_INSTALL_SPEC`, with `{version}` where
       the version goes, so `setup`, `update`, the `scaffold upgrade` baseline and new projects'
       CI install from your mirror (see [Upgrading projects](upgrading.md#install-the-baseline-from-a-mirror)).
+      A mirror of PyPI serves releases from 0.3.1 on as `graph-agents-cli=={version}`, with
+      `UV_INDEX_URL` naming the mirror; earlier releases exist only as git tags.
 - [ ] **The skills from the wheel.** `setup` tries the repository first, then installs the
       skills bundled in the CLI's wheel with `npx skills add`, and without `npx` copies them
       into `~/.agents/skills` (`./.agents/skills` with `--workspace`). No git or network is

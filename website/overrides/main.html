@@ -5,11 +5,11 @@
 {% block announce %}
   <span class="gac-announce gac-announce--long">
     <strong>Alpha {{ config.extra.cli_version }}:</strong> interfaces may change between minor
-    releases (see the <a href="{{ 'reference/changelog/' | url }}">changelog</a>). Not on PyPI
-    yet: install from the git tag.
+    releases (see the <a href="{{ 'reference/changelog/' | url }}">changelog</a>). Install it
+    from PyPI: <code>uv tool install graph-agents-cli</code>.
   </span>
   <span class="gac-announce gac-announce--short">
     <strong>Alpha {{ config.extra.cli_version }}</strong> ·
-    <a href="{{ 'getting-started/installation/' | url }}">install from the git tag</a>
+    <a href="{{ 'getting-started/installation/' | url }}">install from PyPI</a>
   </span>
 {% endblock %}

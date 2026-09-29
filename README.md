@@ -7,6 +7,7 @@ your own Kubernetes, with one CLI and six skills for your coding agent.**
 
 [![CI](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
 [![Release](https://img.shields.io/github/v/release/ss7172/graph-agents-cli?sort=semver)](https://github.com/ss7172/graph-agents-cli/releases)
+[![PyPI](https://img.shields.io/pypi/v/graph-agents-cli)](https://pypi.org/project/graph-agents-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-site-0f766e)](https://ss7172.github.io/graph-agents-cli/)
 
@@ -44,12 +45,17 @@ You need Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/getting-started/
 Deploying also needs `helm`, `kubectl`, `git` and a `docker` that builds with BuildKit.
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+uv tool install graph-agents-cli
 graph-agents-cli setup      # optional: install the skills into your coding agents
 ```
 
-**Not on PyPI yet.** Until this repository's release workflow publishes it, a package named
-`graph-agents-cli` on an index is not this project: install from the release tag as above.
+`pipx install graph-agents-cli` or `pip install graph-agents-cli` (into a virtual
+environment) work too. To install a release tag from GitHub instead:
+
+```bash
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+```
+
 More options (extras, mirrors, disconnected installs):
 [Installation & setup](https://ss7172.github.io/graph-agents-cli/getting-started/installation/).
 
@@ -98,7 +104,8 @@ site's CLI page.
 Version 0.3.0, **alpha**
 ([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.0)).
 Interfaces may still change between minor versions; the changelog lists every breaking
-change with its migration steps. Publication on PyPI is pending.
+change with its migration steps. Released on
+[PyPI](https://pypi.org/project/graph-agents-cli/) and as tags on GitHub.
 
 - [Known issues](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md): parked issues, each with its
   impact and workaround.

@@ -30,7 +30,7 @@ with any coding agent (Claude Code, Codex, Gemini CLI, Cursor, Antigravity, othe
 model is a scaffold-time and runtime choice among OpenAI, Anthropic, Gemini (AI Studio API key),
 and any OpenAI-compatible endpoint (Ollama, vLLM, TGI, OpenRouter). It is generic: projects pick an
 auth policy and declare their outbound APIs, nothing is tied to one consumer. Install with
-`uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0` and `graph-agents-cli setup`.
+`uv tool install graph-agents-cli` (PyPI) and `graph-agents-cli setup`.
 
 > **Before writing agent code, make sure a scaffolded project exists (see Phase 1).** Skipping the
 > scaffold loses the chat API, the auth policy adapter, the eval gate, the Helm chart, and the
@@ -62,7 +62,7 @@ Context compaction may have dropped earlier skill content. If skills are missing
 If `graph-agents-cli` is not installed:
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0   # a release tag; not on PyPI yet
+uv tool install graph-agents-cli   # from PyPI; or the release tag: git+https://github.com/ss7172/graph-agents-cli@v0.3.0
 graph-agents-cli setup          # installs the six skills into detected coding agents
 ```
 

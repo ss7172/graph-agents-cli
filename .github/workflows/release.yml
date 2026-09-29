@@ -10,11 +10,13 @@
 #                     report the tagged version
 #   4. github-release a GitHub Release for the tag with the sdist, the wheel,
 #                     SHA256SUMS and the CHANGELOG section as notes
-#   5. pypi           OFF by default: runs only when the repository variable
-#                     PUBLISH_TO_PYPI is 'true'. PyPI trusted publishing (OIDC,
-#                     no token) from the `pypi` environment.
+#   5. pypi           publishes the sdist and wheel to PyPI when the variable
+#                     PUBLISH_TO_PYPI is exactly 'true' (it is for this
+#                     repository): trusted publishing (OIDC, no token) from
+#                     the `pypi` environment.
 #
-# Until PyPI publishing is enabled, users install the tag from git:
+# Users install a release from PyPI or from its tag:
+#   uv tool install graph-agents-cli
 #   uv tool install git+https://github.com/ss7172/graph-agents-cli@vX.Y.Z
 #
 # Actions are pinned to full commit SHAs (the version is in the comment).

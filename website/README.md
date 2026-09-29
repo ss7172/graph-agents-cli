@@ -34,9 +34,11 @@ Generated or included pages need no edits: the CLI reference comes from the Clic
   `mkdocs build --strict` fails on a missing page or anchor; CLI anchors are
   `#graph-agents-cli-<command>[-<subcommand>]`. Link a command's flags to the CLI reference
   instead of copying the flag list.
-- **Install tags.** Write install commands with the current release tag
-  (`git+https://github.com/ss7172/graph-agents-cli@v0.2.0`); `hooks/version.py` fails the build
-  when a page names another version, so release bumps cannot leave stale commands behind.
+- **Install commands.** Install from PyPI without a version (`uv tool install
+  graph-agents-cli`); never write `graph-agents-cli==X.Y.Z`, which no check keeps current. A
+  pinned install names the current release tag (`git+https://github.com/ss7172/graph-agents-cli@vX.Y.Z`);
+  `hooks/version.py` fails the build when a page names another version, so release bumps
+  cannot leave stale commands behind.
 - **Check before a pull request:** `mkdocs build --strict` (above) passes, and `uv run --group docs mkdocs serve -f website/mkdocs.yml -a 127.0.0.1:<port>`
   (any free port) looks right at desktop and phone widths.
 

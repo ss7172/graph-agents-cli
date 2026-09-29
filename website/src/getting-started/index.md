@@ -14,7 +14,7 @@ Everything up to deployment runs locally; a Kubernetes cluster is needed only to
 
 -   **Installation & setup**
 
-    Install the CLI from its release tag, add the skills to your coding agents and check
+    Install the CLI from PyPI, add the skills to your coding agents and check
     your environment with `login`.
 
     [Install graph-agents-cli](installation.md)

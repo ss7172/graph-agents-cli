@@ -24,7 +24,7 @@ cluster.
 You run two commands yourself; the coding agent runs everything else.
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+uv tool install graph-agents-cli
 graph-agents-cli setup
 ```
 

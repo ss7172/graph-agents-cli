@@ -396,18 +396,22 @@ owner tags releases.
    clean; any other build reports `X.Y.Z+g<commit>`), and creates the GitHub Release with
    the sdist, the wheel, `SHA256SUMS` and the changelog section as notes (a version with
    `a`, `b`, `rc` or `dev` is a prerelease).
-8. **PyPI (off by default).** The `pypi` job runs only when the variable `PUBLISH_TO_PYPI`
-   is `true`. Before turning it on, the owner registers the project on PyPI with a trusted
-   publisher (owner `ss7172`, repository `graph-agents-cli`, workflow `release.yml`,
-   environment `pypi`) and creates the `pypi` environment in the repository settings with
-   required reviewers. That environment and the trusted-publisher registration are the real
-   gate: the job's `if:` is a GitHub expression, which compares strings case-insensitively
-   (`TRUE` passes it) and reads organization variables as well as repository ones (a
-   repository variable wins over an organization variable of the same name). The job's
-   first step therefore refuses any value but exactly `true`. Publishing uses OIDC, no
-   token. Once a version is on PyPI, `install_spec()` in `scaffold/utils/version.py` is the
-   one place to switch the default install spec to the index, and the README install
-   section and the site's Installation page change with it.
+8. **PyPI.** The `pypi` job then publishes the same sdist and wheel to
+   [PyPI](https://pypi.org/project/graph-agents-cli/), from 0.3.1 on. It runs only when the
+   variable `PUBLISH_TO_PYPI` is `true`, which it is for this repository, and publishes
+   through a trusted publisher registered on PyPI (owner `ss7172`, repository
+   `graph-agents-cli`, workflow `release.yml`, environment `pypi`) with OIDC, no token. The
+   repository's `pypi` environment only lets `v*` tags deploy; add required reviewers to it
+   for a human gate before each upload. The job's `if:` is a GitHub expression, which
+   compares strings case-insensitively (`TRUE` passes it) and reads organization variables
+   as well as repository ones (a repository variable wins over an organization variable of
+   the same name), so its first step refuses any value but exactly `true`. Setting the
+   variable to anything else turns publishing off. A version's files on PyPI can never be
+   replaced: a broken release is yanked on PyPI and fixed by the next version. The README's
+   install section and the site's Installation page install from PyPI; `install_spec()` in
+   `scaffold/utils/version.py` (`setup`, `update`, the `scaffold upgrade` baseline and
+   generated projects' `GRAPH_AGENTS_CLI_SPEC`) stays on the release tags, because releases
+   before 0.3.1 exist only as tags.
 
 The workflows pin actions to full commit SHAs with the version in a comment. To bump one,
 resolve the new tag's commit (`git ls-remote https://github.com/<owner>/<action>

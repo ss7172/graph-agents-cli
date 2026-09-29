@@ -89,7 +89,8 @@ reviewed pull request (`argocd`) or the `production` environment gate (`helm-pus
 
 ### Supply chain
 
-The CLI installs from a pinned git tag, and `setup` installs the skills from the same tag.
+The CLI is published on PyPI and as a pinned git tag of each release; `setup` and `update`
+install it from the tag, and `setup` installs the skills from the same tag.
 Generated projects pin the CLI in `.github/agent.env`, install from committed lock files, and
 pin the base images, the uv version, the subchart versions and the subchart image digests. CI
 and CD jobs disable extension overrides (`GRAPH_AGENTS_CLI_DISABLE_OVERRIDES=1`).

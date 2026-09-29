@@ -38,7 +38,7 @@ This comparison is as of google-agents-cli 1.7.0 (September 2026).
 | Secrets | `secrets apply` and `secrets status` for an allow-listed Kubernetes Secret | Secret Manager |
 | Observability | LangSmith or OpenTelemetry, opt-in, metadata-only by default | Cloud Trace, logging, BigQuery Agent Analytics |
 | Publishing | Out of scope | Gemini Enterprise, Agent Registry |
-| Distribution | Pinned git tags; PyPI publication pending | PyPI |
+| Distribution | PyPI, and a pinned git tag per release | PyPI |
 
 ## Where it goes further
 
@@ -66,9 +66,9 @@ This comparison is as of google-agents-cli 1.7.0 (September 2026).
 - **Templates and languages**: one Python LangGraph template and no sample catalogue, against
   upstream's ADK templates in several languages, samples and a LangChain template.
 - **Lint**: no type checker or spell checker in the generated project's `lint`.
-- **Maturity**: upstream has a long release history and PyPI distribution. This project has
-  three tagged releases (`v0.1.0`, `v0.2.0`, `v0.3.0`), this documentation site (published once the
-  maintainers enable it) and the skills; PyPI publication is pending.
+- **Maturity**: upstream has a long release history. This project has three tagged releases
+  (`v0.1.0`, `v0.2.0`, `v0.3.0`), this documentation site (published once the
+  maintainers enable it) and the skills; it is on PyPI from 0.3.1.
 - **Upstream fixes are ported by hand** after 1.6.1, following the upstream-sync process in
   [CONTRIBUTING.md](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md#upstream-sync).
   For example, remote templates still skip symlinks, which upstream 1.7.0 copies when they

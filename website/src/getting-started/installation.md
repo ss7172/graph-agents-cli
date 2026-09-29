@@ -1,10 +1,10 @@
 ---
-description: Install graph-agents-cli from its release tag, add the skills to your coding agents and check your environment with login.
+description: Install graph-agents-cli from PyPI, add the skills to your coding agents and check your environment with login.
 ---
 
 # Installation & setup
 
-<p class="gac-lede">Install the CLI from its release tag, give your coding agents the six
+<p class="gac-lede">Install the CLI from PyPI, give your coding agents the six
 skills, and let <code>login</code> tell you what is still missing before you create a
 project.</p>
 
@@ -25,10 +25,10 @@ find on `PATH` makes it exit 2.
 
 ## Install the CLI
 
-Install a pinned release tag with `uv tool`:
+Install the [PyPI package](https://pypi.org/project/graph-agents-cli/) with `uv tool`:
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+uv tool install graph-agents-cli
 graph-agents-cli --version
 ```
 
@@ -36,10 +36,32 @@ graph-agents-cli --version
 graph-agents-cli, version 0.3.0
 ```
 
-!!! warning "Not on PyPI yet"
-    Publication on PyPI is pending. Until this repository's release workflow publishes it,
-    a package named `graph-agents-cli` on a package index is **not** this project: install
-    from the git tag.
+`uv tool upgrade graph-agents-cli` moves to the latest release later. Other installers work
+too:
+
+=== "pipx"
+
+    ```bash
+    pipx install graph-agents-cli
+    ```
+
+=== "pip"
+
+    ```bash
+    python -m venv ~/.venvs/graph-agents-cli
+    ~/.venvs/graph-agents-cli/bin/pip install graph-agents-cli
+    ```
+
+    Put `~/.venvs/graph-agents-cli/bin` on your `PATH`, or call the CLI by its full path.
+
+=== "A release tag from GitHub"
+
+    ```bash
+    uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+    ```
+
+    The same release, built from its git tag: what `setup`, `update` and generated projects'
+    CI install (see [Install sources](#install-sources)).
 
 ### Optional extras
 
@@ -51,6 +73,8 @@ Two commands need an extra dependency:
 | `langsmith` | `eval submit` (upload a dataset and results to LangSmith) |
 
 ```bash
+uv tool install 'graph-agents-cli[a2a,langsmith]'
+# or from the release tag
 uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.0'
 ```
 
@@ -75,7 +99,9 @@ in CONTRIBUTING.md.
 `setup` installs the six [skills](../reference/skills.md) into the coding agents it finds
 (Claude Code, Codex, Gemini CLI, Cursor, Antigravity and others), so you can ask your agent
 to "use graph-agents-cli to build ...". It also runs `uv tool install` for the pinned CLI
-(nothing changes when it is already installed).
+from its release tag: nothing changes when that is already installed, and a CLI installed
+from PyPI is replaced by the same release built from the tag (see
+[Install sources](#install-sources)).
 
 === "Every detected agent"
 
@@ -209,10 +235,13 @@ stop there.
 
 `setup`, `update`, the `scaffold upgrade` baseline and the CI of every generated project
 (`GRAPH_AGENTS_CLI_SPEC` in its `.github/agent.env`) install the CLI from the same pinned
-git tag. `GRAPH_AGENTS_CLI_INSTALL_SPEC` points all of
+git tag, whichever way you installed it: every release is tagged, while releases before
+0.3.1 are not on PyPI. `GRAPH_AGENTS_CLI_INSTALL_SPEC` points all of
 them somewhere else: a private mirror, a wheel, or a package index. Write `{version}` where
 the release number goes (`git+https://git.example.com/graph-agents-cli@v{version}`) so an
 upgrade can install an older release; an override that cannot work is refused with exit 3.
+`GRAPH_AGENTS_CLI_INSTALL_SPEC='graph-agents-cli=={version}'` installs from PyPI (or the
+index `UV_INDEX_URL` names), for releases published there.
 [Environment variables](../reference/environment.md) has the full rules, and
 [Offline profile](../guides/offline.md) shows a complete disconnected setup.
 
