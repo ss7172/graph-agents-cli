@@ -355,7 +355,9 @@ graph-agents-cli system deploy --env dev  # --parallel 3 --only a,b --keep-going
    agent in file order, with a warning.
 3. **A few at a time.** At most `--parallel` deploys run at once (default `deploy.parallel` in
    the file, else 3): seven images built and loaded at once made one agent take 158 s instead
-   of 27-38 s. A failed wave stops the run unless `--keep-going`.
+   of 27-38 s. A failed wave stops the run unless `--keep-going`. Projects in `argocd`
+   mode go one at a time: each writes a commit and opens a pull request, and projects may
+   share a repository.
 4. **Each is `graph-agents-cli deploy --env ENV`** in its project directory, with every rule on
    this page, no terminal input, and its output kept in a log file whose path is printed.
    Each agent's build, image load and rollout times are printed, read from the commands the

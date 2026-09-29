@@ -1137,3 +1137,80 @@ def test_a_rewritten_entry_keeps_the_schema_key_order() -> None:
         "allowed_methods",
         "limits",
     ]
+
+
+def test_argocd_projects_deploy_one_at_a_time(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _deployable(store)
+    for agent in ("orders", "billing"):
+        manifest = _project(store, agent) / "graph-agents-cli-manifest.yaml"
+        _edit_yaml(manifest, lambda d: d["create_params"].update(cd="argocd"))
+    _with_file(store, lambda d: d["agents"]["billing"].update(calls=[]))  # one wave of two
+    fake = FakeDeploys(seconds=0.2)
+    monkeypatch.setattr(_deploy, "run_cli", fake)
+    result = ok("system", "deploy", "--env", "dev", "--skip-check", "--only", "orders,billing")
+    assert fake.peak == 1
+    assert "billing, orders deploy in argocd mode" in result.output
+
+
+def test_sc10_counts_langgraph_servers_own_pool(store: Path) -> None:
+    _applied(store)
+    _with_file(store, lambda d: d.update(database={"max_connections": {"prod": 1000}}))
+    manifest = _project(store, "orders") / "graph-agents-cli-manifest.yaml"
+    _edit_yaml(manifest, lambda d: d["create_params"].update(runtime="langgraph-server"))
+    _edit_values(_project(store, "orders"), "prod", lambda v: v["env"].update(DB_POOL_MAX_SIZE="4"))
+    system = resolve(store / _model.SYSTEM_FILENAME)
+    assert _checks._pool(system.nodes["orders"], "prod") == (
+        154,
+        "DB_POOL_MAX_SIZE 4 + LANGGRAPH_POSTGRES_POOL_MAX_SIZE 150",
+    )
+    _, findings = _findings()
+    assert "SC10" not in _ids(findings)  # 2 x 10 + 2 x 10 + 2 x 154 = 348 <= 900
+    _with_file(store, lambda d: d.update(database={"max_connections": {"prod": 300}}))
+    _, findings = _findings()
+    sc10 = [f["message"] for f in findings if f["check"] == "SC10"]
+    assert sc10 and "may open 348 connections" in sc10[0]
+    assert "orders 2 x 154 (DB_POOL_MAX_SIZE 4 + LANGGRAPH_POSTGRES_POOL_MAX_SIZE 150)" in sc10[0]
+    _edit_values(
+        _project(store, "orders"),
+        "prod",
+        lambda v: v["env"].update(LANGGRAPH_POSTGRES_POOL_MAX_SIZE="20"),
+    )
+    _, findings = _findings()
+    assert "SC10" not in _ids(findings)  # 40 + 48 = 88 <= 270
+
+
+@pytest.mark.parametrize(
+    ("status", "reachable"),
+    [(200, True), (401, True), (503, False), (404, False)],
+)
+def test_the_live_card_probe_counts_401_as_reachable(status: int, reachable: bool) -> None:
+    import httpx
+    import respx
+
+    url = "https://orders.agents.example.com/a2a/orders/.well-known/agent-card.json"
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.get(url).mock(return_value=httpx.Response(status))
+        assert _checks.Probe().card(url) == (reachable, f"HTTP {status}")
+    assert route.calls[0].request.headers["A2A-Version"] == "1.0"
+    assert "authorization" not in route.calls[0].request.headers  # never a credential
+
+
+def test_the_live_probes_report_what_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    import httpx
+    import respx
+
+    url = "https://orders.agents.example.com/a2a/orders/.well-known/agent-card.json"
+    with respx.mock() as mock:
+        mock.get(url).mock(side_effect=httpx.ConnectTimeout("slow"))
+        assert _checks.Probe().card(url) == (False, "unreachable (ConnectTimeout)")
+
+    def getaddrinfo(host: str, *args: Any) -> list[Any]:  # no DNS query leaves the test
+        if host == "orders.agents.example.com":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.7", 0))]
+        raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    assert _checks.Probe().resolves("orders.agents.example.com") is None
+    assert "not known" in (_checks.Probe().resolves("nowhere.example.com") or "")

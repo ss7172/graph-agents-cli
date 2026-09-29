@@ -339,6 +339,9 @@ def cmd_deploy(
     3. Each agent's build, image load and rollout times are printed.
     4. `system check --live --env ENV`.
 
+    Projects in argocd mode deploy one at a time (each writes a commit and a pull
+    request, and projects may share a repository).
+
     Outside dev every project must record its kube context
     (environments.<env>.context in its manifest): the kubeconfig's current
     context is never used there, and no deploy is asked to confirm one.
@@ -372,6 +375,17 @@ def cmd_deploy(
             )
             raise SystemExit(EXIT_FINDING)
     width = parallel or system.file.deploy.parallel
+    gitops = [n for n in names if system.nodes[n].config.cd == "argocd"]
+    if gitops and width > 1:
+        # argocd mode commits image.tag and opens a pull request: projects that share a
+        # repository would race on its branches and index.
+        console.print(
+            f"  {', '.join(gitops)} deploy in argocd mode (a commit and a pull request each): "
+            "one at a time.",
+            style="yellow",
+            highlight=False,
+        )
+        width = 1
     console.print(
         f"Deploying {len(names)} agent(s) to {env}, at most {width} at once"
         + (" (dry run)" if dry_run else ""),

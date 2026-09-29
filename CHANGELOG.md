@@ -331,7 +331,8 @@ migration" with the steps to follow.
   runs `graph-agents-cli deploy` in every project in waves, callees first (a cycle broken in
   file order), at most `--parallel` at once (default 3), stopping after a failed wave unless
   `--keep-going`, printing each agent's build, load and rollout times, then checks `--live`;
-  outside dev it requires every project's recorded context. `api/_files` edits now build on the
+  outside dev it requires every project's recorded context, and projects in `argocd` mode
+  (a commit and a pull request each) go one at a time. `api/_files` edits now build on the
   planned text of a file, so one plan can hold several peers. The NetworkPolicy rules select an
   agent's pods by the chart's selector labels (name and release: the bundled database shares
   the release label), and were checked on a kind cluster with kindnet enforcing them: callers
