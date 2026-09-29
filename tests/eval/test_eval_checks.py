@@ -87,6 +87,43 @@ def test_json_schema_with_minimal_validator() -> None:
     assert minimal_validate({"type": "integer"}, True)  # bool is not an integer
 
 
+ANSWER = {
+    "type": "object",
+    "required": ["city"],
+    "properties": {"city": {"type": "string"}, "temp": {"type": "number"}},
+}
+
+
+@pytest.mark.parametrize(
+    ("reply", "city"),
+    [
+        # An example block before the answer: the answer (the last one) is checked.
+        (
+            'For example:\n```json\n{"temp": 1}\n```\nAnswer:\n```json\n{"city": "SF"}\n```',
+            "SF",
+        ),
+        # Prose after raw JSON.
+        ('{"city": "Oslo", "temp": 3} Hope this helps! Ask me anything.', "Oslo"),
+        # The input quoted before the answer, and a citation-like list after it.
+        ('You sent {"city": "?"}. Here: {"city": "Lima"} (see [1])', "Lima"),
+        # The whole reply is the answer.
+        ('{"city": "Rome"}', "Rome"),
+    ],
+)
+def test_json_schema_reads_the_replys_last_json_answer(reply: str, city: str) -> None:
+    passed, reason = check_json_schema({**ANSWER, "properties": {"city": {"const": city}}}, reply)
+    assert passed, reason
+
+
+def test_json_schema_picks_json_of_the_schemas_root_type() -> None:
+    schema = {"type": "array", "items": {"type": "integer"}}
+    assert check_json_schema(schema, 'Counts: [1, 2, 3] {"note": "done"}') == (True, "")
+    passed, reason = check_json_schema(ANSWER, "Nothing to report [1] [2]")
+    assert not passed and "schema violation" in reason  # no object: the last value is checked
+    passed, reason = check_json_schema(ANSWER, "no JSON here {not json")
+    assert not passed and "not valid JSON: no JSON object or array found" in reason
+
+
 def test_args_subset_matches_is_recursive() -> None:
     assert args_subset_matches(None, {"a": 1})
     assert args_subset_matches({"query": "SF"}, {"query": "SF", "extra": 1})

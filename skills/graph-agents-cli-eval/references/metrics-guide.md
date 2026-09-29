@@ -11,7 +11,7 @@ designated a quality metric). `graph-agents-cli eval metric list` prints the liv
 | `contains: [..]` | every substring occurs in the final response (case-insensitive) | key facts, required disclaimers |
 | `not_contains: [..]` | none occurs (case-insensitive) | leaked secrets, forbidden claims, refusal text when a call should have succeeded |
 | `regex: "..."` | `re.search` matches (`(?i)` to ignore case) | ids, dates, numeric formats |
-| `json_schema: {..}` | the final response parses as JSON and validates against the schema | structured output modes |
+| `json_schema: {..}` | the final reply's JSON validates against the schema (the whole reply, else its last JSON object or array of the schema's root type) | structured output modes |
 | `tool_calls: [{name, args_subset}]` | each entry matches a trace tool call by name with `args_subset` a subset of the recorded args; `ordered: true` enforces relative order | trajectory assertions, policy regressions (`getIncident` called, nothing else) |
 | `no_tool_calls: true` | the trace has no tool call | answers that must come from the prompt alone |
 | `max_latency_ms: n` | `latency_ms <= n` | latency budget |

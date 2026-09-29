@@ -110,7 +110,7 @@ metrics:
 |---|---|
 | `contains` / `not_contains` | every listed substring appears / none appears in the response (case-insensitive) |
 | `regex` | the response matches (`re.search`, DOTALL; `(?i)` ignores case) |
-| `json_schema` | the final response parses as JSON and validates against the schema |
+| `json_schema` | the final reply's JSON validates against the schema: the whole reply, else its last JSON object or array of the schema's root type (an example or quoted input before the answer, or prose after it, is skipped) |
 | `tool_calls` | the listed tools were called, matched by name and `args_subset` (`ordered: true` for order) |
 | `no_tool_calls` | the agent made no tool call |
 | `max_latency_ms`, `max_tokens` | `latency_ms`, and input plus output tokens, stay at or below the limit |

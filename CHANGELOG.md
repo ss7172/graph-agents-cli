@@ -363,6 +363,14 @@ migration" with the steps to follow.
 
 ### Fixed
 
+- **`eval`'s `json_schema` check reads the reply's answer, not its first JSON.** It parsed the
+  first fenced code block, and otherwise everything from the first `{` or `[` to the end of
+  the reply: a reply that showed an example (or quoted its input) before its answer was
+  checked against the example, and one that added prose after raw JSON failed as "not valid
+  JSON" (the experiments' finding F10). It now reads the whole reply when that is JSON, else
+  the reply's last JSON object or array, taking the schema's root type when it names
+  `object` or `array` (so a citation such as `[1]` after an object answer is skipped), inside
+  code fences or not.
 - **`run`, `eval run`, `eval generate` and `approvals` no longer fail under a SOCKS proxy.**
   With `ALL_PROXY=socks5h://...` in the environment (as coding-agent sandboxes such as Codex's
   network proxy set it), every request crashed with `ImportError: Using SOCKS proxy, but the
