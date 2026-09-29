@@ -561,7 +561,13 @@ edit. The rule is now:
 
 - test holds out **variants within families**, not whole families;
 - test tasks stay **frozen and unseen**: their ids, files and content hashes do not change, they
-  are in no other split, and nothing is authored or tuned against them;
+  are in no other split, and nothing is authored or tuned against them. The one exception is a
+  template change that breaks a test task's fixture setup or verifier: the task is then updated
+  to follow the template, with its prompt, reference, checks and `broken_fails` unchanged, and
+  the change is recorded here. Recorded: `code-remove-checkpointer` (2026-09-29), whose setup
+  and scripted solutions follow the template's `model = get_model()` (structured final answers
+  bind the model once, for `create_agent` and `response_format`), and whose contract check
+  accepts that form;
 - a train or val task may belong to a test task's family (the same failure family), but it must
   differ in fixture, prompt and expected specifics, so that no test answer leaks: another
   project and domain, another environment, identity type, policy or CD mode, another prompt.

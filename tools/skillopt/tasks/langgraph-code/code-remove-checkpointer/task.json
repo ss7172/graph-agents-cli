@@ -10,7 +10,7 @@
       "--prototype"
     ],
     "setup": [
-      "python3 - <<'PY'\nfrom pathlib import Path\np = Path('app/agent.py')\nt = p.read_text()\nt = t.replace('from langchain.agents.middleware import AgentMiddleware\\n', 'from langchain.agents.middleware import AgentMiddleware\\nfrom langchain.chat_models import init_chat_model\\n')\nt = t.replace('from langchain_core.messages import ToolMessage\\n', 'from langchain_core.messages import ToolMessage\\nfrom langgraph.checkpoint.memory import InMemorySaver\\n')\nassert '    model=get_model(),\\n' in t and '    context_schema=AgentContext,\\n' in t\nt = t.replace('    model=get_model(),\\n', '    model=init_chat_model(\"openai:gpt-5-mini\"),\\n')\nt = t.replace('    context_schema=AgentContext,\\n', '    context_schema=AgentContext,\\n    checkpointer=InMemorySaver(),\\n')\np.write_text(t)\nPY"
+      "python3 - <<'PY'\nfrom pathlib import Path\np = Path('app/agent.py')\nt = p.read_text()\nt = t.replace('from langchain.agents.middleware import AgentMiddleware\\n', 'from langchain.agents.middleware import AgentMiddleware\\nfrom langchain.chat_models import init_chat_model\\n')\nt = t.replace('from langchain_core.messages import ToolMessage\\n', 'from langchain_core.messages import ToolMessage\\nfrom langgraph.checkpoint.memory import InMemorySaver\\n')\nassert t.count('\\nmodel = get_model()\\n') == 1 and '    model=model,\\n' in t and '    context_schema=AgentContext,\\n' in t\nt = t.replace('\\nmodel = get_model()\\n', '\\nmodel = init_chat_model(\"openai:gpt-5-mini\")\\n')\nt = t.replace('    context_schema=AgentContext,\\n', '    context_schema=AgentContext,\\n    checkpointer=InMemorySaver(),\\n')\np.write_text(t)\nPY"
     ]
   },
   "needs_local_server": true,

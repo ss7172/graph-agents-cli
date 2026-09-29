@@ -30,6 +30,23 @@ def fail(message):
 
 source = Path("app/agent.py").read_text()
 tree = ast.parse(source)
+
+
+def from_get_model(node):
+    """`get_model()`, or a name the module assigns `get_model()` once (`model = get_model()`)."""
+    if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "get_model":
+        return True
+    if isinstance(node, ast.Name):
+        values = [
+            n.value
+            for n in tree.body
+            if isinstance(n, (ast.Assign, ast.AnnAssign))
+            and any(getattr(t, "id", "") == node.id for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))
+        ]
+        return len(values) == 1 and from_get_model(values[0])
+    return False
+
+
 prompt = None
 for node in tree.body:
     if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "SYSTEM_PROMPT" for t in node.targets):
@@ -49,9 +66,11 @@ if len(calls) != 1:
 kwargs = {k.arg: k.value for k in calls[0].keywords}
 if "checkpointer" in kwargs:
     fail("create_agent must not bind a checkpointer")
-model = kwargs.get("model")
-if not (isinstance(model, ast.Call) and getattr(model.func, "id", "") == "get_model"):
+if not from_get_model(kwargs.get("model")):
     fail("the model must come from get_model()")
+response_format = kwargs.get("response_format")
+if not (isinstance(response_format, ast.Call) and getattr(response_format.func, "id", "") == "response_format"):
+    fail("create_agent must keep response_format=response_format(model, tools)")
 middleware = kwargs.get("middleware")
 if not (isinstance(middleware, ast.Call) and getattr(middleware.func, "id", "") == "middleware"):
     fail("the middleware must stay middleware()")
