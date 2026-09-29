@@ -260,6 +260,8 @@ A request can come from another agent acting for a user: agent A received the us
 and calls this agent for them. The **subject** (`Principal.id`) is still the user; the
 **actor** (`Principal.actor`) is the agent presenting the request. A principal with an actor is
 *delegated*; one without is *direct*.
+This section is the identity side; the whole setup, from `peer add` to relayed approvals, is
+walked through in [Agents calling agents](multi-agent.md).
 
 How a policy knows:
 

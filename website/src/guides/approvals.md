@@ -351,9 +351,10 @@ task, or on its context alone (naming the task in `referenceTaskIds`):
 ```
 
 The decision goes through the same checks as the HTTP route, the auth policy's
-`approval.decide` action included. A task belongs to its principal, so only the requester
-decides over A2A; `role:` approvers use the HTTP routes or `graph-agents-cli approvals` (a
-design choice). However the approval is decided (over A2A, over HTTP, or it expires), the
+`approval.decide` action included. A task belongs to its principal, so over A2A only the
+requester decides, and an agent acting for the requester only where the gate relays through
+it ([Agents calling agents](#agents-calling-agents)); `role:` approvers use the HTTP routes
+or `graph-agents-cli approvals` (a design choice). However the approval is decided (over A2A, over HTTP, or it expires), the
 tasks waiting on it follow: they end as the resumed run did, saying where it continued
 (see [HTTP API](../reference/http-api.md#a2a)). `run --mode a2a` prints a gated call and how
 to resume the task, but does not prompt.
@@ -361,7 +362,8 @@ to resume the task, but does not prompt.
 ## Agents calling agents
 
 When another agent calls this one for a user (a *delegated* request, see
-[Authentication](authentication.md#agents-calling-agents)), the run acts for that user and the
+[Authentication](authentication.md#agents-calling-agents) and the walk-through in
+[Agents calling agents](multi-agent.md)), the run acts for that user and the
 agent that presented the request is recorded with each approval it pauses for
 (`requester_actor`, shown in the approval object). The rules:
 
@@ -449,7 +451,8 @@ left pending. See [Evaluation](evaluation.md#cases-that-reach-an-approval-gate).
 
     - Your own `interrupt()` in the served graph is not exposed over `/chat`: approval gates
       are the only human-in-the-loop the service wires.
-    - Approvers see only the requester's hashed id, not who asked
+    - Approvers see only the requester's hashed id, not who asked, though the approval names
+      the agent a delegated request came through (`requester_actor`)
       ([KI-009](../reference/known-issues.md#ki-009-approvers-cannot-see-who-asked)); a
       requester cannot withdraw a call waiting for another role
       ([KI-011](../reference/known-issues.md#ki-011-a-requester-cannot-withdraw-a-call-waiting-for-another-roles-approval)):

@@ -531,7 +531,10 @@ minted just before sending), the limits and the response cap apply to every byte
   approved, once; a rejection is sent to the peer at once, so its task ends.
 
 `A2APeerClient(peer, runtime=runtime)` does the same from your own tools (`send`,
-`get_task`, `pending_approvals`, `decide`, `cancel`, `relay`, `card`).
+`get_task`, `pending_approvals`, `decide`, `cancel`, `relay`, `card`), and
+`list_agents_tool(PEERS)` gives the model a `list_agents` tool that reads what each peer's
+card says it does, for discovery at run time. Put them in a tool module of your own, never
+in the generated one.
 
 - **The peer is checked first.** Its agent card must offer an A2A 1.x JSON-RPC interface at
   exactly the URL this agent calls (the base URL variable plus `a2a.path`) and be named after
