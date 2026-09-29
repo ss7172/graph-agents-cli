@@ -289,6 +289,33 @@ async def test_a_run_paused_for_approval_answers_once_resumed(client: httpx.Asyn
     assert "/orders/7/cancel" in answer["answer"] and len(SENT) == 1
 
 
+async def test_an_agent_not_built_for_its_schema_ends_every_run_with_the_error(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A project that added the schema file but not `response_format=` in agent.py (one
+    # created before structured answers, say): the runtime still expects an answer.
+    from langchain.agents import create_agent
+
+    from {{cookiecutter.agent_directory}} import agent
+    from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+
+    graph = create_agent(
+        model=get_model(),
+        tools=[probe],
+        system_prompt=agent.SYSTEM_PROMPT,
+        middleware=agent.middleware(),
+        context_schema=agent.AgentContext,
+    )
+    graph.checkpointer = agent.graph.checkpointer
+    monkeypatch.setattr(agent, "graph", graph)
+    events = await _chat(client, "Run the probe for Kyiv")
+    # The tool ran and shows; the model's text is not the answer, so nothing else is sent.
+    assert [e for e, _ in events] == ["message.start", "tool.call", "tool.result", "error"]
+    error = events[-1][1]
+    assert error["code"] == "invalid_structured_response", error
+    assert "ended without an answer" in error["message"]
+
+
 # --- A2A ------------------------------------------------------------------------------
 
 
