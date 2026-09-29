@@ -391,17 +391,30 @@ migration" with the steps to follow.
   comparison on [Compared with google-agents-cli](website/src/reference/comparison.md). The
   tests that ran README examples now run the same examples from the site's guides.
 - **The workflow and scaffold skills carry rules found by the SkillOpt experiment.**
-  [SkillOpt](https://github.com/microsoft/SkillOpt) optimised the skills against a benchmark
-  of graph-agents-cli tasks carried out by Claude Code sessions. Its proposals were reviewed
-  by hand (wording taken from the benchmark generalised, one claim corrected, a misplaced
-  rule moved) and measured again before they were adopted. The workflow skill now says what
-  counts as approval of the spec: a request to build, a draft spec, defaults the agent chose
-  or an instruction to proceed on its own is not one. With nobody to approve, the agent stops
-  before `create` at a draft spec (in 9 of 9 sessions of the benchmark's spec-gate tasks,
-  against 1 to 3 of 6 with the old text) and ends its answer with the open decisions as
-  questions. It also says to fix the agent, not the eval, when an eval that passed breaks
-  (unless the user asked for the change the eval checks), maps failed checks to code, and
-  says how to show that a failing test is unrelated to a change. The scaffold skill keeps
+  [SkillOpt](https://github.com/microsoft/SkillOpt) optimised the skills against gac-bench, a
+  benchmark of graph-agents-cli tasks carried out by Claude Code and Codex sessions. Its
+  proposals were reviewed by hand (wording taken from the benchmark generalised, one claim
+  corrected, a misplaced rule moved, a rule learned from the benchmark's harness dropped) and
+  measured again before they were adopted. The workflow skill now scopes Phase 0 and its spec
+  gate to a new agent: a concrete change to an existing project (add a retry to a tool, bump
+  a dependency, fix a crash) is not a new agent, and is made without a new spec, while the
+  decisions it raises that the user owns (new API operations or access, approval gates, the
+  model) still go to the user. This rule was written by hand after an earlier candidate made
+  Codex refuse such changes. For a new agent it says what counts as approval of the spec: a
+  request to build, a draft spec, defaults the agent chose or an instruction to proceed on its
+  own is not one. With nobody to approve, the agent stops before `create` at a draft spec and
+  ends its answer with each open decision as a direct question, and asks for approval as a
+  question. It also says to fix the agent, not the eval, when an eval that passed breaks
+  (unless the user asked for the change the eval checks), maps failed checks to code, says how
+  to show that a failing test is unrelated to a change, proves a change with `lint`, the `eval
+  run` counts and a `run` smoke test, and never presents the `fake` model's exit 0 as evidence
+  of quality. On the benchmark's workflow val tasks, against the 0.2.0 text: with Codex
+  (gpt-5.6-terra, 2 repetitions) 12 of 12 passed against 6 of 12, the open decisions were
+  asked as questions in 6 of 6 spec-gate sessions against 0 of 6, and every requested change
+  was still made (6 of 6); with Claude Code (3 repetitions) 17 of 18 passed against 10 of 18,
+  the spec-gate sessions stopped before `create` in 9 of 9 against 1 of 9 and asked in 9 of 9
+  against 1 of 9. The adopted wording, with generic examples, was checked again on Claude
+  Code: 18 of 18, with changes made, stops and questions each 9 of 9. The scaffold skill keeps
   the default `AGENTS.md` guidance file unless the user says the team uses one coding agent
   (8 of 8 sessions, against 4 of 8), its examples no longer pass
   `--agent-guidance-filename CLAUDE.md`, and it has the agent read `create_params` before

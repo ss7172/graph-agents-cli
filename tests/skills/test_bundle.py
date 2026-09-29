@@ -189,9 +189,11 @@ def _flat_text(skill: str) -> str:
     return " ".join((SKILLS_DIR / skill / "SKILL.md").read_text(encoding="utf-8").split())
 
 
-# The rules the SkillOpt experiment found (tools/skillopt, round 2), as reviewed and
-# approved: a coding agent stops at an unapproved spec when nobody can approve it, keeps
-# the default guidance file unless the team names one agent, and so on.
+# The rules the SkillOpt experiment found (tools/skillopt, rounds 2 to 3d), as reviewed and
+# approved: a coding agent stops at a new agent's unapproved spec when nobody can approve
+# it, makes a concrete change to an existing project without a new spec, asks its open
+# decisions as questions, keeps the default guidance file unless the team names one agent,
+# and so on.
 WORKFLOW_RULES = (
     "**What counts as approval.** Only the user explicitly approving the spec, in the "
     "conversation.",
@@ -199,9 +201,18 @@ WORKFLOW_RULES = (
     "an instruction to proceed on your own, to decide for yourself or to do what is safe "
     "while nobody can answer your questions: in that session the safe choice is to stop at "
     "the spec.",
-    "When the spec is not approved and nobody can approve it, the safe action is to stop "
-    "before `create`, `scaffold enhance`, or any agent code.",
-    "End your answer with each open decision as an explicit question.",
+    "**What Phase 0 covers.** Phase 0 and its spec gate are for a new agent:",
+    "A concrete change to an existing project (add a retry to a tool, bump a dependency, fix "
+    "a crash) is not a new agent: make the change, following Phases 2 and 3.",
+    "A missing or unapproved `.graph-agents-cli-spec.md` does not block it, and it needs no "
+    "new spec.",
+    "When a new agent's spec is not approved and nobody can approve it, the safe action is to "
+    "stop before `create`, `scaffold enhance`, or any agent code.",
+    "End your answer with each open decision written as a direct question sentence that ends "
+    "in `?`",
+    'A heading called "Open questions", a recommended default, or a "please confirm X" list '
+    "is not a question.",
+    "Ask the user to approve the spec as a question",
     "fix the agent, not the eval: do not edit `tests/eval/`",
     "unless the user asked for the change the eval checks",
     "a module without `TOOLS` (or with it renamed) contributes no tools, and nothing warns "

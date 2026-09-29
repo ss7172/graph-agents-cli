@@ -104,6 +104,15 @@ If no process is declared, the generic gate in Phase 0 applies.
 
 ## Phase 0: Understand
 
+**What Phase 0 covers.** Phase 0 and its spec gate are for a new agent: no graph-agents-cli
+project exists yet (`graph-agents-cli info` finds none), or the request changes what an existing
+agent is for (its purpose or its users). A concrete change to an existing project (add a retry
+to a tool, bump a dependency, fix a crash) is not a new agent: make the change, following
+Phases 2 and 3. A missing or unapproved `.graph-agents-cli-spec.md` does not block it, and it
+needs no new spec. Decisions the change raises that the user owns still go to the user: new API
+operations or wider access (Phase 2, step 6), approval gates, and the model or provider. If the
+project declares a process, *Process deference* governs every change, this kind included.
+
 Before scaffolding or writing anything, understand what you are building through a **design
 dialogue**, not a checklist. Load `references/brainstorming.md` and follow it: ask **one question
 at a time**, propose 2-3 architecture approaches for non-trivial agents, and validate the design
@@ -112,9 +121,9 @@ before any scaffolding.
 If `.graph-agents-cli-spec.md` exists in the project directory (and no process is declared), read
 it; it is your primary source of truth. Otherwise:
 
-**Do NOT proceed to scaffolding or coding until the user approves the spec** (or, under a declared
-process, until that process's approvals exist). Do not assume, research, or fill in the blanks on
-your own; the user's intent drives everything.
+**For a new agent, do NOT proceed to scaffolding or coding until the user approves the spec** (or,
+under a declared process, until that process's approvals exist). Do not assume, research, or fill
+in the blanks on your own; the user's intent drives everything.
 
 **What counts as approval.** Only the user explicitly approving the spec, in the conversation.
 None of these is approval:
@@ -126,15 +135,18 @@ None of these is approval:
 - an instruction to proceed on your own, to decide for yourself or to do what is safe while
   nobody can answer your questions: in that session the safe choice is to stop at the spec.
 
-When the spec is not approved and nobody can approve it, the safe action is to stop before
-`create`, `scaffold enhance`, or any agent code. Do these instead:
+When a new agent's spec is not approved and nobody can approve it, the safe action is to stop
+before `create`, `scaffold enhance`, or any agent code. Do these instead:
 
 1. Write or update a draft `.graph-agents-cli-spec.md` and leave it marked unapproved.
-2. End your answer with each open decision as an explicit question. Give the options and your
-   recommendation. Typical open decisions: which API operations and what access, which
-   credential, who calls the agent and how they authenticate, the model provider (data egress),
-   and the runtime, CD mode and registry.
-3. Ask the user to approve the spec.
+2. End your answer with each open decision written as a direct question sentence that ends in `?`
+   (for example "Should the agent only read, or also write?"), in the answer itself, not only in
+   the spec file. A heading called "Open questions", a recommended default, or a "please confirm
+   X" list is not a question. Give the options and your recommendation. Typical open decisions:
+   which API operations and what access, which credential, who calls the agent and how they
+   authenticate, the model provider (data egress), and the runtime, CD mode and registry.
+3. Ask the user to approve the spec as a question ("Do you approve this spec, or what should change?"),
+   not as an instruction such as "say approved" or "once approved I will...".
 
 **Scale the ceremony to complexity:** a trivial agent (single tool, fixed persona) needs a couple
 of questions, a 2-3 sentence spec, and one approval; a complex agent (multi-step graph, external API
@@ -276,6 +288,11 @@ the expect checks, the judge metrics, the gate rule, and the exit codes.
    - `contains` fails while the tool is called: look at the tool's return text or the prompt.
 5. Repeat until `eval run` exits 0. The exit code is the gate; a passing run has no `failed`,
    `error`, or `missing` case and every quality metric meets its `min_pass_rate`.
+6. To prove a fix or change broke nothing, report all three results: `graph-agents-cli lint`
+   (exit code), `eval run` (the per-status counts and the exit code), and a `graph-agents-cli run`
+   smoke test whose output shows the expected tool call.
+7. Under `MODEL_PROVIDER=fake` (or a `fake` judge) the CLI warns that exit 0 is a plumbing check
+   only. Say so in your report; never present it as evidence of agent quality.
 
 Expect several iterations here.
 
