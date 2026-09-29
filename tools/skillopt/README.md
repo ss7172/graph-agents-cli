@@ -6,7 +6,7 @@ generated project; an optimised skill replaces a shipped one only after a person
 [`DESIGN.md`](DESIGN.md) explains the decisions and the isolation evidence; this page is how to
 run it.
 
-- **gac-bench**: 101 realistic tasks (`tasks/<skill>/<id>/`) across all six skills, each with a
+- **gac-bench**: 104 realistic tasks (`tasks/<skill>/<id>/`) across all six skills, each with a
   fixture, a prompt, a deterministic verifier, a scripted gold solution the verifier accepts and a
   scripted broken solution it rejects. Frozen train/val/test splits per skill are in `splits/`.
 - **`gac_skills`**: a SkillOpt environment (`gac_skillopt/adapter.py`) that installs a candidate
@@ -56,9 +56,10 @@ uv run pytest tools/skillopt/tests -q                        # from the reposito
 
 `selfcheck` runs, for every task, the scripted gold solution (must score `hard=1`, `soft=1.0` and
 exit 0), the scripted broken solution (must score `hard=0` and fail exactly the mandatory checks
-the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). All 101
-tasks pass it against a CLI built from v0.3 (commit dbf2ddd); a run takes about 15 minutes at 8
-slots.
+the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). The
+first 101 tasks pass it against a CLI built from v0.3 (commit dbf2ddd), and the three
+structured-answer tasks against one built from 01a35c2; a run of all of them takes about 15
+minutes at 8 slots.
 
 ## Running agents
 
@@ -130,8 +131,14 @@ train, one in val, one in test), for the agent-to-agent features of 0.3:
   - `code-jsonrpc-policy`: `rpc_method` allows and denials on JSON-RPC APIs.
 - deploy: `deploy-system-wiring`, `system apply` and `system check` over several projects.
 
-No model has run them yet; `selfcheck` proves their verifiers. The structured final-answer mode
-has no task until it is merged into this branch.
+**Structured final answers (round 3e):** three tasks in one more langgraph-code family,
+`code-structured-answer`, one variant per split: declare the answer's shape in
+`app/response_schema.json` for a ticketing system (train), for a calling agent on a model server
+without native structured output, which needs `RESPONSE_FORMAT_STRATEGY=tool` and a nullable
+field (val), and wire a 0.2 `agent.py` by hand after `scaffold upgrade` (test). A hidden check
+runs the project's graph on the fake model and reads its `structured_response`.
+
+No model has run the v0.3 tasks yet; `selfcheck` proves their verifiers.
 
 In training configs, `env.val_reps` (2 in `configs/claude.yaml`) runs each selection item k times,
 and the gate sees the mean.

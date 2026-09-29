@@ -1,0 +1,58 @@
+{
+  "id": "code-answer-legacy-wiring",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-structured-answer",
+  "task_type": "code/structured-answer",
+  "fixture": {
+    "kind": "project",
+    "name": "claims-intake",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "claims-intake/ was created with graph-agents-cli 0.2 and has just been upgraded to 0.3 with `graph-agents-cli scaffold upgrade`. Our claims system is going to read the agent's answers, so make it answer with a JSON object: claim_type (auto, home or travel), urgent (true or false) and notes (text).",
+  "checks": [
+    {
+      "id": "schema",
+      "type": "json",
+      "file": "app/response_schema.json",
+      "expr": "data.get('type') == 'object' and set(get(data, 'properties.claim_type.enum') or []) == {'auto', 'home', 'travel'} and get(data, 'properties.urgent.type') == 'boolean' and get(data, 'properties.notes.type') == 'string' and {'claim_type', 'urgent', 'notes'} <= set(data.get('required') or [])",
+      "why": "the answer's shape is declared in app/response_schema.json"
+    },
+    {
+      "id": "wiring",
+      "type": "file",
+      "path": "app/agent.py",
+      "regex": "(?s)response_format\\s*=\\s*response_format\\(.*StructuredAnswer\\(\\)|StructuredAnswer\\(\\).*response_format\\s*=\\s*response_format\\(",
+      "why": "scaffold upgrade never rewrites agent.py: a 0.2 agent.py must pass response_format(model, tools) to create_agent and add StructuredAnswer() to its middleware by hand"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "output_regex": "^Response schema: app/response_schema\\.json OK$",
+      "why": "lint prints `Response schema: ... OK` only when agent.py is wired; otherwise it warns"
+    },
+    {
+      "id": "answer",
+      "type": "pyfile",
+      "script": "check_answer.py",
+      "why": "a run on the fake model ends with a structured_response that has the asked keys and values"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/tools"
+      ],
+      "why": "the template's structured answers are used as they are: no output tool of your own, no edit to app_utils"
+    }
+  ],
+  "broken_fails": [
+    "wiring",
+    "lint",
+    "answer"
+  ],
+  "reference": "The project's agent.py is 0.2's: `scaffold upgrade` added app_utils/structured.py but never rewrites agent.py. Import `StructuredAnswer` and `response_format` from `app.app_utils.structured`, bind `model = get_model()` and `tools = get_tools()`, pass `response_format=response_format(model, tools)` to `create_agent`, and put `StructuredAnswer()` last in `middleware()`; then write app/response_schema.json (claim_type string enum auto/home/travel, urgent boolean, notes string, all required, `additionalProperties: false`). `graph-agents-cli lint` prints `Response schema: app/response_schema.json OK` (it warns while the wiring is missing, and without it every run ends with invalid_structured_response)."
+}

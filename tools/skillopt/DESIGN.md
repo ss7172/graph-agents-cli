@@ -27,7 +27,7 @@ design for training the six graph-agents-cli skills with it. The spike scripts a
 | Isolation | Proven for both harnesses (section 3): the session sees exactly the skill under test; no user skills, plugins, hooks, MCP servers, connectors, memory or ancestor `CLAUDE.md`/`AGENTS.md`; shell sandboxed to the workspace with network only to PyPI and loopback. |
 | Scoring | Deterministic verifiers run by the harness after the agent exits (lint, API-policy check, tests, `eval run` and `deploy --dry-run` with `MODEL_PROVIDER=fake`, file and manifest assertions, transcript assertions). No LLM judge. |
 | Guard rails on candidates | A static fact-check gate (frontmatter, required sections, references, every `graph-agents-cli` command and flag against the real Click tree, size) runs before any rollout of a candidate; a failing candidate scores 0 with the violation as the failure reason. |
-| Dataset | 30 tasks per skill in parametrised families, split 15 train / 7 selection / 8 test, stratified by family. Hold-out (round 2): test holds out *variants within families*, not whole families; test tasks stay frozen and unseen (section 5.4). As built: 101 tasks (86 in round 2, 15 for the v0.3 features in round 3d), at least 6 train and 6 val per skill (section 12). |
+| Dataset | 30 tasks per skill in parametrised families, split 15 train / 7 selection / 8 test, stratified by family. Hold-out (round 2): test holds out *variants within families*, not whole families; test tasks stay frozen and unseen (section 5.4). As built: 104 tasks (86 in round 2, 15 for the v0.3 features in round 3d, 3 for structured answers in round 3e), at least 6 train and 6 val per skill (section 12). |
 | Budget | Claude: full size for all six skills (tiered epochs). Codex: one full optimisation (eval skill) plus a cross-harness transfer evaluation of every Claude-optimised skill, under a Track A cap of $90 enforced by the runner (section 8). |
 
 ## 2. SkillOpt, as it works at the pinned commit
@@ -790,6 +790,12 @@ weaker model.
   `system apply`/`system check` over several projects, with an `empty` fixture whose setup
   creates them. 101 tasks (langgraph-code 26, deploy 17), 17 of them test tasks (the 12
   before unchanged).
+  Round 3e (structured final answers): one more langgraph-code family,
+  `code-structured-answer`, of three variants under the same rule: a new project's schema
+  (train), a schema with a nullable field plus `RESPONSE_FORMAT_STRATEGY=tool` (val), and a 0.2
+  `agent.py` wired by hand after `scaffold upgrade` (test); a hidden `pyfile` check runs the
+  graph on the fake model and reads `structured_response`. 104 tasks (langgraph-code 29), 18
+  of them test tasks (the 17 before unchanged).
 - **Checks.** `cmd`, `file`, `json`/`yaml`/`dotenv` (a Python expression over the parsed file),
   `unchanged`, `pyfile` (hidden scripts run with the project's interpreter), `eval` and
   `transcript`; the planned `api_check`, `deploy_dry_run` and `manifest` types are expressed with

@@ -27,7 +27,8 @@ propose edits to a skill's text. It lives in the repository under
 
 The tasks cover every skill, including 0.3's agents that call agents: `peer add`, relayed
 approval gates, `auth: exchange` APIs, `rpc_method` rules on JSON-RPC APIs, and `system apply`
-over several projects.
+over several projects; and 0.3's structured final answers: a response schema, the tool
+strategy, and wiring an `agent.py` written for 0.2.
 
 The [README](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/README.md)
 is how to run it; [DESIGN.md](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/DESIGN.md)

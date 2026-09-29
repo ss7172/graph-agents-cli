@@ -1,0 +1,51 @@
+{
+  "id": "code-answer-ticket-triage",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-structured-answer",
+  "task_type": "code/structured-answer",
+  "fixture": {
+    "kind": "project",
+    "name": "helpdesk-triage",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "Our ticketing system will read the answers of the agent in helpdesk-triage/ and file them automatically, so a reply in prose is useless to it. Make every answer a JSON object with a category (billing, technical or account), a priority (low, medium or high) and a summary of at most 200 characters.",
+  "checks": [
+    {
+      "id": "schema",
+      "type": "json",
+      "file": "app/response_schema.json",
+      "expr": "data.get('type') == 'object' and set(get(data, 'properties.category.enum') or []) == {'billing', 'technical', 'account'} and set(get(data, 'properties.priority.enum') or []) == {'low', 'medium', 'high'} and get(data, 'properties.summary.type') == 'string' and isinstance(get(data, 'properties.summary.maxLength'), int) and get(data, 'properties.summary.maxLength') <= 200 and {'category', 'priority', 'summary'} <= set(data.get('required') or [])",
+      "why": "the answer's shape is declared in app/response_schema.json (a JSON Schema, root object), not asked for in the prompt"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "output_regex": "^Response schema: app/response_schema\\.json OK$",
+      "why": "lint checks the response schema and the agent's wiring (`Response schema: ... OK`)"
+    },
+    {
+      "id": "answer",
+      "type": "pyfile",
+      "script": "check_answer.py",
+      "why": "a run on the fake model ends with a structured_response that has the asked keys and values"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/tools"
+      ],
+      "why": "the template's structured answers are used as they are: no output tool of your own, no edit to app_utils"
+    }
+  ],
+  "broken_fails": [
+    "schema",
+    "lint",
+    "answer"
+  ],
+  "reference": "Write app/response_schema.json: `{\"type\": \"object\", \"properties\": {\"category\": {\"type\": \"string\", \"enum\": [\"billing\", \"technical\", \"account\"]}, \"priority\": {\"type\": \"string\", \"enum\": [\"low\", \"medium\", \"high\"]}, \"summary\": {\"type\": \"string\", \"maxLength\": 200}}, \"required\": [\"category\", \"priority\", \"summary\"], \"additionalProperties\": false}`. A new project's agent.py already passes `response_format(model, tools)` and has `StructuredAnswer()` last, so nothing else changes; `graph-agents-cli lint` prints `Response schema: app/response_schema.json OK`. The run delivers the object as `structured_response` (and as the only `message.delta`). Never ask for JSON in the system prompt, parse it from the reply, or add an output tool."
+}

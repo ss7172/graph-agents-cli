@@ -1,0 +1,58 @@
+{
+  "id": "code-answer-invoice-fields",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-structured-answer",
+  "task_type": "code/structured-answer",
+  "fixture": {
+    "kind": "project",
+    "name": "invoice-reader",
+    "create_args": [
+      "--prototype",
+      "--model-provider",
+      "openai-compatible"
+    ]
+  },
+  "prompt": "Another agent calls the agent in invoice-reader/ over A2A and parses what it answers. Make it always answer with a JSON object holding invoice_id (a string), amount (a number that is never negative), currency (EUR, USD or GBP) and due_date (a string, or null when the invoice gives none). Our model server is OpenAI-compatible but has no native structured output, so the answer must not rely on it.",
+  "checks": [
+    {
+      "id": "schema",
+      "type": "json",
+      "file": "app/response_schema.json",
+      "expr": "data.get('type') == 'object' and get(data, 'properties.invoice_id.type') == 'string' and get(data, 'properties.amount.type') in ('number', 'integer') and get(data, 'properties.amount.minimum') == 0 and set(get(data, 'properties.currency.enum') or []) == {'EUR', 'USD', 'GBP'} and (lambda d: d is not None and ('null' in (d.get('type') if isinstance(d.get('type'), list) else [d.get('type')]) or any(isinstance(o, dict) and o.get('type') == 'null' for o in (d.get('anyOf') or d.get('oneOf') or []))))(get(data, 'properties.due_date')) and {'invoice_id', 'amount', 'currency', 'due_date'} <= set(data.get('required') or [])",
+      "why": "the shape lives in app/response_schema.json; a value that may be absent is nullable (strict structured output makes every property required)"
+    },
+    {
+      "id": "strategy",
+      "type": "cmd",
+      "run": "/usr/bin/grep -qE '^RESPONSE_FORMAT_STRATEGY=tool[[:space:]]*$' .env .env.example",
+      "why": "a server without native structured output needs RESPONSE_FORMAT_STRATEGY=tool (the final_answer tool); auto may pick the provider strategy for an OpenAI-API model"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "output_regex": "^Response schema: app/response_schema\\.json OK$",
+      "why": "lint checks the response schema and the agent's wiring"
+    },
+    {
+      "id": "answer",
+      "type": "pyfile",
+      "script": "check_answer.py",
+      "why": "a run on the fake model ends with a structured_response that has the asked keys and values"
+    },
+    {
+      "id": "runtime-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/tools"
+      ],
+      "why": "the template's structured answers are used as they are: no output tool of your own, no edit to app_utils"
+    }
+  ],
+  "broken_fails": [
+    "schema",
+    "strategy"
+  ],
+  "reference": "Write app/response_schema.json with invoice_id `{\"type\": \"string\"}`, amount `{\"type\": \"number\", \"minimum\": 0}`, currency `{\"type\": \"string\", \"enum\": [\"EUR\", \"USD\", \"GBP\"]}` and due_date `{\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}]}`, all four required, `additionalProperties: false`; set `RESPONSE_FORMAT_STRATEGY=tool` in `.env` and `.env.example` (and the chart values when deployed) so the model answers through the `final_answer` tool instead of the provider's structured output; `graph-agents-cli lint` prints `Response schema: app/response_schema.json OK`. The A2A reply's text is the JSON and its data part the object."
+}
