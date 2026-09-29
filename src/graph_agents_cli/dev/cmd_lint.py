@@ -51,7 +51,8 @@ def cmd_lint(fix: bool, policy_only: bool) -> None:
                             project has one (structured final answers), must
                             be a schema the agent starts with; a warning when
                             agent.py does not pass response_format() to the
-                            agent
+                            agent or has no StructuredAnswer() in its
+                            middleware
 
     \b
     Exit codes:
