@@ -174,10 +174,12 @@ from {{cookiecutter.agent_directory}}.app_utils.model import model_label
 from {{cookiecutter.agent_directory}}.app_utils.structured import (
     ANSWER_TOOL,
     MAX_ANSWER_ATTEMPTS,
+    MAX_REPORTED_PROBLEMS,
     StructuredAnswerError,
     answer_text,
+    response_schema,
+    validate,
 )
-from {{cookiecutter.agent_directory}}.app_utils.structured import enabled as structured_enabled
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     OUTCOME_COMPLETED,
@@ -2045,7 +2047,8 @@ class ChatRuntime:
                 start.update(approval_id=resume.approval.approval_id, decision=resume.decision)
             yield EVENT_START, start
             lease.check()
-            state.structured_mode = structured_enabled()
+            schema = response_schema()
+            state.structured_mode = schema is not None
             if self.runtime == LANGGRAPH_SERVER:
                 source = self._server_events(principal, req, thread_id, run_id, state, resume)
             else:
@@ -2098,8 +2101,16 @@ class ChatRuntime:
                 else:
                     # A lone surrogate cannot go out (UTF-8, protobuf): sent as U+FFFD.
                     answer = valid_value(state.structured)
-                    answer_json = answer_text(answer)
-                    state.text = [answer_json]
+                    # `StructuredAnswer` checks every answer before the graph takes it: one
+                    # that reaches delivery and does not fit is refused, never sent.
+                    unfit = validate(schema, answer)
+                    if unfit:
+                        status = STATUS_ERROR
+                        error_event = self._unfit_answer_event(run_id, unfit)
+                        answer = None
+                    else:
+                        answer_json = answer_text(answer)
+                        state.text = [answer_json]
         except RunTimeout:
             status = STATUS_TIMEOUT
             error_id = new_error_id()
@@ -2199,6 +2210,29 @@ class ChatRuntime:
         return {
             "code": CODE_INVALID_STRUCTURED_RESPONSE,
             "message": "The run ended without an answer in the shape of the response schema. "
+            f"Reference: {error_id}.",
+            "error_id": error_id,
+            "run_id": run_id,
+        }
+
+    @staticmethod
+    def _unfit_answer_event(run_id: str, problems: list[str]) -> dict[str, Any]:
+        """A structured run whose answer does not fit the schema when it is delivered.
+
+        `StructuredAnswer` sends such an answer back to the model; one that gets
+        here was never checked (agent.py's `middleware()` has no
+        `StructuredAnswer()`), so the run fails rather than deliver it.
+        """
+        error_id = new_error_id()
+        logger.warning(
+            "run failed: its answer does not fit the response schema and was never checked "
+            "(is StructuredAnswer() last in agent.py's middleware()?) (error_id=%s): %s",
+            error_id,
+            "; ".join(problems[:MAX_REPORTED_PROBLEMS]),
+        )
+        return {
+            "code": CODE_INVALID_STRUCTURED_RESPONSE,
+            "message": "The run failed: the agent's answer did not fit the response schema. "
             f"Reference: {error_id}.",
             "error_id": error_id,
             "run_id": run_id,

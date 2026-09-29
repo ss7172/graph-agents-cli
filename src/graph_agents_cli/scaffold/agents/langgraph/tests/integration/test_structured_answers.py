@@ -383,6 +383,42 @@ async def test_an_agent_not_built_for_its_schema_ends_every_run_with_the_error(
     assert "ended without an answer" in error["message"]
 
 
+async def test_an_unchecked_answer_that_does_not_fit_is_never_delivered(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A project whose agent.py passes `response_format=` but has no `StructuredAnswer()`
+    # in its middleware (half wired, an upgraded one say): nothing sends a bad answer
+    # back to the model, and the runtime refuses to deliver it.
+    from langchain.agents import create_agent
+
+    from {{cookiecutter.agent_directory}} import agent
+    from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+    from {{cookiecutter.agent_directory}}.app_utils.structured import (
+        StructuredAnswer,
+        response_format,
+    )
+
+    model = get_model()
+    graph = create_agent(
+        model=model,
+        tools=[probe],
+        system_prompt=agent.SYSTEM_PROMPT,
+        middleware=[m for m in agent.middleware() if not isinstance(m, StructuredAnswer)],
+        context_schema=agent.AgentContext,
+        response_format=response_format(model, [probe]),
+    )
+    graph.checkpointer = agent.graph.checkpointer
+    monkeypatch.setattr(agent, "graph", graph)
+    events = await _chat(client, "FAILME please")
+    assert [e for e, _ in events] == ["message.start", "error"], events
+    error = events[-1][1]
+    assert error["code"] == "invalid_structured_response", error
+    assert "did not fit the response schema" in error["message"] and error["error_id"]
+    # An answer that fits is delivered as ever.
+    again = await _chat(client, "hello", events[0][1]["thread_id"])
+    assert _answered(again)["answer"] == "Hello! How can I help you today?"
+
+
 # --- A2A ------------------------------------------------------------------------------
 
 

@@ -84,18 +84,20 @@ def cmd_lint(fix: bool, policy_only: bool) -> None:
 
 def check_response_schema(project_root: Path, agent_directory: str) -> None:
     """The project's response schema, when it has one: refused (exit 3) unless the agent starts
-    with it; a warning when ``agent.py`` does not build the agent with ``response_format()``."""
+    with it; a warning when ``agent.py`` does not build the agent with ``response_format()`` or
+    lacks ``StructuredAnswer()`` in its middleware."""
     path = _response_schema.schema_file(project_root, agent_directory)
     if not path.is_file():
         return
     _response_schema.load_schema(path)
-    if not _response_schema.wired(project_root, agent_directory):
+    problems = _response_schema.wiring_problems(project_root, agent_directory)
+    if problems:
         click.secho(
             f"Warning: {agent_directory}/{_response_schema.SCHEMA_FILENAME} declares structured "
-            f"answers, but {agent_directory}/agent.py does not pass "
-            "response_format=response_format(model, tools) to create_agent (with "
-            "StructuredAnswer() last in its middleware): every run would end with "
-            "invalid_structured_response. See the template's app_utils/structured.py.",
+            f"answers, but {'; and '.join(problems)}. Pass "
+            "response_format=response_format(model, tools) to create_agent and put "
+            "StructuredAnswer() last in middleware(); see the template's "
+            "app_utils/structured.py.",
             fg="yellow",
             err=True,
         )

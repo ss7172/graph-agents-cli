@@ -243,8 +243,10 @@ migration" with the steps to follow.
   strategy. **Existing projects:**
   `scaffold upgrade` brings `structured.py` and the runtime, but never rewrites `agent.py`:
   pass `response_format=response_format(model, tools)` to `create_agent` and add
-  `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns
-  otherwise).
+  `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns about
+  either). The runtime checks every answer again before delivering it, so an answer that
+  never went through `StructuredAnswer` and does not fit ends the run with
+  `invalid_structured_response`; it is never delivered.
 - **The A2A server speaks to agents calling for a user.** An agent's card declares the
   graph-agents-cli origin extension (`https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1`,
   optional): an agent calling for a user may put the user's own words in the message metadata

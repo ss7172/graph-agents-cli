@@ -236,10 +236,29 @@ def schema_file(project_root: Path, agent_directory: str) -> Path:
     return project_root / agent_directory / SCHEMA_FILENAME
 
 
-def wired(project_root: Path, agent_directory: str) -> bool:
-    """Whether the project's ``agent.py`` builds its agent with ``response_format(...)``."""
+def wiring_problems(project_root: Path, agent_directory: str) -> list[str]:
+    """What the project's ``agent.py`` lacks to answer in its response schema; empty when wired.
+
+    It builds the agent with ``response_format=response_format(model, tools)`` (else
+    every run ends with ``invalid_structured_response``) and has ``StructuredAnswer()``
+    in its middleware (else an answer that does not fit is not sent back to the model,
+    and the run ends with that error instead of the answer).
+    """
+    agent_py = f"{agent_directory}/agent.py"
     try:
         text = (project_root / agent_directory / "agent.py").read_text(encoding="utf-8")
     except OSError:
-        return False
-    return "response_format(" in text
+        return [f"{agent_py} cannot be read"]
+    problems = []
+    if "response_format(" not in text:
+        problems.append(
+            f"{agent_py} does not pass response_format=response_format(model, tools) to "
+            "create_agent: every run would end with invalid_structured_response"
+        )
+    if "StructuredAnswer(" not in text:
+        problems.append(
+            f"{agent_py} has no StructuredAnswer() (last) in middleware(): an answer that does "
+            "not fit would not go back to the model, and its run would end with "
+            "invalid_structured_response"
+        )
+    return problems

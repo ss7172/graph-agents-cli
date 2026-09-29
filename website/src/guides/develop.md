@@ -400,8 +400,10 @@ A project created before 0.3
 :   `scaffold upgrade` never rewrites `agent.py`, so wire it by hand before you add the file:
     pass `response_format=response_format(model, tools)` to `create_agent` (import it and
     `StructuredAnswer` from `app_utils.structured`) and put `StructuredAnswer()` last in
-    `middleware()`. Until then every run with a schema ends with
-    `invalid_structured_response`, and `lint` warns.
+    `middleware()`. Without `response_format`, every run with a schema ends with
+    `invalid_structured_response`. Without `StructuredAnswer()`, an answer that does not fit
+    is not sent back to the model; the runtime checks every answer again before it delivers
+    it, so such a run ends with that error instead of the answer. `lint` warns about either.
 
 ## The local loop
 

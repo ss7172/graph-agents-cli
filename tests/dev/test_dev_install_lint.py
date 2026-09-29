@@ -154,6 +154,7 @@ def test_lint_checks_the_response_schema(fake_project, recorded_runs, monkeypatc
     schema = fake_project.root / "app" / "response_schema.json"
     schema.write_text('{"type": "object", "properties": {"a": {"type": "string"}}}')
     (fake_project.root / "app" / "agent.py").write_text(
+        "middleware = [StructuredAnswer()]\n"
         "graph = create_agent(model, response_format=response_format(model, tools))\n"
     )
     result = CliRunner().invoke(lint, ["--policy-only"])
@@ -176,6 +177,23 @@ def test_lint_warns_when_the_agent_is_not_built_for_its_response_schema(
     result = CliRunner().invoke(lint, ["--policy-only"])
     assert result.exit_code == 0, result.output
     assert "does not pass response_format=response_format(model, tools)" in result.output
+    assert "Response schema: app/response_schema.json OK" not in result.output
+
+
+def test_lint_warns_when_the_agent_does_not_check_its_answers(
+    fake_project, recorded_runs, monkeypatch
+):
+    # Half wired: response_format() without StructuredAnswer() in the middleware.
+    monkeypatch.setattr(cmd_lint, "run_policy_check", lambda root, agent_dir, **kw: 0)
+    (fake_project.root / "app" / "response_schema.json").write_text('{"type": "object"}')
+    (fake_project.root / "app" / "agent.py").write_text(
+        "graph = create_agent(model, response_format=response_format(model, tools))\n"
+    )
+    result = CliRunner().invoke(lint, ["--policy-only"])
+    assert result.exit_code == 0, result.output
+    assert "has no StructuredAnswer() (last) in middleware()" in result.output
+    assert "does not pass response_format" not in result.output
+    assert "Response schema: app/response_schema.json OK" not in result.output
 
 
 @pytest.mark.parametrize(

@@ -194,7 +194,8 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   command that would allow it (a reviewed change; propose it, do not run it unasked). A
   project with `app/response_schema.json` (structured final answers) has it checked first:
   a schema the agent would not start with is exit 3, and an `agent.py` that does not pass
-  `response_format()` to `create_agent` is a warning.
+  `response_format()` to `create_agent`, or has no `StructuredAnswer()` in its middleware, is
+  a warning.
 - `build`: `docker build -t <registry>/<name>:<tag> -f Dockerfile .` (default tag `latest`;
   `--registry` overrides the manifest; `--push` pushes; `--dry-run` prints the commands). Exit `2`
   on a docker failure, `3` without a Dockerfile or with a placeholder (`ghcr.io/CHANGE-ME`) or

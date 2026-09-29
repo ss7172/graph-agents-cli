@@ -39,7 +39,9 @@ object. Without the file the agent answers in text, as before. With it:
   `message.end` carries `structured_response` (the object), and the run's
   reply text is exactly its JSON text (one `message.delta`): nothing else the
   model wrote on the way is streamed. The A2A reply adds a data part with the
-  object.
+  object. It checks the answer again first: one that does not fit (an
+  `agent.py` without `StructuredAnswer()` in its middleware never checked it)
+  ends the run with `invalid_structured_response` and is never delivered.
 
 The checker supports a documented subset of JSON Schema (`SUPPORTED_KEYWORDS`):
 a schema that uses anything else (`if`/`then`, `patternProperties`,
