@@ -1287,13 +1287,15 @@ class ChatRuntime:
         status: str,
         paused: list[ApprovalRecord],
         reply: str,
+        answer: Any = None,
     ) -> None:
         """The A2A tasks waiting on the decided approval follow the run it resumed (KI-025).
 
         They end as the run did (`completed`, `failed`, or `input-required` with
         the approvals it paused for again), saying where it continued: in the
         A2A task that carried the decision, or outside any task (the HTTP
-        route), with the run's reply.
+        route), with the run's reply. A structured run's `answer` goes whole in
+        the outcome (the tasks add it as a `response` artifact), not in the text.
         """
         record = resume.approval
         if status == STATUS_AWAITING_APPROVAL:
@@ -1327,6 +1329,7 @@ class ChatRuntime:
                 approvals=tuple(r.public() for r in paused),
                 references=resume.references,
                 continued_in=resume.continued_in,
+                answer=answer if state == OUTCOME_COMPLETED else None,
             )
         )
 
@@ -2170,7 +2173,8 @@ class ChatRuntime:
                 resume,
                 status,
                 paused,
-                "".join(reply) + (final_text or "") + (answer_json or ""),
+                "".join(reply) + (final_text or ""),
+                answer if answer_json is not None else None,
             )
         if error_event is not None:
             yield EVENT_ERROR, error_event

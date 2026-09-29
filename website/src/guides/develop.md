@@ -393,7 +393,9 @@ What clients receive
     along the way is streamed, and the `final_answer` tool never shows as a `tool.call`. A
     run that pauses for an [approval](approvals.md) answers once it is resumed. Over A2A the
     `response` artifact holds the JSON text and a data part with the object, and the card
-    lists `application/json` among its output modes. `eval` checks the object itself
+    lists `application/json` among its output modes. A task that waited on an approval
+    decided elsewhere (over HTTP, say) takes the answer as its last `response` artifact the
+    same way. `eval` checks the object itself
     (`expect.json_schema`, see [Evaluation](evaluation.md#deterministic-checks)).
 
 A project created before 0.3

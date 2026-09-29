@@ -147,6 +147,46 @@ def test_a_server_run_paused_for_approval_answers_once_resumed(server: Any) -> N
     assert len(upstream.sent_to(f"/orders/{order}/cancel")) == 1
 
 
+def test_a_server_a2a_task_decided_over_http_completes_with_the_answer(server: Any) -> None:
+    # The A2A task waits on the approval; the person decides over HTTP: the task takes the
+    # answer as its last `response` artifact, the JSON text and the data part.
+    url, upstream = server
+    order = uuid.uuid4().hex[:6]
+
+    def rpc(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        r = httpx.post(
+            f"{url}{A2A_PATH}",
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            headers={**token("alice"), "A2A-Version": "1.0"},
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["result"]
+
+    message = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER"}
+    text = f"Cancel the order for {order}"
+    task = rpc("SendMessage", {"message": {**message, "parts": [{"text": text}]}})["task"]
+    assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED", task
+    [request] = [p["data"] for p in task["status"]["message"]["parts"] if "data" in p]
+    [approval] = json.loads(request["approval_json"])
+    r = httpx.post(
+        f"{url}/threads/{task['contextId']}/approvals/{approval['approval_id']}",
+        json={"decision": "approve"},
+        headers=token("alice"),
+        timeout=60,
+    )
+    assert r.status_code == 200, r.text
+    answer = _answered(parse_sse(r.text))
+    assert len(upstream.sent_to(f"/orders/{order}/cancel")) == 1
+    followed = rpc("GetTask", {"id": task["id"]})
+    assert followed["status"]["state"] == "TASK_STATE_COMPLETED", followed
+    reply = followed["artifacts"][-1]
+    assert reply["name"] == "response"
+    text_part, data_part = reply["parts"]
+    assert data_part["mediaType"] == "application/json"
+    assert json.loads(text_part["text"]) == data_part["data"] == answer
+
+
 def test_the_server_a2a_reply_holds_the_answer_as_data(server: Any) -> None:
     url, _ = server
     r = httpx.post(

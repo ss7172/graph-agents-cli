@@ -132,7 +132,9 @@ class ApprovalOutcome:
     subject, and `requester_actor`, "" for a direct one) take `state`
     (`completed`, `failed` or `input-required` with the new pending
     `approvals`) and say `text`. `continued_in` is the A2A task that carried
-    the decision (never itself updated).
+    the decision (never itself updated). `answer` is the structured answer of
+    a completed run (a project with a response schema), which they take whole
+    as a `response` artifact.
     """
 
     thread_id: str
@@ -144,6 +146,7 @@ class ApprovalOutcome:
     approvals: tuple[dict[str, Any], ...] = ()
     references: tuple[str, ...] = ()
     continued_in: str | None = None
+    answer: Any = None
 
 
 # Called with an `ApprovalOutcome` (best effort: a failing listener is logged and

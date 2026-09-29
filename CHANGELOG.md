@@ -233,7 +233,9 @@ migration" with the steps to follow.
   text and `message.end` carries the object as `structured_response`; the answer tool never
   shows as a `tool.call`; a run paused for an approval answers once resumed; the A2A
   `response` artifact adds a data part with the object (`mediaType` `application/json`,
-  streamed or not) and the card lists `application/json` among its output modes; `eval`
+  streamed or not; an A2A task that waited on an approval decided elsewhere, over HTTP
+  say, takes the whole answer as its last `response` artifact) and the card lists
+  `application/json` among its output modes; `eval`
   records `structured_response` in its traces and `expect.json_schema` checks it as it is.
   Both runtimes, both checkpointers. Without the file nothing changes. Measured with
   gpt-5-mini on a 24-case triage task (a tool call, then a six-field answer), twice: without

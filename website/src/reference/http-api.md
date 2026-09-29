@@ -412,10 +412,13 @@ Tasks follow their approval
     run's outcome (`completed`, `failed`, or `input-required` with the approvals it waits on
     now). Its status says where the run continued: `Continued in task <id>.` (a decision
     sent on the context), `Approval <id> was approved outside this task; the run continued
-    there.` (over HTTP), `Approval <id> was rejected. ...`, followed by the run's reply; an
-    approval that expires fails it (`Approval <id> expired before anyone decided.`). Another
-    principal's task on the same thread is left as it is. `role:` gates are decided over
-    HTTP, not over A2A (a design choice).
+    there.` (over HTTP), `Approval <id> was rejected. ...`, followed by the run's reply (its
+    first 2,000 characters). With a [response schema](#structured-answers) a completed run's
+    answer is not in that text: the task adds it whole as its last `response` artifact, the
+    JSON text and the data part, as a decision sent on the task gives. An approval that
+    expires fails it (`Approval <id> expired before anyone decided.`). Another principal's
+    task on the same thread is left as it is. `role:` gates are decided over HTTP, not over
+    A2A (a design choice).
 
 Error parts
 :   A failed task (and a decision refused while approvals still wait) carries a data part

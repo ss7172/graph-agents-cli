@@ -528,6 +528,57 @@ async def test_a2a_task_paused_for_approval_completes_with_the_answer(
     assert "/orders/9/cancel" in data["data"]["answer"] and len(SENT) == 1
 
 
+async def test_a2a_task_decided_over_http_completes_with_the_whole_answer(
+    client: httpx.AsyncClient, openai_compatible: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The person decides outside the task, over HTTP with their own credentials (what
+    # `decide_with: direct` asks of an agent's request): the task that waited takes the
+    # answer whole, as its last `response` artifact, like a decision sent on the task.
+    fake = openai_compatible
+    _serve_model(monkeypatch, fake.model(), [cancel_order, probe])
+    tool_strategy = os.environ["RESPONSE_FORMAT_STRATEGY"] == "tool"
+
+    async def rpc(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        r = await client.post(
+            A2A_PATH,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            headers={**_as("alice"), "A2A-Version": "1.0"},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["result"]
+
+    fake.queue = [(None, [("call_cancel", "cancel_order", '{"order_id": "12"}')])]
+    message = {"messageId": uuid.uuid4().hex, "role": "ROLE_USER"}
+    sent = await rpc("SendMessage", {"message": {**message, "parts": [{"text": "Cancel 12"}]}})
+    task = sent["task"]
+    assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED", task
+    [request] = [p["data"] for p in task["status"]["message"]["parts"] if "data" in p]
+    [approval] = json.loads(request["approval_json"])
+    # Longer than the 2,000 characters of a reply a followed task's status would quote.
+    long = {"answer": "Cancelled order 12. " + "x" * 3000, "done": True, "items": ["12"]}
+    fake.queue = [(None, [("call_done", ANSWER_TOOL, json.dumps(long))])]
+    if not tool_strategy:
+        fake.queue = [(json.dumps(long), [])]
+    r = await client.post(
+        f"/threads/{task['contextId']}/approvals/{approval['approval_id']}",
+        json={"decision": "approve"},
+        headers=_as("alice"),
+    )
+    assert r.status_code == 200, r.text
+    assert _answered(parse_sse(r.text)) == long and len(SENT) == 1
+    followed = await rpc("GetTask", {"id": task["id"]})
+    assert followed["status"]["state"] == "TASK_STATE_COMPLETED", followed
+    [note] = followed["status"]["message"]["parts"]
+    assert note["text"] == (
+        f"Approval {approval['approval_id']} was approved outside this task; "
+        "the run continued there."
+    )
+    text, data = followed["artifacts"][-1]["parts"]
+    assert followed["artifacts"][-1]["name"] == "response"
+    assert data["mediaType"] == "application/json"
+    assert json.loads(text["text"]) == data["data"] == long
+
+
 async def test_the_card_lists_json_among_the_output_modes(client: httpx.AsyncClient) -> None:
     card = a2a_module.agent_card()
     assert list(card.default_output_modes) == ["text/plain", "application/json"]

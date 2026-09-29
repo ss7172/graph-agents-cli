@@ -87,7 +87,8 @@ fails it when none is pending any more. However an approval ends (a decision
 over A2A or HTTP and the run it resumed, or its expiry), the requester's
 `input-required` tasks on that thread that wait on it follow
 (`follow_approval`, an `A2A_TASK_LISTENERS` entry): they take the run's
-outcome and say where it continued. A failed task, and a refused decision,
+outcome and say where it continued (a structured run's answer as a new
+`response` artifact, whole). A failed task, and a refused decision,
 carry a data part `{"type": "error", "code": ...}` (`thread_busy`: send the
 message again).
 
@@ -139,6 +140,7 @@ from a2a.types import (
     AgentInterface,
     AgentSkill,
     APIKeySecurityScheme,
+    Artifact,
     HTTPAuthSecurityScheme,
     Message,
     Part,
@@ -223,6 +225,7 @@ from {{cookiecutter.agent_directory}}.app_utils.db import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.middleware import max_message_chars
+from {{cookiecutter.agent_directory}}.app_utils.structured import answer_text
 from {{cookiecutter.agent_directory}}.app_utils.structured import enabled as structured_enabled
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     A2A_TASK_LISTENERS,
@@ -1220,6 +1223,13 @@ ERROR_CODE_FORBIDDEN = "forbidden"
 ERROR_CODE_FAILED = "run_failed"
 
 
+def answer_part(answer: Any) -> Part:
+    """A structured answer as a data part (`mediaType` `application/json`)."""
+    data = struct_pb2.Value()
+    json_format.ParseDict(answer, data)
+    return Part(data=data, media_type=JSON_MEDIA_TYPE)
+
+
 def error_part(code: str) -> Part:
     """The data part a failed (or refused) task carries: `{"type": "error", "code": ...}`.
 
@@ -1345,7 +1355,12 @@ def follows(task: Task, owner: str, outcome: ApprovalOutcome) -> bool:
 
 
 def followed(task: Task, outcome: ApprovalOutcome) -> Task:
-    """`task` in the state an approval's outcome gives it (its old status moves to history)."""
+    """`task` in the state an approval's outcome gives it (its old status moves to history).
+
+    A structured run's answer (`outcome.answer`) is added as a new `response`
+    artifact, its JSON text and a data part, as the reply of a decision sent
+    on the task is: the task's last artifact is the answer.
+    """
     new = Task()
     new.CopyFrom(task)
     if new.status.HasField("message"):
@@ -1366,6 +1381,17 @@ def followed(task: Task, outcome: ApprovalOutcome) -> Task:
         )
     )
     new.status.timestamp.GetCurrentTime()
+    if state == TaskState.TASK_STATE_COMPLETED and outcome.answer is not None:
+        new.artifacts.append(
+            Artifact(
+                artifact_id=uuid.uuid4().hex,
+                name="response",
+                parts=[
+                    Part(text=valid_text(answer_text(outcome.answer))),
+                    answer_part(outcome.answer),
+                ],
+            )
+        )
     return new
 
 
@@ -1820,9 +1846,7 @@ class _Reply:
         # A lone surrogate (which protobuf cannot encode) is sent as U+FFFD.
         parts = [Part(text=valid_text(text))]
         if answer is not None:
-            data = struct_pb2.Value()
-            json_format.ParseDict(answer, data)
-            parts.append(Part(data=data, media_type=JSON_MEDIA_TYPE))
+            parts.append(answer_part(answer))
         await self._updater.add_artifact(
             parts,
             artifact_id=self._artifact_id,
