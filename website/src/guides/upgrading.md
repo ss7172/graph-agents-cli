@@ -77,7 +77,10 @@ backups of each project.
     new template adds (the shutdown drain, for example) are silently missing
     ([KI-040](../reference/known-issues.md#ki-040-scaffold-upgrade-keeps-an-edited-chart-valuesyaml-whole-dropping-new-settings)).
     Compare it with a fresh `create` of the same settings, merge by hand and check the result
-    with `helm template`. Your `values-<env>.yaml` files are never touched.
+    with `helm template`. Your `values-<env>.yaml` files are never touched. Lines the CLI's own
+    commands wrote count as your changes: the base URL `api add` writes and, from 0.3, the
+    settings `system apply` writes, so a project wired by `system apply` has this conflict at
+    every upgrade.
 
 ## Which build created the project
 

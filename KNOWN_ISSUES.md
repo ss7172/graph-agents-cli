@@ -67,20 +67,20 @@ contributor tooling in `tools/`, never shipped).
 
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
-| auth | 4 | 2 | 6 |
-| api-policy | 4 | 9 | 13 |
+| auth | 4 | 3 | 7 |
+| api-policy | 5 | 8 | 13 |
 | approvals | 8 | 6 | 14 |
-| runtime | 14 | 14 | 28 |
-| a2a | 3 | 14 | 17 |
+| runtime | 14 | 15 | 29 |
+| a2a | 3 | 17 | 20 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 2 | 25 | 27 |
-| upgrade | 2 | 13 | 15 |
-| docs | 0 | 9 | 9 |
-| tooling | 0 | 3 | 3 |
-| **Total** | **49** | **117** | **166** |
+| cli | 3 | 26 | 29 |
+| upgrade | 2 | 14 | 16 |
+| docs | 0 | 11 | 11 |
+| tooling | 0 | 4 | 4 |
+| **Total** | **51** | **126** | **177** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -213,6 +213,35 @@ Medium · api-policy · found in wave 8
   upgrade`; for a project made by a pre-release 0.2.0 build, name that build with
   `--baseline-ref`, as the CHANGELOG describes). A runtime that supports lists defines
   `approval_rules` in `app_utils/api_client.py`.
+
+### KI-147: The caller's delegation-loop check knows agents by name only
+
+Medium · api-policy · found in v0.3 (identity propagation); raised to Medium by the 0.3 acceptance run
+
+- **Issue:** Before an `auth: exchange` (or `forward_audience`) call is sent, the agent
+  refuses a target audience that is its own (`A2A_NAME`, `AUTH_JWT_AUDIENCE`) or appears in
+  the request's delegation chain. The chain holds the calling agents' client ids (`act.sub`,
+  or `client:<azp>`), so the check assumes each agent's client id equals its audience. An
+  agent registered with a client id other than its audience is not recognised, and an issuer
+  that names no actor in `act` (usable only with `exchange.allow_actorless: true`) shows only
+  the last agent.
+  The A2A client (`app_utils/a2a_client.py`, v0.3 P4) checks a peer the same way before
+  anything is sent, comparing its name and audience with the chain, so an agent whose client
+  id is not its A2A name (`A2A_NAME`, the peer name) is not recognised there either.
+  The same holds for a prefixed actor id, the form the system file's `actor_id` documents
+  for issuers that write `act.sub = agent:<client>`: in a render of 0.3,
+  `loop_problem('concierge', ('agent:concierge',))` returns no problem, while
+  `('concierge',)` and `('client:concierge',)` are refused. `system check`'s SC09 cycle
+  warning still says the client refuses a peer already in the delegation chain, which
+  such a system does not do.
+- **Impact:** A loop through such an agent is not refused by the caller; each hop's callee
+  still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), or origin `hops`
+  past it (the task fails), so the loop ends there, after model calls.
+- **Workaround:** Give each agent's client the same id as its audience and its A2A name (the
+  Keycloak recipe does), and keep `AUTH_MAX_DELEGATION_DEPTH` low. An issuer that writes a
+  prefixed `act.sub` (`agent:<client>`) has no such workaround: rely on
+  `AUTH_MAX_DELEGATION_DEPTH` and avoid cycles in the system file. The fix is to record
+  each called agent's `actor_id` in the caller's peer entry and compare the chain with it.
 
 ### KI-008: A role approver receives the whole resumed run
 
@@ -768,6 +797,31 @@ Medium · cli · found in v0.3 P4
 - **Workaround:** Name the peer's own URL variable (the default, `<NAME>_AGENT_URL`); check
   `peer list` output before sharing it.
 
+### KI-164: SC10 leaves out each replica's run-lease connection, and its hint names PgBouncer without its mode
+
+Medium · cli · found in v0.3 P6 (the docs for agents calling agents); raised to Medium by the 0.3 acceptance run
+
+- **Issue:** `system check`'s SC10 counts replicas × `DB_POOL_MAX_SIZE` (plus LangGraph
+  Server's own pool) against a shared database's `max_connections`. Each `fastapi` replica
+  also holds one connection outside its pool for the run leases (`app_utils/run_locks.py`),
+  as the deploy guide's sizing rule says (replicas × (`DB_POOL_MAX_SIZE` + 1)). The finding's
+  fix hint says "put PgBouncer in front" where the deploy guide says a transaction-mode one
+  is not supported.
+- **Impact:** With 20 replicas SC10 counts 20 connections too few: they come out of the 10%
+  of `max_connections` it keeps for everything else (administration, migrations, other
+  clients), so a system that passes can still run out of connections. The hint can lead to a
+  transaction-mode pooler. In the 0.3 acceptance run (20 agents × 2 replicas on one
+  Postgres, `DB_POOL_MAX_SIZE=3`) each agent peaked at 8 connections, 2 × (3 + 1), where
+  SC10 counts 6: at pool size 3 the undercount is a third, SC10 passed at
+  `max_connections` 134 while the real peak can reach 160, and its hint ("lower
+  `DB_POOL_MAX_SIZE`") makes the share worse. SC10's errors stop `system deploy`, so a
+  passing check is taken as enough.
+- **Workaround:** Leave one extra connection per replica of headroom in
+  `database.max_connections`, and use a session-mode PgBouncer
+  ([External database](website/src/guides/deploy.md#external-database)). The fix is to
+  count `DB_POOL_MAX_SIZE` + 1 for each `fastapi` replica (`_pool` in
+  `system/_checks.py`).
+
 ### KI-040: `scaffold upgrade` keeps an edited chart `values.yaml` whole, dropping new settings
 
 Medium · upgrade · found in wave 7
@@ -776,10 +830,21 @@ Medium · upgrade · found in wave 7
   conflict that `scaffold upgrade` resolves by keeping the project's file, with no
   key-by-key merge and no copy of the new version. The project's change can be as small as
   the base-URL line `api add` writes. Values the new template adds (for example the shutdown
-  drain settings) are then missing, with no error.
+  drain settings) are then missing, with no error. Lines the CLI's own commands write
+  count as edits: `api add` (the base URL) and, from 0.3, `system apply`
+  (`AUTH_ALLOWED_ACTORS`, `AUTH_JWT_AUDIENCE`, `TOKEN_EXCHANGE_CLIENT_ID`), so every
+  project wired by `system apply` conflicts on `values.yaml` at each later upgrade. In
+  the 0.3 acceptance run all three upgraded 0.2.0 projects that had run `api add`
+  conflicted on it; a 0.2.0 project not edited after `create` upgraded with no
+  conflict. From 0.2.0 to 0.3.0 the chart's `values.yaml` changes only in comments for
+  a 0.2 project (the `TOKEN_EXCHANGE_*` lines render only for `auth: exchange` APIs),
+  so keeping the project's file loses nothing on that upgrade.
 - **Impact:** An upgraded deployment silently lacks new chart behaviour.
 - **Workaround:** After an upgrade, compare `values.yaml` with a fresh `create` using the same
-  settings, merge by hand, and check the result with `helm template`.
+  settings, merge by hand, and check the result with `helm template`. The upgrade logic
+  runs in the upgrading CLI, so a fix (sending `values.yaml` through the key-by-key
+  merge `scaffold enhance` already uses, `upgrade.py`'s `_compare_structural_config`)
+  also covers projects created by 0.3.
 
 ### KI-041: A wrong `--baseline-ref` applied with `-y` records a stale project as up to date
 
@@ -825,6 +890,20 @@ Low · auth · found in waves 4 and 7
 - **Impact:** A tool that folds case treats two identities that differ only by case as one.
 - **Workaround:** Use `require_owner`, or compare ids exactly; normalise them once in a
   `custom` policy if your identity provider needs it.
+
+### KI-183: A token exchange refused for its client authentication does not name `TOKEN_EXCHANGE_CLIENT_AUTH`
+
+Low · auth · found in the 0.3 acceptance run
+
+- **Issue:** When the issuer refuses a token exchange with 401 because the agent
+  authenticates its client with the wrong method (for example HTTP Basic where the issuer
+  expects `client_secret_post`), the agent's error says only "token exchange for API ... was
+  refused (HTTP 401); nothing was sent" (`app_utils/token_exchange.py`).
+- **Impact:** The cause is found by trial; the acceptance run's six-agent build needed
+  `TOKEN_EXCHANGE_CLIENT_AUTH=client_secret_post` set by hand before any delegated call
+  worked.
+- **Workaround:** On a 401 from the token URL, try the other value of
+  `TOKEN_EXCHANGE_CLIENT_AUTH` ([Environment variables](website/src/reference/environment.md)).
 
 ### KI-044: Schema checks of names accept a trailing newline
 
@@ -899,6 +978,7 @@ Low · api-policy · found in the A2A multi-agent experiment
 - **0.3:** Closed for `protocol: jsonrpc|a2a` APIs: their gates name `rpc_method` or
   `a2a_operation`, which the client reads from the request body, never from the tool's label,
   and a label naming an entry for another request is refused. Unchanged for `http` APIs.
+
 ### KI-130: `lint` accepts a tools module that declares no `API_CALLS`
 
 Low · api-policy · found in the skill-optimisation experiment
@@ -912,26 +992,6 @@ Low · api-policy · found in the skill-optimisation experiment
   `api-policy.yaml` does not allow.
 - **Workaround:** Give every tools module an `API_CALLS` (`[]` when it calls no API) and
   treat the registry's "declares no API_CALLS" warning as an error.
-
-### KI-147: The caller's delegation-loop check knows agents by name only
-
-Low · api-policy · found in v0.3 (identity propagation)
-
-- **Issue:** Before an `auth: exchange` (or `forward_audience`) call is sent, the agent
-  refuses a target audience that is its own (`A2A_NAME`, `AUTH_JWT_AUDIENCE`) or appears in
-  the request's delegation chain. The chain holds the calling agents' client ids (`act.sub`,
-  or `client:<azp>`), so the check assumes each agent's client id equals its audience. An
-  agent registered with a client id other than its audience is not recognised, and an issuer
-  that names no actor in `act` (usable only with `exchange.allow_actorless: true`) shows only
-  the last agent.
-  The A2A client (`app_utils/a2a_client.py`, v0.3 P4) checks a peer the same way before
-  anything is sent, comparing its name and audience with the chain, so an agent whose client
-  id is not its A2A name (`A2A_NAME`, the peer name) is not recognised there either.
-- **Impact:** A loop through such an agent is not refused by the caller; each hop's callee
-  still refuses a chain longer than its `AUTH_MAX_DELEGATION_DEPTH` (401), or origin `hops`
-  past it (the task fails), so the loop ends there, after model calls.
-- **Workaround:** Give each agent's client the same id as its audience and its A2A name (the
-  Keycloak recipe does), and keep `AUTH_MAX_DELEGATION_DEPTH` low.
 
 ### KI-163: On a JSON-RPC API, an allow entry without `rpc_method` admits every method, and `api revoke` cannot remove it alone
 
@@ -1085,7 +1145,17 @@ Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent
   a read-only agent asking whether it may look something up in two), and 2 of 14 gated
   writes were never reached. With it fixed, the orchestrator still asked in text instead of
   relaying the called agent's approval in 3 of 20 approval runs on the cluster (scenarios,
-  eval and a final smoke test) and in none of 24 local ones.
+  eval and a final smoke test) and in none of 24 local ones. In the 0.3 acceptance run
+  (six agents built with `peer add` and `system apply`, gpt-5-mini), the calling agent
+  answered a called agent's `needs_user_approval` result with a question in text
+  instead of calling `approve_agent_action` in 3 of 18 planned relays (13 of 15 in the
+  scenarios; 21 of 24 over every observed relay), and the eval's `cancel-approved`
+  case failed on its first run for the same reason (8/10; a second run scored 10/10).
+  None of these misses came from the wiring. An A/B of `A2A_CALLER_NOTE` on six local
+  scenarios × 4 (24 runs each) passed 18/24 with the note on (5 missed gates, 7 asks
+  by the called agents, 3 by the caller) and 22/24 with it off (2, 4, 2); Fisher
+  p = 0.24, so the default `on` (kept for its security role: the model is told
+  another agent wrote the request) is neither confirmed nor refuted.
 - **Impact:** Extra turns; eval cases for writes can fail; in a multi-agent system a write the
   user asked for is not made.
 - **Workaround:** Add "then call the tool in the same reply" to your prompt and test with your
@@ -1221,6 +1291,19 @@ Low · runtime · found in v0.3 (structured answers, verification)
   the run's error still says the answer "did not fit the response schema in 3 tries".
 - **Impact:** A try can be wasted, and the final error can name the wrong cause.
 - **Workaround:** Read the log's per-try reason (`structured answer: try N did not fit`).
+
+### KI-189: Under `langgraph dev`, a restart within about 10 seconds of a pause expires the approval
+
+Low · runtime · found in the 0.3 acceptance run (upgrade from 0.2.0)
+
+- **Issue:** The in-memory runtime of `langgraph dev` (langgraph-runtime-inmem 0.34.1)
+  writes its state to disk every 10 seconds and not at shutdown. A run paused for approval
+  less than about 10 seconds before a restart is lost; deciding it afterwards returns 409
+  "The run no longer waits for this approval", and nothing is sent upstream.
+- **Impact:** Local development only, and it fails closed: the person asks again. The
+  server image with `DATABASE_URI` (Postgres) is not affected.
+- **Workaround:** Wait a few seconds after a pause before restarting `langgraph dev`, or
+  develop with Postgres.
 
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 
@@ -1396,6 +1479,44 @@ Low · a2a · found in v0.3 (structured answers, verification)
   where the docs say the `response` artifact holds the JSON text and a data part.
 - **Workaround:** Treat a completed task whose `response` artifact has no data part as
   failed, and keep `RECURSION_LIMIT` above what the agent's tool calls need.
+
+### KI-180: No metrics for A2A tasks
+
+Low · a2a · found in the 0.3 acceptance run
+
+- **Issue:** `/metrics` counts runs, tool calls and approvals, but has no count of A2A tasks
+  by state and no timing of the A2A task store (the 0.3 design named
+  `agent_a2a_tasks_total` and `agent_a2a_task_store_seconds`; neither was built).
+- **Impact:** A slow or failing Postgres task store, or a pile of tasks waiting for input,
+  shows only indirectly (request latency, the task list).
+- **Workaround:** Query the `a2a_tasks` table, or use the traces of `/a2a/*` requests.
+
+### KI-181: A relayed decision whose connection fails just after the called agent's pods are replaced uses up the approval
+
+Low · a2a · found in the 0.3 acceptance run
+
+- **Issue:** The A2A client retries a peer that is busy (`thread_busy`) and a task still
+  running on another replica (-32002), but not a connection that fails before anything was
+  sent (`app_utils/a2a_client.py`, `BUSY_RETRY_DELAYS_S`). In the acceptance run a relayed
+  decision sent about 80 ms after the called agent's new pods turned Ready met a connect
+  timeout in 2 of 3 tries (0 of 2 with a 3 s pause).
+- **Impact:** The calling agent's run ends normally and asks the person for a new approval;
+  the called agent's task stays `input-required`, so nothing is lost or done twice, but the
+  person approves again.
+- **Workaround:** Approve again. The fix is to retry a connect-phase error once, since
+  nothing reached the peer.
+
+### KI-184: `ask_agent`'s `waiting[].effect` is null for the called agent's own approval
+
+Low · a2a · found in the 0.3 acceptance run
+
+- **Issue:** When a called agent waits for an approval of its own call, `ask_agent`'s
+  result lists it under `waiting` with `"effect": null` beside the call it names (for
+  example `POST /invoices/INV-5001/refund`); `_effect_line` in `app_utils/a2a_client.py`
+  returns nothing for an approval that is not nested. The calling agent's own approval card
+  carries the effect.
+- **Impact:** Cosmetic: the model sees a null field; the call is named in `call`.
+- **Workaround:** None needed. The fix is to leave the key out when it is null.
 
 ### KI-065: Every eval case runs as one identity
 
@@ -1881,24 +2002,6 @@ Low · cli · found in v0.3 P5
 - **Workaround:** With the agents running, `graph-agents-cli peer show <peer> --check` in
   each caller reads the peer's card at the URL `.env` gives.
 
-### KI-164: SC10 leaves out each replica's run-lease connection, and its hint names PgBouncer without its mode
-
-Low · cli · found in v0.3 P6 (the docs for agents calling agents)
-
-- **Issue:** `system check`'s SC10 counts replicas × `DB_POOL_MAX_SIZE` (plus LangGraph
-  Server's own pool) against a shared database's `max_connections`. Each `fastapi` replica
-  also holds one connection outside its pool for the run leases (`app_utils/run_locks.py`),
-  as the deploy guide's sizing rule says (replicas × (`DB_POOL_MAX_SIZE` + 1)). The finding's
-  fix hint says "put PgBouncer in front" where the deploy guide says a transaction-mode one
-  is not supported.
-- **Impact:** With 20 replicas SC10 counts 20 connections too few: they come out of the 10%
-  of `max_connections` it keeps for everything else (administration, migrations, other
-  clients), so a system that passes can still run out of connections. The hint can lead to a
-  transaction-mode pooler.
-- **Workaround:** Leave one extra connection per replica of headroom in
-  `database.max_connections`, and use a session-mode PgBouncer
-  ([External database](website/src/guides/deploy.md#external-database)).
-
 ### KI-170: `create --response-schema` and `lint` accept some schemas that fail at runtime, and exit 1 on others
 
 Low · cli · found in v0.3 (structured answers, verification)
@@ -1917,6 +2020,32 @@ Low · cli · found in v0.3 (structured answers, verification)
   exit code and a raw error message.
 - **Workaround:** List every `required` name under `properties`, keep schemas small and
   shallow, and use ordinary numbers.
+
+### KI-182: No system check sees the actor id the issuer writes, so a wrong `actor_id` passes every check
+
+Low · cli · found in the 0.3 acceptance run
+
+- **Issue:** `system apply` lists each calling agent's `actor_id` (default: its `client_id`)
+  in the called agents' `AUTH_ALLOWED_ACTORS`. If the issuer writes another `act.sub` (for
+  example `agent:concierge`), every check still passes: SC14 only checks that the token URL
+  answers (`system/_checks.py`), and no check performs an exchange.
+- **Impact:** Each delegated call is refused with 403 at runtime although `system check`
+  is green; the acceptance run's first build hit this before `actor_id` existed.
+- **Workaround:** Decode one exchanged token and set `actor_id` in the system file to its
+  `act.sub` ([The system file](website/src/reference/system-file.md)).
+
+### KI-188: Per-environment issuer and exchange settings are set by hand in values files
+
+Low · cli · found in the 0.3 acceptance run
+
+- **Issue:** No command writes an environment's issuer, JWKS URL,
+  `TOKEN_EXCHANGE_CLIENT_AUTH`, log format, tracing endpoint or backend URL; in the
+  acceptance run each of the six agents needed 8-10 such lines in its values files by hand,
+  beside what `api add`, `peer add` and `system apply` wrote.
+- **Impact:** Repetitive, error-prone setup for a system of agents that share one issuer.
+- **Workaround:** Set them in each project's `values-<env>.yaml`
+  ([Environment variables](website/src/reference/environment.md)). A later system-file or
+  deploy setting could carry them once.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 
@@ -2072,6 +2201,16 @@ Low · upgrade · found in wave 8
 - **Workaround:** Read the note under the first line, and upgrade with
   `--baseline-ref <clone>@<commit>` as it describes.
 
+### KI-190: With `GRAPH_AGENTS_CLI_INSTALL_SPEC` set only for the upgrade, `.github/agent.env` is listed as changed by you
+
+Low · upgrade · found in the 0.3 acceptance run
+
+- **Issue:** `scaffold upgrade` renders the baseline with the install spec in effect at
+  upgrade time, so a project created without the override, upgraded with it, shows
+  `.github/agent.env` under "Will preserve" as a file you modified.
+- **Impact:** Cosmetic: the project's own file is kept, which is what it had.
+- **Workaround:** None needed; or set the same override when creating and upgrading.
+
 ### KI-108: The workflow skill says `create` runs `uv sync`
 
 Low · docs · found in waves 4 and 7
@@ -2177,6 +2316,31 @@ Low · docs · found in v0.3 (structured answers, verification)
 - **Workaround:** Use `create_agent` for a project with a response schema, or build the
   model node with `create_agent` inside the `StateGraph`.
 
+### KI-186: The skills do not teach `--rpc-method`, nor to deny approvals only on the edges a request names
+
+Low · docs · found in the 0.3 skills check (gac-bench)
+
+- **Issue:** The langgraph-code skill's API section never mentions `api allow --rpc-method`
+  for JSON-RPC APIs, and the deploy skill's `system apply` edges section does not say to put
+  `approvals: deny` only on the edges the request names. In the final before/after run
+  Codex failed the JSON-RPC allow task in both arms, and Claude's one regression put
+  `approvals: deny` on an edge the request did not name.
+- **Impact:** Coding agents write a path-only allow on JSON-RPC APIs (see KI-163), or deny
+  approvals more widely than asked.
+- **Workaround:** Say so in the request. Candidate SkillOpt targets for the next release.
+
+### KI-187: The generated `AGENTS.md` spec-first rule can stop an unattended coding agent on a concrete change
+
+Low · docs · found in the 0.3 skills check (gac-bench)
+
+- **Issue:** A project created with `--process null` gets guidance (`AGENTS.md` or
+  `CLAUDE.md`) that asks for a spec before code, without the workflow skill's scope rule (a
+  concrete change to an existing project is not a new agent). In 3 of 330 Claude rollouts,
+  in both arms, the agent stopped with a draft `.graph-agents-cli-spec.md` instead of making
+  the change.
+- **Impact:** Unattended sessions occasionally stop without doing a small requested change.
+- **Workaround:** Say in the request that the change is concrete and needs no spec.
+
 ### KI-161: gac-bench: cloning the warm uv cache races with another slot's install
 
 Low · tooling · found in the skill-optimisation experiment
@@ -2219,5 +2383,18 @@ Low · tooling · found in v0.3 (structured answers, verification)
 - **Impact:** Disk use grows with every failing fixture; nothing else reads the leftovers.
 - **Workaround:** Delete leftover `selfcheck-*`/rollout directories under the workspace root
   after a run that reported infrastructure errors.
+
+### KI-185: gac-bench: two verifiers are stricter than their tasks
+
+Low · tooling · found in the 0.3 skills check (gac-bench)
+
+- **Issue:** `code-temperature-tool`'s `others-untouched` check fails the new unit tests the
+  langgraph-code skill recommends, and `code-rpc-allow-inventory`'s `delete-denied` check
+  refuses the equivalent `{rpc_method: item.delete, methods: [POST]}` entry
+  (`tools/skillopt/tasks/langgraph-code/*/task.json`).
+- **Impact:** Correct answers score as failures in both arms; the before/after difference is
+  unaffected, absolute scores are slightly low.
+- **Workaround:** Read these two tasks' failures by hand. The fix changes frozen verifiers,
+  so it needs the hold-out rule's owner acknowledgment.
 
 <!-- --8<-- [end:entries] -->
