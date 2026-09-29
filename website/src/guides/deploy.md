@@ -253,6 +253,20 @@ Some settings would give pods that cannot start or cannot answer. `deploy` refus
   Gateway with a blank `gateway.parentRef.name`, which `deploy` refuses (exit 3) in `skip` and
   `helm-push` mode before anything runs. Set it (and `gateway.hostname`), or disable the
   Gateway and enable the Ingress.
+- **An agent it could not call.** For the other agents in `api-policy.yaml` (`protocol: a2a`),
+  the rules the agent itself applies: a credential (`bearer`, `forward` or `exchange`) sent
+  over plain `http` to a host that is not loopback, a single-label name or a cluster-internal
+  `.svc` name; an `auth: exchange` API without `TOKEN_EXCHANGE_URL` or
+  `TOKEN_EXCHANGE_CLIENT_ID` in the chart `env`; a plain-`http` `TOKEN_EXCHANGE_URL` to a host
+  that is not loopback (unless `TOKEN_EXCHANGE_ALLOW_HTTP` is `true`, for a trusted in-cluster
+  issuer). It warns about an unset peer URL, and about `TOKEN_EXCHANGE_CLIENT_SECRET` or
+  `PRINCIPAL_HASH_SALT` missing from `secrets.keys`. This applies in every CD mode.
+
+  ```text
+  Error: The agent could not call the agents in api-policy.yaml in prod:
+    - ORDERS_AGENT_URL (http://orders.example.com) must use https outside APP_ENV=dev to carry credentials (auth: exchange); plain http is for loopback and cluster-internal names only
+    Set them in values-prod.yaml (or values.yaml) under env:.
+  ```
 
 A value listed in the chart `env`, even an empty one, overrides the same key in the Secret.
 

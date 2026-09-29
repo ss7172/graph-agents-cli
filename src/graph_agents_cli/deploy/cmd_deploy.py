@@ -278,6 +278,7 @@ def _deploy_direct(
     path = secrets_apply.resolve_env_file(env, opts.env_file)
     chart_values = load_chart_values(settings.chart_dir, env)
     _check_chart_env(settings, env, chart_values, console=console)
+    _check_peers(settings, env, chart_values, dry_run=opts.dry_run, console=console)
     _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console, warn=False)
     if path is None and not _modes.is_dev_env(env):
         raise secrets_apply.missing_env_file_error(
@@ -429,6 +430,7 @@ def _deploy_helm_push(
     _require_chart(settings, env)
     chart_values = load_chart_values(settings.chart_dir, env)
     _check_chart_env(settings, env, chart_values, console=console)
+    _check_peers(settings, env, chart_values, dry_run=opts.dry_run, console=console)
     _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console, warn=False)
     if env in PROTECTED_ENVS and not opts.force_direct and not _kube.in_ci():
         raise Refused(
@@ -489,6 +491,7 @@ def _deploy_argocd(
     chart_values = load_chart_values(settings.chart_dir, env)
     # Argo CD renders these values as they are: check what its pods would get.
     _check_chart_env(settings, env, chart_values, console=console)
+    _check_peers(settings, env, chart_values, dry_run=opts.dry_run, console=console)
     _check_jwt(settings, env, chart_values, None, dry_run=opts.dry_run, console=console)
     chart_repository = str((chart_values.get("image") or {}).get("repository") or "")
     if _image.has_placeholder(chart_repository):
@@ -809,6 +812,31 @@ def _check_chart_env(
         f"{names} still hold(s) the placeholder CHANGE-ME in the chart values for {env}: the "
         f"pods would call it. Set the real value(s) in {where}."
     )
+
+
+def _check_peers(
+    settings: DeploySettings,
+    env: str,
+    values: dict[str, Any],
+    *,
+    dry_run: bool,
+    console: Console,
+) -> None:
+    """The peer rules (api-policy.yaml's protocol: a2a APIs): exit 3 outside dev, warnings.
+
+    Runs before anything is built. An invalid or absent policy is `lint`'s to report.
+    """
+    from graph_agents_cli._api_policy import POLICY_FILENAME, read_policy_document
+
+    document = read_policy_document(Path(POLICY_FILENAME))
+    findings = _preflight.peer_findings(settings, env, values, document)
+    error = findings.error()
+    if error:
+        raise ConfigError(
+            error + ("\n  (--dry-run: the real deploy stops here the same way.)" if dry_run else "")
+        )
+    for note in findings.notes():
+        console.print(f"  Warning: {note}", style="yellow", markup=False)
 
 
 def _check_jwt(

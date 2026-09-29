@@ -291,6 +291,15 @@ migration" with the steps to follow.
   while the module and the policy differ, and notes a tool module that calls a peer itself.
   Wiring the round-1 concierge's five peers takes five `peer add` commands instead of 40 `api`
   commands and 418 hand-written lines.
+- **`deploy` checks the agents the project calls before building** (the peer pre-checks).
+  Outside dev (the environment or the pods' `APP_ENV`) it refuses, exit 3, in every CD mode:
+  a credential for a `protocol: a2a` API sent over plain http to a host that is not loopback, a
+  single-label name or a `.svc` name (the runtime's transport rule); an `auth: exchange` API
+  without `TOKEN_EXCHANGE_URL` or `TOKEN_EXCHANGE_CLIENT_ID` in the chart `env`; a plain-http
+  `TOKEN_EXCHANGE_URL` to a host that is not loopback without `TOKEN_EXCHANGE_ALLOW_HTTP`. It
+  warns about an unset peer URL and about `TOKEN_EXCHANGE_CLIENT_SECRET` or
+  `PRINCIPAL_HASH_SALT` missing from `secrets.keys`; in dev the refusals warn too. A test keeps
+  the CLI's copy of the runtime's `internal_host` equal to the template's.
 
 ### Changed
 

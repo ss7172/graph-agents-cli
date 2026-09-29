@@ -27,11 +27,18 @@ and the names of the keys the Secret holds (values are never needed):
   and answers every request with 503.
 - ``dsn_without_tls``: a database connection string for an external database
   that does not require TLS.
+- ``peer_findings``: the other agents the project calls (``protocol: a2a`` APIs):
+  a peer reached with a credential over plain http to a host that is not
+  cluster-internal, an ``auth: exchange`` API without the issuer's token URL
+  or this agent's client id (or a plain-http token URL), and what is missing
+  from ``secrets.keys``.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import urllib.parse
 from collections.abc import Mapping, Set
 from dataclasses import dataclass, field
 from typing import Any
@@ -221,3 +228,143 @@ def dsn_tls_warning(key: str) -> str:
         "sslrootcert=system for a publicly trusted certificate), or set PGSSLMODE in the "
         "chart env."
     )
+
+
+# ---------------------------------------------------------------------------
+# Peers (protocol: a2a APIs): the rules the runtime applies when it calls them
+# ---------------------------------------------------------------------------
+
+# A credential-carrying call to another agent may use plain http outside APP_ENV=dev only to
+# these hosts: the runtime's `internal_host` (app_utils/api_client.py; a test keeps the two
+# in step).
+INTERNAL_SUFFIXES = (".svc", ".svc.cluster.local")
+CREDENTIAL_AUTH_MODES = ("bearer", "forward", "exchange")
+TOKEN_EXCHANGE_URL = "TOKEN_EXCHANGE_URL"
+TOKEN_EXCHANGE_CLIENT_ID = "TOKEN_EXCHANGE_CLIENT_ID"
+TOKEN_EXCHANGE_CLIENT_SECRET = "TOKEN_EXCHANGE_CLIENT_SECRET"
+PRINCIPAL_HASH_SALT = "PRINCIPAL_HASH_SALT"
+_TRUE = ("1", "true", "yes", "on")
+
+
+def internal_host(host: str) -> bool:
+    """Whether `host` is loopback, a single-label name or a cluster-internal (`.svc`) name."""
+    host = host.strip("[]").lower().rstrip(".")
+    if host == "localhost" or ("." not in host and ":" not in host):
+        return True
+    if host.endswith(INTERNAL_SUFFIXES):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _loopback(host: str) -> bool:
+    host = host.strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@dataclass
+class PeerFindings:
+    """What keeps the agent from calling its peers in an environment (``strict`` outside dev:
+    the runtime refuses those calls, or refuses to start)."""
+
+    env_name: str = ""
+    strict: bool = False
+    problems: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def error(self) -> str | None:
+        """The refusal (exit 3) outside dev."""
+        if not (self.problems and self.strict):
+            return None
+        lines = "\n".join(f"  - {problem}" for problem in self.problems)
+        return (
+            f"The agent could not call the agents in api-policy.yaml in {self.env_name}:\n{lines}"
+            f"\n  Set them in values-{self.env_name}.yaml (or values.yaml) under env:."
+        )
+
+    def notes(self) -> list[str]:
+        """The warnings, and in dev the problems too (they warn there)."""
+        return [*([] if self.strict else self.problems), *self.warnings]
+
+
+def peer_findings(
+    settings: DeploySettings,
+    env_name: str,
+    values: Mapping[str, Any],
+    document: Mapping[str, Any] | None,
+) -> PeerFindings:
+    """The peer rules (``deploy``'s pre-checks; design 7.4) for ``env_name``.
+
+    Refused outside dev: a credential-carrying peer URL over http to a host that
+    is not internal (loopback, a single label, ``.svc``); an ``auth: exchange`` API
+    without ``TOKEN_EXCHANGE_URL`` or ``TOKEN_EXCHANGE_CLIENT_ID``, or with an http
+    token URL to a host that is not loopback (unless ``TOKEN_EXCHANGE_ALLOW_HTTP``).
+    A peer URL still at ``CHANGE-ME`` is refused by ``env_placeholders`` already.
+    Warned: an unset peer URL, and what ``secrets.keys`` lacks (the exchange
+    client secret, ``PRINCIPAL_HASH_SALT``).
+    """
+    findings = PeerFindings(env_name=env_name)
+    findings.strict = not _modes.is_dev_env(env_name) or app_env(values) != "dev"
+    apis = (document or {}).get("apis") or {}
+    peers = {
+        str(n): a for n, a in apis.items() if isinstance(a, Mapping) and a.get("protocol") == "a2a"
+    }
+    env = chart_env(values)
+    for name, api in peers.items():
+        variable = str(api.get("base_url_env") or "")
+        url = str(env.get(variable) or "").strip()
+        if not url:
+            findings.warnings.append(
+                f"{variable} (the URL of the agent behind {name}) is not in the chart env: set it "
+                f"in values-{env_name}.yaml, or the calls to {name} fail"
+            )
+            continue
+        if _image.has_placeholder(url) or api.get("auth") not in CREDENTIAL_AUTH_MODES:
+            continue
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme == "http" and not internal_host(parts.hostname or ""):
+            findings.problems.append(
+                f"{variable} ({url}) must use https outside APP_ENV=dev to carry credentials "
+                f"(auth: {api.get('auth')}); plain http is for loopback and cluster-internal "
+                "names only"
+            )
+    keys = set(settings.secret_keys)
+    if any(api.get("auth") == "exchange" for api in apis.values() if isinstance(api, Mapping)):
+        for variable in (TOKEN_EXCHANGE_URL, TOKEN_EXCHANGE_CLIENT_ID):
+            if not str(env.get(variable) or "").strip():
+                findings.problems.append(
+                    f"{variable} is not set, and auth: exchange APIs need it (the issuer's token "
+                    "endpoint and this agent's client there)"
+                )
+        token = str(env.get(TOKEN_EXCHANGE_URL) or "").strip()
+        allow_http = str(env.get("TOKEN_EXCHANGE_ALLOW_HTTP") or "").strip().lower() in _TRUE
+        parts = urllib.parse.urlsplit(token)
+        if (
+            token
+            and not _image.has_placeholder(token)
+            and parts.scheme == "http"
+            and not (_loopback(parts.hostname or "") or allow_http)
+        ):
+            findings.problems.append(
+                f"{TOKEN_EXCHANGE_URL} ({token}) must use https outside APP_ENV=dev (it carries "
+                'the users\' tokens and the client secret); set TOKEN_EXCHANGE_ALLOW_HTTP: "true" '
+                "only for a trusted in-cluster issuer"
+            )
+        if TOKEN_EXCHANGE_CLIENT_SECRET not in keys:
+            findings.warnings.append(
+                f"{TOKEN_EXCHANGE_CLIENT_SECRET} is not in secrets.keys: the pods never get it, so "
+                "every token exchange fails"
+            )
+    if peers and PRINCIPAL_HASH_SALT not in keys:
+        findings.warnings.append(
+            f"{PRINCIPAL_HASH_SALT} is not in secrets.keys: the conversation ids sent to other "
+            "agents are keyed without a secret"
+        )
+    return findings
