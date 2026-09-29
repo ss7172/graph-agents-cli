@@ -530,6 +530,11 @@ main.add_lazy_command(
     "Declare the other agents this agent asks, over A2A (its peers).",
 )
 main.add_lazy_command(
+    "system",
+    "graph_agents_cli.system.cmd_system:system_group",
+    "Check, wire and deploy agents that call each other, as one system.",
+)
+main.add_lazy_command(
     "install",
     "graph_agents_cli.dev.cmd_install:cmd_install",
     "Install project dependencies.",

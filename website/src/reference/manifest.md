@@ -102,7 +102,7 @@ Present for the kubernetes target: `dev`, `staging` and `prod`, each with:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `context` | `""` | The kube context `deploy` and `secrets` use. Empty means the kubeconfig's current context, which outside `dev` needs a confirmation (or `--yes`). `--context` wins over it. |
+| `context` | `""` | The kube context `deploy` and `secrets` use. Empty means the kubeconfig's current context, which outside `dev` needs a confirmation (or `--yes`). `--context` wins over it. `system deploy` and `system check --live` require it outside `dev`. |
 | `namespace` | `<name>-<env>` | The namespace of the release and its Secret. |
 
 Record the contexts of staging and prod here, so a deploy never lands on whatever context is

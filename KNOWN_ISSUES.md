@@ -67,13 +67,13 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | runtime | 11 | 6 | 17 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
-| deploy | 4 | 8 | 12 |
+| deploy | 4 | 9 | 13 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 2 | 21 | 23 |
+| cli | 2 | 23 | 25 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **100** | **146** |
+| **Total** | **46** | **103** | **149** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -1221,6 +1221,19 @@ Low · eval · found in wave 0
 - **Workaround:** Write cases by hand. See
   [Where it is behind](website/src/reference/comparison.md#where-it-is-behind).
 
+### KI-158: `system check --live` reads Services through the Endpoints API
+
+Low · deploy · found in v0.3 P5
+
+- **Issue:** SC14 counts the ready addresses of each in-cluster Service with `kubectl get
+  endpoints`. Kubernetes 1.33 deprecates the v1 Endpoints API in favour of EndpointSlices:
+  `kubectl` prints a deprecation warning, and a cluster that stops serving Endpoints would make
+  every in-cluster URL read as a Service that does not exist.
+- **Impact:** A warning today; a false SC14 error on a cluster without the Endpoints API.
+- **Workaround:** Check those Services with `kubectl get endpointslices -l
+  kubernetes.io/service-name=<service> -n <namespace>` and run `system check` without
+  `--live`.
+
 ### KI-072: helm's failure reason is printed on stdout
 
 Low · deploy · found in wave 2b
@@ -1609,6 +1622,32 @@ Low · cli · found in v0.3 P4
   out), which the template's client accepts (it normalises both).
 - **Impact:** A false "foreign endpoint" report (exit 1) for a peer the agent calls fine.
 - **Workaround:** Write the peer's `APP_URL` and this agent's URL variable the same way.
+
+### KI-159: SC10 counts LangGraph Server's own pool at one version's default
+
+Low · cli · found in v0.3 P5
+
+- **Issue:** For a `langgraph-server` agent, `system check` (SC10) adds LangGraph Server's own
+  Postgres pool to the app's `DB_POOL_MAX_SIZE`: `LANGGRAPH_POSTGRES_POOL_MAX_SIZE` from the
+  chart `env`, else 150, the default of langgraph-api 0.14. Another langgraph-api version
+  with another default is counted wrongly, and a value set only in the Secret is not seen.
+- **Impact:** SC10 over- or under-states the connections a `langgraph-server` agent opens to
+  a shared database.
+- **Workaround:** Set `LANGGRAPH_POSTGRES_POOL_MAX_SIZE` in the chart `env` of each
+  `langgraph-server` agent that shares a database.
+
+### KI-160: `system check` does not check a local environment's settings
+
+Low · cli · found in v0.3 P5
+
+- **Issue:** A local environment of `graph-agents-system.yaml` (`port_base`) runs from each
+  project's `.env`, which the CLI never reads for a check. `system check` reports only what
+  the project files say for it (SC01, SC02, the auth policies of SC04, SC07, SC09, SC11,
+  SC12), and `system apply` prints the `.env` lines instead of writing them.
+- **Impact:** A wrong URL, audience or allowed actor in a local `.env` shows up only when the
+  agents call each other.
+- **Workaround:** With the agents running, `graph-agents-cli peer show <peer> --check` in
+  each caller reads the peer's card at the URL `.env` gives.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 

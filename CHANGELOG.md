@@ -300,6 +300,40 @@ migration" with the steps to follow.
   warns about an unset peer URL and about `TOKEN_EXCHANGE_CLIENT_SECRET` or
   `PRINCIPAL_HASH_SALT` missing from `secrets.keys`; in dev the refusals warn too. A test keeps
   the CLI's copy of the runtime's `internal_host` equal to the template's.
+- **`graph-agents-cli system check|apply|graph|delegations|deploy`: agent projects that call
+  each other, seen as one** (B13). An optional `graph-agents-system.yaml` (found upward, or
+  `--file`; JSON Schema `schemas/graph-agents-system.schema.json`, generated from the models)
+  names each agent's project, its client id, the agents it calls (with `approvals`, `auth`,
+  `scope`, `calls`, `description`), the environments (`port_base` for local processes, a `url`
+  template, or in-cluster URLs from each chart and manifest namespace), the token issuer, a
+  shared database's `max_connections` and `deploy.parallel`. A file that cannot be used exits 3
+  (an unknown project or one two agents name, an edge to an unknown agent or to itself, one
+  agent called twice by another, two agents with one client id, an `exchange` edge without
+  `identity`, an environment a manifest does not know). `system apply` writes both sides of every edge,
+  idempotently and one diff per project: in each caller what `peer add` writes, and per
+  environment the peer URLs, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the called
+  agent's pods (`TOKEN_EXCHANGE_CLIENT_ID` is the file's client id); in each called agent its
+  `appUrl` per environment, `AUTH_JWT_AUDIENCE` when empty, the callers in
+  `AUTH_ALLOWED_ACTORS`, and `networkPolicy.ingressFrom` for the callers' pods (plus the
+  Gateway's namespace while the route publishes paths). It never writes gates (it prints the
+  `api approval ... --decide-with relayed` line a relay needs), secrets, `.env` or local
+  settings, removes a peer of the file's agents that left `calls`, keeps an existing peer's
+  tuning, and never takes access away. `system check` runs SC01-SC13 (runtimes and charts,
+  edges in step, paths, issuer and audience, appUrl against the URL dialled, replicas with
+  in-memory tasks, relays the called agent's gates refuse, allowed actors, cycles and delegation
+  depth, a shared database's connection budget, the callers' secrets, exchange under
+  `langgraph-server`, an A2A path still public), and with `--live` SC14-SC15 (Services with a
+  ready endpoint, cards and the token URL answering, the Secrets' key names), using each
+  project's recorded kube context and never the current one outside dev; exit 1 on an error,
+  `--json`. `system graph` draws the system (mermaid, dot or json); `system delegations` prints
+  what the issuer must allow each client and guarantee. `system deploy --env ENV` checks, then
+  runs `graph-agents-cli deploy` in every project in waves, callees first (a cycle broken in
+  file order), at most `--parallel` at once (default 3), stopping after a failed wave unless
+  `--keep-going`, printing each agent's build, load and rollout times, then checks `--live`;
+  outside dev it requires every project's recorded context. `api/_files` edits now build on the
+  planned text of a file, so one plan can hold several peers. KI-158 to KI-160 park the
+  residuals (the Endpoints API behind SC14, LangGraph Server's own pool in SC10, a local
+  environment's `.env` unchecked).
 
 ### Changed
 

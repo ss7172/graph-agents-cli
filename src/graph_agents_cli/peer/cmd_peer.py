@@ -32,6 +32,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,7 @@ from graph_agents_cli.api._files import (
     values_remove,
 )
 from graph_agents_cli.api.cmd_api import (
+    _API_KEY_ORDER,
     _edit,
     _load_project,
     _policy_header,
@@ -148,15 +150,21 @@ def _dry_run_option(function: Callable[..., Any]) -> Callable[..., Any]:
 
 def _project() -> _Project:
     project = _load_project()
-    runtime = project.root / project.config.agent_directory / RUNTIME_MODULE
-    if not runtime.is_file():
-        raise PeerCommandError(
-            "this project's runtime predates A2A peers (no "
-            f"{project.config.agent_directory}/{RUNTIME_MODULE}): run `graph-agents-cli scaffold "
-            "upgrade` first. A 0.2 runtime refuses every call once api-policy.yaml uses "
-            "protocol: a2a (as KI-007)."
-        )
+    problem = runtime_problem(project.root, project.config.agent_directory)
+    if problem:
+        raise PeerCommandError(problem)
     return project
+
+
+def runtime_problem(root: Path, agent_directory: str) -> str | None:
+    """Why the project's runtime cannot have peers (a 0.2 runtime), or None."""
+    if (root / agent_directory / RUNTIME_MODULE).is_file():
+        return None
+    return (
+        f"this project's runtime predates A2A peers (no {agent_directory}/{RUNTIME_MODULE}): run "
+        "`graph-agents-cli scaffold upgrade` first. A 0.2 runtime refuses every call once "
+        "api-policy.yaml uses protocol: a2a (as KI-007)."
+    )
 
 
 def _module(project: _Project) -> tuple[str, str | None]:
@@ -634,16 +642,130 @@ def cmd_add(
         )
     parsed_calls = _parse_calls(calls)
     project = _project()
+    plan = Plan(project.root)
+    added = plan_add(
+        project,
+        plan,
+        PeerOptions(
+            name=name,
+            api_name=api_name,
+            url_env=url_env,
+            path=path,
+            auth=auth,
+            audience=audience,
+            scope=scope,
+            resource=resource,
+            allow_actorless=allow_actorless,
+            token_env=token_env,
+            description=description,
+            card=card,
+            calls=tuple(parsed_calls),
+            approvals=approvals,
+            approval_timeout_s=approval_timeout_s,
+            max_calls_per_run=max_calls_per_run,
+            read_timeout_ms=read_timeout_ms,
+            max_response_bytes=max_response_bytes,
+            cluster_url=cluster_url,
+        ),
+    )
+    _finish(project, plan, dry_run=dry_run, notes=added.notes, todos=added.todos)
+
+
+@dataclass
+class PeerOptions:
+    """What `peer add` is asked for (its options), for `plan_add`."""
+
+    name: str
+    api_name: str | None = None
+    url_env: str | None = None
+    path: str | None = None
+    auth: str | None = None
+    audience: str | None = None
+    scope: str | None = None
+    resource: str | None = None
+    allow_actorless: bool = False
+    token_env: str | None = None
+    description: str | None = None
+    card: str | None = None
+    calls: tuple[str, ...] = DEFAULT_CALLS
+    approvals: str = RELAY
+    approval_timeout_s: int = DEFAULT_APPROVAL_TIMEOUT_S
+    max_calls_per_run: int = DEFAULT_MAX_CALLS
+    read_timeout_ms: int = DEFAULT_READ_TIMEOUT_MS
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
+    cluster_url: str | None = None
+    # The peer's URL in .env.example (a local run).
+    local_url: str = PEER_LOCAL_URL
+
+
+@dataclass
+class PeerAdded:
+    """What `plan_add` planned: the project as it will be, and what to tell the user."""
+
+    project: _Project  # its policy text and document with the peer in
+    api_name: str
+    api: dict[str, Any]
+    notes: list[str]
+    todos: list[str]
+    names: dict[str, str]  # API -> peer name for the generated module, this peer's included
+
+
+# An existing peer's settings `plan_add(keep_tuning=True)` keeps when it rewrites the entry
+# (`system apply`): what the system file does not say. The rest follows the file.
+TUNED_KEYS = ("timeouts_ms", "limits", "forward_header")
+
+
+def _retuned(api: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """``api`` with the tuning of the ``existing`` entry it replaces carried over."""
+    new = copy.deepcopy(api)
+    for key in TUNED_KEYS:
+        if key in existing:
+            new[key] = copy.deepcopy(existing[key])
+    old_exchange = existing.get(EXCHANGE_KEY) or {}
+    if EXCHANGE_KEY in new and "resource" in old_exchange and "resource" not in new[EXCHANGE_KEY]:
+        new[EXCHANGE_KEY]["resource"] = old_exchange["resource"]
+    old_rules, new_rules = existing.get("approval"), new.get("approval")
+    if isinstance(old_rules, list) and isinstance(new_rules, list):
+        for old_rule, new_rule in zip(old_rules, new_rules, strict=False):
+            if isinstance(old_rule, dict) and "timeout_s" in old_rule:
+                new_rule["timeout_s"] = old_rule["timeout_s"]
+    if DESCRIPTION_KEY not in new and existing.get(DESCRIPTION_KEY):
+        new[DESCRIPTION_KEY] = existing[DESCRIPTION_KEY]
+    # The schema's key order, as every command writes an entry.
+    rank = {key: index for index, key in enumerate(_API_KEY_ORDER)}
+    return {key: new[key] for key in sorted(new, key=lambda k: rank.get(k, len(rank)))}
+
+
+def plan_add(
+    project: _Project,
+    plan: Plan,
+    options: PeerOptions,
+    *,
+    names: dict[str, str] | None = None,
+    keep_tuning: bool = False,
+) -> PeerAdded:
+    """Plan a peer's entry and every file that follows it into ``plan``.
+
+    ``project`` holds the policy as earlier plans left it, so several peers can be
+    planned into one ``plan`` (``names``: the peer names planned so far, API -> name).
+    An entry of the same name that differs is refused, unless ``keep_tuning``
+    (``system apply``): a peer's entry is then rewritten to the options, keeping the
+    settings the options do not decide (``TUNED_KEYS``, the approval timeout, the
+    exchange resource and a description the options do not give).
+    """
     config = project.config
+    name = options.name
     if name in (config.agent_directory, config.project_name):
         raise click.UsageError(f"an agent cannot be its own peer ({name})")
-    auth = auth or AUTH_BY_POLICY.get(config.auth_policy, "bearer")
-    if auth != "exchange" and (scope or resource or allow_actorless):
+    auth = options.auth or AUTH_BY_POLICY.get(config.auth_policy, "bearer")
+    if auth != "exchange" and (options.scope or options.resource or options.allow_actorless):
         raise click.UsageError("--scope, --resource and --allow-actorless go with --auth exchange")
-    if auth != "bearer" and token_env:
+    if auth != "bearer" and options.token_env:
         raise click.UsageError("--token-env goes with --auth bearer")
     notes: list[str] = []
-    if card is not None:
+    path, description = options.path, options.description
+    if options.card is not None:
+        card = options.card
         try:
             data = _read_card(card)
         except Exception as exc:
@@ -665,77 +787,84 @@ def cmd_add(
                     else "does not declare the origin extension: the user's words stay here"
                 )
             )
-    api_name = api_name or f"{name}{gen.AGENT_SUFFIX}"
-    url_env = url_env or f"{name.upper()}_AGENT_URL"
+    api_name = options.api_name or f"{name}{gen.AGENT_SUFFIX}"
+    url_env = options.url_env or f"{name.upper()}_AGENT_URL"
     path = path or f"/a2a/{name}"
-    token_env = token_env or (f"{name.upper()}_AGENT_KEY" if auth == "bearer" else None)
+    token_env = options.token_env or (f"{name.upper()}_AGENT_KEY" if auth == "bearer" else None)
     if description is not None:
         description = " ".join(description.split())
         if len(description) > DESCRIPTION_MAX_CHARS:
             description = description[: DESCRIPTION_MAX_CHARS - 3].rstrip() + "..."
             notes.append(f"the description was cut to {DESCRIPTION_MAX_CHARS} characters")
-    else:
-        notes.append(
-            f"no --description: the model's roster says {name} has none (lint warns); give one "
-            "with --description or --card"
-        )
     api = _entry(
         description=description,
         path=path,
         url_env=url_env,
         auth=auth,
         token_env=token_env,
-        audience=audience or name,
-        scope=scope,
-        resource=resource,
-        allow_actorless=allow_actorless,
+        audience=options.audience or name,
+        scope=options.scope,
+        resource=options.resource,
+        allow_actorless=options.allow_actorless,
         forward_audience=auth == "forward"
-        and (audience is not None or config.auth_policy == "jwt"),
-        calls=parsed_calls,
-        approvals=approvals,
-        approval_timeout_s=approval_timeout_s,
-        max_calls_per_run=max_calls_per_run,
-        read_timeout_ms=read_timeout_ms,
-        max_response_bytes=max_response_bytes,
+        and (options.audience is not None or config.auth_policy == "jwt"),
+        calls=list(options.calls),
+        approvals=options.approvals,
+        approval_timeout_s=options.approval_timeout_s,
+        max_calls_per_run=options.max_calls_per_run,
+        read_timeout_ms=options.read_timeout_ms,
+        max_response_bytes=options.max_response_bytes,
     )
     existing = (project.document or {}).get("apis", {}).get(api_name)
     if existing is not None and existing != api:
-        if _same_peer(existing, path):
+        if keep_tuning and api_protocol(existing) == PROTOCOL_A2A:
+            api = _retuned(api, existing)
+        elif _same_peer(existing, path):
             raise PeerCommandError(
                 f"peer {name} exists with other settings; change it with `graph-agents-cli api "
                 f"...` ({api_name}), or `peer remove {name}` then `peer add {name}`"
             )
-        raise PeerCommandError(f"API {api_name} exists; pick --api-name")
+        else:
+            raise PeerCommandError(f"API {api_name} exists; pick --api-name")
+    if DESCRIPTION_KEY not in api:
+        notes.append(
+            f"no --description: the model's roster says {name} has none (lint warns); give one "
+            "with --description or --card"
+        )
     document = ch.with_api(project.document, api_name, api)
     _validate(project, document)
     errors, matrix_notes = auth_policy_findings({"apis": {api_name: api}}, config.auth_policy)
     if errors:
         lines = "\n".join(f"  - {error}" for error in errors)
         raise PeerCommandError(f"{name} cannot work in this project; nothing was written:\n{lines}")
-    named = {p.api: p.name for p in gen.peers_of(document, _names(project, {api_name: name}))}
+    extra = {**(names or {}), api_name: name}
+    named = {p.api: p.name for p in gen.peers_of(document, _names(project, extra))}
     if named.get(api_name) != name:
         clash = next((api for api, n in named.items() if n == name and api != api_name), "?")
         raise PeerCommandError(f"another peer is already called {name} (API {clash})")
-    plan = Plan(project.root)
-    if existing is None:
+    text = project.text
+    if existing != api:
         if project.text is None:
             lines = [*_policy_header(config), "apis:", *block_lines({api_name: api}, 2)]
             text = "\n".join(lines) + "\n"
         else:
             editor = project.editor()
-            _edit(lambda: editor.set(("apis", api_name), api), f"add apis.{api_name}")
+            verb = "add" if existing is None else "rewrite"
+            _edit(lambda: editor.set(("apis", api_name), api), f"{verb} apis.{api_name}")
             text = editor.text
         if YamlText(text).data != document:
             raise PeerCommandError(f"could not write {POLICY_FILENAME} (internal check)")
-        plan.set_text(POLICY_FILENAME, project.text, text)
+        plan.set_text(POLICY_FILENAME, read_text(project.root / POLICY_FILENAME), text)
     # The same peer again: nothing in the policy changes, and the files that follow it are
     # brought back in step (each edit below finds its work done when it is).
     sync_manifest(plan, config, document=document, previous=project.document)
-    env_example_add(plan, api_name, api, peer=name, base_url=PEER_LOCAL_URL)
+    env_example_add(plan, api_name, api, peer=name, base_url=options.local_url)
     values_add(plan, config, document, api_name)
     values_exchange_add(plan, config, document, api_name)
-    cluster_envs = values_env_set(plan, config, url_env, cluster_url) if cluster_url else []
-    _sync_module(plan, project, document, {api_name: name})
+    cluster_envs = (
+        values_env_set(plan, config, url_env, options.cluster_url) if options.cluster_url else []
+    )
+    _sync_module(plan, project, document, extra)
     previous = copy.deepcopy(project.document)
     if previous is not None and existing is not None:
         del previous["apis"][api_name]
@@ -746,12 +875,19 @@ def cmd_add(
         project, name, api_name, api, first_exchange=first_exchange, cluster_envs=cluster_envs
     )
     notes.extend(matrix_notes)
-    if approvals == RELAY:
+    if options.approvals == RELAY:
         notes.append(
             f"messages that approve {name}'s pending approvals wait for the person here (gated: "
             "requester): this agent relays their decision, never its own"
         )
-    _finish(project, plan, dry_run=dry_run, notes=notes, todos=todos)
+    return PeerAdded(
+        project=_Project(project.root, config, text, document),
+        api_name=api_name,
+        api=api,
+        notes=notes,
+        todos=todos,
+        names=extra,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -765,19 +901,43 @@ def cmd_add(
 def cmd_remove(name: str, dry_run: bool) -> None:
     """Remove a peer (its API and variables), and regenerate or delete tools/a2a_peers.py."""
     project = _project()
-    peer = _peer(project, name)
+    plan = Plan(project.root)
+    removed = plan_remove(project, plan, name)
+    _finish(project, plan, dry_run=dry_run, notes=removed.notes, todos=[])
+
+
+@dataclass
+class PeerRemoved:
+    """What `plan_remove` planned: the project as it will be, and what to tell the user."""
+
+    project: _Project
+    notes: list[str]
+
+
+def plan_remove(
+    project: _Project, plan: Plan, name: str, *, names: dict[str, str] | None = None
+) -> PeerRemoved:
+    """Plan removing peer ``name`` and the files that follow it into ``plan`` (``project``
+    as earlier plans left it; ``names``: the peer names planned so far, API -> name)."""
+    peers = {p.name: p for p in gen.peers_of(project.document, _names(project, names))}
+    if name not in peers:
+        known = ", ".join(peers) or "none"
+        raise PeerCommandError(f"no peer {name!r} in {POLICY_FILENAME} (peers: {known})")
+    peer = peers[name]
     assert project.document is not None
     api = project.document["apis"][peer.api]
     document = copy.deepcopy(project.document)
     del document["apis"][peer.api]
     after: dict[str, Any] | None = document if document["apis"] else None
-    plan = Plan(project.root)
+    stored = read_text(project.root / POLICY_FILENAME)
+    text: str | None
     if after is None:
-        plan.set_text(POLICY_FILENAME, project.text, None)
+        text = None
     else:
         editor = project.editor()
         _edit(lambda: editor.delete(("apis", peer.api)), f"delete apis.{peer.api}")
-        plan.set_text(POLICY_FILENAME, project.text, editor.text)
+        text = editor.text
+    plan.set_text(POLICY_FILENAME, stored, text)
     sync_manifest(plan, project.config, document=after, previous=project.document)
     others = list(document["apis"].values())
     keep = {str(o["base_url_env"]) for o in others} | {
@@ -790,7 +950,7 @@ def cmd_remove(name: str, dry_run: bool) -> None:
         )
     if api["auth"] == EXCHANGE_KEY and not (after and uses_exchange(summarize(after))):
         values_exchange_remove(plan, project.config)
-    _sync_module(plan, project, after)
+    _sync_module(plan, project, after, names)
     notes = []
     if peer.approvals == RELAY:
         notes.append(
@@ -799,7 +959,7 @@ def cmd_remove(name: str, dry_run: bool) -> None:
         )
     if after is None:
         notes.append(f"{name} was the only API: {POLICY_FILENAME} goes")
-    _finish(project, plan, dry_run=dry_run, notes=notes, todos=[])
+    return PeerRemoved(_Project(project.root, project.config, text, after), notes)
 
 
 @peer_group.command("sync")

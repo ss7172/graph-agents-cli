@@ -404,6 +404,106 @@ and a `tools/a2a_peers.py` it did not write. `--card URL|FILE` reads the descrip
 and whether the peer reads the user's words from its agent card; an unreachable card is a
 warning.
 
+### Many agents at once: `graph-agents-system.yaml`
+
+`peer add` is complete on its own. When several of your projects call each other, an
+optional `graph-agents-system.yaml` (in a directory above them, or `--file`) names each
+agent's project, the client id it exchanges tokens as, the agents it calls and the
+environments they run in; `graph-agents-cli system` then works on all of them at once. Its
+JSON Schema is `schemas/graph-agents-system.schema.json` in the repository.
+
+```yaml title="graph-agents-system.yaml"
+version: 1
+name: store
+agents:
+  concierge:
+    project: concierge-agent     # a project directory, relative to this file
+    client_id: concierge         # its client at the issuer, the actor its peers see (default: the name)
+    calls: [orders, billing]
+  billing:
+    project: billing-agent
+    calls:
+      - {agent: orders, approvals: relay, scope: "orders.read"}
+  orders: {project: orders-agent}
+identity:                        # required when an edge uses auth: exchange
+  issuer: https://issuer.example.com
+  token_url: {dev: "http://issuer.shared.svc.cluster.local:8080/token"}
+environments:
+  local: {port_base: 8100}       # local processes: http://127.0.0.1:<8100 + position>
+  dev: {}                        # in the cluster: http://<release>.<namespace>.svc.cluster.local
+  prod: {url: "https://{agent}.agents.example.com"}
+database:                        # optional: a shared server's budget (check SC10)
+  max_connections: {prod: 200}
+deploy: {parallel: 3}
+```
+
+An agent's name is the peer name its callers give it; an edge (`calls`) takes what `peer add`
+would be told: `approvals` (`relay`, the default, or `deny`), `auth` (default by the caller's
+auth policy), `scope` and `allow_actorless` for `exchange`, `calls`
+(`ask`, `status`, `cancel`) and a `description` (default: the called agent's
+`A2A_DESCRIPTION`). A file that cannot be used is exit 3: a project that does not exist or
+that two agents name, an edge to an unknown agent or to itself, one agent called twice by
+another, two agents with one client id, an `exchange` edge without `identity`, an
+environment a manifest does not know.
+
+- **`system apply [--env ENV ...] [--dry-run]`** writes each project's side of every edge,
+  one diff per project, and is idempotent. In each caller: what `peer add` writes (the path
+  from the called agent's `A2A_NAME`, its name as the audience), and per environment
+  `<PEER>_AGENT_URL`, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the called agent's
+  pods; `TOKEN_EXCHANGE_CLIENT_ID` is the `client_id`. In each called agent: `appUrl` per
+  environment (the URL its callers dial, so their card check passes), `AUTH_JWT_AUDIENCE`
+  when it is empty, the callers' client ids added to `AUTH_ALLOWED_ACTORS`, and
+  `networkPolicy.ingressFrom` for the callers' pods. It never writes approval gates (it prints
+  the `api approval ... --decide-with relayed --relayers <client>` line a relay needs, for the
+  called agent's owners to review), secrets, `.env`, or a local environment's settings (it
+  prints them). A peer of an agent of the file goes when it leaves `calls`; your other APIs
+  and peers are never touched, and an existing peer keeps its limits, timeouts, approval
+  timeout and description. It never takes access away either: an allowed actor that no
+  longer calls stays listed (a note says so).
+- **`system check [--env ENV] [--live] [--json]`** reports what would keep the agents from
+  calling each other, and exits 1 on an error:
+
+    | Id | Check | Severity |
+    |---|---|---|
+    | SC01 | Every project runs a 0.3 runtime, and has a chart and `values-<env>.yaml` where it runs in a cluster | error |
+    | SC02 | Every edge is a peer in the caller, as the file says; no peer of an agent the file no longer lets it call; `tools/a2a_peers.py` in step | error (fix: `system apply`) |
+    | SC03 | The caller's `a2a.path` is the called agent's A2A mount (`/a2a/<A2A_NAME>`), in every environment | error |
+    | SC04 | The auth modes work: `exchange` needs a `jwt` agent whose `AUTH_JWT_ISSUER` is the file's issuer and whose `AUTH_JWT_AUDIENCE` holds the audience; `bearer` needs a `shared-bearer` agent with `API_KEY`; a `custom` agent is a warning | error / warning |
+    | SC05 | Per environment, the called agent's `appUrl` is the URL the caller dials | error |
+    | SC06 | A called agent runs several replicas (or an HPA) with its A2A tasks in memory | error |
+    | SC07 | A relay edge reaches gates the person must decide at the called agent (with the `api approval` line that lets the caller relay) | warning |
+    | SC08 | The called agent's `AUTH_ALLOWED_ACTORS` lacks the caller | error |
+    | SC09 | Cycles; a chain of `exchange` edges longer than the last agent's `AUTH_MAX_DELEGATION_DEPTH` | warning / error |
+    | SC10 | The agents' connections to a shared database (replicas x `DB_POOL_MAX_SIZE`, plus LangGraph Server's own pool) stay under `max_connections` less 10% | error |
+    | SC11 | The caller's `secrets.keys` holds `TOKEN_EXCHANGE_CLIENT_SECRET` or the bearer key; `PRINCIPAL_HASH_SALT` | error / warning |
+    | SC12 | `exchange` or `forward` in a `langgraph-server` caller | error |
+    | SC13 | A called agent's route still publishes its A2A path in a cluster environment where agents call it inside the cluster | warning |
+    | SC14 (`--live`) | In-cluster URLs: the Service has a ready endpoint; other URLs resolve and their card answers (200, or 401: [KI-120](../reference/known-issues.md#ki-120-the-agent-card-lists-one-generic-skill-and-reading-it-needs-a-credential)); the token URL answers | error |
+    | SC15 (`--live`) | Each caller's Secret holds the keys its edges need (names only) | error / warning |
+
+    `--live` runs `kubectl` with each project's recorded context
+    (`environments.<env>.context`), and outside `dev` never with the kubeconfig's current one.
+    A local environment's settings are in `.env`, which is never read
+    ([KI-160](../reference/known-issues.md#ki-160-system-check-does-not-check-a-local-environments-settings)).
+- **`system graph [--format mermaid|dot|json]`** draws the system: each edge with its auth
+  mode, `relay` or `deny`, and how the called agent decides a relay (`direct`: the person
+  approves there; `relayed`: the caller may relay; `no gate`); each agent with its replicas and
+  A2A task store per environment.
+- **`system delegations [--format table|json]`** prints what the token issuer must allow:
+  each client, the audiences (and scopes) it may exchange users' tokens for and the edges that
+  need them, then what the issuer must guarantee (an `act` claim naming the client, no
+  exchange of service tokens, `expires_in` of 300 s or less, no other audiences).
+
+```text
+client      may exchange for audience   scope              because
+concierge   orders                      (issuer default)   concierge -> orders (relay)
+concierge   billing                     (issuer default)   concierge -> billing (relay)
+billing     orders                      orders.read        billing -> orders (relay)
+```
+
+- **`system deploy --env ENV`** deploys every project, callees first:
+  see [Deploy a system of agents](deploy.md#deploy-a-system-of-agents).
+
 ### Ask other agents: `app_utils/a2a_client.py`
 
 The template's A2A client calls a peer through this policy, never around it: every request

@@ -135,6 +135,17 @@ class Plan:
         if before != after:
             self.changes.append(FileChange(path, before, after, summary))
 
+    def current(self, path: str) -> str | None:
+        """``path``'s text after the changes planned so far (its stored text when none is).
+
+        Every edit starts from this text, so several edits of one file in one plan
+        (``system apply`` adds many peers at once) build on each other.
+        """
+        for change in self.changes:
+            if change.path == path:
+                return change.after
+        return read_text(self.root / path)
+
     @property
     def effective(self) -> list[FileChange]:
         return [c for c in self.changes if c.before != c.after]
@@ -246,8 +257,8 @@ def sync_manifest(
     A token variable goes when the last API using it goes, unless it is one of
     the project's default keys (the provider key, API_KEY, ...).
     """
-    path = plan.root / MANIFEST_FILENAME
-    before = read_text(path)
+    stored = read_text(plan.root / MANIFEST_FILENAME)
+    before = plan.current(MANIFEST_FILENAME)
     if before is None:
         plan.left_for_you.append(f"{MANIFEST_FILENAME} not found; nothing recorded there")
         return
@@ -292,7 +303,7 @@ def sync_manifest(
                 manifest.set(("secrets", "keys"), value)
         except EditError as exc:
             plan.left_for_you.append(_manifest_todo(kind, value, exc))
-    plan.set_text(MANIFEST_FILENAME, before, manifest.text)
+    plan.set_text(MANIFEST_FILENAME, stored, manifest.text)
 
 
 def _manifest_todo(kind: str, value: Any, exc: EditError) -> str:
@@ -326,8 +337,8 @@ def env_example_add(
     base_url: str = LOCAL_BASE_URL,
 ) -> None:
     """Document an API's variables in ``.env.example`` (``peer``: the A2A peer it is)."""
-    path = plan.root / ENV_EXAMPLE
-    before = read_text(path)
+    stored = read_text(plan.root / ENV_EXAMPLE)
+    before = plan.current(ENV_EXAMPLE)
     if before is None:
         return
     variables = [(api["base_url_env"], base_url)]
@@ -357,7 +368,7 @@ def env_example_add(
         wanted = [var for var, _ in variables] + (list(EXCHANGE_VARIABLES) if exchange else [])
         plan.left_for_you.append(f"{ENV_EXAMPLE}: document {', '.join(wanted)} (not edited: {exc})")
         return
-    plan.set_text(ENV_EXAMPLE, before, after)
+    plan.set_text(ENV_EXAMPLE, stored, after)
 
 
 def _api_variables(api: Mapping[str, Any]) -> set[str]:
@@ -384,8 +395,8 @@ def env_example_remove(
     shares keeps it, it is renamed to that API. Without any API left the
     fresh project's "no policy" note comes back.
     """
-    path = plan.root / ENV_EXAMPLE
-    before = read_text(path)
+    stored = read_text(plan.root / ENV_EXAMPLE)
+    before = plan.current(ENV_EXAMPLE)
     if before is None:
         return
     names = [api["base_url_env"]] + ([api["token_env"]] if api["auth"] == "bearer" else [])
@@ -410,7 +421,7 @@ def env_example_remove(
     except (EditError, ValueError) as exc:
         plan.left_for_you.append(f"{ENV_EXAMPLE}: remove {', '.join(names)} (not edited: {exc})")
         return
-    plan.set_text(ENV_EXAMPLE, before, after)
+    plan.set_text(ENV_EXAMPLE, stored, after)
 
 
 def _peer_comments(text: str, name: str) -> list[str]:
@@ -489,7 +500,7 @@ def values_add(plan: Plan, config: ProjectConfig, document: dict[str, Any], name
         return
     path = files[0]
     rel = path.relative_to(plan.root).as_posix()
-    before = read_text(path)
+    before = plan.current(rel)
     api = document["apis"][name]
     variable = api["base_url_env"]
     try:
@@ -514,7 +525,7 @@ def values_add(plan: Plan, config: ProjectConfig, document: dict[str, Any], name
             f"{rel}: add {variable}: <the API's base URL> under env: (not edited: {exc})"
         )
         return
-    plan.set_text(rel, before, values.text)
+    plan.set_text(rel, read_text(path), values.text)
 
 
 def values_exchange_add(
@@ -527,7 +538,7 @@ def values_exchange_add(
         return
     path = files[0]
     rel = path.relative_to(plan.root).as_posix()
-    before = plan_text(plan, rel) if plan_text(plan, rel) is not None else read_text(path)
+    before = plan.current(rel)
     try:
         values = YamlText(before or "")
         env = values.get(("env",))
@@ -565,8 +576,7 @@ def values_exchange_remove(plan: Plan, config: ProjectConfig) -> None:
     for path in chart_values_files(plan.root, config):
         rel = path.relative_to(plan.root).as_posix()
         stored = read_text(path)
-        before = plan_text(plan, rel)
-        before = stored if before is None else before
+        before = plan.current(rel)
         try:
             values = YamlText(before or "")
             env = values.get(("env",))
@@ -588,16 +598,23 @@ def values_exchange_remove(plan: Plan, config: ProjectConfig) -> None:
         plan.set_text(rel, stored, text)
 
 
-def values_env_set(plan: Plan, config: ProjectConfig, variable: str, template: str) -> list[str]:
+def values_env_set(
+    plan: Plan, config: ProjectConfig, variable: str, template: str | Mapping[str, str]
+) -> list[str]:
     """Set ``variable`` in each ``values-<env>.yaml``'s ``env`` to ``template`` with ``{env}``
-    filled; the environments it was set for."""
+    filled, or to the value a mapping gives each environment (the files of the others are
+    left alone); the environments it was set for."""
     done = []
     for path in chart_values_files(plan.root, config)[1:]:
         environment = path.stem.removeprefix("values-")
+        if isinstance(template, Mapping):
+            if environment not in template:
+                continue
+            value = template[environment]
+        else:
+            value = template.replace("{env}", environment)
         rel = path.relative_to(plan.root).as_posix()
-        planned = plan_text(plan, rel)
-        before = planned if planned is not None else read_text(path)
-        value = template.replace("{env}", environment)
+        before = plan.current(rel)
         try:
             values = YamlText(before or "")
             env = values.get(("env",))
@@ -615,14 +632,6 @@ def values_env_set(plan: Plan, config: ProjectConfig, variable: str, template: s
     return done
 
 
-def plan_text(plan: Plan, path: str) -> str | None:
-    """The text ``path`` has after the changes planned so far (None: none planned)."""
-    for change in plan.changes:
-        if change.path == path:
-            return change.after
-    return None
-
-
 def values_remove(plan: Plan, config: ProjectConfig, variable: str, remaining: set[str]) -> None:
     """Drop ``variable`` from the chart's env maps; ``remaining``: the other APIs' base URLs.
 
@@ -630,7 +639,7 @@ def values_remove(plan: Plan, config: ProjectConfig, variable: str, remaining: s
     """
     for path in chart_values_files(plan.root, config):
         rel = path.relative_to(plan.root).as_posix()
-        before = read_text(path)
+        before = plan.current(rel)
         try:
             values = YamlText(before or "")
             env = values.get(("env",))
@@ -646,4 +655,4 @@ def values_remove(plan: Plan, config: ProjectConfig, variable: str, remaining: s
         except EditError as exc:
             plan.left_for_you.append(f"{rel}: remove {variable} from env: (not edited: {exc})")
             continue
-        plan.set_text(rel, before, text)
+        plan.set_text(rel, read_text(path), text)

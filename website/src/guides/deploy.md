@@ -337,6 +337,46 @@ installed, and `--restart` warns that Argo CD's self-heal may revert the restart
     `--kube-context <ctx>` (helm) or `--context <ctx>` (kubectl) before running one
     ([KI-029](../reference/known-issues.md#ki-029-recovery-commands-printed-by-deploy-leave-out-the-kube-context)).
 
+## Deploy a system of agents
+
+When several projects call each other and a
+[`graph-agents-system.yaml`](api-policy.md#many-agents-at-once-graph-agents-systemyaml) names
+them, `system deploy` deploys them all:
+
+```bash
+graph-agents-cli system apply --env dev   # each project's side of every edge
+graph-agents-cli system deploy --env dev  # --parallel 3 --only a,b --keep-going --skip-check --dry-run
+```
+
+1. **`system check --env ENV`** (the projects' files only): an error stops here, before any
+   deploy (`--skip-check` goes on anyway).
+2. **Callees first.** The agents deploy in waves: a wave holds the agents whose callees are
+   all deployed, so a caller's first card check finds them up. A cycle is broken at its first
+   agent in file order, with a warning.
+3. **A few at a time.** At most `--parallel` deploys run at once (default `deploy.parallel` in
+   the file, else 3): seven images built and loaded at once made one agent take 158 s instead
+   of 27-38 s. A failed wave stops the run unless `--keep-going`.
+4. **Each is `graph-agents-cli deploy --env ENV`** in its project directory, with every rule on
+   this page, no terminal input, and its output kept in a log file whose path is printed.
+   Each agent's build, image load and rollout times are printed, read from the commands the
+   deploy prints; a failed one prints the end of its log.
+5. **`system check --live --env ENV`**: every in-cluster Service the callers dial has a ready
+   endpoint, the other URLs resolve and serve their card, the token URL answers, and each
+   caller's Secret holds the keys its edges need (names only). Skipped with `--skip-check` or
+   `--dry-run`.
+
+Outside `dev` every project must record its kube context (`environments.<env>.context` in
+its manifest): `system deploy` refuses (exit 3) before any deploy otherwise, since a deploy
+would ask to confirm the kubeconfig's current context and nothing answers it. `--live` uses
+the same contexts, and in `dev` the current one when none is recorded.
+
+`system apply` sets, per environment, what makes the agents find each other: the URL each
+caller dials (`<PEER>_AGENT_URL`: the called agent's in-cluster Service,
+`http://<release>.<namespace>.svc.cluster.local`, or the environment's `url` template) and the
+called agent's `appUrl`, which its card advertises (the two must match, SC05), the audience
+(`AUTH_JWT_AUDIENCE` when empty) and the allowed actors, and the NetworkPolicy rules below.
+Set `AUTH_JWT_ISSUER` yourself: `system check` compares it with the file's issuer.
+
 ## The chart
 
 The chart lives in `deployment/helm/<name>/`. It renders a Deployment, a Service, a ConfigMap
@@ -428,6 +468,26 @@ networkPolicy:
 
 `deploy --env <env> --dry-run` renders the policy. Once it is deployed, a pod in another
 namespace must not reach the agent, and `/ready` must still answer 200.
+
+**Agents calling agents.** `system apply` writes, for each cluster environment of a
+[system file](api-policy.md#many-agents-at-once-graph-agents-systemyaml), a caller's
+`egressTo` rule to each agent it calls (the pods of that release in its namespace, on the
+pods' port `service.targetPort`, not the Service's: a NetworkPolicy sees the connection after
+the Service has translated it) and a called agent's `ingressFrom` entry for each caller's
+pods, plus the Gateway's namespace (`gateway.parentRef.namespace`) while its route publishes
+paths, since the Gateway must still reach `/chat`. The rules take effect once
+`networkPolicy.enabled` (and `restrictEgress` for egress) is on; with `restrictEgress`, also
+allow the token issuer's address. Entries you wrote stay: `system apply` adds and removes only
+the rules for agents of the file.
+
+```yaml title="values-dev.yaml of orders (written by system apply)"
+networkPolicy:
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: concierge-agent-dev}
+      podSelector:
+        matchLabels: {app.kubernetes.io/instance: concierge-agent}
+```
 
 ## External database
 

@@ -230,9 +230,14 @@ class _Project:
 
 def _load_project() -> _Project:
     chdir_project_root()
-    root = Path.cwd()
+    return load_project_at(Path.cwd())
+
+
+def load_project_at(root: Path) -> _Project:
+    """The project whose root is ``root``, read without changing directory (``system`` reads
+    several); an invalid policy is an ``ApiCommandError`` (exit 3)."""
     ensure_no_legacy_api_policy(root)
-    config = read_project_config()
+    config = read_project_config(str(root))
     text = read_text(root / POLICY_FILENAME)
     document = None
     if text is not None:

@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ss7172/graph-agents-cli/main/schemas/graph-agents-system.schema.json",
+  "$defs": {
+    "Agent": {
+      "additionalProperties": false,
+      "description": "One agent of the system: a graph-agents-cli project.",
+      "properties": {
+        "project": {
+          "description": "The project directory, relative to this file.",
+          "minLength": 1,
+          "title": "Project",
+          "type": "string"
+        },
+        "client_id": {
+          "anyOf": [
+            {
+              "pattern": "^[^\\s,\\x00-\\x1f\\x7f]{1,256}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The client id this agent exchanges tokens with at the issuer: the actor id the agents it calls see (default: the agent's name).",
+          "title": "Client Id"
+        },
+        "calls": {
+          "description": "The agents this agent calls (names, or edges).",
+          "items": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_]{0,25}$",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/Edge"
+              }
+            ]
+          },
+          "title": "Calls",
+          "type": "array"
+        }
+      },
+      "required": [
+        "project"
+      ],
+      "title": "Agent",
+      "type": "object"
+    },
+    "Database": {
+      "additionalProperties": false,
+      "description": "A database server the agents share (enables check SC10).",
+      "properties": {
+        "max_connections": {
+          "description": "The server's max_connections, per environment.",
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,30}$": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Max Connections",
+          "type": "object",
+          "additionalProperties": false
+        }
+      },
+      "title": "Database",
+      "type": "object"
+    },
+    "Deploy": {
+      "additionalProperties": false,
+      "description": "How `system deploy` runs.",
+      "properties": {
+        "parallel": {
+          "default": 3,
+          "description": "How many projects deploy at once (default 3).",
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Parallel",
+          "type": "integer"
+        }
+      },
+      "title": "Deploy",
+      "type": "object"
+    },
+    "Edge": {
+      "additionalProperties": false,
+      "description": "One agent this agent calls, with what `peer add` would be told about it.",
+      "properties": {
+        "agent": {
+          "description": "The agent called (a key of `agents`).",
+          "pattern": "^[a-z][a-z0-9_]{0,25}$",
+          "title": "Agent",
+          "type": "string"
+        },
+        "approvals": {
+          "default": "relay",
+          "description": "relay: the person's decisions on the called agent's pending approvals go through a gate here (requester); deny: this agent never sends them.",
+          "enum": [
+            "relay",
+            "deny"
+          ],
+          "title": "Approvals",
+          "type": "string"
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "enum": [
+                "exchange",
+                "forward",
+                "bearer"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How the caller authenticates; default by its auth policy (jwt: exchange, custom: forward, shared-bearer: bearer).",
+          "title": "Auth"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+(?: [\\x21\\x23-\\x5b\\x5d-\\x7e]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "exchange: the scopes asked for (least privilege).",
+          "title": "Scope"
+        },
+        "allow_actorless": {
+          "default": false,
+          "description": "exchange: accept exchanged tokens that name no actor (the called agent then lists client:<client_id> in AUTH_ALLOWED_ACTORS).",
+          "title": "Allow Actorless",
+          "type": "boolean"
+        },
+        "calls": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "ask",
+                  "status",
+                  "cancel"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the caller may send: ask (SendMessage), status (GetTask), cancel.",
+          "title": "Calls"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the called agent does, for the caller's model (default: the called agent's A2A_DESCRIPTION).",
+          "title": "Description"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "title": "Edge",
+      "type": "object"
+    },
+    "Environment": {
+      "additionalProperties": false,
+      "description": "Where the agents run, and so the URL each is called at.",
+      "properties": {
+        "port_base": {
+          "anyOf": [
+            {
+              "maximum": 65000,
+              "minimum": 1024,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Local processes: the agent at position i of `agents` listens on http://127.0.0.1:<port_base + i>.",
+          "title": "Port Base"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Each agent's URL, from a template with {agent} (and optionally {project}, {env}), e.g. https://{agent}.agents.example.com. Without url or port_base, the in-cluster URL of each project's chart and manifest namespace.",
+          "title": "Url"
+        }
+      },
+      "title": "Environment",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "description": "The issuer that exchanges users' tokens (RFC 8693) for the `auth: exchange` edges.",
+      "properties": {
+        "issuer": {
+          "description": "Compared with each called agent's AUTH_JWT_ISSUER.",
+          "minLength": 1,
+          "title": "Issuer",
+          "type": "string"
+        },
+        "token_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "patternProperties": {
+                "^[a-z][a-z0-9-]{0,30}$": {
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The issuer's token endpoint (TOKEN_EXCHANGE_URL), one for every environment or one per environment.",
+          "title": "Token Url"
+        }
+      },
+      "required": [
+        "issuer"
+      ],
+      "title": "Identity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Agent projects that call each other over A2A, for `graph-agents-cli system`. Generated from the CLI's own models: edit those, not this file.",
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "The format version: 1.",
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "description": "The system's name.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$",
+      "title": "Name",
+      "type": "string"
+    },
+    "agents": {
+      "description": "The agents, by name (the name their callers give them).",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,25}$": {
+          "$ref": "#/$defs/Agent"
+        }
+      },
+      "title": "Agents",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Identity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Required when an edge uses auth: exchange."
+    },
+    "environments": {
+      "description": "The environments the agents run in.",
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,30}$": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Environment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "Environments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "database": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Database"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "deploy": {
+      "$ref": "#/$defs/Deploy"
+    }
+  },
+  "required": [
+    "version",
+    "name",
+    "agents"
+  ],
+  "title": "graph-agents-cli system (graph-agents-system.yaml, version 1)",
+  "type": "object"
+}

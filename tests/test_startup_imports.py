@@ -91,6 +91,9 @@ def _run_help(args: list[str]) -> dict:
         ["peer"],
         ["peer", "add"],
         ["peer", "show"],
+        ["system"],
+        ["system", "check"],
+        ["system", "deploy"],
     ],
 )
 def test_help_imports_no_framework_or_vendor_sdk(args: list[str]) -> None:
@@ -113,6 +116,7 @@ def test_root_help_lists_every_command() -> None:
         "install",
         "lint",
         "peer",
+        "system",
         "build",
         "eval",
         "deploy",
