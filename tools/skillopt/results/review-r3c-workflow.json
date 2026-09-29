@@ -1,0 +1,3094 @@
+{
+ "generated": "2026-09-28",
+ "texts": {
+  "shipped": {
+   "skill_md_sha256": "79049d4e5ef1869f06db568d559725c7b3f551a02e796f3f4572f5e3d19094a5"
+  },
+  "r2": {
+   "skill_md_sha256": "e0b81aafba09d35be3f7ef870b7ef051904956e9ae6a5c6a5f807725fb95ee3e",
+   "body_sha256": "efe6ca364df8d20e848fced1594bd821523df5325347d389d0f79366cd27a248"
+  },
+  "final": {
+   "skill_md_sha256": "6f92d99647f71378bc5f3dc3d572e86b8fe2b83040bc54b7ffccc544ca00f97d",
+   "body_sha256": "feaa8d4df7c309dc59612903a7fa3b2560ee2c852938fdd6ad5db31a0006c5a0"
+  }
+ },
+ "runs": {
+  "codex-final": {
+   "generated": "2026-09-28 11:33:27",
+   "harnesses": {
+    "codex": {
+     "meta": {
+      "harness": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "permission_mode": "",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "candidates": [
+        "graph-agents-cli-workflow"
+       ]
+      },
+      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/final",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22150,
+       22177
+      ]
+     },
+     "reps": [
+      1,
+      2
+     ],
+     "wall_s": {
+      "1": 395.2,
+      "2": 233.6
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 12,
+       "hard": 1.0,
+       "soft": 0.9694,
+       "mixed": 0.9847
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 12,
+       "hard": 1.0,
+       "soft": 0.9694,
+       "mixed": 0.9847
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 12,
+        "hard": 1.0,
+        "soft": 0.9694,
+        "mixed": 0.9847
+       },
+       "val": {
+        "n": 12,
+        "hard": 1.0,
+        "soft": 0.9694,
+        "mixed": 0.9847
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 39.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.15044,
+         "tokens": {
+          "in": 201119,
+          "cached": 164828,
+          "out": 2230
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 44.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.17054,
+         "tokens": {
+          "in": 243618,
+          "cached": 206004,
+          "out": 2943
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 29.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.15501,
+         "tokens": {
+          "in": 265392,
+          "cached": 231600,
+          "out": 2019
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 18.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12451,
+         "tokens": {
+          "in": 165068,
+          "cached": 132385,
+          "out": 1361
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 307.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 12,
+         "leftover_notes": [
+          "stopped leftover pid 36337: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/approvals-server0/langgraph.json --port 52898 --no-browser --no-reload",
+          "stopped leftover pid 36799: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 53034 --no-browser",
+          "stopped leftover pid 36803: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 36804: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 37109: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 53344 --no-browser --no-reload",
+          "stopped leftover pid 38154: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 53795 --no-browser",
+          "stopped leftover pid 38155: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/approvals-server0/langgraph.json --port 53797 --no-browser --no-reload",
+          "stopped leftover pid 38157: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 38158: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 38978: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 54035 --no-browser",
+          "stopped leftover pid 39014: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 39015: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
+         ],
+         "permission_denials": 0,
+         "usd": 0.38977,
+         "tokens": {
+          "in": 882799,
+          "cached": 826090,
+          "out": 6901
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 174.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 8,
+         "leftover_notes": [
+          "stopped leftover pid 44787: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-1/approvals-server0/langgraph.json --port 57503 --no-browser --no-reload",
+          "stopped leftover pid 46092: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 59006 --no-browser --no-reload",
+          "stopped leftover pid 46135: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-1/test_the_dev_server_keeps_the_0/langgraph.json --port 59039 --no-browser",
+          "stopped leftover pid 46141: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 46142: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 46579: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 59404 --no-browser",
+          "stopped leftover pid 46590: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 46591: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
+         ],
+         "permission_denials": 0,
+         "usd": 0.40109,
+         "tokens": {
+          "in": 875666,
+          "cached": 804962,
+          "out": 5280
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 0.8333,
+         "failed": [],
+         "reason": "covers-provider: the final answer lacks /(?i)provider|model/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 30.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.11692,
+         "tokens": {
+          "in": 122348,
+          "cached": 93451,
+          "out": 2166
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 44.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.16359,
+         "tokens": {
+          "in": 221390,
+          "cached": 187411,
+          "out": 3431
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 0.9166,
+       "mixed": 0.9583
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 23.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12427,
+         "tokens": {
+          "in": 109582,
+          "cached": 73812,
+          "out": 1674
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 30.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.13255,
+         "tokens": {
+          "in": 180407,
+          "cached": 149885,
+          "out": 2190
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 37.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12145,
+         "tokens": {
+          "in": 122213,
+          "cached": 93196,
+          "out": 2523
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 0.8,
+         "failed": [],
+         "reason": "covers-trigger: the final answer lacks /(?i)schedul|cron|trigger|every morning|who (calls|starts|runs)/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 40.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.14379,
+         "tokens": {
+          "in": 180536,
+          "cached": 149562,
+          "out": 3038
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 0.9,
+       "mixed": 0.95
+      }
+     },
+     "totals": {
+      "rollouts": 12,
+      "sessions": 12,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 20,
+      "permission_denials": 0,
+      "rollouts_with_permission_denials": 0,
+      "codex_usd_last_attempts": 2.1939,
+      "claude_api_equivalent_usd": 0
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  },
+  "codex-shipped": {
+   "generated": "2026-09-28 11:33:27",
+   "harnesses": {
+    "codex": {
+     "meta": {
+      "harness": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "permission_mode": "",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "workflow": "79049d4e5ef1869f",
+       "scaffold": "69ac60ef59a84d41",
+       "langgraph-code": "a4deab4607c050f8",
+       "eval": "c1392683969e9bbc",
+       "deploy": "1c744b7e804c708b",
+       "observability": "af66b46cb02f8668"
+      },
+      "body_dir": "",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22156,
+       22183
+      ]
+     },
+     "reps": [
+      1,
+      2
+     ],
+     "wall_s": {
+      "1": 333.0,
+      "2": 253.1
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 12,
+       "hard": 0.5,
+       "soft": 0.8639,
+       "mixed": 0.682
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 12,
+       "hard": 0.5,
+       "soft": 0.8639,
+       "mixed": 0.682
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 12,
+        "hard": 0.5,
+        "soft": 0.8639,
+        "mixed": 0.682
+       },
+       "val": {
+        "n": 12,
+        "hard": 0.5,
+        "soft": 0.8639,
+        "mixed": 0.682
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 67.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.24669,
+         "tokens": {
+          "in": 439874,
+          "cached": 392447,
+          "out": 4138
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 61.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.22108,
+         "tokens": {
+          "in": 395025,
+          "cached": 352018,
+          "out": 3598
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 23.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12596,
+         "tokens": {
+          "in": 187023,
+          "cached": 156450,
+          "out": 1521
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 24.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.13137,
+         "tokens": {
+          "in": 191591,
+          "cached": 158956,
+          "out": 1500
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 250.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 9,
+         "leftover_notes": [
+          "stopped leftover pid 50455: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 60278 --no-browser --no-reload",
+          "stopped leftover pid 50902: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 60529 --no-browser",
+          "stopped leftover pid 50903: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 50905: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 51199: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/approvals-server0/langgraph.json --port 60659 --no-browser --no-reload",
+          "stopped leftover pid 51606: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-3/test_the_dev_server_keeps_the_0/langgraph.json --port 60837 --no-browser",
+          "stopped leftover pid 51609: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 51610: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 53641: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 61615 --no-browser --no-reload"
+         ],
+         "permission_denials": 0,
+         "usd": 0.37185,
+         "tokens": {
+          "in": 779455,
+          "cached": 716015,
+          "out": 5839
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 151.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.3263,
+         "tokens": {
+          "in": 601767,
+          "cached": 544825,
+          "out": 6250
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8333,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 39.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12972,
+         "tokens": {
+          "in": 162125,
+          "cached": 133156,
+          "out": 2556
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.3333,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 229.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 4,
+         "leftover_notes": [
+          "stopped leftover pid 61249: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/approvals-server0/langgraph.json --port 49987 --no-browser --no-re",
+          "stopped leftover pid 61589: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-2/test_the_dev_server_keeps_the_0/langgraph.json --port 50115 --no-b",
+          "stopped leftover pid 61602: W/orders-support-agent/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 61603: W/orders-support-agent/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
+         ],
+         "permission_denials": 0,
+         "usd": 0.53055,
+         "tokens": {
+          "in": 1191062,
+          "cached": 1120474,
+          "out": 10835
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.5833,
+       "mixed": 0.2917
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 46.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.13333,
+         "tokens": {
+          "in": 147984,
+          "cached": 117936,
+          "out": 2886
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 43.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.15235,
+         "tokens": {
+          "in": 201648,
+          "cached": 165936,
+          "out": 2491
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.8,
+       "mixed": 0.4
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 47.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.14085,
+         "tokens": {
+          "in": 177756,
+          "cached": 147644,
+          "out": 3004
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 40.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.1335,
+         "tokens": {
+          "in": 147959,
+          "cached": 116974,
+          "out": 2721
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.8,
+       "mixed": 0.4
+      }
+     },
+     "totals": {
+      "rollouts": 12,
+      "sessions": 12,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 13,
+      "permission_denials": 0,
+      "rollouts_with_permission_denials": 0,
+      "codex_usd_last_attempts": 2.6435,
+      "claude_api_equivalent_usd": 0
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  },
+  "codex-r2": {
+   "generated": "2026-09-28 11:33:27",
+   "harnesses": {
+    "codex": {
+     "meta": {
+      "harness": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "medium",
+      "permission_mode": "",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "candidates": [
+        "graph-agents-cli-workflow"
+       ]
+      },
+      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/r2",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22162,
+       22189
+      ]
+     },
+     "reps": [
+      1,
+      2
+     ],
+     "wall_s": {
+      "1": 287.9,
+      "2": 99.1
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 12,
+       "hard": 0.3333,
+       "soft": 0.7611,
+       "mixed": 0.5472
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 12,
+       "hard": 0.3333,
+       "soft": 0.7611,
+       "mixed": 0.5472
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 12,
+        "hard": 0.3333,
+        "soft": 0.7611,
+        "mixed": 0.5472
+       },
+       "val": {
+        "n": 12,
+        "hard": 0.3333,
+        "soft": 0.7611,
+        "mixed": 0.5472
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.3333,
+         "failed": [
+          "tool",
+          "case",
+          "gate",
+          "proved"
+         ],
+         "reason": "tool: check_recipe.py failed: FAIL: no tool named suggest_recipe (tools: ['get_weather']); case: tests/eval/datasets/basic-dataset.json: `any(c.get('id') == 'recipe-mushrooms' and any(tc.get('name') == 'suggest_recipe' for tc in (get(c, 'ex",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 33.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.14533,
+         "tokens": {
+          "in": 167031,
+          "cached": 130219,
+          "out": 2272
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.3333,
+         "failed": [
+          "tool",
+          "case",
+          "gate",
+          "proved"
+         ],
+         "reason": "tool: check_recipe.py failed: FAIL: no tool named suggest_recipe (tools: ['get_weather']); case: tests/eval/datasets/basic-dataset.json: `any(c.get('id') == 'recipe-mushrooms' and any(tc.get('name') == 'suggest_recipe' for tc in (get(c, 'ex",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 31.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.1197,
+         "tokens": {
+          "in": 124098,
+          "cached": 93296,
+          "out": 2004
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.3333,
+       "mixed": 0.1666
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 24.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.1295,
+         "tokens": {
+          "in": 188819,
+          "cached": 157602,
+          "out": 1662
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 25.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.14296,
+         "tokens": {
+          "in": 231135,
+          "cached": 197504,
+          "out": 1616
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 232.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 8,
+         "leftover_notes": [
+          "stopped leftover pid 50380: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/approvals-server0/langgraph.json --port 60246 --no-browser --no-reload",
+          "stopped leftover pid 50824: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-5/test_the_dev_server_keeps_the_0/langgraph.json --port 60500 --no-browser",
+          "stopped leftover pid 50835: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 50836: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork",
+          "stopped leftover pid 50912: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/approvals-server0/langgraph.json --port 60543 --no-browser --no-reload",
+          "stopped leftover pid 51353: W/forecast-desk/.venv/bin/python W/forecast-desk/.venv/bin/langgraph dev --config W/.bench/tmp/pytest-of-satyabratsrikumar/pytest-6/test_the_dev_server_keeps_the_0/langgraph.json --port 60740 --no-browser",
+          "stopped leftover pid 51362: W/forecast-desk/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)",
+          "stopped leftover pid 51363: W/forecast-desk/.venv/bin/python -c from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=6, pipe_handle=8) --multiprocessing-fork"
+         ],
+         "permission_denials": 0,
+         "usd": 0.50503,
+         "tokens": {
+          "in": 1149169,
+          "cached": 1078908,
+          "out": 9469
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.4,
+         "failed": [
+          "renamed",
+          "dataset",
+          "proved"
+         ],
+         "reason": "renamed: check_arg.py failed: FAIL: get_weather parameters are ['query'], expected city and no query; dataset: the eval cases assert the argument by name (args_subset): rename it there too -- tests/eval/datasets/basic-dataset.json: `all('qu",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 31.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.15776,
+         "tokens": {
+          "in": 183686,
+          "cached": 143204,
+          "out": 2327
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.5,
+       "soft": 0.7,
+       "mixed": 0.6
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8333,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 34.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12844,
+         "tokens": {
+          "in": 126157,
+          "cached": 94326,
+          "out": 2500
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.8333,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 35.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12741,
+         "tokens": {
+          "in": 150762,
+          "cached": 120959,
+          "out": 2393
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.8333,
+       "mixed": 0.4167
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 34.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.12903,
+         "tokens": {
+          "in": 149744,
+          "cached": 119312,
+          "out": 2425
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 39.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.14651,
+         "tokens": {
+          "in": 170212,
+          "cached": 133486,
+          "out": 2334
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.0,
+       "soft": 0.8,
+       "mixed": 0.4
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 38.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.13654,
+         "tokens": {
+          "in": 177320,
+          "cached": 147367,
+          "out": 2683
+         }
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 1,
+         "agent_s": 34.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "usd": 0.11713,
+         "tokens": {
+          "in": 120188,
+          "cached": 91825,
+          "out": 2322
+         }
+        }
+       ],
+       "n": 2,
+       "hard": 0.5,
+       "soft": 0.9,
+       "mixed": 0.7
+      }
+     },
+     "totals": {
+      "rollouts": 12,
+      "sessions": 12,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 8,
+      "permission_denials": 0,
+      "rollouts_with_permission_denials": 0,
+      "codex_usd_last_attempts": 1.9853,
+      "claude_api_equivalent_usd": 0
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  },
+  "claude-final": {
+   "generated": "2026-09-28 11:33:26",
+   "harnesses": {
+    "claude": {
+     "meta": {
+      "harness": "claude",
+      "model": "sonnet",
+      "effort": "medium",
+      "permission_mode": "acceptEdits",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "candidates": [
+        "graph-agents-cli-workflow"
+       ]
+      },
+      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/final",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22400,
+       22430
+      ]
+     },
+     "reps": [
+      1,
+      2,
+      3
+     ],
+     "wall_s": {
+      "1": 476.4,
+      "2": 544.7,
+      "3": 521.3
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 18,
+       "hard": 0.9444,
+       "soft": 0.9889,
+       "mixed": 0.9667
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 18,
+       "hard": 0.9444,
+       "soft": 0.9889,
+       "mixed": 0.9667
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 18,
+        "hard": 0.9444,
+        "soft": 0.9889,
+        "mixed": 0.9667
+       },
+       "val": {
+        "n": 18,
+        "hard": 0.9444,
+        "soft": 0.9889,
+        "mixed": 0.9667
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 20,
+         "agent_s": 219.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2759
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 16,
+         "agent_s": 50.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2761
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 23,
+         "agent_s": 63.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 3,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.3596
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 24.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1465
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 10,
+         "agent_s": 31.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1611
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 27.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1348
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 36,
+         "agent_s": 436.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.5289
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 34,
+         "agent_s": 516.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.6183
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 32,
+         "agent_s": 502.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.483
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 91.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2515
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 17.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1021
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 16.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.0951
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 49.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1993
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 58.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1843
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "covers-provider"
+         ],
+         "reason": "covers-provider: \"our LLM\" names no provider or endpoint: the egress decision goes back to the user -- the final answer lacks /(?i)provider|endpoint|base.?url|openai-compatible|self-hosted|vllm|ollama|on-network|\\bllm\\b|which model/",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 11.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1165
+        }
+       ],
+       "n": 3,
+       "hard": 0.6667,
+       "soft": 0.9333,
+       "mixed": 0.8
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 55.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2144
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 23.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1535
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 10.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1173
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      }
+     },
+     "totals": {
+      "rollouts": 18,
+      "sessions": 18,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 0,
+      "permission_denials": 6,
+      "rollouts_with_permission_denials": 4,
+      "codex_usd_last_attempts": 0.0,
+      "claude_api_equivalent_usd": 4.42
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  },
+  "claude-shipped": {
+   "generated": "2026-09-28 11:33:27",
+   "harnesses": {
+    "claude": {
+     "meta": {
+      "harness": "claude",
+      "model": "sonnet",
+      "effort": "medium",
+      "permission_mode": "acceptEdits",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "workflow": "79049d4e5ef1869f",
+       "scaffold": "69ac60ef59a84d41",
+       "langgraph-code": "a4deab4607c050f8",
+       "eval": "c1392683969e9bbc",
+       "deploy": "1c744b7e804c708b",
+       "observability": "af66b46cb02f8668"
+      },
+      "body_dir": "",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22406,
+       22436
+      ]
+     },
+     "reps": [
+      1,
+      2,
+      3
+     ],
+     "wall_s": {
+      "1": 937.8,
+      "2": 828.4,
+      "3": 777.4
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 18,
+       "hard": 0.5556,
+       "soft": 0.6722,
+       "mixed": 0.6139
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 18,
+       "hard": 0.5556,
+       "soft": 0.6722,
+       "mixed": 0.6139
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 18,
+        "hard": 0.5556,
+        "soft": 0.6722,
+        "mixed": 0.6139
+       },
+       "val": {
+        "n": 18,
+        "hard": 0.5556,
+        "soft": 0.6722,
+        "mixed": 0.6139
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 23,
+         "agent_s": 260.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.376
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 17,
+         "agent_s": 51.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2812
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 19,
+         "agent_s": 325.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.3101
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 23.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1463
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 9,
+         "agent_s": 27.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1465
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 24.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.144
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 29,
+         "agent_s": 530.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.5383
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 27,
+         "agent_s": 579.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.6042
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 27,
+         "agent_s": 424.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.5016
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.1667,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+         "skill_loaded": true,
+         "turns": 113,
+         "agent_s": 900.1,
+         "timed_out": true,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 1,
+         "leftover_notes": [
+          "stopped leftover pid 47616: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22408"
+         ],
+         "permission_denials": 0,
+         "session_mode": "acceptEdits"
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.1667,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 81,
+         "agent_s": 816.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 1,
+         "leftover_notes": [
+          "stopped leftover pid 72992: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22408"
+         ],
+         "permission_denials": 6,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 3.3995
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.1667,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 81,
+         "agent_s": 769.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 5,
+         "leftover_notes": [
+          "stopped leftover pid 81421: W/orders-support-agent/.venv/bin/python .dev-mock-orders-api.py",
+          "stopped leftover pid 82153: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22408",
+          "stopped leftover pid 89044: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 18080",
+          "stopped leftover pid 90299: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 18082",
+          "stopped leftover pid 91297: W/orders-support-agent/.venv/bin/python W/orders-support-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 18083"
+         ],
+         "permission_denials": 7,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 3.0385
+        }
+       ],
+       "n": 3,
+       "hard": 0.0,
+       "soft": 0.1667,
+       "mixed": 0.0833
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.4,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 52,
+         "agent_s": 470.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 1,
+         "leftover_notes": [
+          "stopped leftover pid 35991: W/wiki-onboarding-agent/.venv/bin/python W/wiki-onboarding-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22409"
+         ],
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 1.1018
+        },
+        {
+         "rep": 2,
+         "hard": 0,
+         "soft": 0.4,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 71,
+         "agent_s": 709.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 1.6783
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.0,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks",
+          "covers-provider"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 81,
+         "agent_s": 398.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 2,
+         "leftover_notes": [
+          "stopped leftover pid 76934: W/wiki-assistant/.venv/bin/python W/wiki-assistant/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22409",
+          "stopped leftover pid 77912: W/wiki-assistant/.venv/bin/python W/wiki-assistant/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 18088"
+         ],
+         "permission_denials": 5,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 1.7568
+        }
+       ],
+       "n": 3,
+       "hard": 0.0,
+       "soft": 0.2667,
+       "mixed": 0.1333
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.4,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 73,
+         "agent_s": 705.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 2.2914
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 13.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1106
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.4,
+         "failed": [
+          "no-scaffold",
+          "no-create",
+          "asks"
+         ],
+         "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+         "skill_loaded": true,
+         "turns": 60,
+         "agent_s": 415.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 1,
+         "leftover_notes": [
+          "stopped leftover pid 77926: W/pr-digest-agent/.venv/bin/python W/pr-digest-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22410"
+         ],
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 1.6282
+        }
+       ],
+       "n": 3,
+       "hard": 0.3333,
+       "soft": 0.6,
+       "mixed": 0.4667
+      }
+     },
+     "totals": {
+      "rollouts": 18,
+      "sessions": 18,
+      "infra_failures": 0,
+      "timeouts": 1,
+      "skill_not_loaded": 0,
+      "leftover_processes": 11,
+      "permission_denials": 24,
+      "rollouts_with_permission_denials": 9,
+      "codex_usd_last_attempts": 0.0,
+      "claude_api_equivalent_usd": 18.05
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  },
+  "claude-r2": {
+   "generated": "2026-09-28 11:33:27",
+   "harnesses": {
+    "claude": {
+     "meta": {
+      "harness": "claude",
+      "model": "sonnet",
+      "effort": "medium",
+      "permission_mode": "acceptEdits",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+g73740d8",
+      "skills": {
+       "candidates": [
+        "graph-agents-cli-workflow"
+       ]
+      },
+      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3c/bodies/r2",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22412,
+       22442
+      ]
+     },
+     "reps": [
+      1,
+      2,
+      3
+     ],
+     "wall_s": {
+      "1": 475.4,
+      "2": 529.0,
+      "3": 438.3
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 18,
+       "hard": 0.8333,
+       "soft": 0.9389,
+       "mixed": 0.8861
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 18,
+       "hard": 0.8333,
+       "soft": 0.9389,
+       "mixed": 0.8861
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 18,
+        "hard": 0.8333,
+        "soft": 0.9389,
+        "mixed": 0.8861
+       },
+       "val": {
+        "n": 18,
+        "hard": 0.8333,
+        "soft": 0.9389,
+        "mixed": 0.8861
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 18,
+         "agent_s": 53.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2673
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 18,
+         "agent_s": 272.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.248
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 20,
+         "agent_s": 326.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2894
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 23.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1462
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 27.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1475
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 24.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1482
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 25,
+         "agent_s": 435.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.4138
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 30,
+         "agent_s": 506.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 3,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.5435
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 26,
+         "agent_s": 419.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.4562
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 0,
+         "soft": 0.8333,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 76.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1844
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 0.8333,
+         "failed": [],
+         "reason": "covers-provider: the final answer lacks /(?i)provider|model/",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 17.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1073
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.8333,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 42.2,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1424
+        }
+       ],
+       "n": 3,
+       "hard": 0.3333,
+       "soft": 0.8333,
+       "mixed": 0.5833
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 47.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1479
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 77.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1748
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 56.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1446
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 0.8,
+         "failed": [],
+         "reason": "covers-trigger: the final answer lacks /(?i)schedul|cron|trigger|every morning|who (calls|starts|runs)/",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 38.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1352
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 0.8,
+         "failed": [],
+         "reason": "covers-trigger: the final answer lacks /(?i)schedul|cron|trigger|every morning|who (calls|starts|runs)/",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 10.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.0934
+        },
+        {
+         "rep": 3,
+         "hard": 0,
+         "soft": 0.8,
+         "failed": [
+          "asks"
+         ],
+         "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+         "skill_loaded": true,
+         "turns": 8,
+         "agent_s": 66.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1758
+        }
+       ],
+       "n": 3,
+       "hard": 0.6667,
+       "soft": 0.8,
+       "mixed": 0.7333
+      }
+     },
+     "totals": {
+      "rollouts": 18,
+      "sessions": 18,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 0,
+      "permission_denials": 5,
+      "rollouts_with_permission_denials": 3,
+      "codex_usd_last_attempts": 0.0,
+      "claude_api_equivalent_usd": 3.97
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  }
+ },
+ "rescore_after_3036936": {
+  "run_roots": 17,
+  "rollouts": 357,
+  "changed": [
+   {
+    "run": "r3-train-h2h-approved/claude/rep2",
+    "task": "wf-end-to-end-tool",
+    "from": {
+     "hard": 0,
+     "soft": 0.8333,
+     "fail_reason": "proved: the agent never ran a command matching /graph-agents-cli\\s+eval\\s+run/"
+    },
+    "to": {
+     "hard": 1,
+     "soft": 1.0
+    }
+   },
+   {
+    "run": "r3-train-h2h-approved/claude/rep2",
+    "task": "wf-rename-arg-propagate",
+    "from": {
+     "hard": 0,
+     "soft": 0.8,
+     "fail_reason": "proved: behaviour is proven by the eval gate, not by lint alone -- the agent never ran a command matching /graph-agents-cli\\s+eval\\s+run/"
+    },
+    "to": {
+     "hard": 1,
+     "soft": 1.0
+    }
+   }
+  ]
+ }
+}

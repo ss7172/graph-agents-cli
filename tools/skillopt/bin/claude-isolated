@@ -1,0 +1,33 @@
+#!/bin/sh
+# Copyright 2026 graph-agents-cli contributors
+# Licensed under the Apache License, Version 2.0 (see LICENSE at the repository root).
+#
+# SkillOpt's optimizer calls (model.claude_code_exec_path): the developer's Claude Code, logged in
+# through their user configuration, with nothing else of it (DESIGN section 3.1): no user or
+# local settings, hooks, plugins, MCP servers, connectors, memory, bundled skills or workflows,
+# and an environment built from an allowlist. SkillOpt passes the prompt on stdin and its own
+# flags (-p, --output-format json, --tools "", --model, --effort, ...) as arguments.
+CLAUDE="${GAC_SKILLOPT_CLAUDE_BIN:-$(command -v claude)}"
+if [ -z "$CLAUDE" ]; then
+  echo "claude-isolated: claude not found (set GAC_SKILLOPT_CLAUDE_BIN)" >&2
+  exit 127
+fi
+exec env -i \
+  HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" SHELL=/bin/sh LANG="${LANG:-en_US.UTF-8}" \
+  TERM="${TERM:-dumb}" TMPDIR="${TMPDIR:-/tmp}" PATH="$(dirname "$CLAUDE"):/usr/bin:/bin:/usr/sbin:/sbin" \
+  ENABLE_CLAUDEAI_MCP_SERVERS=false \
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
+  CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 \
+  CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL=1 \
+  CLAUDE_CODE_DISABLE_POLICY_SKILLS=1 \
+  CLAUDE_CODE_DISABLE_WORKFLOWS=1 \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  DISABLE_DOCTOR_COMMAND=1 \
+  DISABLE_BUILTIN_AGENTS=1 \
+  DISABLE_AUTOUPDATER=1 \
+  "$CLAUDE" \
+  --setting-sources project \
+  --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+  --settings '{"disableAllHooks":true}' \
+  --no-session-persistence \
+  "$@"

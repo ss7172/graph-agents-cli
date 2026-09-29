@@ -1,0 +1,40 @@
+{
+  "train": [
+    "eval-tool-case-lisbon",
+    "eval-quality-metric-task-success",
+    "eval-fix-step-limit",
+    "eval-fix-judge-key",
+    "eval-no-tools-case",
+    "eval-quality-metric-groundedness"
+  ],
+  "val": [
+    "eval-tool-case-tokyo",
+    "eval-fix-missing-threshold",
+    "eval-fix-run-wide-rate",
+    "eval-quality-rate-four-cases",
+    "eval-regex-degrees-case",
+    "eval-fix-wrong-case"
+  ],
+  "test": [
+    "eval-multiturn-order",
+    "eval-honest-report",
+    "eval-compare-regression"
+  ],
+  "hashes": {
+    "eval-tool-case-lisbon": "104c1c4a7bdc0f7f",
+    "eval-quality-metric-task-success": "79cde1a902457ad6",
+    "eval-fix-step-limit": "27f7d33ebc81cedf",
+    "eval-fix-judge-key": "16bf2cf2ed83ad03",
+    "eval-no-tools-case": "52c6c0ffe71fd4af",
+    "eval-quality-metric-groundedness": "fb9762e1f1a7fe79",
+    "eval-tool-case-tokyo": "f2bdf053b293337e",
+    "eval-fix-missing-threshold": "a22de6289c6bd4fe",
+    "eval-fix-run-wide-rate": "f51b79292c488217",
+    "eval-quality-rate-four-cases": "e39440664e92c87c",
+    "eval-regex-degrees-case": "af7843ff7ccf4fb1",
+    "eval-fix-wrong-case": "809a3888316c5483",
+    "eval-multiturn-order": "f186eaf605e83852",
+    "eval-honest-report": "09e8bba53fc4a52c",
+    "eval-compare-regression": "34c7049382cbbd81"
+  }
+}

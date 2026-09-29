@@ -1,0 +1,55 @@
+{
+  "id": "scaffold-enhance-registry",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-enhance",
+  "task_type": "scaffold/enhance",
+  "fixture": {
+    "kind": "project",
+    "name": "inventory-agent",
+    "create_args": [],
+    "install": false
+  },
+  "prompt": "In inventory-agent/, `graph-agents-cli build --dry-run` refuses because of a registry placeholder. Our registry is registry.example.com/platform. Fix the project so that build and deploy use it.",
+  "checks": [
+    {
+      "id": "manifest",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.registry') == 'registry.example.com/platform'"
+    },
+    {
+      "id": "values",
+      "type": "yaml",
+      "file": "deployment/helm/inventory-agent/values.yaml",
+      "expr": "get(data, 'image.repository') == 'registry.example.com/platform/inventory-agent'",
+      "why": "the chart's image.repository must name the registry too"
+    },
+    {
+      "id": "agent-env",
+      "type": "file",
+      "path": ".github/agent.env",
+      "regex": "^IMAGE_REPOSITORY=registry\\.example\\.com/platform/inventory-agent$",
+      "why": "CI reads IMAGE_REPOSITORY from .github/agent.env"
+    },
+    {
+      "id": "build",
+      "type": "cmd",
+      "run": "graph-agents-cli build --dry-run",
+      "output_regex": "registry\\.example\\.com/platform/inventory-agent"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "tests"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "values",
+    "agent-env"
+  ],
+  "reference": "`graph-agents-cli scaffold enhance --registry registry.example.com/platform -y` from inventory-agent/ sets create_params.registry in the manifest, image.repository in the chart's values.yaml and IMAGE_REPOSITORY in .github/agent.env together; `build --dry-run` then shows registry.example.com/platform/inventory-agent."
+}

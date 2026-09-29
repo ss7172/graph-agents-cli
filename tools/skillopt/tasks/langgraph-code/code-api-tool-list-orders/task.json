@@ -1,0 +1,45 @@
+{
+  "id": "code-api-tool-list-orders",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-tool",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "shop-support",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add orders --base-url-env ORDERS_API_BASE_URL --auth bearer --token-env ORDERS_API_TOKEN --access read-only",
+      "graph-agents-cli api allow orders listOrders --method GET --path /orders"
+    ]
+  },
+  "prompt": "In shop-support/, add a tool `list_orders(status: str)` that lists the orders with a given status from the orders API (`GET /orders?status=<status>`, operationId `listOrders`). The API is already declared in api-policy.yaml.",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_list_orders.py",
+      "why": "the call goes through the policy client, sends status as a query parameter and is declared in API_CALLS"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "why": "ruff plus the static API-policy check"
+    },
+    {
+      "id": "policy-untouched",
+      "type": "unchanged",
+      "paths": [
+        "api-policy.yaml",
+        "graph-agents-cli-manifest.yaml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "A tool module with a literal `API_CALLS` entry `{\"api\": \"orders\", \"method\": \"GET\", \"operation_id\": \"listOrders\", \"path\": \"/orders\"}` and an async `list_orders(status, runtime: ToolRuntime[Any])` calling `get_client(\"orders\", ...).get(\"/orders\", operation_id=\"listOrders\", params={\"status\": status})`, plus `TOOLS`; `lint` checks the declaration against the policy."
+}

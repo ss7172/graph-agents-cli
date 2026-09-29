@@ -1,0 +1,46 @@
+{
+  "id": "code-write-tool-guard",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-untrusted-input",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "orders-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add orders --base-url-env ORDERS_API_BASE_URL --auth bearer --token-env ORDERS_API_TOKEN --access read-write",
+      "graph-agents-cli api allow orders getOrder --method GET --path '/orders/{order_id}'",
+      "graph-agents-cli api allow orders cancelOrder --method POST --path '/orders/{order_id}/cancel'"
+    ]
+  },
+  "prompt": "In orders-agent/, add a tool `cancel_order(order_id: str)` that cancels an order through the orders API (`POST /orders/{order_id}/cancel`, operationId `cancelOrder`).",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_cancel.py",
+      "why": "a write tool acts only on a record the user named (require_user_mentioned), so text planted in tool output cannot pick the record"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "why": "ruff plus the static API-policy check"
+    },
+    {
+      "id": "policy-untouched",
+      "type": "unchanged",
+      "paths": [
+        "api-policy.yaml",
+        "graph-agents-cli-manifest.yaml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "A module with a literal API_CALLS entry for POST cancelOrder and an async `cancel_order(order_id, runtime: ToolRuntime[Any])` that first calls `require_user_mentioned(order_id, runtime)`, then `get_client(\"orders\", context=runtime.context).post(\"/orders/{order_id}/cancel\", operation_id=\"cancelOrder\", path_params={\"order_id\": order_id})`; TOOLS; lint passes. Optionally propose an approval gate (`graph-agents-cli api approval`) without adding it."
+}

@@ -1,0 +1,70 @@
+# gac-bench on Claude Code (the developer's plan): full-size training of one skill.
+#   python -m gac_skillopt.run train --config configs/claude.yaml --skill eval
+# Rollouts: Claude Code `sonnet` with the isolation of DESIGN section 3.1. Optimizer: Claude Code
+# `opus` as a chat model through bin/claude-isolated (set by the runner). Nothing is billed to an
+# API key. Tier 2 skills (deploy, workflow, observability): add
+# `--cfg-options train.num_epochs=2`.
+_base_: _base.yaml
+
+model:
+  optimizer: opus
+  target: sonnet
+  optimizer_backend: claude_code_exec
+  target_backend: claude_code_exec   # bookkeeping only: the adapter runs the rollouts itself
+  claude_code_exec_use_sdk: cli      # the SDK path would bypass bin/claude-isolated
+  claude_code_exec_effort: high      # optimizer calls only; rollouts use env.harness_effort
+  reasoning_effort: high
+
+train:
+  num_epochs: 3
+  batch_size: 5
+  accumulation: 1
+  seed: 42
+
+gradient:
+  minibatch_size: 3
+  merge_batch_size: 4
+  analyst_workers: 4
+  failure_only: false
+
+optimizer:
+  learning_rate: 3
+  min_learning_rate: 1
+  lr_scheduler: cosine
+  lr_control_mode: fixed
+  skill_update_mode: patch
+  use_slow_update: true
+  slow_update_samples: 5
+  slow_update_gate_with_selection: true
+  longitudinal_pair_policy: mixed
+  use_meta_skill: true
+  use_skill_aware_reflection: false
+
+evaluation:
+  use_gate: true
+  gate_metric: mixed
+  gate_mixed_weight: 0.5
+  sel_env_num: 0        # the whole selection split
+  test_env_num: 0       # the whole test split
+  eval_test: true
+
+env:
+  name: gac_skills
+  skill: graph-agents-cli-eval      # the runner sets it from --skill
+  harness: claude
+  harness_model: sonnet
+  harness_effort: medium
+  harness_max_turns: 80
+  # Rollouts' Claude Code permission mode, always with the workspace's Bash sandbox. The owner's
+  # bypassPermissions choice failed its preflight on Claude Code 2.1.283 (results/preflight-r3.md):
+  # the Write/Edit tools wrote outside the workspace and example.com was reachable.
+  harness_permission_mode: acceptEdits
+  # Each selection (val) item runs this many times and the gate sees the per-item mean
+  # (repetitions run in parallel slots; train and test items run once).
+  val_reps: 2
+  slots: 4                           # parallel rollouts; ports 22050+slot and 22075+slot
+  port_base: 22050
+  task_timeout_s: 0                  # 0: each task's own timeout_s
+  factcheck: true
+  keep_workspaces: false
+  split_mode: split_dir              # informational: the loader reads splits/<skill>.json

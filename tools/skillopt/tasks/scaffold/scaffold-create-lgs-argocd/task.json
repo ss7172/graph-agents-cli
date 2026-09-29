@@ -1,0 +1,63 @@
+{
+  "id": "scaffold-create-lgs-argocd",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-create",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "support-bot"
+  },
+  "prompt": "Create a new agent project named `support-bot` in the current directory. The spec is approved and every choice is made: it runs on our Kubernetes cluster on LangGraph Server with Postgres; images go to `harbor.acme.internal/agents`; delivery is through Argo CD; callers are individual users who sign in through our OIDC provider; the model provider is Anthropic with its default model; our coding agent is Claude Code. Only scaffold it: don't install dependencies and don't create a git repository.",
+  "checks": [
+    {
+      "id": "architecture",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.runtime') == 'langgraph-server' and get(data, 'create_params.deployment_target') == 'kubernetes' and get(data, 'create_params.checkpointer') == 'postgres' and get(data, 'create_params.cd') == 'argocd'"
+    },
+    {
+      "id": "choices",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.registry') == 'harbor.acme.internal/agents' and get(data, 'create_params.auth_policy') == 'jwt' and get(data, 'create_params.model_provider') == 'anthropic'",
+      "why": "per-user OIDC callers are the jwt auth policy"
+    },
+    {
+      "id": "guidance",
+      "type": "file",
+      "path": "CLAUDE.md",
+      "why": "Claude Code reads CLAUDE.md: --agent-guidance-filename CLAUDE.md"
+    },
+    {
+      "id": "no-agents-md",
+      "type": "file",
+      "path": "AGENTS.md",
+      "exists": false
+    },
+    {
+      "id": "argocd-files",
+      "type": "file",
+      "path": "deployment/argocd/*.yaml"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "guidance",
+    "no-agents-md"
+  ],
+  "reference": "`graph-agents-cli create support-bot --runtime langgraph-server --deployment-target kubernetes --checkpointer postgres --registry harbor.acme.internal/agents --cd argocd --auth-policy jwt --model-provider anthropic --agent-guidance-filename CLAUDE.md -y` (no mkdir first, no install, no git init)."
+}

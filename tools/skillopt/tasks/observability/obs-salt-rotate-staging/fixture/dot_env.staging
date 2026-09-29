@@ -1,0 +1,5 @@
+# staging keys (placeholders for the exercise; never real secrets)
+OPENAI_API_KEY=sk-placeholder-staging
+API_KEY=staging-placeholder
+POSTGRES_DSN=postgresql://agent:placeholder@db.staging.internal:5432/agent?sslmode=verify-full
+PRINCIPAL_HASH_SALT=s4lt-leaked-in-chat-0001xyz

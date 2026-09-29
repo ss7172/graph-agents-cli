@@ -1,0 +1,48 @@
+{
+  "id": "obs-langsmith-key-no-traces",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-debug",
+  "task_type": "observability/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "insight-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "install": false,
+    "env": {
+      "LANGSMITH_API_KEY": "lsv2_pt_placeholder_0000",
+      "TRACING_ENABLED": "false"
+    }
+  },
+  "prompt": "I put my LangSmith key into insight-agent/.env, but no traces show up in LangSmith when I run the agent locally. Fix it.",
+  "checks": [
+    {
+      "id": "enabled",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('TRACING_ENABLED', '').lower() == 'true'",
+      "why": "the key alone does nothing: TRACING_ENABLED=true is the opt-in"
+    },
+    {
+      "id": "key-kept",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('LANGSMITH_API_KEY') == 'lsv2_pt_placeholder_0000' and data.get('TRACE_CAPTURE', 'metadata') == 'metadata' and data.get('MODEL_PROVIDER') == 'fake'",
+      "why": "keep the key and the metadata capture; switching to full is the user's egress decision"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "enabled"
+  ],
+  "reference": "TRACING_ENABLED is false in .env; tracing is off unless it is true (the LangSmith key alone does nothing). Set TRACING_ENABLED=true (LangSmith is used because the key is set), keep TRACE_CAPTURE=metadata."
+}

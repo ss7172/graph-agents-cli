@@ -1,0 +1,56 @@
+{
+  "id": "wf-rename-arg-propagate",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-change-propagation",
+  "task_type": "workflow/change",
+  "fixture": {
+    "kind": "project",
+    "name": "forecast-desk",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In forecast-desk/, rename the weather tool's argument from `query` to `city` everywhere it matters, and prove that nothing broke.",
+  "checks": [
+    {
+      "id": "renamed",
+      "type": "pyfile",
+      "script": "check_arg.py"
+    },
+    {
+      "id": "dataset",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "all('query' not in (tc.get('args_subset') or {}) for c in data.get('cases', []) for tc in (get(c, 'expect.tool_calls') or [])) and {'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])} and any((tc.get('args_subset') or {}).get('city') == 'Paris' for c in data.get('cases', []) if c.get('id') == 'weather' for tc in (get(c, 'expect.tool_calls') or []))",
+      "why": "the eval cases assert the argument by name (args_subset): rename it there too"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "proved",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "why": "behaviour is proven by the eval gate, not by lint alone"
+    }
+  ],
+  "broken_fails": [
+    "dataset",
+    "gate",
+    "proved"
+  ],
+  "reference": "Rename the parameter in app/tools/weather.py (get_weather(city: str), its uses and docstring), then every `args_subset` {\"query\": ...} in tests/eval/datasets/basic-dataset.json to {\"city\": ...} (weather and weather-follow-up), and prove it with `graph-agents-cli lint` and `graph-agents-cli eval run` (exit 0)."
+}

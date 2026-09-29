@@ -1,0 +1,61 @@
+{
+  "id": "obs-log-level-prod",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-logs",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "payouts-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "The production logs of payouts-agent/ are too noisy. In production only warnings and errors should be logged; every other environment stays as it is. Don't deploy anything.",
+  "checks": [
+    {
+      "id": "prod-level",
+      "type": "yaml",
+      "file": "deployment/helm/payouts-agent/values-prod.yaml",
+      "expr": "str(get(data, 'env.LOG_LEVEL', '')).upper() == 'WARNING'",
+      "why": "LOG_LEVEL is chart env configuration: values-prod.yaml env.LOG_LEVEL"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/payouts-agent/values.yaml",
+        "deployment/helm/payouts-agent/values-dev.yaml",
+        "deployment/helm/payouts-agent/values-staging.yaml",
+        "app",
+        ".env"
+      ],
+      "why": "values.yaml is shared by every environment; the app reads LOG_LEVEL already"
+    },
+    {
+      "id": "next-step",
+      "type": "transcript",
+      "final_regex": [
+        "deploy[^\\n]*--env[ =]?prod"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "prod-level",
+    "others-untouched"
+  ],
+  "reference": "Set `env: {LOG_LEVEL: WARNING}` in deployment/helm/payouts-agent/values-prod.yaml (keeping APP_ENV: prod); no code change, values.yaml untouched. The ConfigMap checksum rolls the pods on the next `graph-agents-cli deploy --env prod`."
+}

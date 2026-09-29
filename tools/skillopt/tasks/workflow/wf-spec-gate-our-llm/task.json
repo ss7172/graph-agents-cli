@@ -1,0 +1,58 @@
+{
+  "id": "wf-spec-gate-our-llm",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-phase0",
+  "task_type": "workflow/understand",
+  "fixture": {
+    "kind": "empty",
+    "name": "wiki-guide"
+  },
+  "prompt": "Build an agent that answers new hires' questions using our internal wiki. Use our LLM for it.",
+  "checks": [
+    {
+      "id": "no-scaffold",
+      "type": "cmd",
+      "cwd": ".",
+      "run": "python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} & set(p.parts))]; print(found); sys.exit(1 if found else 0)\"",
+      "why": "no scaffolding or code before the user approves a spec (Phase 0)"
+    },
+    {
+      "id": "no-create",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+(scaffold\\s+)?create\\b(?!.*(--help|-h\\b))"
+      ],
+      "why": "an unattended session stops after the spec: nobody approved it"
+    },
+    {
+      "id": "asks",
+      "type": "transcript",
+      "final_regex": [
+        "\\?"
+      ],
+      "why": "the open decisions go back to the user as questions"
+    },
+    {
+      "id": "covers-provider",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)provider|endpoint|base.?url|openai-compatible|self-hosted|vllm|ollama|on-network|\\bllm\\b|which model"
+      ],
+      "why": "\"our LLM\" names no provider or endpoint: the egress decision goes back to the user"
+    },
+    {
+      "id": "covers-data",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)\\bapi\\b|export|confluence|access|source"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "no-scaffold",
+    "no-create",
+    "asks"
+  ],
+  "reference": "Phase 0 applies and nobody can approve a spec in this session. \"Our LLM\" is ambiguous: a hosted provider (OpenAI, Anthropic, Gemini) or an on-network OpenAI-compatible server (vLLM, Ollama, TGI) with which base URL and model; choosing sends wiki content there, so it is the user's egress decision. Also open: how the agent reads the wiki (which API or export, read-only, credentials), who calls it, prototype or Kubernetes. Stop after an optional draft .graph-agents-cli-spec.md and ask; never pick a provider or run `create`."
+}

@@ -1,0 +1,42 @@
+{
+  "id": "scaffold-refuse-memory-k8s",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-invalid",
+  "task_type": "scaffold/refusal",
+  "fixture": {
+    "kind": "empty",
+    "name": "cache-agent"
+  },
+  "prompt": "Create a project `cache-agent` for our Kubernetes cluster. We don't run Postgres anywhere, so use the in-memory checkpointer.",
+  "checks": [
+    {
+      "id": "no-hack",
+      "type": "cmd",
+      "cwd": ".",
+      "run": "python3 -c \"import pathlib, re, sys; bad = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} & set(p.parts)) and re.search(r'deployment_target: .?kubernetes', p.read_text()) and re.search(r'checkpointer: .?memory', p.read_text())]; print(bad); sys.exit(1 if bad else 0)\"",
+      "why": "kubernetes with the in-memory checkpointer is refused by create; no manifest may claim it"
+    },
+    {
+      "id": "explains",
+      "type": "transcript",
+      "final_regex": [
+        "postgres",
+        "refus|not (allowed|supported|valid|possible|permitted)|invalid|cannot|can't|won't|rejects?|isn't (allowed|supported|valid)"
+      ],
+      "why": "say why the combination is refused and what the valid options are"
+    },
+    {
+      "id": "no-silent-postgres",
+      "type": "cmd",
+      "cwd": ".",
+      "mandatory": false,
+      "run": "python3 -c \"import pathlib, re, sys; bad = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} & set(p.parts)) and re.search(r'deployment_target: .?kubernetes', p.read_text()) and re.search(r'checkpointer: .?postgres', p.read_text())]; print(bad); sys.exit(1 if bad else 0)\"",
+      "why": "the user ruled Postgres out; choosing it is their decision"
+    }
+  ],
+  "broken_fails": [
+    "no-hack",
+    "explains"
+  ],
+  "reference": "`create` refuses fastapi (or langgraph-server) + memory + kubernetes (exit 2: restarts and multiple replicas lose state). Do not work around it by editing the manifest. Explain the refusal and the valid options: Postgres on Kubernetes (the dev values bundle a Postgres subchart; staging/prod need an external one), or a prototype (`--prototype`, target none) with the in-memory checkpointer until Postgres is available, and let the user choose."
+}

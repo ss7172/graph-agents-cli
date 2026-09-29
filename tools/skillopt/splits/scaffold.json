@@ -1,0 +1,42 @@
+{
+  "train": [
+    "scaffold-create-lgs-argocd",
+    "scaffold-create-helmpush-custom",
+    "scaffold-enhance-add-argocd",
+    "scaffold-guidance-gemini-only",
+    "scaffold-guidance-codex-team",
+    "scaffold-create-onprem-vllm",
+    "scaffold-guidance-default-prototype"
+  ],
+  "val": [
+    "scaffold-create-prototype-gemini",
+    "scaffold-enhance-registry",
+    "scaffold-guidance-mixed-team",
+    "scaffold-guidance-unstated",
+    "scaffold-guidance-claude-team",
+    "scaffold-enhance-jwt-okta",
+    "scaffold-guidance-default-lgs"
+  ],
+  "test": [
+    "scaffold-refuse-memory-k8s",
+    "scaffold-create-process"
+  ],
+  "hashes": {
+    "scaffold-create-lgs-argocd": "37249ffe4e6ed37c",
+    "scaffold-create-helmpush-custom": "8034e0bddf9c7612",
+    "scaffold-enhance-add-argocd": "2b2982b1440f1fe6",
+    "scaffold-guidance-gemini-only": "9b267bbca5f84e02",
+    "scaffold-guidance-codex-team": "d9d65a0170aa38b9",
+    "scaffold-create-onprem-vllm": "5f038134231f47c0",
+    "scaffold-guidance-default-prototype": "15d4a3eb2707c532",
+    "scaffold-create-prototype-gemini": "52eeb393e179fed8",
+    "scaffold-enhance-registry": "64ac83dc7e261a51",
+    "scaffold-guidance-mixed-team": "41f9a96957de18d2",
+    "scaffold-guidance-unstated": "aa41e055684946fd",
+    "scaffold-guidance-claude-team": "f95b719fa8f030e8",
+    "scaffold-enhance-jwt-okta": "ac6383b7fc0dc1f1",
+    "scaffold-guidance-default-lgs": "39db703c11cd2937",
+    "scaffold-refuse-memory-k8s": "b0f4b94d8696d24b",
+    "scaffold-create-process": "b21c1b6651698579"
+  }
+}

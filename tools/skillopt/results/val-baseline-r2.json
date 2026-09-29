@@ -1,0 +1,4637 @@
+{
+ "generated": "2026-09-27 22:23:32",
+ "harnesses": {
+  "claude": {
+   "meta": {
+    "harness": "claude",
+    "model": "sonnet",
+    "effort": "medium",
+    "permission_mode": "acceptEdits",
+    "max_turns": 80,
+    "cli": "graph-agents-cli, version 0.2.0+gb35b246",
+    "skills": {
+     "workflow": "79049d4e5ef1869f",
+     "scaffold": "69ac60ef59a84d41",
+     "langgraph-code": "a4deab4607c050f8",
+     "eval": "c1392683969e9bbc",
+     "deploy": "1c744b7e804c708b",
+     "observability": "af66b46cb02f8668"
+    },
+    "body_dir": "",
+    "splits": [
+     "train",
+     "val"
+    ],
+    "ports": [
+     22400,
+     22432
+    ],
+    "merged": [
+     {
+      "from": "runs/r2base-add/claude/rep1/summary.json",
+      "run_name": "base-claude-r1-222140",
+      "replaced": [
+       "deploy-kube-contexts"
+      ],
+      "added": [
+       "scaffold-guidance-default-lgs",
+       "scaffold-guidance-default-prototype"
+      ],
+      "codex_usd": 0.0,
+      "at": "2026-09-27 22:23:16"
+     }
+    ]
+   },
+   "reps": [
+    1,
+    2
+   ],
+   "wall_s": {
+    "1": 1267.6,
+    "2": 2086.0
+   },
+   "overall": {
+    "train": {
+     "n": 74,
+     "hard": 0.8919,
+     "soft": 0.9212,
+     "mixed": 0.9065
+    },
+    "val": {
+     "n": 74,
+     "hard": 0.8784,
+     "soft": 0.9275,
+     "mixed": 0.9029
+    },
+    "test": {
+     "n": 0,
+     "hard": null,
+     "soft": null,
+     "mixed": null
+    },
+    "all": {
+     "n": 148,
+     "hard": 0.8851,
+     "soft": 0.9243,
+     "mixed": 0.9047
+    }
+   },
+   "skills": {
+    "deploy": {
+     "all": {
+      "n": 24,
+      "hard": 0.9583,
+      "soft": 0.9917,
+      "mixed": 0.975
+     },
+     "train": {
+      "n": 12,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     },
+     "val": {
+      "n": 12,
+      "hard": 0.9167,
+      "soft": 0.9833,
+      "mixed": 0.95
+     }
+    },
+    "eval": {
+     "all": {
+      "n": 24,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     },
+     "train": {
+      "n": 12,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     },
+     "val": {
+      "n": 12,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     }
+    },
+    "langgraph-code": {
+     "all": {
+      "n": 24,
+      "hard": 0.9583,
+      "soft": 0.9667,
+      "mixed": 0.9625
+     },
+     "train": {
+      "n": 12,
+      "hard": 1.0,
+      "soft": 0.9833,
+      "mixed": 0.9916
+     },
+     "val": {
+      "n": 12,
+      "hard": 0.9167,
+      "soft": 0.95,
+      "mixed": 0.9333
+     }
+    },
+    "observability": {
+     "all": {
+      "n": 24,
+      "hard": 0.9583,
+      "soft": 0.9861,
+      "mixed": 0.9722
+     },
+     "train": {
+      "n": 12,
+      "hard": 0.9167,
+      "soft": 0.9722,
+      "mixed": 0.9445
+     },
+     "val": {
+      "n": 12,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     }
+    },
+    "scaffold": {
+     "all": {
+      "n": 28,
+      "hard": 0.8214,
+      "soft": 0.9143,
+      "mixed": 0.8679
+     },
+     "train": {
+      "n": 14,
+      "hard": 0.9286,
+      "soft": 0.9429,
+      "mixed": 0.9357
+     },
+     "val": {
+      "n": 14,
+      "hard": 0.7143,
+      "soft": 0.8857,
+      "mixed": 0.8
+     }
+    },
+    "workflow": {
+     "all": {
+      "n": 24,
+      "hard": 0.625,
+      "soft": 0.6889,
+      "mixed": 0.6569
+     },
+     "train": {
+      "n": 12,
+      "hard": 0.5,
+      "soft": 0.625,
+      "mixed": 0.5625
+     },
+     "val": {
+      "n": 12,
+      "hard": 0.75,
+      "soft": 0.7528,
+      "mixed": 0.7514
+     }
+    }
+   },
+   "tasks": {
+    "code-api-allow-new-op": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-policy-boundary",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "ran-lint: the agent never ran a command matching /graph-agents-cli\\s+(lint|api\\s+check)/",
+       "skill_loaded": true,
+       "turns": 18,
+       "agent_s": 509.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2951
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "policy-untouched",
+        "no-widen"
+       ],
+       "reason": "policy-untouched: allow-listing a new operation is the user's reviewed decision, never the agent's -- changed: api-policy.yaml (changed); no-widen: changing api-policy.yaml is the user's reviewed decision -- the agent ran /graph-agents-cli\\",
+       "skill_loaded": true,
+       "turns": 16,
+       "agent_s": 65.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2574
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.7,
+     "mixed": 0.6
+    },
+    "code-api-limits-recursion": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-api-limits",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 338.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3914
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 23,
+       "agent_s": 348.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3701
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-api-new-billing": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-new",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 20,
+       "agent_s": 261.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3658
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 25,
+       "agent_s": 821.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.4549
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-api-tool-get-item": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-api-tool",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 240.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2212
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 312.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2355
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-api-tool-list-orders": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-tool",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 29,
+       "agent_s": 307.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.5014
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 251.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2172
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-approval-refund-requester": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-approval-gate",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 581.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3835
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 18,
+       "agent_s": 338.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3006
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-approval-role-finance": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-approval-gate",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 43.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2296
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 317.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3397
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-create-ticket-body": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-write-body",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 257.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.243
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 292.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2337
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-policy-no-widen": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-policy-boundary",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 33.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1586
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "ran-lint: the agent never ran a command matching /graph-agents-cli\\s+(lint|api\\s+check)/",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 39.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2195
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 0.9,
+     "mixed": 0.95
+    },
+    "code-system-prompt-preserve": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-preservation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": false,
+       "turns": 4,
+       "agent_s": 11.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0715
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": false,
+       "turns": 5,
+       "agent_s": 52.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0823
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-temperature-tool": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-plain-tool",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 248.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2289
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 322.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2422
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-update-ticket-status": {
+     "skill": "langgraph-code",
+     "split": "train",
+     "family": "code-api-write-body",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 328.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.247
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 22,
+       "agent_s": 599.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 8,
+       "api_equivalent_usd": 0.3461
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-api-url-prod": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 42.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2439
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 36.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1877
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-argocd-secrets-not-git": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-secrets-ownership",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 38.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1352
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 58.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1625
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-dry-run-plan": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-preview",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 47.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2154
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 24.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1475
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-helmpush-rotate-key": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-secrets-ownership",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 18.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1113
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 15.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1032
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-helmpush-values-rerun": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-modes",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 24.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1722
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.8,
+       "failed": [
+        "rollout-path"
+       ],
+       "reason": "rollout-path: pushes that only change values-*.yaml do not start the staging workflow: run it by hand from main -- the final answer lacks /(?i)workflow_dispatch|by hand|manual|re-?run|trigger|run (the )?[`'\"]?staging[`'\"]? (workflow|job)/",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 30.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.145
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.9,
+     "mixed": 0.7
+    },
+    "deploy-ingress-staging": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 49.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2489
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 40.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2317
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-jwt-staging": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 22.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1602
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 25.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1235
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-kube-contexts": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-context",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 21.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.136
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 37.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1678
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-placeholder-url": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 32.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1735
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 68.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1513
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-prod-gateway-tls": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 41.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2445
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 52.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.264
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-secret-key": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-secrets",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 17,
+       "agent_s": 62.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2555
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 41.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1951
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-staging-gateway": {
+     "skill": "deploy",
+     "split": "train",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 14,
+       "agent_s": 46.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2206
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 43.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2118
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-judge-key": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-config-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 30.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0917
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 49.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1338
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-missing-threshold": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-config-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 27.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1026
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 27.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.104
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-run-wide-rate": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-config-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 32.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1181
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 16,
+       "agent_s": 53.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1916
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-step-limit": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-debug-incomplete",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 65.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.216
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 32.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1329
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-wrong-case": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-dataset-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 13,
+       "agent_s": 64.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1702
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 44.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1626
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-no-tools-case": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-no-tool-case",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 25.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1328
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 25.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0918
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-quality-metric-groundedness": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-quality-metric",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 36.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1269
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 40.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1575
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-quality-metric-task-success": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-quality-metric",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 34.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.139
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 37.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1476
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-quality-rate-four-cases": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-quality-metric",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 46.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.175
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 40.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1457
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-regex-degrees-case": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-response-check",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 27.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1151
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 32.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1298
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-tool-case-lisbon": {
+     "skill": "eval",
+     "split": "train",
+     "family": "eval-tool-case",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 26.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0929
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 33.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0932
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-tool-case-tokyo": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-tool-case",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 34.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1249
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 34.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1228
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-langsmith-key-no-traces": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-debug",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 26.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0907
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 25.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1074
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-langsmith-key-rotated": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-secret-rotation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 40.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.143
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 21.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0739
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-langsmith-self-hosted": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-enable-env",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6667,
+       "failed": [
+        "staging-values",
+        "others-untouched"
+       ],
+       "reason": "staging-values: staging values: tracing.{enabled,capture,langsmith.project} and env.LANGSMITH_ENDPOINT -- deployment/helm/catalog-api/values-staging.yaml: `get(data, 'tracing.enabled') is True and get(data, 'tracing.langsmith.project') == '",
+       "skill_loaded": true,
+       "turns": 21,
+       "agent_s": 80.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2778
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 17,
+       "agent_s": 51.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2028
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.8334,
+     "mixed": 0.6667
+    },
+    "obs-local-otlp": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-enable-local",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 19.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0826
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 18.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1146
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-log-level-prod": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-logs",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": false,
+       "turns": 10,
+       "agent_s": 42.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1987
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 34.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1545
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-otlp-collector-moved": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-enable-env",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 14.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0817
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 17.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.078
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-otlp-prod": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-enable-env",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 34.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1561
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 12,
+       "agent_s": 34.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.157
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-salt-local-dev": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 28.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1193
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 33.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1089
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-salt-loyalty-cards": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 16,
+       "agent_s": 109.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2578
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 16,
+       "agent_s": 714.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2768
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-salt-phone-numbers": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 17,
+       "agent_s": 77.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2251
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 43.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1604
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-salt-rotate-staging": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 14.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.062
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 61.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0936
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-staging-langsmith": {
+     "skill": "observability",
+     "split": "train",
+     "family": "obs-enable-env",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 179.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1033
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 23.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1272
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-helmpush-custom": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 20.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0848
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 18.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0845
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-lgs-argocd": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 14.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0805
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 22.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0809
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-onprem-vllm": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "base-url: deploy refuses the CHANGE-ME base URL outside dev -- deployment/helm/netops-agent/values.yaml: `get(data, 'env.OPENAI_BASE_URL') == 'http://vllm.ml.svc:8000/v1'` is false",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 37.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1374
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "base-url: deploy refuses the CHANGE-ME base URL outside dev -- deployment/helm/netops-agent/values.yaml: `get(data, 'env.OPENAI_BASE_URL') == 'http://vllm.ml.svc:8000/v1'` is false",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 23.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0872
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 0.8,
+     "mixed": 0.9
+    },
+    "scaffold-create-prototype-gemini": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 11.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0743
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 10.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0721
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-add-argocd": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 25.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1073
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 26.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1202
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-jwt-okta": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 144.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.4022
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 22,
+       "agent_s": 145.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3965
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-registry": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 20.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0938
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 12.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0812
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-claude-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 15.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0728
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 12.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0821
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-codex-team": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 20.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0919
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 25.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1064
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-default-lgs": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 15.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0819
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 13.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0804
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.6,
+     "mixed": 0.3
+    },
+    "scaffold-guidance-default-prototype": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: nobody named a coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'` is",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 27.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0755
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 9.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0739
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.8,
+     "mixed": 0.65
+    },
+    "scaffold-guidance-gemini-only": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 14.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0773
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 12.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0824
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-mixed-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 22.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0944
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 26.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1291
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-unstated": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 14.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0853
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 12.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0759
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.6,
+     "mixed": 0.3
+    },
+    "wf-debug-unregistered-tool": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-debugging",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 22,
+       "agent_s": 107.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2843
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 47.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2057
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-end-to-end-tool": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-build-loop",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 18,
+       "agent_s": 191.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2838
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 15,
+       "agent_s": 52.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.2176
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-fix-failing-eval": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-debugging",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "reproduced: the agent never ran a command matching /graph-agents-cli\\s+eval\\s+(run|generate|grade)/",
+       "skill_loaded": true,
+       "turns": 16,
+       "agent_s": 47.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1808
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 569.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.3389
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 0.9,
+     "mixed": 0.95
+    },
+    "wf-process-deference": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-process",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 9,
+       "agent_s": 29.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.144
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 10,
+       "agent_s": 28.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1407
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-rename-arg-propagate": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-change-propagation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 431.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.4879
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 55,
+       "agent_s": 876.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 3,
+       "api_equivalent_usd": 1.0629
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-rename-tool-consistent": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-change-propagation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 33,
+       "agent_s": 558.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.4069
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 28,
+       "agent_s": 504.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.475
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-spec-gate-draft-open-questions": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 81,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1,
+       "api_equivalent_usd": 2.333
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.5,
+       "failed": [
+        "no-scaffold",
+        "no-create"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 64,
+       "agent_s": 725.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 1.9183
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.25,
+     "mixed": 0.125
+    },
+    "wf-spec-gate-it-kb": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 52,
+       "agent_s": 576.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 1.6082
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 59,
+       "agent_s": 569.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 1.8292
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.4,
+     "mixed": 0.2
+    },
+    "wf-spec-gate-orders-openapi": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8333,
+       "failed": [],
+       "reason": "covers-provider: the final answer lacks /(?i)provider|model/",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 18.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.0729
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks",
+        "covers-writes"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 104,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 2
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.4167,
+     "mixed": 0.4584
+    },
+    "wf-spec-gate-our-llm": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 47,
+       "agent_s": 441.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.9805
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 54,
+       "agent_s": 602.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 1.1459
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.4,
+     "mixed": 0.2
+    },
+    "wf-spec-gate-prototype-please": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 66,
+       "agent_s": 666.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1,
+       "api_equivalent_usd": 1.2898
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 45,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.2,
+     "mixed": 0.1
+    },
+    "wf-spec-gate-slack-digest": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "covers-access: the GitHub read and the Slack write need credentials and access the user chooses -- the final answer lacks /(?i)token|credential|access|permission|scope|read.?only|\\bapi\\b/",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 11.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.1193
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 0.6,
+       "failed": [],
+       "reason": "covers-access: the GitHub read and the Slack write need credentials and access the user chooses -- the final answer lacks /(?i)token|credential|access|permission|scope|read.?only|\\bapi\\b/; covers-trigger: the final answer lacks /(?i)schedul",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 12.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "api_equivalent_usd": 0.081
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 0.7,
+     "mixed": 0.85
+    }
+   },
+   "totals": {
+    "rollouts": 148,
+    "sessions": 148,
+    "infra_failures": 0,
+    "timeouts": 3,
+    "skill_not_loaded": 3,
+    "leftover_processes": 16,
+    "codex_usd_last_attempts": 0.0,
+    "claude_api_equivalent_usd": 36.43
+   }
+  },
+  "codex": {
+   "meta": {
+    "harness": "codex",
+    "model": "gpt-5.6-terra",
+    "effort": "medium",
+    "permission_mode": "",
+    "max_turns": 80,
+    "cli": "graph-agents-cli, version 0.2.0+gb35b246",
+    "skills": {
+     "workflow": "79049d4e5ef1869f",
+     "scaffold": "69ac60ef59a84d41",
+     "langgraph-code": "a4deab4607c050f8",
+     "eval": "c1392683969e9bbc",
+     "deploy": "1c744b7e804c708b",
+     "observability": "af66b46cb02f8668"
+    },
+    "body_dir": "",
+    "splits": [
+     "val"
+    ],
+    "ports": [
+     22410,
+     22440
+    ]
+   },
+   "reps": [
+    1
+   ],
+   "wall_s": {
+    "1": 303.5
+   },
+   "overall": {
+    "train": {
+     "n": 0,
+     "hard": null,
+     "soft": null,
+     "mixed": null
+    },
+    "val": {
+     "n": 36,
+     "hard": 0.8056,
+     "soft": 0.9197,
+     "mixed": 0.8626
+    },
+    "test": {
+     "n": 0,
+     "hard": null,
+     "soft": null,
+     "mixed": null
+    },
+    "all": {
+     "n": 36,
+     "hard": 0.8056,
+     "soft": 0.9197,
+     "mixed": 0.8626
+    }
+   },
+   "skills": {
+    "deploy": {
+     "all": {
+      "n": 6,
+      "hard": 0.6667,
+      "soft": 0.925,
+      "mixed": 0.7958
+     },
+     "val": {
+      "n": 6,
+      "hard": 0.6667,
+      "soft": 0.925,
+      "mixed": 0.7958
+     }
+    },
+    "eval": {
+     "all": {
+      "n": 6,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     },
+     "val": {
+      "n": 6,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     }
+    },
+    "langgraph-code": {
+     "all": {
+      "n": 6,
+      "hard": 0.8333,
+      "soft": 0.8583,
+      "mixed": 0.8458
+     },
+     "val": {
+      "n": 6,
+      "hard": 0.8333,
+      "soft": 0.8583,
+      "mixed": 0.8458
+     }
+    },
+    "observability": {
+     "all": {
+      "n": 6,
+      "hard": 0.8333,
+      "soft": 0.8625,
+      "mixed": 0.8479
+     },
+     "val": {
+      "n": 6,
+      "hard": 0.8333,
+      "soft": 0.8625,
+      "mixed": 0.8479
+     }
+    },
+    "scaffold": {
+     "all": {
+      "n": 6,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     },
+     "val": {
+      "n": 6,
+      "hard": 1.0,
+      "soft": 1.0,
+      "mixed": 1.0
+     }
+    },
+    "workflow": {
+     "all": {
+      "n": 6,
+      "hard": 0.5,
+      "soft": 0.8722,
+      "mixed": 0.6861
+     },
+     "val": {
+      "n": 6,
+      "hard": 0.5,
+      "soft": 0.8722,
+      "mixed": 0.6861
+     }
+    }
+   },
+   "tasks": {
+    "code-api-allow-new-op": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-policy-boundary",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "policy-untouched",
+        "proposed",
+        "no-widen"
+       ],
+       "reason": "policy-untouched: allow-listing a new operation is the user's reviewed decision, never the agent's -- changed: api-policy.yaml (changed); proposed: tell the user which `graph-agents-cli api allow` command would allow the call -- the final a",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 108.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 4,
+       "usd": 0.20037,
+       "tokens": {
+        "in": 400857,
+        "cached": 360811,
+        "out": 4010
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.4,
+     "mixed": 0.2
+    },
+    "code-api-new-billing": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-new",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.75,
+       "failed": [],
+       "reason": "token-allowlisted: `api add` puts a bearer token_env into secrets.keys -- graph-agents-cli-manifest.yaml: `'BILLING_API_TOKEN' in get(data, 'secrets.keys', [])` is false",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 89.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.23501,
+       "tokens": {
+        "in": 478893,
+        "cached": 438995,
+        "out": 5618
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 0.75,
+     "mixed": 0.875
+    },
+    "code-api-tool-list-orders": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-tool",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 109.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 5,
+       "usd": 0.18146,
+       "tokens": {
+        "in": 303049,
+        "cached": 263241,
+        "out": 4100
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-approval-refund-requester": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-approval-gate",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 31.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.13662,
+       "tokens": {
+        "in": 234508,
+        "cached": 198658,
+        "out": 2099
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-create-ticket-body": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-api-write-body",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 26.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.12074,
+       "tokens": {
+        "in": 167571,
+        "cached": 135621,
+        "out": 2476
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "code-system-prompt-preserve": {
+     "skill": "langgraph-code",
+     "split": "val",
+     "family": "code-preservation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 9.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08216,
+       "tokens": {
+        "in": 108735,
+        "cached": 81443,
+        "out": 941
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-argocd-secrets-not-git": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-secrets-ownership",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.75,
+       "failed": [
+        "names-apply"
+       ],
+       "reason": "names-apply: the Secret's owner runs `graph-agents-cli secrets apply --env staging` from a workstation -- the final answer lacks /secrets\\s+apply\\b[^\\n]*--env[ =]?staging/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 32.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.12376,
+       "tokens": {
+        "in": 182749,
+        "cached": 154743,
+        "out": 3067
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.75,
+     "mixed": 0.375
+    },
+    "deploy-helmpush-values-rerun": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-modes",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 18.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.10685,
+       "tokens": {
+        "in": 167118,
+        "cached": 140178,
+        "out": 2078
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-ingress-staging": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.8,
+       "failed": [
+        "dry-run-used"
+       ],
+       "reason": "dry-run-used: the agent never ran a command matching /graph-agents-cli\\s+deploy\\b.*--dry-run/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 35.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.15363,
+       "tokens": {
+        "in": 251762,
+        "cached": 215570,
+        "out": 3178
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.8,
+     "mixed": 0.4
+    },
+    "deploy-jwt-staging": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 14.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.09407,
+       "tokens": {
+        "in": 122766,
+        "cached": 94238,
+        "out": 1514
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-placeholder-url": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-values",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 14.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.09423,
+       "tokens": {
+        "in": 163761,
+        "cached": 137664,
+        "out": 1209
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "deploy-secret-key": {
+     "skill": "deploy",
+     "split": "val",
+     "family": "deploy-secrets",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 37.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.14074,
+       "tokens": {
+        "in": 247928,
+        "cached": 220773,
+        "out": 3523
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-missing-threshold": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-config-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 27.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08176,
+       "tokens": {
+        "in": 128829,
+        "cached": 106270,
+        "out": 1282
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-run-wide-rate": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-config-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 26.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.07979,
+       "tokens": {
+        "in": 120905,
+        "cached": 99757,
+        "out": 1462
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-fix-wrong-case": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-dataset-fix",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 21.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.0745,
+       "tokens": {
+        "in": 106840,
+        "cached": 84462,
+        "out": 1071
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-quality-rate-four-cases": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-quality-metric",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 30.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08659,
+       "tokens": {
+        "in": 118317,
+        "cached": 96693,
+        "out": 2000
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-regex-degrees-case": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-response-check",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 23.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.07394,
+       "tokens": {
+        "in": 88194,
+        "cached": 65794,
+        "out": 1332
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "eval-tool-case-tokyo": {
+     "skill": "eval",
+     "split": "val",
+     "family": "eval-tool-case",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 22.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08427,
+       "tokens": {
+        "in": 113777,
+        "cached": 89171,
+        "out": 1435
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-langsmith-key-no-traces": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-debug",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 39.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.1121,
+       "tokens": {
+        "in": 163274,
+        "cached": 136486,
+        "out": 2602
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-langsmith-key-rotated": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-secret-rotation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 16.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08796,
+       "tokens": {
+        "in": 97487,
+        "cached": 69661,
+        "out": 1531
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "obs-log-level-prod": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-logs",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.75,
+       "failed": [],
+       "reason": "next-step: the final answer lacks /deploy[^\\n]*--env[ =]?prod/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 33.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.1337,
+       "tokens": {
+        "in": 191318,
+        "cached": 155145,
+        "out": 2527
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 0.75,
+     "mixed": 0.875
+    },
+    "obs-otlp-collector-moved": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-enable-env",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.75,
+       "failed": [],
+       "reason": "next-step: the final answer lacks /deploy[^\\n]*--env[ =]?staging/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 14.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.0572,
+       "tokens": {
+        "in": 87623,
+        "cached": 71370,
+        "out": 868
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 0.75,
+     "mixed": 0.875
+    },
+    "obs-salt-local-dev": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8,
+       "failed": [],
+       "reason": "allowlisted: PRINCIPAL_HASH_SALT is a secret: only the manifest's secrets.keys reach the app Secret -- graph-agents-cli-manifest.yaml: `'PRINCIPAL_HASH_SALT' in get(data, 'secrets.keys', [])` is false",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 23.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.11142,
+       "tokens": {
+        "in": 146013,
+        "cached": 113958,
+        "out": 2043
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 0.8,
+     "mixed": 0.9
+    },
+    "obs-salt-loyalty-cards": {
+     "skill": "observability",
+     "split": "val",
+     "family": "obs-privacy",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.875,
+       "failed": [
+        "names-apply"
+       ],
+       "reason": "names-apply: the value reaches the cluster only through `graph-agents-cli secrets apply --env <env>` -- the final answer lacks /secrets\\s+apply\\b/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 44.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.16925,
+       "tokens": {
+        "in": 294471,
+        "cached": 263111,
+        "out": 4492
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.875,
+     "mixed": 0.4375
+    },
+    "scaffold-create-prototype-gemini": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 11.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.05459,
+       "tokens": {
+        "in": 80726,
+        "cached": 65301,
+        "out": 890
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-jwt-okta": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 104.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.29294,
+       "tokens": {
+        "in": 605877,
+        "cached": 553427,
+        "out": 6446
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-registry": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 16.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.07813,
+       "tokens": {
+        "in": 109087,
+        "cached": 87011,
+        "out": 1381
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-claude-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 15.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.06531,
+       "tokens": {
+        "in": 99233,
+        "cached": 82934,
+        "out": 1344
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-mixed-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 34.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.15512,
+       "tokens": {
+        "in": 287549,
+        "cached": 256572,
+        "out": 3488
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-unstated": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 13.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.06836,
+       "tokens": {
+        "in": 90151,
+        "cached": 69938,
+        "out": 1162
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-end-to-end-tool": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-build-loop",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 43.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.16744,
+       "tokens": {
+        "in": 269436,
+        "cached": 230836,
+        "out": 3673
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-process-deference": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-process",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 19.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.10792,
+       "tokens": {
+        "in": 198665,
+        "cached": 171775,
+        "out": 1649
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-rename-arg-propagate": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-change-propagation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 183.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 8,
+       "usd": 0.29963,
+       "tokens": {
+        "in": 653126,
+        "cached": 600117,
+        "out": 6132
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-spec-gate-orders-openapi": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.8333,
+       "failed": [
+        "asks"
+       ],
+       "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 36.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.1122,
+       "tokens": {
+        "in": 125575,
+        "cached": 101483,
+        "out": 3643
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.8333,
+     "mixed": 0.4167
+    },
+    "wf-spec-gate-our-llm": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.8,
+       "failed": [
+        "asks"
+       ],
+       "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 23.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.08397,
+       "tokens": {
+        "in": 108578,
+        "cached": 87952,
+        "out": 2094
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.8,
+     "mixed": 0.4
+    },
+    "wf-spec-gate-slack-digest": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "asks"
+       ],
+       "reason": "asks: the open decisions go back to the user as questions -- the final answer lacks /\\?/",
+       "skill_loaded": true,
+       "turns": 1,
+       "agent_s": 35.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "usd": 0.10874,
+       "tokens": {
+        "in": 124064,
+        "cached": 100104,
+        "out": 3400
+       }
+      }
+     ],
+     "n": 1,
+     "hard": 0.0,
+     "soft": 0.6,
+     "mixed": 0.3
+    }
+   },
+   "totals": {
+    "rollouts": 36,
+    "sessions": 36,
+    "infra_failures": 0,
+    "timeouts": 0,
+    "skill_not_loaded": 0,
+    "leftover_processes": 17,
+    "codex_usd_last_attempts": 4.4165,
+    "claude_api_equivalent_usd": 0
+   }
+  }
+ },
+ "prices_usd_per_1m": {
+  "read_on": "2026-09-27",
+  "gpt-6-astra": [
+   10.0,
+   1.0,
+   50.0
+  ],
+  "gpt-6-sol": [
+   2.0,
+   0.2,
+   10.0
+  ],
+  "gpt-6-luna": [
+   0.1,
+   0.01,
+   0.5
+  ],
+  "gpt-5.6-sol": [
+   4.0,
+   0.4,
+   20.0
+  ],
+  "gpt-5.6-terra": [
+   2.0,
+   0.2,
+   12.0
+  ],
+  "gpt-5.5": [
+   5.0,
+   0.5,
+   30.0
+  ],
+  "gpt-5.4": [
+   2.5,
+   0.25,
+   15.0
+  ],
+  "gpt-5.4-mini": [
+   0.75,
+   0.075,
+   4.5
+  ]
+ }
+}

@@ -1,0 +1,53 @@
+{
+  "id": "code-approval-role-finance",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-approval-gate",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "refund-desk",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ],
+    "setup": [
+      "graph-agents-cli api add payments --base-url-env PAYMENTS_API_BASE_URL --auth bearer --token-env PAYMENTS_API_TOKEN --access read-write",
+      "graph-agents-cli api allow payments getPayment --method GET --path '/payments/{payment_id}'",
+      "graph-agents-cli api allow payments refundPayment --method POST --path '/payments/{payment_id}/refund'"
+    ]
+  },
+  "prompt": "In refund-desk/, refunds must be approved by a second person who holds the `finance` role before they are sent; the user who asks for a refund must not be able to approve it themselves. Nothing else about the agent changes.",
+  "checks": [
+    {
+      "id": "gate",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(('refundPayment' in [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] or 'POST' in [str(m).upper() for m in (get(r, 'required_for.methods') or [])]) and sorted(r.get('approvers') or []) == ['role:finance'] for r in (lambda a: a if isinstance(a, list) else [a])(get(data, 'apis.payments.approval')) if isinstance(r, dict))",
+      "why": "a second person: approvers role:finance only (listing requester would let the requester decide)"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.payments.allowed_methods') or []) == sorted(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) and sorted(o.get('operationId') for o in (get(data, 'apis.payments.allowed_operations') or [])) == ['getPayment', 'refundPayment'] and not get(data, 'apis.payments.denied_operations')",
+      "why": "an approval gate never changes what the API allows"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "gate"
+  ],
+  "reference": "`graph-agents-cli api approval payments --operations refundPayment --approvers role:finance` (without requester, so the requester cannot decide their own refund; role approvers need the per-user jwt policy the project has). No tool code, access unchanged, lint passes."
+}

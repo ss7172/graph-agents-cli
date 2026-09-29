@@ -1,0 +1,66 @@
+{
+  "id": "deploy-ingress-staging",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/values",
+  "fixture": {
+    "kind": "project",
+    "name": "quote-service",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "The staging cluster of quote-service/ has no Gateway API; it runs ingress-nginx (IngressClass `nginx`). Publish staging at quotes.staging.acme.dev through it, and prove that a staging deploy would render, without deploying anything.",
+  "checks": [
+    {
+      "id": "values",
+      "type": "yaml",
+      "file": "deployment/helm/quote-service/values-staging.yaml",
+      "expr": "get(data, 'gateway.enabled') is False and get(data, 'ingress.enabled') is True and get(data, 'ingress.className') == 'nginx' and get(data, 'ingress.hostname') == 'quotes.staging.acme.dev'",
+      "why": "values-staging.yaml: gateway.enabled false, ingress.{enabled, className, hostname}"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/quote-service/values.yaml",
+        "deployment/helm/quote-service/values-dev.yaml",
+        "deployment/helm/quote-service/values-prod.yaml",
+        "deployment/helm/quote-service/templates"
+      ],
+      "why": "values.yaml is shared by every environment; other environments must not change"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env staging --dry-run --tag abc1234",
+      "output_regex": "kind: Ingress"
+    },
+    {
+      "id": "dry-run-used",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+deploy\\b.*--dry-run"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "values",
+    "others-untouched",
+    "renders"
+  ],
+  "reference": "In values-staging.yaml: `gateway.enabled: false` and `ingress: {enabled: true, className: nginx, hostname: quotes.staging.acme.dev}` (values.yaml and the other environments unchanged), then `graph-agents-cli deploy --env staging --dry-run` renders the Ingress (it reads .env.staging)."
+}

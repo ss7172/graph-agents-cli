@@ -1,0 +1,68 @@
+{
+  "id": "wf-debug-unregistered-tool",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-debugging",
+  "task_type": "workflow/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "weather-bot",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('app/tools/weather.py'); t = p.read_text(); assert 'TOOLS = [get_weather]' in t; p.write_text(t.replace('TOOLS = [get_weather]', 'TOOL = [get_weather]'))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in weather-bot/ fails since yesterday's refactor. Find the root cause and fix it without weakening the eval.",
+  "checks": [
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "eval-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval"
+      ],
+      "why": "the eval is the spec: fix the code, not the checks"
+    },
+    {
+      "id": "scope",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        ".env"
+      ],
+      "except": [
+        "app/tools/weather.py"
+      ],
+      "why": "change only what the root cause needs"
+    },
+    {
+      "id": "registered",
+      "type": "pyfile",
+      "script": "check_registered.py"
+    },
+    {
+      "id": "reproduced",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+(run|generate|grade)|graph-agents-cli\\s+run\\b"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "gate",
+    "eval-untouched",
+    "registered"
+  ],
+  "reference": "Reproduce with `graph-agents-cli eval run`: weather, capabilities and weather-follow-up fail because the agent has no tools. app/tools/weather.py exports `TOOL` instead of `TOOLS`, so get_tools() collects nothing. Restore `TOOLS = [get_weather]`, rerun eval run (exit 0); leave the dataset alone."
+}

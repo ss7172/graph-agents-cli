@@ -1,0 +1,61 @@
+{
+  "id": "obs-staging-langsmith",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-enable-env",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Enable tracing to LangSmith for the staging environment of shop/, into the LangSmith project `shop-staging`, metadata only. The API key is in our password manager; I'll put it into .env.staging myself. Don't deploy.",
+  "checks": [
+    {
+      "id": "staging-values",
+      "type": "yaml",
+      "file": "deployment/helm/shop/values-staging.yaml",
+      "expr": "get(data, 'tracing.enabled') is True and get(data, 'tracing.langsmith.project') == 'shop-staging' and get(data, 'tracing.capture', 'metadata') == 'metadata'",
+      "why": "chart values tracing.{enabled,capture,langsmith.project} in the staging values file"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/shop/values.yaml",
+        "deployment/helm/shop/values-dev.yaml",
+        "deployment/helm/shop/values-prod.yaml",
+        "app"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "key-allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'LANGSMITH_API_KEY' in get(data, 'secrets.keys', [])"
+    },
+    {
+      "id": "no-key-in-values",
+      "type": "file",
+      "path": "deployment/helm/shop/values*.yaml",
+      "not_regex": "(?m)^\\s+LANGSMITH_API_KEY:"
+    },
+    {
+      "id": "next-step",
+      "type": "transcript",
+      "final_regex": [
+        "secrets apply[^\\n]*--env[ =]staging"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "staging-values",
+    "others-untouched"
+  ],
+  "reference": "Add `tracing: {enabled: true, capture: metadata, langsmith: {project: shop-staging}}` to deployment/helm/shop/values-staging.yaml only; LANGSMITH_API_KEY is already in secrets.keys, so the user puts it in .env.staging and runs `graph-agents-cli secrets apply --env staging`, then deploys per the CD mode."
+}

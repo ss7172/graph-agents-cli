@@ -1,0 +1,64 @@
+{
+  "id": "eval-fix-missing-threshold",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-config-fix",
+  "task_type": "eval/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "quality-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('tests/eval/eval_config.yaml'); t = p.read_text(); o = 'response_quality: { threshold: 4, min_pass_rate: 0.9 }'; assert o in t; p.write_text(t.replace(o, 'response_quality: { min_pass_rate: 0.9 }'))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in quality-agent/ stops with exit code 3 since someone edited the eval config. Fix it so the eval gate runs and passes again. The team's agreed bar for response quality is a score of 4 on at least 90% of the scored cases.",
+  "checks": [
+    {
+      "id": "config",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.response_quality') == {'threshold': 4, 'min_pass_rate': 0.9}",
+      "why": "the quality metric gets its threshold back; removing or loosening it is not a fix"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "dataset-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval/datasets"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "explained",
+      "type": "transcript",
+      "final_regex": [
+        "threshold"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "config"
+  ],
+  "reference": "Exit 3 is a configuration error: `quality_metrics.response_quality` lost its `threshold` (a quality metric needs both threshold and min_pass_rate). Restore `response_quality: { threshold: 4, min_pass_rate: 0.9 }` in tests/eval/eval_config.yaml, rerun `graph-agents-cli eval run` (exit 0), and explain the cause."
+}

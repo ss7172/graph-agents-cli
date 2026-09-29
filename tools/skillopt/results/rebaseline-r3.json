@@ -1,0 +1,1606 @@
+{
+ "generated": "2026-09-28 01:09:40",
+ "harnesses": {
+  "claude": {
+   "meta": {
+    "harness": "claude",
+    "model": "sonnet",
+    "effort": "medium",
+    "permission_mode": "acceptEdits",
+    "max_turns": 80,
+    "cli": "graph-agents-cli, version 0.2.0+gb35b246",
+    "skills": {
+     "workflow": "79049d4e5ef1869f",
+     "scaffold": "69ac60ef59a84d41",
+     "langgraph-code": "a4deab4607c050f8",
+     "eval": "c1392683969e9bbc",
+     "deploy": "1c744b7e804c708b",
+     "observability": "af66b46cb02f8668"
+    },
+    "body_dir": "",
+    "splits": [
+     "train",
+     "val"
+    ],
+    "ports": [
+     22400,
+     22437
+    ]
+   },
+   "reps": [
+    1,
+    2
+   ],
+   "wall_s": {
+    "1": 924.4,
+    "2": 923.8
+   },
+   "overall": {
+    "train": {
+     "n": 26,
+     "hard": 0.6923,
+     "soft": 0.8038,
+     "mixed": 0.748
+    },
+    "val": {
+     "n": 26,
+     "hard": 0.6538,
+     "soft": 0.7705,
+     "mixed": 0.7122
+    },
+    "test": {
+     "n": 0,
+     "hard": null,
+     "soft": null,
+     "mixed": null
+    },
+    "all": {
+     "n": 52,
+     "hard": 0.6731,
+     "soft": 0.7872,
+     "mixed": 0.7302
+    }
+   },
+   "skills": {
+    "scaffold": {
+     "all": {
+      "n": 28,
+      "hard": 0.7857,
+      "soft": 0.9071,
+      "mixed": 0.8464
+     },
+     "train": {
+      "n": 14,
+      "hard": 0.8571,
+      "soft": 0.9286,
+      "mixed": 0.8928
+     },
+     "val": {
+      "n": 14,
+      "hard": 0.7143,
+      "soft": 0.8857,
+      "mixed": 0.8
+     }
+    },
+    "workflow": {
+     "all": {
+      "n": 24,
+      "hard": 0.5417,
+      "soft": 0.6472,
+      "mixed": 0.5944
+     },
+     "train": {
+      "n": 12,
+      "hard": 0.5,
+      "soft": 0.6583,
+      "mixed": 0.5792
+     },
+     "val": {
+      "n": 12,
+      "hard": 0.5833,
+      "soft": 0.6361,
+      "mixed": 0.6097
+     }
+    }
+   },
+   "tasks": {
+    "scaffold-create-helmpush-custom": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 16.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.082
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 12.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0794
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-lgs-argocd": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 14.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0816
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 15.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0823
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-onprem-vllm": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 46.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.2067
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 11,
+       "agent_s": 37.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1901
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-create-prototype-gemini": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-create",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 13.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0813
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 9.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0769
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-add-argocd": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 7,
+       "agent_s": 24.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1148
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 38.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1075
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-jwt-okta": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 19,
+       "agent_s": 290.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 2,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.3203
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 17,
+       "agent_s": 281.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.281
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-enhance-registry": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-enhance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 10.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.081
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 12.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0814
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-claude-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 11.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.073
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 9.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0733
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-codex-team": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 30.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1328
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 16.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0942
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-default-lgs": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 16.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0893
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 23.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1101
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.6,
+     "mixed": 0.3
+    },
+    "scaffold-guidance-default-prototype": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "prototype",
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "prototype: graph-agents-cli-manifest.yaml does not exist; guidance: nobody named a coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml does not exis",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 31.5,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1059
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: nobody named a coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'` is",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 14.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0777
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.5,
+     "mixed": 0.25
+    },
+    "scaffold-guidance-gemini-only": {
+     "skill": "scaffold",
+     "split": "train",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 18.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0755
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 15.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0868
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-mixed-team": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 20.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0887
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 6,
+       "agent_s": 22.6,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1034
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "scaffold-guidance-unstated": {
+     "skill": "scaffold",
+     "split": "val",
+     "family": "scaffold-guidance",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 16.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0946
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.6,
+       "failed": [
+        "guidance",
+        "guidance-file"
+       ],
+       "reason": "guidance: the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice) -- graph-agents-cli-manifest.yaml: `get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'`",
+       "skill_loaded": true,
+       "turns": 4,
+       "agent_s": 12.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.0773
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.6,
+     "mixed": 0.3
+    },
+    "wf-debug-unregistered-tool": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-debugging",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 25,
+       "agent_s": 417.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.3489
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 24,
+       "agent_s": 102.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 2,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.3397
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-end-to-end-tool": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-build-loop",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 17,
+       "agent_s": 59.1,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.2535
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 23,
+       "agent_s": 423.8,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.3397
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-fix-failing-eval": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-debugging",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 19,
+       "agent_s": 58.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.2397
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 21,
+       "agent_s": 271.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 2,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.2577
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-process-deference": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-process",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 28.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1325
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 8,
+       "agent_s": 29.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.1337
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-rename-arg-propagate": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-change-propagation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 25,
+       "agent_s": 419.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.402
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 27,
+       "agent_s": 471.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.4906
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-rename-tool-consistent": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-change-propagation",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 43,
+       "agent_s": 703.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.5376
+      },
+      {
+       "rep": 2,
+       "hard": 1,
+       "soft": 1.0,
+       "failed": [],
+       "reason": "",
+       "skill_loaded": true,
+       "turns": 29,
+       "agent_s": 419.2,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.4367
+      }
+     ],
+     "n": 2,
+     "hard": 1.0,
+     "soft": 1.0,
+     "mixed": 1.0
+    },
+    "wf-spec-gate-draft-open-questions": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 97,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1,
+       "leftover_notes": [
+        "stopped leftover pid 12228: W/invoice-assistant/.venv/bin/python scripts/fake_billing_server.py 8091"
+       ],
+       "permission_denials": 0,
+       "session_mode": "acceptEdits"
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.5,
+       "failed": [
+        "no-scaffold",
+        "no-create"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 76,
+       "agent_s": 718.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 3,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.6826
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.25,
+     "mixed": 0.125
+    },
+    "wf-spec-gate-it-kb": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.2,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 87,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits"
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 53,
+       "agent_s": 573.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1,
+       "leftover_notes": [
+        "stopped leftover pid 25595: W/it-kb-agent/.venv/bin/python W/it-kb-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22404"
+       ],
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.4904
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.3,
+     "mixed": 0.15
+    },
+    "wf-spec-gate-orders-openapi": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 1,
+       "soft": 0.8333,
+       "failed": [],
+       "reason": "covers-provider: the final answer lacks /(?i)provider|model/",
+       "skill_loaded": true,
+       "turns": 5,
+       "agent_s": 14.0,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.079
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks",
+        "covers-writes"
+       ],
+       "reason": "timed out after 900s; no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '",
+       "skill_loaded": true,
+       "turns": 94,
+       "agent_s": 900.1,
+       "timed_out": true,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 0,
+       "session_mode": "acceptEdits"
+      }
+     ],
+     "n": 2,
+     "hard": 0.5,
+     "soft": 0.4167,
+     "mixed": 0.4584
+    },
+    "wf-spec-gate-our-llm": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks",
+        "covers-provider"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 81,
+       "agent_s": 576.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 4,
+       "leftover_notes": [
+        "stopped leftover pid 9331: W/wiki-onboarding-agent/.venv/bin/python W/wiki-onboarding-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22409",
+        "stopped leftover pid 10986: W/wiki-onboarding-agent/.venv/bin/python W/wiki-onboarding-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22555",
+        "stopped leftover pid 12255: W/wiki-onboarding-agent/.venv/bin/python W/wiki-onboarding-agent/.venv/bin/langgraph dev --config <claude-temp> --po",
+        "stopped leftover pid 12268: W/wiki-onboarding-agent/.venv/bin/python -c from multiprocessing.resource_tracker import main;main(5)"
+       ],
+       "permission_denials": 9,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.7707
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 51,
+       "agent_s": 535.3,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 6,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.0454
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.2,
+     "mixed": 0.1
+    },
+    "wf-spec-gate-prototype-please": {
+     "skill": "workflow",
+     "split": "train",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 46,
+       "agent_s": 712.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 3,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.8245
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 44,
+       "agent_s": 650.4,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 2,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 0.7397
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.4,
+     "mixed": 0.2
+    },
+    "wf-spec-gate-slack-digest": {
+     "skill": "workflow",
+     "split": "val",
+     "family": "wf-phase0",
+     "reps": [
+      {
+       "rep": 1,
+       "hard": 0,
+       "soft": 0.0,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 81,
+       "agent_s": 546.9,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 1,
+       "leftover_notes": [
+        "stopped leftover pid 10673: W/pr-digest-agent/.venv/bin/python W/pr-digest-agent/.venv/bin/uvicorn app.fast_api_app:app --host 127.0.0.1 --port 22410"
+       ],
+       "permission_denials": 6,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.898
+      },
+      {
+       "rep": 2,
+       "hard": 0,
+       "soft": 0.4,
+       "failed": [
+        "no-scaffold",
+        "no-create",
+        "asks"
+       ],
+       "reason": "no-scaffold: no scaffolding or code before the user approves a spec (Phase 0) -- `python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} &",
+       "skill_loaded": true,
+       "turns": 74,
+       "agent_s": 477.7,
+       "timed_out": false,
+       "attempts": 1,
+       "infra": false,
+       "leftovers": 0,
+       "permission_denials": 1,
+       "session_mode": "acceptEdits",
+       "api_equivalent_usd": 1.7697
+      }
+     ],
+     "n": 2,
+     "hard": 0.0,
+     "soft": 0.2,
+     "mixed": 0.1
+    }
+   },
+   "totals": {
+    "rollouts": 52,
+    "sessions": 52,
+    "infra_failures": 0,
+    "timeouts": 3,
+    "skill_not_loaded": 0,
+    "leftover_processes": 7,
+    "permission_denials": 41,
+    "rollouts_with_permission_denials": 15,
+    "codex_usd_last_attempts": 0.0,
+    "claude_api_equivalent_usd": 18.36
+   }
+  }
+ },
+ "prices_usd_per_1m": {
+  "read_on": "2026-09-27",
+  "gpt-6-astra": [
+   10.0,
+   1.0,
+   50.0
+  ],
+  "gpt-6-sol": [
+   2.0,
+   0.2,
+   10.0
+  ],
+  "gpt-6-luna": [
+   0.1,
+   0.01,
+   0.5
+  ],
+  "gpt-5.6-sol": [
+   4.0,
+   0.4,
+   20.0
+  ],
+  "gpt-5.6-terra": [
+   2.0,
+   0.2,
+   12.0
+  ],
+  "gpt-5.5": [
+   5.0,
+   0.5,
+   30.0
+  ],
+  "gpt-5.4": [
+   2.5,
+   0.25,
+   15.0
+  ],
+  "gpt-5.4-mini": [
+   0.75,
+   0.075,
+   4.5
+  ]
+ },
+ "permission_gate_noise": {
+  "metric": "len(permission_denials) summed over a session's result events; 'approval_obs' counts tool results saying 'no approval surface' in conversation.json (round 2's method, undercounts when the middle of a long trajectory is cut)",
+  "round2_acceptEdits": {
+   "all": {
+    "rollouts": 52,
+    "rollouts_with_gate_denials": 19,
+    "gate_denials": 50,
+    "rollouts_with_approval_obs": 15,
+    "hard": 0.731,
+    "soft": 0.81,
+    "denied_tools": {
+     "Bash": 45,
+     "Glob": 1,
+     "Write": 2,
+     "Read": 2
+    }
+   },
+   "by_skill": {
+    "workflow": {
+     "rollouts": 24,
+     "rollouts_with_gate_denials": 16,
+     "gate_denials": 39,
+     "rollouts_with_approval_obs": 12,
+     "hard": 0.625,
+     "soft": 0.689,
+     "denied_tools": {
+      "Bash": 36,
+      "Glob": 1,
+      "Read": 2
+     }
+    },
+    "scaffold": {
+     "rollouts": 28,
+     "rollouts_with_gate_denials": 3,
+     "gate_denials": 11,
+     "rollouts_with_approval_obs": 3,
+     "hard": 0.821,
+     "soft": 0.914,
+     "denied_tools": {
+      "Bash": 9,
+      "Write": 2
+     }
+    }
+   },
+   "per_task": {
+    "scaffold-create-helmpush-custom rep1": 0,
+    "scaffold-create-lgs-argocd rep1": 0,
+    "scaffold-create-onprem-vllm rep1": 0,
+    "scaffold-create-prototype-gemini rep1": 0,
+    "scaffold-enhance-add-argocd rep1": 0,
+    "scaffold-enhance-jwt-okta rep1": 5,
+    "scaffold-enhance-registry rep1": 1,
+    "scaffold-guidance-claude-team rep1": 0,
+    "scaffold-guidance-codex-team rep1": 0,
+    "scaffold-guidance-default-lgs rep1": 0,
+    "scaffold-guidance-default-prototype rep1": 0,
+    "scaffold-guidance-gemini-only rep1": 0,
+    "scaffold-guidance-mixed-team rep1": 0,
+    "scaffold-guidance-unstated rep1": 0,
+    "wf-debug-unregistered-tool rep1": 1,
+    "wf-end-to-end-tool rep1": 2,
+    "wf-fix-failing-eval rep1": 1,
+    "wf-process-deference rep1": 0,
+    "wf-rename-arg-propagate rep1": 0,
+    "wf-rename-tool-consistent rep1": 1,
+    "wf-spec-gate-draft-open-questions rep1": 1,
+    "wf-spec-gate-it-kb rep1": 4,
+    "wf-spec-gate-orders-openapi rep1": 0,
+    "wf-spec-gate-our-llm rep1": 4,
+    "wf-spec-gate-prototype-please rep1": 6,
+    "wf-spec-gate-slack-digest rep1": 0,
+    "scaffold-create-helmpush-custom rep2": 0,
+    "scaffold-create-lgs-argocd rep2": 0,
+    "scaffold-create-onprem-vllm rep2": 0,
+    "scaffold-create-prototype-gemini rep2": 0,
+    "scaffold-enhance-add-argocd rep2": 0,
+    "scaffold-enhance-jwt-okta rep2": 5,
+    "scaffold-enhance-registry rep2": 0,
+    "scaffold-guidance-claude-team rep2": 0,
+    "scaffold-guidance-codex-team rep2": 0,
+    "scaffold-guidance-default-lgs rep2": 0,
+    "scaffold-guidance-default-prototype rep2": 0,
+    "scaffold-guidance-gemini-only rep2": 0,
+    "scaffold-guidance-mixed-team rep2": 0,
+    "scaffold-guidance-unstated rep2": 0,
+    "wf-debug-unregistered-tool rep2": 1,
+    "wf-end-to-end-tool rep2": 1,
+    "wf-fix-failing-eval rep2": 2,
+    "wf-process-deference rep2": 0,
+    "wf-rename-arg-propagate rep2": 3,
+    "wf-rename-tool-consistent rep2": 1,
+    "wf-spec-gate-draft-open-questions rep2": 4,
+    "wf-spec-gate-it-kb rep2": 3,
+    "wf-spec-gate-orders-openapi rep2": 0,
+    "wf-spec-gate-our-llm rep2": 4,
+    "wf-spec-gate-prototype-please rep2": 0,
+    "wf-spec-gate-slack-digest rep2": 0
+   }
+  },
+  "round3_acceptEdits": {
+   "all": {
+    "rollouts": 52,
+    "rollouts_with_gate_denials": 15,
+    "gate_denials": 41,
+    "rollouts_with_approval_obs": 12,
+    "hard": 0.673,
+    "soft": 0.787,
+    "denied_tools": {
+     "Bash": 37,
+     "Read": 3,
+     "Glob": 1
+    }
+   },
+   "by_skill": {
+    "workflow": {
+     "rollouts": 24,
+     "rollouts_with_gate_denials": 13,
+     "gate_denials": 38,
+     "rollouts_with_approval_obs": 10,
+     "hard": 0.542,
+     "soft": 0.647,
+     "denied_tools": {
+      "Bash": 34,
+      "Read": 3,
+      "Glob": 1
+     }
+    },
+    "scaffold": {
+     "rollouts": 28,
+     "rollouts_with_gate_denials": 2,
+     "gate_denials": 3,
+     "rollouts_with_approval_obs": 2,
+     "hard": 0.786,
+     "soft": 0.907,
+     "denied_tools": {
+      "Bash": 3
+     }
+    }
+   },
+   "per_task": {
+    "scaffold-create-helmpush-custom rep1": 0,
+    "scaffold-create-lgs-argocd rep1": 0,
+    "scaffold-create-onprem-vllm rep1": 0,
+    "scaffold-create-prototype-gemini rep1": 0,
+    "scaffold-enhance-add-argocd rep1": 0,
+    "scaffold-enhance-jwt-okta rep1": 2,
+    "scaffold-enhance-registry rep1": 0,
+    "scaffold-guidance-claude-team rep1": 0,
+    "scaffold-guidance-codex-team rep1": 0,
+    "scaffold-guidance-default-lgs rep1": 0,
+    "scaffold-guidance-default-prototype rep1": 1,
+    "scaffold-guidance-gemini-only rep1": 0,
+    "scaffold-guidance-mixed-team rep1": 0,
+    "scaffold-guidance-unstated rep1": 0,
+    "wf-debug-unregistered-tool rep1": 0,
+    "wf-end-to-end-tool rep1": 0,
+    "wf-fix-failing-eval rep1": 1,
+    "wf-process-deference rep1": 0,
+    "wf-rename-arg-propagate rep1": 1,
+    "wf-rename-tool-consistent rep1": 1,
+    "wf-spec-gate-draft-open-questions rep1": 0,
+    "wf-spec-gate-it-kb rep1": 0,
+    "wf-spec-gate-orders-openapi rep1": 0,
+    "wf-spec-gate-our-llm rep1": 9,
+    "wf-spec-gate-prototype-please rep1": 3,
+    "wf-spec-gate-slack-digest rep1": 6,
+    "scaffold-create-helmpush-custom rep2": 0,
+    "scaffold-create-lgs-argocd rep2": 0,
+    "scaffold-create-onprem-vllm rep2": 0,
+    "scaffold-create-prototype-gemini rep2": 0,
+    "scaffold-enhance-add-argocd rep2": 0,
+    "scaffold-enhance-jwt-okta rep2": 0,
+    "scaffold-enhance-registry rep2": 0,
+    "scaffold-guidance-claude-team rep2": 0,
+    "scaffold-guidance-codex-team rep2": 0,
+    "scaffold-guidance-default-lgs rep2": 0,
+    "scaffold-guidance-default-prototype rep2": 0,
+    "scaffold-guidance-gemini-only rep2": 0,
+    "scaffold-guidance-mixed-team rep2": 0,
+    "scaffold-guidance-unstated rep2": 0,
+    "wf-debug-unregistered-tool rep2": 2,
+    "wf-end-to-end-tool rep2": 0,
+    "wf-fix-failing-eval rep2": 2,
+    "wf-process-deference rep2": 0,
+    "wf-rename-arg-propagate rep2": 0,
+    "wf-rename-tool-consistent rep2": 0,
+    "wf-spec-gate-draft-open-questions rep2": 3,
+    "wf-spec-gate-it-kb rep2": 1,
+    "wf-spec-gate-orders-openapi rep2": 0,
+    "wf-spec-gate-our-llm rep2": 6,
+    "wf-spec-gate-prototype-please rep2": 2,
+    "wf-spec-gate-slack-digest rep2": 1
+   }
+  }
+ }
+}

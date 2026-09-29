@@ -1,0 +1,59 @@
+{
+  "id": "deploy-secret-key",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-secrets",
+  "task_type": "deploy/secrets",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "The agent in shop/ will need a `WEATHER_API_TOKEN` at runtime in every environment. Make sure deploys put it into the app's Secret. I'll put the values into our .env.<env> files myself; no secret value goes into the repository.",
+  "checks": [
+    {
+      "id": "allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'WEATHER_API_TOKEN' in get(data, 'secrets.keys', [])",
+      "why": "only the manifest's secrets.keys are exported from an env file into the Secret"
+    },
+    {
+      "id": "keys-kept",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "all(k in get(data, 'secrets.keys', []) for k in ('OPENAI_API_KEY', 'JUDGE_API_KEY', 'POSTGRES_DSN', 'API_KEY', 'LANGSMITH_API_KEY'))"
+    },
+    {
+      "id": "no-values-secret",
+      "type": "file",
+      "path": "deployment/helm/shop/values*.yaml",
+      "exists": true,
+      "not_regex": "(?m)^\\s+WEATHER_API_TOKEN:",
+      "why": "secrets never go into chart values"
+    },
+    {
+      "id": "applies",
+      "type": "cmd",
+      "run": "printf 'OPENAI_API_KEY=x\\nAPI_KEY=y\\nWEATHER_API_TOKEN=z\\n' > \"$TMPDIR/env.dev\" && graph-agents-cli secrets apply --env dev --env-file \"$TMPDIR/env.dev\" --dry-run",
+      "output_regex": "WEATHER_API_TOKEN: <redacted>"
+    },
+    {
+      "id": "no-api-policy",
+      "type": "file",
+      "path": "api-policy.yaml",
+      "exists": false,
+      "mandatory": false,
+      "why": "a runtime secret is not an outbound API declaration"
+    }
+  ],
+  "broken_fails": [
+    "allowlisted",
+    "no-values-secret",
+    "applies"
+  ],
+  "reference": "Add WEATHER_API_TOKEN to `secrets.keys` in graph-agents-cli-manifest.yaml (keep the existing keys). `secrets apply --env <env>` (and a direct deploy) then export it from `.env.<env>` into the `<release>-app` Secret; nothing goes into values files. Tell the user to add it to each .env.<env> and run `graph-agents-cli secrets apply --env <env>` (then `deploy --restart`)."
+}

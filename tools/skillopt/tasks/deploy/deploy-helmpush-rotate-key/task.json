@@ -1,0 +1,64 @@
+{
+  "id": "deploy-helmpush-rotate-key",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-secrets-ownership",
+  "task_type": "deploy/secrets",
+  "fixture": {
+    "kind": "project",
+    "name": "courier-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--cd",
+      "helm-push"
+    ],
+    "install": false
+  },
+  "prompt": "courier-agent/ is deployed by our CI with helm. We rotated its OpenAI key for production; the new key is already in courier-agent/.env.prod. What exactly do I run so that production uses it? I run the cluster commands myself.",
+  "checks": [
+    {
+      "id": "nothing-changed",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "deployment",
+        ".github",
+        "graph-agents-cli-manifest.yaml",
+        ".env.prod"
+      ],
+      "why": "the key is allow-listed and already in .env.prod; CI never holds application secrets"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b[^\\n]*--env[ =]?prod"
+      ]
+    },
+    {
+      "id": "names-restart",
+      "type": "transcript",
+      "final_regex": [
+        "restart"
+      ],
+      "why": "pods read a changed Secret only at start: `deploy --restart --env prod`"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "nothing-changed",
+    "names-apply",
+    "names-restart"
+  ],
+  "reference": "In helm-push mode deploy never touches Secrets and CI never holds them: the Secret's owner runs `graph-agents-cli secrets apply --env prod` from a workstation (allow-listed keys of .env.prod), then `graph-agents-cli deploy --restart --env prod` (a Secret change alone replaces no pod); `secrets status --env prod` checks it. No file changes."
+}

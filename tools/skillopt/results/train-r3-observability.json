@@ -1,0 +1,5862 @@
+{
+ "about": "A9 (round 3b): Codex SkillOpt on the observability skill, head-to-heads and the Codex transfer check. Every rollout; usd_recorded is the harness's figure before the cache-write price fix (8e0f034), the ledger carries the correction.",
+ "training": {
+  "selection_eval_baseline": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 43.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1439,
+    "tokens": {
+     "input_tokens": 241255,
+     "cached_input_tokens": 205519,
+     "output_tokens": 2610
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 16.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11053,
+    "tokens": {
+     "input_tokens": 171777,
+     "cached_input_tokens": 138359,
+     "output_tokens": 1335
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 30.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17574,
+    "tokens": {
+     "input_tokens": 333404,
+     "cached_input_tokens": 287984,
+     "output_tokens": 2275
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 23.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10639,
+    "tokens": {
+     "input_tokens": 200273,
+     "cached_input_tokens": 175478,
+     "output_tokens": 1809
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 38.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17345,
+    "tokens": {
+     "input_tokens": 295708,
+     "cached_input_tokens": 253086,
+     "output_tokens": 3132
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.875,
+    "failed": [
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 53.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15959,
+    "tokens": {
+     "input_tokens": 260843,
+     "cached_input_tokens": 220658,
+     "output_tokens": 2924
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11296,
+    "tokens": {
+     "input_tokens": 169369,
+     "cached_input_tokens": 139577,
+     "output_tokens": 2122
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 13.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09798,
+    "tokens": {
+     "input_tokens": 112913,
+     "cached_input_tokens": 77931,
+     "output_tokens": 1036
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 40.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13205,
+    "tokens": {
+     "input_tokens": 238307,
+     "cached_input_tokens": 204178,
+     "output_tokens": 1913
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 22.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15034,
+    "tokens": {
+     "input_tokens": 297322,
+     "cached_input_tokens": 259640,
+     "output_tokens": 1921
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 41.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15798,
+    "tokens": {
+     "input_tokens": 265981,
+     "cached_input_tokens": 226034,
+     "output_tokens": 2740
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.875,
+    "failed": [
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 24.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10903,
+    "tokens": {
+     "input_tokens": 157971,
+     "cached_input_tokens": 126570,
+     "output_tokens": 1743
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10487,
+    "tokens": {
+     "input_tokens": 158821,
+     "cached_input_tokens": 127261,
+     "output_tokens": 1358
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 9.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07003,
+    "tokens": {
+     "input_tokens": 63995,
+     "cached_input_tokens": 37432,
+     "output_tokens": 785
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 49.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.19828,
+    "tokens": {
+     "input_tokens": 392092,
+     "cached_input_tokens": 350231,
+     "output_tokens": 3709
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 15.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11424,
+    "tokens": {
+     "input_tokens": 203423,
+     "cached_input_tokens": 171188,
+     "output_tokens": 1294
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 32.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14547,
+    "tokens": {
+     "input_tokens": 226211,
+     "cached_input_tokens": 185610,
+     "output_tokens": 2262
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 0,
+    "soft": 0.875,
+    "failed": [
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 40.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14294,
+    "tokens": {
+     "input_tokens": 209056,
+     "cached_input_tokens": 170228,
+     "output_tokens": 2603
+    }
+   }
+  ],
+  "step_0001": {
+   "action": "accept_new_best",
+   "candidate_len": 12649,
+   "selection_hard": 1.0,
+   "selection_soft": 0.9111166666666667,
+   "train": [
+    {
+     "id": "obs-langsmith-self-hosted",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.833,
+     "failed": [],
+     "failed_optional": [
+      "names-apply"
+     ],
+     "turns": 1,
+     "agent_wall_s": 44.7,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.15839,
+     "tokens": {
+      "input_tokens": 249043,
+      "cached_input_tokens": 209999,
+      "output_tokens": 3192
+     }
+    },
+    {
+     "id": "obs-local-otlp",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 18.8,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10274,
+     "tokens": {
+      "input_tokens": 151024,
+      "cached_input_tokens": 119760,
+      "output_tokens": 1355
+     }
+    },
+    {
+     "id": "obs-otlp-prod",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "langsmith-note"
+     ],
+     "turns": 1,
+     "agent_wall_s": 26.9,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10975,
+     "tokens": {
+      "input_tokens": 193495,
+      "cached_input_tokens": 166344,
+      "output_tokens": 1848
+     }
+    },
+    {
+     "id": "obs-salt-phone-numbers",
+     "split": "train",
+     "rep": 1,
+     "hard": 0,
+     "soft": 0.714,
+     "failed": [
+      "names-apply",
+      "names-restart"
+     ],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 66.2,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.25821,
+     "tokens": {
+      "input_tokens": 480749,
+      "cached_input_tokens": 427260,
+      "output_tokens": 5482
+     }
+    },
+    {
+     "id": "obs-salt-rotate-staging",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 30.0,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.1069,
+     "tokens": {
+      "input_tokens": 99207,
+      "cached_input_tokens": 66934,
+      "output_tokens": 2414
+     }
+    }
+   ],
+   "selection": [
+    {
+     "id": "obs-langsmith-key-no-traces",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 19.8,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.08932,
+     "tokens": {
+      "input_tokens": 123027,
+      "cached_input_tokens": 94072,
+      "output_tokens": 1050
+     }
+    },
+    {
+     "id": "obs-langsmith-key-rotated",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 9.4,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.07591,
+     "tokens": {
+      "input_tokens": 72275,
+      "cached_input_tokens": 42524,
+      "output_tokens": 659
+     }
+    },
+    {
+     "id": "obs-log-level-prod",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "next-step"
+     ],
+     "turns": 1,
+     "agent_wall_s": 42.4,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.18874,
+     "tokens": {
+      "input_tokens": 386873,
+      "cached_input_tokens": 347917,
+      "output_tokens": 3437
+     }
+    },
+    {
+     "id": "obs-otlp-collector-moved",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "next-step"
+     ],
+     "turns": 1,
+     "agent_wall_s": 16.8,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10941,
+     "tokens": {
+      "input_tokens": 173058,
+      "cached_input_tokens": 139978,
+      "output_tokens": 1271
+     }
+    },
+    {
+     "id": "obs-salt-local-dev",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.8,
+     "failed": [],
+     "failed_optional": [
+      "allowlisted"
+     ],
+     "turns": 1,
+     "agent_wall_s": 33.3,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.12392,
+     "tokens": {
+      "input_tokens": 209588,
+      "cached_input_tokens": 179273,
+      "output_tokens": 2286
+     }
+    },
+    {
+     "id": "obs-salt-loyalty-cards",
+     "split": "val",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 25.6,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.09194,
+     "tokens": {
+      "input_tokens": 115918,
+      "cached_input_tokens": 89444,
+      "output_tokens": 1759
+     }
+    },
+    {
+     "id": "obs-langsmith-key-no-traces",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 23.0,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.09975,
+     "tokens": {
+      "input_tokens": 168554,
+      "cached_input_tokens": 140988,
+      "output_tokens": 1368
+     }
+    },
+    {
+     "id": "obs-langsmith-key-rotated",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 13.1,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.11015,
+     "tokens": {
+      "input_tokens": 150100,
+      "cached_input_tokens": 112411,
+      "output_tokens": 1024
+     }
+    },
+    {
+     "id": "obs-log-level-prod",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 31.0,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.12833,
+     "tokens": {
+      "input_tokens": 213376,
+      "cached_input_tokens": 180990,
+      "output_tokens": 2280
+     }
+    },
+    {
+     "id": "obs-otlp-collector-moved",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "next-step"
+     ],
+     "turns": 1,
+     "agent_wall_s": 19.7,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10466,
+     "tokens": {
+      "input_tokens": 188248,
+      "cached_input_tokens": 162438,
+      "output_tokens": 1713
+     }
+    },
+    {
+     "id": "obs-salt-local-dev",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 0.8,
+     "failed": [],
+     "failed_optional": [
+      "allowlisted"
+     ],
+     "turns": 1,
+     "agent_wall_s": 27.5,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.12677,
+     "tokens": {
+      "input_tokens": 206182,
+      "cached_input_tokens": 171822,
+      "output_tokens": 1974
+     }
+    },
+    {
+     "id": "obs-salt-loyalty-cards",
+     "split": "val",
+     "rep": 2,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 26.7,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.08654,
+     "tokens": {
+      "input_tokens": 111996,
+      "cached_input_tokens": 86714,
+      "output_tokens": 1553
+     }
+    },
+    {
+     "id": "obs-langsmith-key-no-traces",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 19.4,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.08833,
+     "tokens": {
+      "input_tokens": 120827,
+      "cached_input_tokens": 92587,
+      "output_tokens": 1111
+     }
+    },
+    {
+     "id": "obs-langsmith-key-rotated",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 9.6,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.06505,
+     "tokens": {
+      "input_tokens": 62244,
+      "cached_input_tokens": 37934,
+      "output_tokens": 737
+     }
+    },
+    {
+     "id": "obs-log-level-prod",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 29.7,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.14001,
+     "tokens": {
+      "input_tokens": 239902,
+      "cached_input_tokens": 204553,
+      "output_tokens": 2367
+     }
+    },
+    {
+     "id": "obs-otlp-collector-moved",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "next-step"
+     ],
+     "turns": 1,
+     "agent_wall_s": 17.8,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.11288,
+     "tokens": {
+      "input_tokens": 198003,
+      "cached_input_tokens": 166748,
+      "output_tokens": 1418
+     }
+    },
+    {
+     "id": "obs-salt-local-dev",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 0.8,
+     "failed": [],
+     "failed_optional": [
+      "allowlisted"
+     ],
+     "turns": 1,
+     "agent_wall_s": 34.2,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.1294,
+     "tokens": {
+      "input_tokens": 175215,
+      "cached_input_tokens": 140545,
+      "output_tokens": 2663
+     }
+    },
+    {
+     "id": "obs-salt-loyalty-cards",
+     "split": "val",
+     "rep": 3,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 27.6,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10615,
+     "tokens": {
+      "input_tokens": 151761,
+      "cached_input_tokens": 121791,
+      "output_tokens": 1821
+     }
+    }
+   ]
+  },
+  "step_0002": {
+   "action": "reject",
+   "candidate_len": 13417,
+   "selection_hard": 0.0,
+   "selection_soft": 0.0,
+   "train": [
+    {
+     "id": "obs-staging-langsmith",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 31.5,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.13792,
+     "tokens": {
+      "input_tokens": 260412,
+      "cached_input_tokens": 229960,
+      "output_tokens": 2585
+     }
+    }
+   ],
+   "selection": []
+  },
+  "step_0003": {
+   "action": "reject",
+   "candidate_len": 13311,
+   "selection_hard": 0.0,
+   "selection_soft": 0.0,
+   "train": [
+    {
+     "id": "obs-langsmith-self-hosted",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 48.9,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.17137,
+     "tokens": {
+      "input_tokens": 310665,
+      "cached_input_tokens": 277044,
+      "output_tokens": 4060
+     }
+    },
+    {
+     "id": "obs-local-otlp",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 13.1,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.08182,
+     "tokens": {
+      "input_tokens": 115715,
+      "cached_input_tokens": 89352,
+      "output_tokens": 935
+     }
+    },
+    {
+     "id": "obs-otlp-prod",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 0.75,
+     "failed": [],
+     "failed_optional": [
+      "langsmith-note"
+     ],
+     "turns": 1,
+     "agent_wall_s": 21.9,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.10652,
+     "tokens": {
+      "input_tokens": 169075,
+      "cached_input_tokens": 141268,
+      "output_tokens": 1888
+     }
+    },
+    {
+     "id": "obs-salt-phone-numbers",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 26.1,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.1139,
+     "tokens": {
+      "input_tokens": 179153,
+      "cached_input_tokens": 149500,
+      "output_tokens": 2058
+     }
+    },
+    {
+     "id": "obs-staging-langsmith",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 28.7,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.1349,
+     "tokens": {
+      "input_tokens": 239601,
+      "cached_input_tokens": 208068,
+      "output_tokens": 2518
+     }
+    }
+   ],
+   "selection": []
+  },
+  "step_0004": {
+   "action": "reject",
+   "candidate_len": 13121,
+   "selection_hard": 0.0,
+   "selection_soft": 0.0,
+   "train": [
+    {
+     "id": "obs-salt-rotate-staging",
+     "split": "train",
+     "rep": 1,
+     "hard": 1,
+     "soft": 1.0,
+     "failed": [],
+     "failed_optional": [],
+     "turns": 1,
+     "agent_wall_s": 54.5,
+     "skill_loaded": true,
+     "infra": "",
+     "leftovers": 0,
+     "usd_recorded": 0.17625,
+     "tokens": {
+      "input_tokens": 330057,
+      "cached_input_tokens": 301328,
+      "output_tokens": 4877
+     }
+    }
+   ],
+   "selection": []
+  },
+  "slow_update_epoch_02": [
+   {
+    "id": "obs-local-otlp",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08749,
+    "tokens": {
+     "input_tokens": 136424,
+     "cached_input_tokens": 111079,
+     "output_tokens": 1215
+    }
+   },
+   {
+    "id": "obs-otlp-prod",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "langsmith-note"
+    ],
+    "turns": 1,
+    "agent_wall_s": 27.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14051,
+    "tokens": {
+     "input_tokens": 266920,
+     "cached_input_tokens": 235483,
+     "output_tokens": 2545
+    }
+   },
+   {
+    "id": "obs-salt-phone-numbers",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 26.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11168,
+    "tokens": {
+     "input_tokens": 156527,
+     "cached_input_tokens": 124773,
+     "output_tokens": 1935
+    }
+   },
+   {
+    "id": "obs-salt-rotate-staging",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 22.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08291,
+    "tokens": {
+     "input_tokens": 84307,
+     "cached_input_tokens": 60133,
+     "output_tokens": 1878
+    }
+   },
+   {
+    "id": "obs-staging-langsmith",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 41.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15903,
+    "tokens": {
+     "input_tokens": 271748,
+     "cached_input_tokens": 237685,
+     "output_tokens": 3614
+    }
+   },
+   {
+    "id": "obs-local-otlp",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.0902,
+    "tokens": {
+     "input_tokens": 140790,
+     "cached_input_tokens": 113982,
+     "output_tokens": 1149
+    }
+   },
+   {
+    "id": "obs-otlp-prod",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 41.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15841,
+    "tokens": {
+     "input_tokens": 262073,
+     "cached_input_tokens": 226071,
+     "output_tokens": 3433
+    }
+   },
+   {
+    "id": "obs-salt-phone-numbers",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 29.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10354,
+    "tokens": {
+     "input_tokens": 141914,
+     "cached_input_tokens": 114539,
+     "output_tokens": 2157
+    }
+   },
+   {
+    "id": "obs-salt-rotate-staging",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 21.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08517,
+    "tokens": {
+     "input_tokens": 88079,
+     "cached_input_tokens": 62197,
+     "output_tokens": 1747
+    }
+   },
+   {
+    "id": "obs-staging-langsmith",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14216,
+    "tokens": {
+     "input_tokens": 258376,
+     "cached_input_tokens": 222996,
+     "output_tokens": 2233
+    }
+   }
+  ]
+ },
+ "training_aborted": {
+  "note": "stopped after its baseline (verifier false negative, fixed in 9f8aaa1); the step-1 train rollouts were killed",
+  "selection_eval_baseline": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 40.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 1,
+    "usd_recorded": 0.13862,
+    "tokens": {
+     "input_tokens": 257379,
+     "cached_input_tokens": 224560,
+     "output_tokens": 2339
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10115,
+    "tokens": {
+     "input_tokens": 111605,
+     "cached_input_tokens": 75863,
+     "output_tokens": 1208
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 27.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15087,
+    "tokens": {
+     "input_tokens": 299815,
+     "cached_input_tokens": 264090,
+     "output_tokens": 2217
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 16.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10715,
+    "tokens": {
+     "input_tokens": 181950,
+     "cached_input_tokens": 152348,
+     "output_tokens": 1456
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 36.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.16329,
+    "tokens": {
+     "input_tokens": 274639,
+     "cached_input_tokens": 231625,
+     "output_tokens": 2578
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 40.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17492,
+    "tokens": {
+     "input_tokens": 256913,
+     "cached_input_tokens": 208275,
+     "output_tokens": 2999
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 37.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13092,
+    "tokens": {
+     "input_tokens": 169313,
+     "cached_input_tokens": 129552,
+     "output_tokens": 2124
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.75,
+    "failed": [
+     "nothing-applied"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09899,
+    "tokens": {
+     "input_tokens": 101047,
+     "cached_input_tokens": 66467,
+     "output_tokens": 1378
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 31.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.16449,
+    "tokens": {
+     "input_tokens": 287271,
+     "cached_input_tokens": 243344,
+     "output_tokens": 2331
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 18.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10388,
+    "tokens": {
+     "input_tokens": 183049,
+     "cached_input_tokens": 156359,
+     "output_tokens": 1602
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 33.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14159,
+    "tokens": {
+     "input_tokens": 250342,
+     "cached_input_tokens": 214143,
+     "output_tokens": 2197
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.75,
+    "failed": [
+     "code-untouched",
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 90.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.29891,
+    "tokens": {
+     "input_tokens": 559887,
+     "cached_input_tokens": 503911,
+     "output_tokens": 7181
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 43.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1508,
+    "tokens": {
+     "input_tokens": 265620,
+     "cached_input_tokens": 229743,
+     "output_tokens": 2758
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11724,
+    "tokens": {
+     "input_tokens": 155731,
+     "cached_input_tokens": 116489,
+     "output_tokens": 1288
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 32.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13133,
+    "tokens": {
+     "input_tokens": 207571,
+     "cached_input_tokens": 171049,
+     "output_tokens": 2006
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 23.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13004,
+    "tokens": {
+     "input_tokens": 255576,
+     "cached_input_tokens": 224169,
+     "output_tokens": 1866
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 34.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1382,
+    "tokens": {
+     "input_tokens": 248877,
+     "cached_input_tokens": 215472,
+     "output_tokens": 2358
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 0,
+    "soft": 0.75,
+    "failed": [
+     "code-untouched",
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 168.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 4,
+    "usd_recorded": 0.48486,
+    "tokens": {
+     "input_tokens": 1183908,
+     "cached_input_tokens": 1099381,
+     "output_tokens": 7994
+    }
+   }
+  ],
+  "step_0001_train": [
+   {
+    "id": "obs-langsmith-self-hosted",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.833,
+    "failed": [],
+    "failed_optional": [
+     "names-apply"
+    ],
+    "turns": 1,
+    "agent_wall_s": 31.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17478,
+    "tokens": {
+     "input_tokens": 337010,
+     "cached_input_tokens": 294883,
+     "output_tokens": 2629
+    }
+   },
+   {
+    "id": "obs-local-otlp",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 26.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12465,
+    "tokens": {
+     "input_tokens": 217573,
+     "cached_input_tokens": 182791,
+     "output_tokens": 1544
+    }
+   },
+   {
+    "id": "obs-otlp-prod",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "langsmith-note"
+    ],
+    "turns": 1,
+    "agent_wall_s": 19.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11615,
+    "tokens": {
+     "input_tokens": 188541,
+     "cached_input_tokens": 155641,
+     "output_tokens": 1602
+    }
+   },
+   {
+    "id": "obs-salt-phone-numbers",
+    "split": "train",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.714,
+    "failed": [
+     "names-apply",
+     "names-restart"
+    ],
+    "failed_optional": [],
+    "turns": 13,
+    "agent_wall_s": 43.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.0,
+    "tokens": {
+     "input_tokens": 0,
+     "cached_input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   {
+    "id": "obs-salt-rotate-staging",
+    "split": "train",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10299,
+    "tokens": {
+     "input_tokens": 138839,
+     "cached_input_tokens": 112041,
+     "output_tokens": 2249
+    }
+   }
+  ]
+ },
+ "runs": {
+  "h2h-codex-best": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 24.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09675,
+    "tokens": {
+     "input_tokens": 149514,
+     "cached_input_tokens": 120978,
+     "output_tokens": 1290
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09784,
+    "tokens": {
+     "input_tokens": 112107,
+     "cached_input_tokens": 76713,
+     "output_tokens": 976
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 27.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12381,
+    "tokens": {
+     "input_tokens": 200380,
+     "cached_input_tokens": 165955,
+     "output_tokens": 1814
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 35.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14324,
+    "tokens": {
+     "input_tokens": 189932,
+     "cached_input_tokens": 148664,
+     "output_tokens": 2581
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 19.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11607,
+    "tokens": {
+     "input_tokens": 200003,
+     "cached_input_tokens": 168204,
+     "output_tokens": 1569
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 27.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12201,
+    "tokens": {
+     "input_tokens": 200015,
+     "cached_input_tokens": 166503,
+     "output_tokens": 1807
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 37.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12817,
+    "tokens": {
+     "input_tokens": 208393,
+     "cached_input_tokens": 174608,
+     "output_tokens": 2140
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 29.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11584,
+    "tokens": {
+     "input_tokens": 163644,
+     "cached_input_tokens": 129463,
+     "output_tokens": 1799
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08122,
+    "tokens": {
+     "input_tokens": 113648,
+     "cached_input_tokens": 87859,
+     "output_tokens": 1006
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09234,
+    "tokens": {
+     "input_tokens": 105353,
+     "cached_input_tokens": 74038,
+     "output_tokens": 1242
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 21.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12816,
+    "tokens": {
+     "input_tokens": 215689,
+     "cached_input_tokens": 179990,
+     "output_tokens": 1730
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13214,
+    "tokens": {
+     "input_tokens": 205122,
+     "cached_input_tokens": 170324,
+     "output_tokens": 2373
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 24.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13869,
+    "tokens": {
+     "input_tokens": 272702,
+     "cached_input_tokens": 238607,
+     "output_tokens": 1898
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1259,
+    "tokens": {
+     "input_tokens": 166628,
+     "cached_input_tokens": 130672,
+     "output_tokens": 2321
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 41.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15442,
+    "tokens": {
+     "input_tokens": 247871,
+     "cached_input_tokens": 210204,
+     "output_tokens": 3087
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 38.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11728,
+    "tokens": {
+     "input_tokens": 177224,
+     "cached_input_tokens": 146319,
+     "output_tokens": 2184
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 22.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09575,
+    "tokens": {
+     "input_tokens": 142276,
+     "cached_input_tokens": 114142,
+     "output_tokens": 1388
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 11.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09607,
+    "tokens": {
+     "input_tokens": 110567,
+     "cached_input_tokens": 75132,
+     "output_tokens": 848
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 39.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1808,
+    "tokens": {
+     "input_tokens": 336442,
+     "cached_input_tokens": 289208,
+     "output_tokens": 2374
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 43.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17777,
+    "tokens": {
+     "input_tokens": 290178,
+     "cached_input_tokens": 243939,
+     "output_tokens": 3042
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11793,
+    "tokens": {
+     "input_tokens": 219448,
+     "cached_input_tokens": 192205,
+     "output_tokens": 2084
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 27.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12329,
+    "tokens": {
+     "input_tokens": 167040,
+     "cached_input_tokens": 131347,
+     "output_tokens": 2136
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 55.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.20224,
+    "tokens": {
+     "input_tokens": 383929,
+     "cached_input_tokens": 339163,
+     "output_tokens": 3740
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09251,
+    "tokens": {
+     "input_tokens": 122087,
+     "cached_input_tokens": 93630,
+     "output_tokens": 1406
+    }
+   }
+  ],
+  "h2h-codex-shipped": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11895,
+    "tokens": {
+     "input_tokens": 172833,
+     "cached_input_tokens": 137359,
+     "output_tokens": 1711
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 13.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10061,
+    "tokens": {
+     "input_tokens": 114434,
+     "cached_input_tokens": 78216,
+     "output_tokens": 1044
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 32.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15212,
+    "tokens": {
+     "input_tokens": 273062,
+     "cached_input_tokens": 230556,
+     "output_tokens": 1750
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 34.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14578,
+    "tokens": {
+     "input_tokens": 225627,
+     "cached_input_tokens": 184699,
+     "output_tokens": 2249
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 15.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10756,
+    "tokens": {
+     "input_tokens": 170349,
+     "cached_input_tokens": 137487,
+     "output_tokens": 1195
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 155.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 4,
+    "usd_recorded": 0.36151,
+    "tokens": {
+     "input_tokens": 779980,
+     "cached_input_tokens": 712671,
+     "output_tokens": 7030
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 39.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13541,
+    "tokens": {
+     "input_tokens": 224396,
+     "cached_input_tokens": 190609,
+     "output_tokens": 2476
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.75,
+    "failed": [
+     "names-apply"
+    ],
+    "failed_optional": [
+     "both-envs"
+    ],
+    "turns": 1,
+    "agent_wall_s": 40.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14569,
+    "tokens": {
+     "input_tokens": 211149,
+     "cached_input_tokens": 170619,
+     "output_tokens": 2542
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 45.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17219,
+    "tokens": {
+     "input_tokens": 305258,
+     "cached_input_tokens": 265525,
+     "output_tokens": 3302
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 24.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13847,
+    "tokens": {
+     "input_tokens": 197937,
+     "cached_input_tokens": 155770,
+     "output_tokens": 1915
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 26.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11791,
+    "tokens": {
+     "input_tokens": 171307,
+     "cached_input_tokens": 136070,
+     "output_tokens": 1685
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 35.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14066,
+    "tokens": {
+     "input_tokens": 211908,
+     "cached_input_tokens": 173874,
+     "output_tokens": 2485
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 17.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10664,
+    "tokens": {
+     "input_tokens": 187614,
+     "cached_input_tokens": 157860,
+     "output_tokens": 1297
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 46.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.22197,
+    "tokens": {
+     "input_tokens": 381099,
+     "cached_input_tokens": 323232,
+     "output_tokens": 3466
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 37.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15023,
+    "tokens": {
+     "input_tokens": 257219,
+     "cached_input_tokens": 219132,
+     "output_tokens": 2519
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.875,
+    "failed": [
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 43.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17263,
+    "tokens": {
+     "input_tokens": 265830,
+     "cached_input_tokens": 222970,
+     "output_tokens": 3526
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 31.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11924,
+    "tokens": {
+     "input_tokens": 183901,
+     "cached_input_tokens": 151394,
+     "output_tokens": 1996
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12352,
+    "tokens": {
+     "input_tokens": 155725,
+     "cached_input_tokens": 114326,
+     "output_tokens": 1488
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 44.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1769,
+    "tokens": {
+     "input_tokens": 295211,
+     "cached_input_tokens": 252754,
+     "output_tokens": 3453
+    }
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 49.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.16697,
+    "tokens": {
+     "input_tokens": 260915,
+     "cached_input_tokens": 218784,
+     "output_tokens": 3246
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 16.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09257,
+    "tokens": {
+     "input_tokens": 146775,
+     "cached_input_tokens": 119737,
+     "output_tokens": 1212
+    }
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 44.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.16702,
+    "tokens": {
+     "input_tokens": 289056,
+     "cached_input_tokens": 250813,
+     "output_tokens": 3364
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 37.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.18974,
+    "tokens": {
+     "input_tokens": 382005,
+     "cached_input_tokens": 336113,
+     "output_tokens": 2561
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 0,
+    "soft": 0.75,
+    "failed": [
+     "code-untouched",
+     "names-apply"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 207.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 8,
+    "usd_recorded": 0.45912,
+    "tokens": {
+     "input_tokens": 1088633,
+     "cached_input_tokens": 1015708,
+     "output_tokens": 9177
+    }
+   }
+  ],
+  "h2h-claude-best": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 10.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.10175780000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 10.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0730692,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 12,
+    "agent_wall_s": 96.5,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1624354,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 21,
+    "agent_wall_s": 82.7,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.4752006,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 4
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 14.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.09367639999999999,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 26.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1036554,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 22.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.12272739999999999,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 9,
+    "agent_wall_s": 32.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.140427,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 13.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1068374,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 4,
+    "agent_wall_s": 10.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0666092,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 15,
+    "agent_wall_s": 35.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.19666440000000002,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 21,
+    "agent_wall_s": 88.6,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.3210138,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 2
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 7,
+    "agent_wall_s": 9.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.10230220000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 20.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1032976,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 6,
+    "agent_wall_s": 13.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.10036380000000002,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 44.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.15250019999999997,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 7,
+    "agent_wall_s": 23.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1298824,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 3,
+    "agent_wall_s": 4.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0550958,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 13,
+    "agent_wall_s": 48.2,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.2488974,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 30,
+    "agent_wall_s": 144.7,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.5542704,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 1
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 7,
+    "agent_wall_s": 11.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0994586,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 10,
+    "agent_wall_s": 30.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.16626039999999997,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 27.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1368096,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 10,
+    "agent_wall_s": 58.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.14581919999999998,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   }
+  ],
+  "h2h-claude-shipped": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 10.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0852354,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 12.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0737804,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 12,
+    "agent_wall_s": 31.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.22211119999999998,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 24,
+    "agent_wall_s": 73.5,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.3506194,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 4
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 21.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0889554,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 16,
+    "agent_wall_s": 46.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.2275776,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 9,
+    "agent_wall_s": 29.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1616266,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 17,
+    "agent_wall_s": 75.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.3007596,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 1
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 11.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.09869220000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 14.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.07402220000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 25.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1421258,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 33,
+    "agent_wall_s": 227.9,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.5551204000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 2
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 10.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0893428,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 15,
+    "agent_wall_s": 42.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.27612580000000003,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 37.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.120418,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 19,
+    "agent_wall_s": 90.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.34093100000000004,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 5,
+    "agent_wall_s": 12.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.10078980000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 8,
+    "agent_wall_s": 14.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.1132504,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 1
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 14,
+    "agent_wall_s": 44.3,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.28962879999999996,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 2
+   },
+   {
+    "id": "obs-metrics-token",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 27,
+    "agent_wall_s": 136.9,
+    "skill_loaded": false,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.5163036000000001,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 2
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 6,
+    "agent_wall_s": 10.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.0885262,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-principal-salt",
+    "split": "test",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 16,
+    "agent_wall_s": 46.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.219167,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 13,
+    "agent_wall_s": 32.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.17667760000000002,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 1
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 16,
+    "agent_wall_s": 52.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "api_equivalent_usd": 0.21044420000000003,
+    "permission_mode": "acceptEdits",
+    "permission_denials": 0
+   }
+  ],
+  "proposed-codex": [
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 1,
+    "usd_recorded": 0.13599,
+    "tokens": {
+     "input_tokens": 219700,
+     "cached_input_tokens": 180435,
+     "output_tokens": 1781
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 12.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09792,
+    "tokens": {
+     "input_tokens": 113122,
+     "cached_input_tokens": 78111,
+     "output_tokens": 1023
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.16457,
+    "tokens": {
+     "input_tokens": 320535,
+     "cached_input_tokens": 282443,
+     "output_tokens": 2658
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 10.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08662,
+    "tokens": {
+     "input_tokens": 127865,
+     "cached_input_tokens": 99155,
+     "output_tokens": 781
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 31.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13451,
+    "tokens": {
+     "input_tokens": 203641,
+     "cached_input_tokens": 167411,
+     "output_tokens": 2381
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 27.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11642,
+    "tokens": {
+     "input_tokens": 183034,
+     "cached_input_tokens": 151085,
+     "output_tokens": 1859
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 25.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10933,
+    "tokens": {
+     "input_tokens": 156033,
+     "cached_input_tokens": 123266,
+     "output_tokens": 1595
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 9.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08133,
+    "tokens": {
+     "input_tokens": 76423,
+     "cached_input_tokens": 44327,
+     "output_tokens": 689
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 25.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14068,
+    "tokens": {
+     "input_tokens": 258648,
+     "cached_input_tokens": 219806,
+     "output_tokens": 1586
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 19.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10727,
+    "tokens": {
+     "input_tokens": 210733,
+     "cached_input_tokens": 185220,
+     "output_tokens": 1600
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 30.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12093,
+    "tokens": {
+     "input_tokens": 176392,
+     "cached_input_tokens": 141837,
+     "output_tokens": 1954
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 23.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09604,
+    "tokens": {
+     "input_tokens": 140881,
+     "cached_input_tokens": 114306,
+     "output_tokens": 1669
+    }
+   },
+   {
+    "id": "obs-langsmith-key-no-traces",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 23.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09794,
+    "tokens": {
+     "input_tokens": 151947,
+     "cached_input_tokens": 122777,
+     "output_tokens": 1254
+    }
+   },
+   {
+    "id": "obs-langsmith-key-rotated",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11439,
+    "tokens": {
+     "input_tokens": 147125,
+     "cached_input_tokens": 109064,
+     "output_tokens": 1371
+    }
+   },
+   {
+    "id": "obs-log-level-prod",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 25.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12193,
+    "tokens": {
+     "input_tokens": 197872,
+     "cached_input_tokens": 162712,
+     "output_tokens": 1589
+    }
+   },
+   {
+    "id": "obs-otlp-collector-moved",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.75,
+    "failed": [],
+    "failed_optional": [
+     "next-step"
+    ],
+    "turns": 1,
+    "agent_wall_s": 19.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10658,
+    "tokens": {
+     "input_tokens": 189839,
+     "cached_input_tokens": 160190,
+     "output_tokens": 1270
+    }
+   },
+   {
+    "id": "obs-salt-local-dev",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "allowlisted"
+    ],
+    "turns": 1,
+    "agent_wall_s": 35.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1471,
+    "tokens": {
+     "input_tokens": 249846,
+     "cached_input_tokens": 213477,
+     "output_tokens": 2639
+    }
+   },
+   {
+    "id": "obs-salt-loyalty-cards",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 22.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09998,
+    "tokens": {
+     "input_tokens": 147985,
+     "cached_input_tokens": 118870,
+     "output_tokens": 1498
+    }
+   }
+  ],
+  "transfer-approved": [
+   {
+    "id": "scaffold-create-process",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12408,
+    "tokens": {
+     "input_tokens": 226195,
+     "cached_input_tokens": 196907,
+     "output_tokens": 2177
+    }
+   },
+   {
+    "id": "scaffold-refuse-memory-k8s",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07164,
+    "tokens": {
+     "input_tokens": 102096,
+     "cached_input_tokens": 80179,
+     "output_tokens": 981
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks",
+     "covers-data"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 25.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10101,
+    "tokens": {
+     "input_tokens": 131277,
+     "cached_input_tokens": 103751,
+     "output_tokens": 2101
+    }
+   },
+   {
+    "id": "scaffold-create-process",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 37.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13024,
+    "tokens": {
+     "input_tokens": 225243,
+     "cached_input_tokens": 196245,
+     "output_tokens": 2750
+    }
+   },
+   {
+    "id": "scaffold-refuse-memory-k8s",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 16.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07423,
+    "tokens": {
+     "input_tokens": 85729,
+     "cached_input_tokens": 61242,
+     "output_tokens": 1084
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks",
+     "covers-data"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 30.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11243,
+    "tokens": {
+     "input_tokens": 145352,
+     "cached_input_tokens": 114933,
+     "output_tokens": 2384
+    }
+   }
+  ],
+  "transfer-shipped": [
+   {
+    "id": "scaffold-create-process",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 22.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10952,
+    "tokens": {
+     "input_tokens": 172364,
+     "cached_input_tokens": 142264,
+     "output_tokens": 1739
+    }
+   },
+   {
+    "id": "scaffold-refuse-memory-k8s",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 12.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.0644,
+    "tokens": {
+     "input_tokens": 61229,
+     "cached_input_tokens": 37580,
+     "output_tokens": 799
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks",
+     "covers-data"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 29.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11766,
+    "tokens": {
+     "input_tokens": 172702,
+     "cached_input_tokens": 143045,
+     "output_tokens": 2478
+    }
+   },
+   {
+    "id": "scaffold-create-process",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 29.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11635,
+    "tokens": {
+     "input_tokens": 170510,
+     "cached_input_tokens": 139810,
+     "output_tokens": 2249
+    }
+   },
+   {
+    "id": "scaffold-refuse-memory-k8s",
+    "split": "test",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.06761,
+    "tokens": {
+     "input_tokens": 81749,
+     "cached_input_tokens": 59303,
+     "output_tokens": 905
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks",
+     "covers-data"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12629,
+    "tokens": {
+     "input_tokens": 198717,
+     "cached_input_tokens": 169725,
+     "output_tokens": 2863
+    }
+   }
+  ],
+  "transfer-val-approved": [
+   {
+    "id": "scaffold-create-prototype-gemini",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 13.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08087,
+    "tokens": {
+     "input_tokens": 112885,
+     "cached_input_tokens": 86785,
+     "output_tokens": 943
+    }
+   },
+   {
+    "id": "scaffold-enhance-jwt-okta",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 60.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17642,
+    "tokens": {
+     "input_tokens": 299545,
+     "cached_input_tokens": 252198,
+     "output_tokens": 2607
+    }
+   },
+   {
+    "id": "scaffold-enhance-registry",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 20.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11334,
+    "tokens": {
+     "input_tokens": 181529,
+     "cached_input_tokens": 148046,
+     "output_tokens": 1397
+    }
+   },
+   {
+    "id": "scaffold-guidance-claude-team",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08592,
+    "tokens": {
+     "input_tokens": 134169,
+     "cached_input_tokens": 108432,
+     "output_tokens": 1063
+    }
+   },
+   {
+    "id": "scaffold-guidance-default-lgs",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 20.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10036,
+    "tokens": {
+     "input_tokens": 164434,
+     "cached_input_tokens": 137136,
+     "output_tokens": 1528
+    }
+   },
+   {
+    "id": "scaffold-guidance-mixed-team",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11898,
+    "tokens": {
+     "input_tokens": 177520,
+     "cached_input_tokens": 145930,
+     "output_tokens": 2218
+    }
+   },
+   {
+    "id": "scaffold-guidance-unstated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 16.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09719,
+    "tokens": {
+     "input_tokens": 146021,
+     "cached_input_tokens": 116103,
+     "output_tokens": 1178
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 20.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10047,
+    "tokens": {
+     "input_tokens": 126047,
+     "cached_input_tokens": 95577,
+     "output_tokens": 1701
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10039,
+    "tokens": {
+     "input_tokens": 150616,
+     "cached_input_tokens": 120601,
+     "output_tokens": 1353
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 326.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.50627,
+    "tokens": {
+     "input_tokens": 1474554,
+     "cached_input_tokens": 1406234,
+     "output_tokens": 7365
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.833,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 36.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1179,
+    "tokens": {
+     "input_tokens": 149163,
+     "cached_input_tokens": 118922,
+     "output_tokens": 2803
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 24.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09701,
+    "tokens": {
+     "input_tokens": 114328,
+     "cached_input_tokens": 86939,
+     "output_tokens": 2070
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 38.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12329,
+    "tokens": {
+     "input_tokens": 174732,
+     "cached_input_tokens": 145051,
+     "output_tokens": 2910
+    }
+   },
+   {
+    "id": "scaffold-create-prototype-gemini",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 13.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07741,
+    "tokens": {
+     "input_tokens": 110366,
+     "cached_input_tokens": 85674,
+     "output_tokens": 908
+    }
+   },
+   {
+    "id": "scaffold-enhance-jwt-okta",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 73.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.20693,
+    "tokens": {
+     "input_tokens": 410695,
+     "cached_input_tokens": 362459,
+     "output_tokens": 3164
+    }
+   },
+   {
+    "id": "scaffold-enhance-registry",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 23.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11188,
+    "tokens": {
+     "input_tokens": 155063,
+     "cached_input_tokens": 121642,
+     "output_tokens": 1726
+    }
+   },
+   {
+    "id": "scaffold-guidance-claude-team",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08023,
+    "tokens": {
+     "input_tokens": 110108,
+     "cached_input_tokens": 85266,
+     "output_tokens": 1124
+    }
+   },
+   {
+    "id": "scaffold-guidance-default-lgs",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 29.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11185,
+    "tokens": {
+     "input_tokens": 195309,
+     "cached_input_tokens": 167547,
+     "output_tokens": 1901
+    }
+   },
+   {
+    "id": "scaffold-guidance-mixed-team",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 28.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1205,
+    "tokens": {
+     "input_tokens": 197158,
+     "cached_input_tokens": 167835,
+     "output_tokens": 2357
+    }
+   },
+   {
+    "id": "scaffold-guidance-unstated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07973,
+    "tokens": {
+     "input_tokens": 110486,
+     "cached_input_tokens": 85475,
+     "output_tokens": 1051
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 23.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12286,
+    "tokens": {
+     "input_tokens": 165521,
+     "cached_input_tokens": 128603,
+     "output_tokens": 1942
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09881,
+    "tokens": {
+     "input_tokens": 153281,
+     "cached_input_tokens": 123430,
+     "output_tokens": 1202
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.4,
+    "failed": [
+     "renamed",
+     "dataset",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 31.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1348,
+    "tokens": {
+     "input_tokens": 178436,
+     "cached_input_tokens": 140919,
+     "output_tokens": 2632
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.833,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 36.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12054,
+    "tokens": {
+     "input_tokens": 151760,
+     "cached_input_tokens": 121300,
+     "output_tokens": 2947
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 25.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09343,
+    "tokens": {
+     "input_tokens": 91176,
+     "cached_input_tokens": 63570,
+     "output_tokens": 2125
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 40.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13446,
+    "tokens": {
+     "input_tokens": 176820,
+     "cached_input_tokens": 144791,
+     "output_tokens": 3454
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 3,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 22.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13288,
+    "tokens": {
+     "input_tokens": 182815,
+     "cached_input_tokens": 143505,
+     "output_tokens": 2130
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 18.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10095,
+    "tokens": {
+     "input_tokens": 171446,
+     "cached_input_tokens": 143485,
+     "output_tokens": 1361
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 3,
+    "hard": 0,
+    "soft": 0.4,
+    "failed": [
+     "renamed",
+     "dataset",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 27.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1431,
+    "tokens": {
+     "input_tokens": 189287,
+     "cached_input_tokens": 146873,
+     "output_tokens": 2408
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 4,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1066,
+    "tokens": {
+     "input_tokens": 130178,
+     "cached_input_tokens": 97041,
+     "output_tokens": 1743
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 4,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08829,
+    "tokens": {
+     "input_tokens": 118540,
+     "cached_input_tokens": 90969,
+     "output_tokens": 1246
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 4,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 163.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 4,
+    "usd_recorded": 0.3283,
+    "tokens": {
+     "input_tokens": 712381,
+     "cached_input_tokens": 659292,
+     "output_tokens": 7522
+    }
+   }
+  ],
+  "transfer-val-shipped": [
+   {
+    "id": "scaffold-create-prototype-gemini",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09241,
+    "tokens": {
+     "input_tokens": 160784,
+     "cached_input_tokens": 134918,
+     "output_tokens": 1141
+    }
+   },
+   {
+    "id": "scaffold-enhance-jwt-okta",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 78.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.24383,
+    "tokens": {
+     "input_tokens": 482741,
+     "cached_input_tokens": 425733,
+     "output_tokens": 3722
+    }
+   },
+   {
+    "id": "scaffold-enhance-registry",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 19.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11265,
+    "tokens": {
+     "input_tokens": 195597,
+     "cached_input_tokens": 164193,
+     "output_tokens": 1417
+    }
+   },
+   {
+    "id": "scaffold-guidance-claude-team",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 13.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.07248,
+    "tokens": {
+     "input_tokens": 104369,
+     "cached_input_tokens": 81318,
+     "output_tokens": 843
+    }
+   },
+   {
+    "id": "scaffold-guidance-default-lgs",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08657,
+    "tokens": {
+     "input_tokens": 113973,
+     "cached_input_tokens": 86500,
+     "output_tokens": 1194
+    }
+   },
+   {
+    "id": "scaffold-guidance-mixed-team",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 35.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17608,
+    "tokens": {
+     "input_tokens": 343391,
+     "cached_input_tokens": 303742,
+     "output_tokens": 3003
+    }
+   },
+   {
+    "id": "scaffold-guidance-unstated",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 12.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08084,
+    "tokens": {
+     "input_tokens": 112462,
+     "cached_input_tokens": 86281,
+     "output_tokens": 935
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 75.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.19844,
+    "tokens": {
+     "input_tokens": 328681,
+     "cached_input_tokens": 278279,
+     "output_tokens": 3498
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 20.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11131,
+    "tokens": {
+     "input_tokens": 199088,
+     "cached_input_tokens": 169611,
+     "output_tokens": 1536
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 317.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.37717,
+    "tokens": {
+     "input_tokens": 998214,
+     "cached_input_tokens": 937966,
+     "output_tokens": 5757
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.833,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13566,
+    "tokens": {
+     "input_tokens": 172241,
+     "cached_input_tokens": 134639,
+     "output_tokens": 2794
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 36.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11973,
+    "tokens": {
+     "input_tokens": 173293,
+     "cached_input_tokens": 144198,
+     "output_tokens": 2725
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [
+     "covers-trigger"
+    ],
+    "turns": 1,
+    "agent_wall_s": 33.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11277,
+    "tokens": {
+     "input_tokens": 143035,
+     "cached_input_tokens": 113350,
+     "output_tokens": 2561
+    }
+   },
+   {
+    "id": "scaffold-create-prototype-gemini",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 14.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08257,
+    "tokens": {
+     "input_tokens": 133178,
+     "cached_input_tokens": 108594,
+     "output_tokens": 974
+    }
+   },
+   {
+    "id": "scaffold-enhance-jwt-okta",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 69.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.20893,
+    "tokens": {
+     "input_tokens": 361029,
+     "cached_input_tokens": 308657,
+     "output_tokens": 3538
+    }
+   },
+   {
+    "id": "scaffold-enhance-registry",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09873,
+    "tokens": {
+     "input_tokens": 146310,
+     "cached_input_tokens": 115144,
+     "output_tokens": 1114
+    }
+   },
+   {
+    "id": "scaffold-guidance-claude-team",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 18.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08917,
+    "tokens": {
+     "input_tokens": 135734,
+     "cached_input_tokens": 110164,
+     "output_tokens": 1333
+    }
+   },
+   {
+    "id": "scaffold-guidance-default-lgs",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 16.6,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.08928,
+    "tokens": {
+     "input_tokens": 113763,
+     "cached_input_tokens": 85125,
+     "output_tokens": 1248
+    }
+   },
+   {
+    "id": "scaffold-guidance-mixed-team",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 35.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.14824,
+    "tokens": {
+     "input_tokens": 308414,
+     "cached_input_tokens": 278674,
+     "output_tokens": 2752
+    }
+   },
+   {
+    "id": "scaffold-guidance-unstated",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09042,
+    "tokens": {
+     "input_tokens": 137630,
+     "cached_input_tokens": 111250,
+     "output_tokens": 1284
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 46.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1922,
+    "tokens": {
+     "input_tokens": 343173,
+     "cached_input_tokens": 298418,
+     "output_tokens": 3584
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 18.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11457,
+    "tokens": {
+     "input_tokens": 210899,
+     "cached_input_tokens": 180009,
+     "output_tokens": 1399
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 191.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 8,
+    "usd_recorded": 0.36553,
+    "tokens": {
+     "input_tokens": 883045,
+     "cached_input_tokens": 820918,
+     "output_tokens": 6424
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.833,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 27.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10977,
+    "tokens": {
+     "input_tokens": 146085,
+     "cached_input_tokens": 117126,
+     "output_tokens": 2369
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.6,
+    "failed": [
+     "asks"
+    ],
+    "failed_optional": [
+     "covers-data"
+    ],
+    "turns": 1,
+    "agent_wall_s": 33.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12661,
+    "tokens": {
+     "input_tokens": 160628,
+     "cached_input_tokens": 125278,
+     "output_tokens": 2571
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.4,
+    "failed": [
+     "no-scaffold",
+     "no-create",
+     "asks"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 230.7,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.9334,
+    "tokens": {
+     "input_tokens": 2605473,
+     "cached_input_tokens": 2497333,
+     "output_tokens": 18138
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 47.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.17564,
+    "tokens": {
+     "input_tokens": 330478,
+     "cached_input_tokens": 291099,
+     "output_tokens": 3222
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 15.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10193,
+    "tokens": {
+     "input_tokens": 153744,
+     "cached_input_tokens": 123330,
+     "output_tokens": 1370
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 3,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 281.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.30313,
+    "tokens": {
+     "input_tokens": 711606,
+     "cached_input_tokens": 657286,
+     "output_tokens": 5253
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 4,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 50.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.21426,
+    "tokens": {
+     "input_tokens": 373796,
+     "cached_input_tokens": 322909,
+     "output_tokens": 3992
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 4,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 16.8,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.09933,
+    "tokens": {
+     "input_tokens": 151253,
+     "cached_input_tokens": 121710,
+     "output_tokens": 1325
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 4,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 318.4,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.35697,
+    "tokens": {
+     "input_tokens": 898642,
+     "cached_input_tokens": 837103,
+     "output_tokens": 5539
+    }
+   }
+  ],
+  "transfer-r3proposed": [
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 1,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 23.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12256,
+    "tokens": {
+     "input_tokens": 147454,
+     "cached_input_tokens": 116566,
+     "output_tokens": 1836
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1059,
+    "tokens": {
+     "input_tokens": 138186,
+     "cached_input_tokens": 111106,
+     "output_tokens": 1332
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 225.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 8,
+    "usd_recorded": 0.64048,
+    "tokens": {
+     "input_tokens": 1686069,
+     "cached_input_tokens": 1598162,
+     "output_tokens": 8427
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 1,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "covers-provider"
+    ],
+    "turns": 1,
+    "agent_wall_s": 29.5,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13323,
+    "tokens": {
+     "input_tokens": 162189,
+     "cached_input_tokens": 129565,
+     "output_tokens": 2147
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 34.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11325,
+    "tokens": {
+     "input_tokens": 109022,
+     "cached_input_tokens": 83529,
+     "output_tokens": 2735
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 30.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12714,
+    "tokens": {
+     "input_tokens": 146391,
+     "cached_input_tokens": 115816,
+     "output_tokens": 2296
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 1,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.1,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.11468,
+    "tokens": {
+     "input_tokens": 112309,
+     "cached_input_tokens": 84851,
+     "output_tokens": 2423
+    }
+   },
+   {
+    "id": "wf-end-to-end-tool",
+    "split": "val",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.333,
+    "failed": [
+     "tool",
+     "case",
+     "gate",
+     "proved"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 32.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.15619,
+    "tokens": {
+     "input_tokens": 227649,
+     "cached_input_tokens": 192682,
+     "output_tokens": 2521
+    }
+   },
+   {
+    "id": "wf-process-deference",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 17.9,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.1292,
+    "tokens": {
+     "input_tokens": 192528,
+     "cached_input_tokens": 160343,
+     "output_tokens": 1390
+    }
+   },
+   {
+    "id": "wf-rename-arg-propagate",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 209.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 4,
+    "usd_recorded": 0.55824,
+    "tokens": {
+     "input_tokens": 1399209,
+     "cached_input_tokens": 1320646,
+     "output_tokens": 8145
+    }
+   },
+   {
+    "id": "wf-spec-gate-new-agent",
+    "split": "test",
+    "rep": 2,
+    "hard": 0,
+    "soft": 0.8,
+    "failed": [
+     "covers-data"
+    ],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 33.2,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.10229,
+    "tokens": {
+     "input_tokens": 84646,
+     "cached_input_tokens": 60005,
+     "output_tokens": 2391
+    }
+   },
+   {
+    "id": "wf-spec-gate-orders-openapi",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.833,
+    "failed": [],
+    "failed_optional": [
+     "covers-provider"
+    ],
+    "turns": 1,
+    "agent_wall_s": 28.3,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12825,
+    "tokens": {
+     "input_tokens": 150520,
+     "cached_input_tokens": 120758,
+     "output_tokens": 2475
+    }
+   },
+   {
+    "id": "wf-spec-gate-our-llm",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 1.0,
+    "failed": [],
+    "failed_optional": [],
+    "turns": 1,
+    "agent_wall_s": 30.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.12399,
+    "tokens": {
+     "input_tokens": 139108,
+     "cached_input_tokens": 108697,
+     "output_tokens": 2186
+    }
+   },
+   {
+    "id": "wf-spec-gate-slack-digest",
+    "split": "val",
+    "rep": 2,
+    "hard": 1,
+    "soft": 0.8,
+    "failed": [],
+    "failed_optional": [
+     "covers-trigger"
+    ],
+    "turns": 1,
+    "agent_wall_s": 29.0,
+    "skill_loaded": true,
+    "infra": "",
+    "leftovers": 0,
+    "usd_recorded": 0.13015,
+    "tokens": {
+     "input_tokens": 167631,
+     "cached_input_tokens": 137339,
+     "output_tokens": 2247
+    }
+   }
+  ]
+ }
+}

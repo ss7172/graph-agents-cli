@@ -1,0 +1,50 @@
+{
+  "id": "deploy-kube-contexts",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-context",
+  "task_type": "deploy/config",
+  "fixture": {
+    "kind": "project",
+    "name": "route-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Deploys of route-agent/ must never fall back to whatever kube context happens to be current. Staging runs in the context `stg-eu1` and production in `prod-eu1`. Set the project up that way.",
+  "checks": [
+    {
+      "id": "contexts",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'environments.staging.context') == 'stg-eu1' and get(data, 'environments.prod.context') == 'prod-eu1' and get(data, 'environments.staging.namespace') == 'route-agent-staging' and get(data, 'environments.prod.namespace') == 'route-agent-prod'",
+      "why": "the manifest's environments.<env>.context is what deploy and secrets use before the current context"
+    },
+    {
+      "id": "deployment-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment",
+        "app",
+        ".github"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "contexts",
+    "deployment-untouched"
+  ],
+  "reference": "Record `environments.staging.context: stg-eu1` and `environments.prod.context: prod-eu1` in graph-agents-cli-manifest.yaml (keep the namespaces); `deploy` and `secrets` then use them before the kubeconfig's current context. Nothing else changes."
+}

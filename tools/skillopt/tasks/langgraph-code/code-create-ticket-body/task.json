@@ -1,0 +1,43 @@
+{
+  "id": "code-create-ticket-body",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-write-body",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "service-desk",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add tickets --base-url-env TICKETS_API_BASE_URL --auth bearer --token-env TICKETS_API_TOKEN --access custom --methods GET,POST",
+      "graph-agents-cli api allow tickets createTicket --method POST --path /tickets"
+    ]
+  },
+  "prompt": "In service-desk/, add a tool `create_ticket(title: str, description: str)` that opens a ticket through the tickets API: `POST /tickets` with the JSON body `{\"title\": ..., \"description\": ...}`, operationId `createTicket`. The API is already declared in api-policy.yaml.",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_ticket.py",
+      "why": "the policy client takes the body as json_body= and the call is declared in API_CALLS"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "policy-untouched",
+      "type": "unchanged",
+      "paths": [
+        "api-policy.yaml",
+        "graph-agents-cli-manifest.yaml"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "A tool module with a literal API_CALLS entry {api: tickets, method: POST, operation_id: createTicket, path: /tickets} and an async create_ticket(title, description, runtime: ToolRuntime[Any]) calling `get_client(\"tickets\", ...).post(\"/tickets\", operation_id=\"createTicket\", json_body={\"title\": ..., \"description\": ...})` (the client's parameter is json_body, not json), plus TOOLS; lint passes."
+}

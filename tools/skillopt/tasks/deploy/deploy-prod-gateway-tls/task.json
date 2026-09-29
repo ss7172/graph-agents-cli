@@ -1,0 +1,64 @@
+{
+  "id": "deploy-prod-gateway-tls",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/values",
+  "fixture": {
+    "kind": "project",
+    "name": "portal-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Get production of portal-agent/ ready: attach it to the Gateway `public-gw` in the namespace `gateways` with the hostname `agents.acme.com`, with its TLS certificate from cert-manager's ClusterIssuer `letsencrypt-prod`. Prove that a prod deploy would render, without deploying anything.",
+  "checks": [
+    {
+      "id": "values",
+      "type": "yaml",
+      "file": "deployment/helm/portal-agent/values-prod.yaml",
+      "expr": "get(data, 'gateway.parentRef.name') == 'public-gw' and get(data, 'gateway.parentRef.namespace') == 'gateways' and get(data, 'gateway.hostname') == 'agents.acme.com' and get(data, 'tls.certManager.enabled') is True and get(data, 'tls.certManager.issuerRef.name') == 'letsencrypt-prod' and get(data, 'tls.certManager.issuerRef.kind', 'ClusterIssuer') == 'ClusterIssuer'"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/portal-agent/values.yaml",
+        "deployment/helm/portal-agent/values-dev.yaml",
+        "deployment/helm/portal-agent/values-staging.yaml",
+        "deployment/helm/portal-agent/templates"
+      ],
+      "why": "values.yaml is shared by every environment; other environments must not change"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env prod --dry-run --tag abc1234",
+      "output_regex": "kind: Certificate"
+    },
+    {
+      "id": "dry-run-used",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+deploy\\b.*--dry-run"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "values",
+    "renders"
+  ],
+  "reference": "In values-prod.yaml: `gateway.hostname: agents.acme.com`, `gateway.parentRef: {name: public-gw, namespace: gateways}`, `tls.certManager: {enabled: true, issuerRef: {name: letsencrypt-prod, kind: ClusterIssuer}}`; then `graph-agents-cli deploy --env prod --dry-run` renders the HTTPRoute and the Certificate (it reads .env.prod)."
+}

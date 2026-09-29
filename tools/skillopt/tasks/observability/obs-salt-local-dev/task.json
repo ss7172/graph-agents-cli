@@ -1,0 +1,65 @@
+{
+  "id": "obs-salt-local-dev",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-privacy",
+  "task_type": "observability/privacy",
+  "fixture": {
+    "kind": "project",
+    "name": "roster-agent",
+    "create_args": [
+      "--prototype",
+      "--auth-policy",
+      "jwt"
+    ],
+    "install": false,
+    "env": {
+      "TRACING_ENABLED": "true",
+      "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.dev.internal:4318"
+    }
+  },
+  "prompt": "Local runs of roster-agent/ send traces to our team's shared OpenTelemetry collector (already configured in .env), and the principal ids are our employee numbers, which are easy to guess. Make sure nobody reading those traces can tell which employee a conversation belongs to by hashing employee numbers.",
+  "checks": [
+    {
+      "id": "salt-set",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "len(data.get('PRINCIPAL_HASH_SALT', '')) >= 16 and 'change' not in data.get('PRINCIPAL_HASH_SALT', '').lower()",
+      "why": "a long random PRINCIPAL_HASH_SALT in .env keys the hashed id for local runs"
+    },
+    {
+      "id": "env-kept",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('MODEL_PROVIDER') == 'fake' and data.get('TRACING_ENABLED') == 'true' and data.get('OTEL_EXPORTER_OTLP_ENDPOINT') == 'http://otel.dev.internal:4318' and data.get('TRACE_CAPTURE', 'metadata') == 'metadata'"
+    },
+    {
+      "id": "no-secret-in-repo",
+      "type": "file",
+      "path": ".env.example",
+      "not_regex": "(?m)^PRINCIPAL_HASH_SALT=\\S",
+      "why": ".env.example is committed: a real salt there is a leaked secret"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "why": "a configuration-only change: the app already reads this setting"
+    },
+    {
+      "id": "allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'PRINCIPAL_HASH_SALT' in get(data, 'secrets.keys', [])",
+      "why": "PRINCIPAL_HASH_SALT is a secret: only the manifest's secrets.keys reach the app Secret",
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "salt-set",
+    "no-secret-in-repo"
+  ],
+  "reference": "Configuration only: set PRINCIPAL_HASH_SALT to a long random value in .env (git-ignored; never .env.example, never code); the app HMAC-keys the hashed id with it. Restart the local server (run/playground pick it up). Optionally add it to `secrets.keys` for deployed environments (then `secrets apply` + `deploy --restart`). Hashes change once the salt is set."
+}

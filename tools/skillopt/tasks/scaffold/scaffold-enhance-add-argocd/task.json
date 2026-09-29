@@ -1,0 +1,54 @@
+{
+  "id": "scaffold-enhance-add-argocd",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-enhance",
+  "task_type": "scaffold/enhance",
+  "fixture": {
+    "kind": "project",
+    "name": "shop-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "The prototype in shop-agent/ is ready for our cluster. Add Kubernetes deployment with Postgres persistence and Argo CD delivery; images go to ghcr.io/acme. Keep the agent code and the eval data exactly as they are.",
+  "checks": [
+    {
+      "id": "manifest",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.deployment_target') == 'kubernetes' and get(data, 'create_params.checkpointer') == 'postgres' and get(data, 'create_params.cd') == 'argocd' and get(data, 'create_params.registry') == 'ghcr.io/acme'"
+    },
+    {
+      "id": "chart",
+      "type": "file",
+      "path": "deployment/helm/shop-agent/Chart.yaml",
+      "why": "enhance renders the chart; editing the manifest by hand does not"
+    },
+    {
+      "id": "argocd",
+      "type": "file",
+      "path": "deployment/argocd/*.yaml"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/agent.py",
+        "app/tools",
+        "app/policies",
+        "tests/eval"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "chart",
+    "argocd"
+  ],
+  "reference": "From shop-agent/: `graph-agents-cli scaffold enhance . --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme --cd argocd -y` (3-way merge; agent code, datasets and config are never touched), then check with `graph-agents-cli info` / `lint`."
+}

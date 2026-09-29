@@ -1,0 +1,44 @@
+{
+  "id": "scaffold-create-process",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-process",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "claims-agent"
+  },
+  "prompt": "Create a prototype `claims-agent` in the current directory. Our team governs all agent work through the delivery process in `docs/delivery-process.md` inside the project (I'll add that file after the project exists). Set the project up so coding agents working in it follow that process. Don't install anything.",
+  "checks": [
+    {
+      "id": "manifest-process",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "data.get('process') == 'docs/delivery-process.md'",
+      "why": "--process records the governing process in the manifest (read by info and upgrade)"
+    },
+    {
+      "id": "guidance",
+      "type": "file",
+      "path": "AGENTS.md",
+      "regex": "docs/delivery-process\\.md"
+    },
+    {
+      "id": "prototype",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.deployment_target') == 'none'"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "manifest-process"
+  ],
+  "reference": "`graph-agents-cli create claims-agent --prototype --process docs/delivery-process.md -y`: `process:` goes into the manifest and the guidance file, and the workflow skill then defers to that process."
+}

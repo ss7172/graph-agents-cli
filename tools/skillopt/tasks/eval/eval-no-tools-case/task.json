@@ -1,0 +1,61 @@
+{
+  "id": "eval-no-tools-case",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-no-tool-case",
+  "task_type": "eval/dataset",
+  "fixture": {
+    "kind": "project",
+    "name": "greeter-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "Add an eval case `thanks-no-tools` to greeter-agent/: the user says \"Thanks, that's all for today!\" and the case must check that the agent answers without calling any tool. Keep the other cases, run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "shape",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'thanks-no-tools' and get(c, 'expect.no_tool_calls') is True for c in data.get('cases', []))",
+      "why": "`expect.no_tool_calls: true`; an empty tool_calls list asserts nothing"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "thanks-no-tools": "passed"
+      }
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        "tests/eval/eval_config.yaml"
+      ]
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "shape"
+  ],
+  "reference": "Add {\"id\": \"thanks-no-tools\", \"messages\": [{\"role\": \"user\", \"content\": \"Thanks, that's all for today!\"}], \"expect\": {\"no_tool_calls\": true}}; run `graph-agents-cli eval run` (exit 0 on the fake model: plumbing only)."
+}

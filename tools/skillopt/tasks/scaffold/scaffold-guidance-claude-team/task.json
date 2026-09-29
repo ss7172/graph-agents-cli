@@ -1,0 +1,53 @@
+{
+  "id": "scaffold-guidance-claude-team",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-guidance",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "quote-agent"
+  },
+  "prompt": "Create a prototype `quote-agent` in the current directory with Gemini and its default model. Everyone who works on this project uses Claude Code, and no other coding agent. Only scaffold it: no install, no git repository.",
+  "checks": [
+    {
+      "id": "prototype",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.deployment_target') == 'none' and get(data, 'create_params.model_provider') == 'gemini'"
+    },
+    {
+      "id": "guidance",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.agent_guidance_filename') == 'CLAUDE.md'",
+      "why": "a team that uses Claude Code alone gets CLAUDE.md"
+    },
+    {
+      "id": "guidance-file",
+      "type": "file",
+      "path": "CLAUDE.md",
+      "regex": "graph-agents-cli",
+      "why": "the project's agent guidance is rendered into CLAUDE.md"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "guidance",
+    "guidance-file"
+  ],
+  "reference": "`graph-agents-cli create quote-agent --prototype --model-provider gemini --agent-guidance-filename CLAUDE.md -y`: the team uses Claude Code and nothing else, so the guidance goes to CLAUDE.md."
+}

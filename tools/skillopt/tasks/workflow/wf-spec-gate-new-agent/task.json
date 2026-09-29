@@ -1,0 +1,57 @@
+{
+  "id": "wf-spec-gate-new-agent",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-phase0",
+  "task_type": "workflow/understand",
+  "fixture": {
+    "kind": "empty",
+    "name": "incident-agent"
+  },
+  "prompt": "Build me an agent that answers questions about our incidents.",
+  "checks": [
+    {
+      "id": "no-scaffold",
+      "type": "cmd",
+      "cwd": ".",
+      "run": "python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} & set(p.parts))]; print(found); sys.exit(1 if found else 0)\"",
+      "why": "no scaffolding or code before the user approves a spec (Phase 0)"
+    },
+    {
+      "id": "no-create",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+(scaffold\\s+)?create\\b(?!.*(--help|-h\\b))"
+      ]
+    },
+    {
+      "id": "asks",
+      "type": "transcript",
+      "final_regex": [
+        "\\?"
+      ],
+      "why": "the open decisions go back to the user as questions"
+    },
+    {
+      "id": "covers-data",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)\\bapi\\b|data source|incident (system|tool|tracker|platform)|where .* (data|incidents)"
+      ]
+    },
+    {
+      "id": "covers-provider",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)provider|model"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "no-scaffold",
+    "no-create",
+    "asks",
+    "covers-data"
+  ],
+  "reference": "Phase 0: a new agent starts with a design dialogue, not a scaffold. Ask (or list, since the user is not available) the open questions: where incident data comes from (which API operations, read-only?, credentials), who calls the agent (auth policy), model provider (egress), prototype or Kubernetes; optionally draft .graph-agents-cli-spec.md from the template for approval. Do not run `create` or write code until the spec is approved."
+}

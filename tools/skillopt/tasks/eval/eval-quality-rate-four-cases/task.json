@@ -1,0 +1,65 @@
+{
+  "id": "eval-quality-rate-four-cases",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-quality-metric",
+  "task_type": "eval/config",
+  "fixture": {
+    "kind": "project",
+    "name": "concierge-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In concierge-agent/, the response_quality metric should tolerate one of the dataset's four cases scoring below its threshold of 4, but no more. Then run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "config",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.response_quality.threshold') == 4 and 0.5 < float(get(data, 'quality_metrics.response_quality.min_pass_rate', 0)) <= 0.75",
+      "why": "one of four below threshold is a pass rate of 0.75"
+    },
+    {
+      "id": "declared-all",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "len(data.get('cases', [])) == 4 and all(get(c, 'judge.response_quality.threshold') == 4 for c in data.get('cases', []))",
+      "why": "a quality rate counts only the cases that declare the metric: scored on 2 cases, one failure is 50 percent"
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])} and any(tc.get('name') == 'get_weather' for c in data.get('cases', []) if c.get('id') == 'weather' for tc in (get(c, 'expect.tool_calls') or []))"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ]
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "declared-all"
+  ],
+  "reference": "The scaffolded dataset declares response_quality on greeting and capabilities only, and a quality rate counts only the cases scored on the metric. Declare `\"judge\": {\"response_quality\": {\"threshold\": 4}}` on weather and weather-follow-up too, set `response_quality: { threshold: 4, min_pass_rate: 0.75 }`, run `graph-agents-cli eval run` (exit 0 on the fake judge: plumbing only)."
+}

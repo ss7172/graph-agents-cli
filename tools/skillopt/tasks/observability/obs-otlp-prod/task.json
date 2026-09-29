@@ -1,0 +1,59 @@
+{
+  "id": "obs-otlp-prod",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-enable-env",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "dispatch-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Send the production traces of dispatch-agent/ to our in-cluster OpenTelemetry collector at http://otel-collector.monitoring.svc:4318, metadata only; the other environments keep tracing off. Don't deploy.",
+  "checks": [
+    {
+      "id": "prod-values",
+      "type": "yaml",
+      "file": "deployment/helm/dispatch-agent/values-prod.yaml",
+      "expr": "get(data, 'tracing.enabled') is True and get(data, 'tracing.otlpEndpoint') == 'http://otel-collector.monitoring.svc:4318' and get(data, 'tracing.capture', 'metadata') == 'metadata'"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/dispatch-agent/values.yaml",
+        "deployment/helm/dispatch-agent/values-dev.yaml",
+        "deployment/helm/dispatch-agent/values-staging.yaml",
+        "app"
+      ]
+    },
+    {
+      "id": "langsmith-note",
+      "type": "transcript",
+      "final_regex": [
+        "LANGSMITH_API_KEY"
+      ],
+      "mandatory": false,
+      "why": "with LANGSMITH_API_KEY in the prod Secret, traces go to LangSmith instead of OTLP"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "prod-values",
+    "others-untouched"
+  ],
+  "reference": "In values-prod.yaml only: `tracing: {enabled: true, capture: metadata, otlpEndpoint: http://otel-collector.monitoring.svc:4318}`; no key needed, but LANGSMITH_API_KEY must not be in the prod Secret (with it, traces go to LangSmith). Deploy prod per the CD mode afterwards."
+}

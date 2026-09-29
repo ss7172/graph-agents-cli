@@ -1,0 +1,60 @@
+{
+  "id": "eval-fix-judge-key",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-config-fix",
+  "task_type": "eval/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "digest-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('tests/eval/eval_config.yaml'); t = p.read_text(); o = '  model: null'; assert o in t; p.write_text(t.replace(o, '  temperature: 0\\n' + o, 1))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in digest-agent/ exits 3 since a teammate tried to make the judge deterministic. Fix it; the judge keeps using the agent's own provider and model.",
+  "checks": [
+    {
+      "id": "judge",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "set(get(data, 'judge') or {}) <= {'provider', 'model', 'max_tool_result_chars'} and get(data, 'judge.provider') is None and get(data, 'judge.model') is None",
+      "why": "judge: accepts only provider, model and max_tool_result_chars; null keeps the agent's"
+    },
+    {
+      "id": "quality-kept",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics') == {'response_quality': {'threshold': 4, 'min_pass_rate': 0.9}}"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "dataset-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval/datasets"
+      ]
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "judge"
+  ],
+  "reference": "Exit 3: `judge:` accepts only provider, model and max_tool_result_chars, so `temperature: 0` is a configuration error. Remove it (a lower temperature is already the judge's default); keep provider and model null; `graph-agents-cli eval run` exits 0."
+}

@@ -1,0 +1,45 @@
+openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.4.0
+servers:
+  - url: https://orders.internal.example/v1
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      parameters:
+        - {name: customer_id, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+      responses: {"200": {description: Orders}}
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      parameters:
+        - {name: order_id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: One order}}
+  /orders/{order_id}/cancel:
+    post:
+      operationId: cancelOrder
+      parameters:
+        - {name: order_id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Cancelled}}
+  /orders/{order_id}/refund:
+    post:
+      operationId: refundOrder
+      parameters:
+        - {name: order_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount_cents: {type: integer}
+                reason: {type: string}
+      responses: {"200": {description: Refunded}}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+security:
+  - bearer: []

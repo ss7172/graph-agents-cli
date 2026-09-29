@@ -1,0 +1,63 @@
+{
+  "id": "deploy-jwt-staging",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "member-portal",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--auth-policy",
+      "jwt"
+    ],
+    "install": false,
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('deployment/helm/member-portal/values-staging.yaml'); t = p.read_text(); t = t.replace('hostname: \\\"\\\"', 'hostname: \\\"members.staging.acme.dev\\\"', 1).replace('    name: \\\"\\\"', '    name: \\\"shared-gw\\\"', 1).replace('    namespace: \\\"\\\"', '    namespace: \\\"infra\\\"', 1); p.write_text(t)\""
+    ]
+  },
+  "prompt": "`graph-agents-cli deploy --env staging --dry-run` in member-portal/ fails with exit code 3. Our staging identity provider is https://login.staging.acme.dev/ (its JWKS is at https://login.staging.acme.dev/.well-known/jwks.json), and tokens for this agent carry the audience `member-portal`. Fix it and prove that the dry run passes.",
+  "checks": [
+    {
+      "id": "staging-values",
+      "type": "yaml",
+      "file": "deployment/helm/member-portal/values-staging.yaml",
+      "expr": "get(data, 'env.AUTH_JWT_JWKS_URL') == 'https://login.staging.acme.dev/.well-known/jwks.json' and get(data, 'env.AUTH_JWT_ISSUER') == 'https://login.staging.acme.dev/' and get(data, 'env.AUTH_JWT_AUDIENCE') == 'member-portal'",
+      "why": "the staging identity provider belongs in values-staging.yaml env"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/member-portal/values.yaml",
+        "deployment/helm/member-portal/values-dev.yaml",
+        "deployment/helm/member-portal/values-prod.yaml",
+        "deployment/helm/member-portal/templates"
+      ],
+      "why": "values.yaml is shared by every environment; other environments must not change"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env staging --dry-run --tag abc1234",
+      "output_regex": "login\\.staging\\.acme\\.dev"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "staging-values",
+    "others-untouched"
+  ],
+  "reference": "Exit 3: the jwt policy cannot verify tokens in staging (no JWKS URL, issuer or audience; the chart's empty values override the Secret). Set `env.AUTH_JWT_JWKS_URL`, `env.AUTH_JWT_ISSUER` and `env.AUTH_JWT_AUDIENCE` in values-staging.yaml (staging's identity provider must not reach prod through values.yaml), then `graph-agents-cli deploy --env staging --dry-run` passes."
+}

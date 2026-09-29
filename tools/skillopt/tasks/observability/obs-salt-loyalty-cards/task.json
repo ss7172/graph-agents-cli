@@ -1,0 +1,91 @@
+{
+  "id": "obs-salt-loyalty-cards",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-privacy",
+  "task_type": "observability/privacy",
+  "fixture": {
+    "kind": "project",
+    "name": "loyalty-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--auth-policy",
+      "jwt"
+    ],
+    "install": false
+  },
+  "prompt": "Users of loyalty-agent/ are identified by their loyalty card number: 8 digits, handed out in sequence. Anyone who holds our traces or logs must not be able to tell which card a conversation belongs to by hashing card numbers. Staging and production are deployed; I keep the secret values in .env.staging and .env.prod and run all cluster commands myself.",
+  "checks": [
+    {
+      "id": "allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'PRINCIPAL_HASH_SALT' in get(data, 'secrets.keys', [])",
+      "why": "PRINCIPAL_HASH_SALT is a secret: only the manifest's secrets.keys reach the app Secret"
+    },
+    {
+      "id": "keys-kept",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "all(k in get(data, 'secrets.keys', []) for k in ('OPENAI_API_KEY', 'JUDGE_API_KEY', 'POSTGRES_DSN', 'LANGSMITH_API_KEY'))"
+    },
+    {
+      "id": "no-secret-in-values",
+      "type": "file",
+      "path": "deployment/helm/loyalty-agent/values*.yaml",
+      "not_regex": "(?m)^\\s+PRINCIPAL_HASH_SALT:",
+      "why": "secrets never go into chart values"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "why": "a configuration-only change: the app already reads this setting"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b"
+      ],
+      "why": "the value reaches the cluster only through `graph-agents-cli secrets apply --env <env>`"
+    },
+    {
+      "id": "names-restart",
+      "type": "transcript",
+      "final_regex": [
+        "restart"
+      ],
+      "why": "pods read a changed Secret only when they start: `deploy --restart --env <env>`"
+    },
+    {
+      "id": "both-envs",
+      "type": "transcript",
+      "final_regex": [
+        "staging",
+        "prod"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "code-untouched",
+    "names-apply",
+    "names-restart"
+  ],
+  "reference": "The hashed principal id is plain sha256 unless PRINCIPAL_HASH_SALT is set (then HMAC-keyed), and sequential card numbers are trivially guessable. The app already reads the salt: the change is configuration only. Add PRINCIPAL_HASH_SALT to `secrets.keys` in the manifest (never to values files, never in code), and tell the user to put a long random value in .env.staging and .env.prod, run `graph-agents-cli secrets apply --env staging` / `--env prod`, then `graph-agents-cli deploy --restart --env <env>` (a Secret change alone does not restart pods). Changing the salt changes every hash."
+}

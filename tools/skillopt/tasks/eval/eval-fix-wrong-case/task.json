@@ -1,0 +1,56 @@
+{
+  "id": "eval-fix-wrong-case",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-dataset-fix",
+  "task_type": "eval/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "transit-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import json, pathlib; p = pathlib.Path('tests/eval/datasets/basic-dataset.json'); d = json.loads(p.read_text()); d['cases'].append({'id': 'madrid-weather', 'messages': [{'role': 'user', 'content': 'What is the weather in Madrid?'}], 'expect': {'contains': ['sunny'], 'tool_calls': [{'name': 'get_weather', 'args_subset': {'city': 'Madrid'}}]}}); p.write_text(json.dumps(d, indent=2) + chr(10))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "Since a teammate added the eval case `madrid-weather` to transit-agent/, `graph-agents-cli eval run` fails. The agent itself behaves correctly. Fix it so the case checks what they meant, and show that the gate passes.",
+  "checks": [
+    {
+      "id": "case-fixed",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'madrid-weather' and 'sunny' in [str(s).lower() for s in (get(c, 'expect.contains') or [])] and any(tc.get('name') == 'get_weather' and 'madrid' in json.dumps(tc.get('args_subset') or {}).lower() and 'city' not in (tc.get('args_subset') or {}) for tc in (get(c, 'expect.tool_calls') or [])) for c in data.get('cases', []))",
+      "why": "keep the case's intent (get_weather for Madrid) with the tool's real argument name, `query`"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "madrid-weather": "passed"
+      },
+      "min_planned": 5
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "case-fixed"
+  ],
+  "reference": "Reproduce: madrid-weather fails its tool_calls check because get_weather's argument is `query` (app/tools/weather.py), not `city`. The agent is right, so fix the case: args_subset {\"query\": \"Madrid\"}, keep contains sunny; do not rename the tool's argument or drop the assertion. `graph-agents-cli eval run` exits 0."
+}

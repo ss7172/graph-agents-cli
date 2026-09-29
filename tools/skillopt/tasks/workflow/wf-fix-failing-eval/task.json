@@ -1,0 +1,70 @@
+{
+  "id": "wf-fix-failing-eval",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-debugging",
+  "task_type": "workflow/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "weather-desk",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('app/tools/weather.py'); t = p.read_text(); o = \\\"It's 90 degrees and sunny.\\\"; assert o in t; p.write_text(t.replace(o, \\\"It's 90 degrees and suny.\\\"))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in weather-desk/ started failing after a teammate's change. Find the root cause and fix it without weakening the eval.",
+  "checks": [
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "eval-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval"
+      ],
+      "mandatory": true,
+      "why": "the eval is the spec: fix the code, not the checks"
+    },
+    {
+      "id": "scope",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        ".env"
+      ],
+      "mandatory": true,
+      "except": [
+        "app/tools/weather.py"
+      ],
+      "why": "change only what the root cause needs"
+    },
+    {
+      "id": "tool-fixed",
+      "type": "file",
+      "path": "app/tools/weather.py",
+      "regex": "degrees and sunny"
+    },
+    {
+      "id": "reproduced",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+(run|generate|grade)"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "eval-untouched",
+    "tool-fixed"
+  ],
+  "reference": "Reproduce with `graph-agents-cli eval run`: `weather` fails `contains: sunny`. The teammate's change made get_weather return \"suny\" (a typo) in app/tools/weather.py. Fix the string, rerun the eval (exit 0); leave the dataset alone."
+}

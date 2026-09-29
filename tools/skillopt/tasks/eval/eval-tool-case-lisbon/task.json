@@ -1,0 +1,80 @@
+{
+  "id": "eval-tool-case-lisbon",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-tool-case",
+  "task_type": "eval/dataset",
+  "fixture": {
+    "kind": "project",
+    "name": "weather-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In the project in weather-agent/, add an eval case with the id `lisbon-weather` that asks \"What is the weather in Lisbon?\" and checks that the agent calls the weather tool for Lisbon. Keep the existing cases. Then run the evaluation and tell me the result.",
+  "checks": [
+    {
+      "id": "case-shape",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'lisbon-weather' and 'lisbon' in json.dumps(c.get('messages')).lower() and any(tc.get('name') == 'get_weather' and 'lisbon' in json.dumps(tc.get('args_subset', {})).lower() for tc in (get(c, 'expect.tool_calls') or [])) for c in data.get('cases', []))",
+      "why": "the case asserts the tool call by name with an args_subset naming Lisbon"
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "lisbon-weather": "passed"
+      },
+      "why": "the new case passes on the fake model and the gate is met"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        "tests/eval/eval_config.yaml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "reported",
+      "type": "transcript",
+      "final_regex": [
+        "exit (code )?(status )?0|exit(ed)? with 0|\\b0\\b.*exit|passed"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "fake-caveat",
+      "type": "transcript",
+      "final_regex": [
+        "fake"
+      ],
+      "mandatory": false,
+      "why": "a run on the fake model proves the plumbing only; the report should say so"
+    }
+  ],
+  "broken_fails": [
+    "gate"
+  ],
+  "reference": "Add {\"id\": \"lisbon-weather\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Lisbon?\"}], \"expect\": {\"tool_calls\": [{\"name\": \"get_weather\", \"args_subset\": {\"query\": \"Lisbon\"}}]}} to tests/eval/datasets/basic-dataset.json (the tool's argument is `query`: read it in app/tools/weather.py), run `graph-agents-cli eval run` from the project, and report the per-status counts and exit code 0, noting that the fake model proves the plumbing only."
+}

@@ -1,0 +1,50 @@
+{
+  "id": "scaffold-create-prototype-gemini",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-create",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "faq-helper"
+  },
+  "prompt": "Start a quick prototype called `faq-helper` in the current directory: no deployment for now, we'll add Kubernetes later. It uses Gemini with its default model. Just scaffold it; don't install anything.",
+  "checks": [
+    {
+      "id": "target",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.deployment_target') == 'none' and get(data, 'create_params.cd') == 'skip' and get(data, 'create_params.checkpointer') == 'memory'"
+    },
+    {
+      "id": "provider",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.model_provider') == 'gemini'"
+    },
+    {
+      "id": "no-deployment",
+      "type": "file",
+      "path": "deployment/**/*",
+      "exists": false,
+      "why": "a prototype has no chart or Argo manifests"
+    },
+    {
+      "id": "pr-checks",
+      "type": "file",
+      "path": ".github/workflows/pr_checks.yaml"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "target",
+    "no-deployment"
+  ],
+  "reference": "`graph-agents-cli create faq-helper --prototype --model-provider gemini -y` (prototype: target none, CD skip, memory checkpointer, only pr_checks.yaml among the workflows; add deployment later with `scaffold enhance`)."
+}

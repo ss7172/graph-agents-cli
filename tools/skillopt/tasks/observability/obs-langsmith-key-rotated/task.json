@@ -1,0 +1,64 @@
+{
+  "id": "obs-langsmith-key-rotated",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-secret-rotation",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "trends-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false,
+    "setup": [
+      "printf 'tracing:\\n  enabled: true\\n  capture: metadata\\n  langsmith:\\n    project: trends-prod\\n' >> deployment/helm/trends-agent/values-prod.yaml"
+    ]
+  },
+  "prompt": "We rotated the LangSmith API key that trends-agent/ uses in production; the new key is already in trends-agent/.env.prod. What exactly do I need to run so that production uses it? I run the cluster commands myself.",
+  "checks": [
+    {
+      "id": "nothing-changed",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "deployment",
+        "graph-agents-cli-manifest.yaml",
+        ".env.prod"
+      ],
+      "why": "the key is already allow-listed and in .env.prod: nothing in the repository changes"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b[^\\n]*--env[ =]?prod"
+      ],
+      "why": "the value reaches the cluster only through `graph-agents-cli secrets apply --env <env>`"
+    },
+    {
+      "id": "names-restart",
+      "type": "transcript",
+      "final_regex": [
+        "restart"
+      ],
+      "why": "pods read a changed Secret only when they start: `deploy --restart --env <env>`"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "names-apply",
+    "names-restart"
+  ],
+  "reference": "LANGSMITH_API_KEY is in secrets.keys by default and the new value is in .env.prod, so no file changes: run `graph-agents-cli secrets apply --env prod` (server-side apply of the allow-listed keys), then `graph-agents-cli deploy --restart --env prod`, because pods read a changed Secret only when they start (a redeploy of the same image replaces no pod). Check with `secrets status --env prod`."
+}

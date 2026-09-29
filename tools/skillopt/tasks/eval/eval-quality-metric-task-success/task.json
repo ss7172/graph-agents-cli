@@ -1,0 +1,72 @@
+{
+  "id": "eval-quality-metric-task-success",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-quality-metric",
+  "task_type": "eval/config",
+  "fixture": {
+    "kind": "project",
+    "name": "review-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In review-agent/, make `task_success` a quality metric of the eval: a case passes it with a score of 4 or more, and the gate should accept up to 20% of the scored cases below that. Declare it on the `weather` and `weather-follow-up` cases. Keep `response_quality` as it is. Then run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "config-quality",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.task_success.threshold') == 4 and get(data, 'quality_metrics.task_success.min_pass_rate') == 0.8",
+      "why": "a quality metric needs a per-case threshold and an aggregate min_pass_rate under quality_metrics"
+    },
+    {
+      "id": "response-quality-kept",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.response_quality') == {'threshold': 4, 'min_pass_rate': 0.9}"
+    },
+    {
+      "id": "declared",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "all('task_success' in (c.get('judge') or {}) for c in data.get('cases', []) if c.get('id') in ('weather', 'weather-follow-up')) and len([c for c in data.get('cases', []) if c.get('id') in ('weather', 'weather-follow-up')]) == 2"
+    },
+    {
+      "id": "other-cases-untouched",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "all(c.get('judge') == {'response_quality': {'threshold': 4}} for c in data.get('cases', []) if c.get('id') in ('greeting', 'capabilities'))"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "config-quality",
+    "gate"
+  ],
+  "reference": "In tests/eval/eval_config.yaml add `task_success: { threshold: 4, min_pass_rate: 0.8 }` under `quality_metrics:` (there is no run-wide min_pass_rate: an unknown top-level key is exit 3), keep `response_quality: { threshold: 4, min_pass_rate: 0.9 }`, add `\"judge\": {\"task_success\": {\"threshold\": 4}}` to the `weather` and `weather-follow-up` cases (both have a `reference`), run `graph-agents-cli eval run` (exit 0 on the fake judge) and report it as a plumbing check."
+}

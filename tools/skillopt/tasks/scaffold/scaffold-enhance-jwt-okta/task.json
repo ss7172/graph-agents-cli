@@ -1,0 +1,51 @@
+{
+  "id": "scaffold-enhance-jwt-okta",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-enhance",
+  "task_type": "scaffold/enhance",
+  "fixture": {
+    "kind": "project",
+    "name": "tickets-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "install": false
+  },
+  "prompt": "Users of tickets-agent/ will sign in through our Okta tenant and call the agent with their own tokens, so that each conversation belongs to one user. Switch the project to per-user identity. Keep the agent code and the eval data exactly as they are.",
+  "checks": [
+    {
+      "id": "manifest",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.auth_policy') == 'jwt'",
+      "why": "per-user OIDC tokens are the jwt auth policy"
+    },
+    {
+      "id": "env-example",
+      "type": "file",
+      "path": ".env.example",
+      "regex": "(?m)^AUTH_POLICY=jwt\\b",
+      "why": "scaffold enhance --auth-policy jwt re-renders the project for the policy; editing the manifest by hand does not"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/agent.py",
+        "app/tools",
+        "app/policies",
+        "tests/eval"
+      ]
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "env-example"
+  ],
+  "reference": "From tickets-agent/: `graph-agents-cli scaffold enhance . --auth-policy jwt -y` (3-way merge: manifest, .env.example, AGENTS.md and the README follow; agent code and eval data are untouched). Then the user sets AUTH_JWT_JWKS_URL (Okta's JWKS), AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE, and locally `graph-agents-cli auth dev-token --sub <user>` gives a token."
+}

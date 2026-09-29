@@ -1,0 +1,56 @@
+{
+  "id": "wf-rename-tool-consistent",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-change-propagation",
+  "task_type": "workflow/change",
+  "fixture": {
+    "kind": "project",
+    "name": "weather-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In weather-agent/, rename the weather tool from `get_weather` to `get_weather_report` everywhere it matters, and prove that nothing broke.",
+  "checks": [
+    {
+      "id": "renamed",
+      "type": "pyfile",
+      "script": "check_renamed.py"
+    },
+    {
+      "id": "dataset",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "all(tc.get('name') != 'get_weather' for c in data.get('cases', []) for tc in (get(c, 'expect.tool_calls') or [])) and {'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}",
+      "why": "the eval cases assert the tool by name: rename it there too"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "proved",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "why": "behaviour is proven by the eval gate, not by lint alone"
+    }
+  ],
+  "broken_fails": [
+    "dataset",
+    "gate",
+    "proved"
+  ],
+  "reference": "Rename the function in app/tools/weather.py (and TOOLS), update every `get_weather` in tests/eval/datasets/basic-dataset.json tool_calls, then `graph-agents-cli lint` and `graph-agents-cli eval run` (exit 0) as the proof."
+}

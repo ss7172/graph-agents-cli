@@ -1,0 +1,54 @@
+{
+  "id": "scaffold-create-onprem-vllm",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-create",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "netops-agent"
+  },
+  "prompt": "Create `netops-agent` in the current directory for our air-gapped Kubernetes cluster: nothing may leave our network. The model is `qwen2.5:14b`, served by our vLLM at http://vllm.ml.svc:8000/v1. Images go to `harbor.corp.internal/agents`; no CD. Set it up (scaffold only: no install, no git repository).",
+  "checks": [
+    {
+      "id": "provider",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.model_provider') == 'openai-compatible' and get(data, 'create_params.model') == 'qwen2.5:14b'",
+      "why": "an on-network vLLM/Ollama/TGI server is the openai-compatible provider"
+    },
+    {
+      "id": "architecture",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.runtime') == 'fastapi' and get(data, 'create_params.deployment_target') == 'kubernetes' and get(data, 'create_params.registry') == 'harbor.corp.internal/agents' and get(data, 'create_params.cd') == 'skip'",
+      "why": "the disconnected profile: fastapi (not langgraph-server), no hosted CD"
+    },
+    {
+      "id": "base-url",
+      "type": "yaml",
+      "file": "deployment/helm/netops-agent/values.yaml",
+      "expr": "get(data, 'env.OPENAI_BASE_URL') == 'http://vllm.ml.svc:8000/v1'",
+      "mandatory": false,
+      "why": "deploy refuses the CHANGE-ME base URL outside dev"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "provider"
+  ],
+  "reference": "`graph-agents-cli create netops-agent --model-provider openai-compatible --model qwen2.5:14b --runtime fastapi --deployment-target kubernetes --registry harbor.corp.internal/agents --cd skip -y`, then set `env.OPENAI_BASE_URL: http://vllm.ml.svc:8000/v1` in the chart values (and OPENAI_BASE_URL in .env for local runs); tracing off or OTLP in-cluster; GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1."
+}

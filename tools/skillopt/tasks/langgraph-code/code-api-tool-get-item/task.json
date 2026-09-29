@@ -1,0 +1,55 @@
+{
+  "id": "code-api-tool-get-item",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-tool",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "stock-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add inventory --base-url-env INVENTORY_API_BASE_URL --auth bearer --token-env INVENTORY_API_TOKEN --access read-only",
+      "graph-agents-cli api allow inventory getItem --method GET --path '/items/{item_id}'"
+    ]
+  },
+  "prompt": "In stock-agent/, add a tool `get_item(item_id: str)` that fetches one item from the inventory API (`GET /items/{item_id}`, operationId `getItem`) and returns the response as JSON text. The API is already declared in api-policy.yaml; don't change the policy.",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_get_item.py",
+      "why": "the call goes through app_utils.api_client.get_client with a path template and is declared in API_CALLS"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "why": "ruff plus the static API-policy check"
+    },
+    {
+      "id": "policy-untouched",
+      "type": "unchanged",
+      "paths": [
+        "api-policy.yaml",
+        "graph-agents-cli-manifest.yaml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "scaffolding-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/agent.py",
+        "app/fast_api_app.py"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "A module app/tools/inventory.py with a literal `API_CALLS = [{\"api\": \"inventory\", \"method\": \"GET\", \"operation_id\": \"getItem\", \"path\": \"/items/{item_id}\"}]`, an async `@tool get_item(item_id: str, runtime: ToolRuntime[Any])` that calls `get_client(\"inventory\", context=runtime.context).get(\"/items/{item_id}\", operation_id=\"getItem\", path_params={\"item_id\": item_id})` and returns JSON text, and `TOOLS = [get_item]`; never httpx directly; `graph-agents-cli lint` passes."
+}

@@ -1,0 +1,59 @@
+{
+  "id": "wf-spec-gate-slack-digest",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-phase0",
+  "task_type": "workflow/understand",
+  "fixture": {
+    "kind": "empty",
+    "name": "merge-digest"
+  },
+  "prompt": "Set up an agent that every morning posts a summary of yesterday's merged pull requests to our team's Slack channel.",
+  "checks": [
+    {
+      "id": "no-scaffold",
+      "type": "cmd",
+      "cwd": ".",
+      "run": "python3 -c \"import pathlib, sys; found = [str(p) for p in pathlib.Path('.').rglob('graph-agents-cli-manifest.yaml') if not ({'.bench', '.claude', '.agents'} & set(p.parts))]; print(found); sys.exit(1 if found else 0)\"",
+      "why": "no scaffolding or code before the user approves a spec (Phase 0)"
+    },
+    {
+      "id": "no-create",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+(scaffold\\s+)?create\\b(?!.*(--help|-h\\b))"
+      ],
+      "why": "an unattended session stops after the spec: nobody approved it"
+    },
+    {
+      "id": "asks",
+      "type": "transcript",
+      "final_regex": [
+        "\\?"
+      ],
+      "why": "the open decisions go back to the user as questions"
+    },
+    {
+      "id": "covers-access",
+      "mandatory": false,
+      "type": "transcript",
+      "final_regex": [
+        "(?i)token|credential|access|permission|scope|read.?only|\\bapi\\b"
+      ],
+      "why": "the GitHub read and the Slack write need credentials and access the user chooses"
+    },
+    {
+      "id": "covers-trigger",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)schedul|cron|trigger|every morning|who (calls|starts|runs)"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "no-scaffold",
+    "no-create",
+    "asks"
+  ],
+  "reference": "Phase 0 applies and nobody can approve a spec in this session. Open decisions: which GitHub organisation/repositories and with which read-only credential, posting to Slack (a write: which channel, which bot token, may it post without a human's approval), what starts the run each morning (graph-agents-cli serves a chat API: a scheduler such as a Kubernetes CronJob must call it), which model provider may see the pull-request data, prototype or Kubernetes. Stop after an optional draft .graph-agents-cli-spec.md and return these as questions; no `create`, no code."
+}

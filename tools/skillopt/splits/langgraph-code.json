@@ -1,0 +1,38 @@
+{
+  "train": [
+    "code-api-tool-get-item",
+    "code-policy-no-widen",
+    "code-temperature-tool",
+    "code-api-limits-recursion",
+    "code-approval-role-finance",
+    "code-update-ticket-status"
+  ],
+  "val": [
+    "code-api-tool-list-orders",
+    "code-system-prompt-preserve",
+    "code-api-allow-new-op",
+    "code-approval-refund-requester",
+    "code-api-new-billing",
+    "code-create-ticket-body"
+  ],
+  "test": [
+    "code-remove-checkpointer",
+    "code-write-tool-guard"
+  ],
+  "hashes": {
+    "code-api-tool-get-item": "111cc22f4b6d7a62",
+    "code-policy-no-widen": "7cf1104f4f78bb31",
+    "code-temperature-tool": "6b5831c64e823932",
+    "code-api-limits-recursion": "df2e629748f6c802",
+    "code-approval-role-finance": "e47610365f76ad29",
+    "code-update-ticket-status": "ac12c2b21b8a0920",
+    "code-api-tool-list-orders": "96c63267fb48c2da",
+    "code-system-prompt-preserve": "b416ca4aa590855c",
+    "code-api-allow-new-op": "bbf4395b5e705de5",
+    "code-approval-refund-requester": "ff8430dca9f3e58a",
+    "code-api-new-billing": "0532d94b4166897e",
+    "code-create-ticket-body": "81c6e7ade52e7519",
+    "code-remove-checkpointer": "98a6f1fd88ec1b05",
+    "code-write-tool-guard": "ba49b2dcb8c5d5dd"
+  }
+}

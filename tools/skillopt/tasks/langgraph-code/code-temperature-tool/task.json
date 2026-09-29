@@ -1,0 +1,43 @@
+{
+  "id": "code-temperature-tool",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-plain-tool",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "util-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "In util-agent/, add a tool `convert_temperature(value: float, unit: str) -> str` that converts between Celsius and Fahrenheit: with unit \"C\" it converts the value from Celsius to Fahrenheit, with \"F\" from Fahrenheit to Celsius, and it returns the result as text (for example \"100 C = 212 F\"). Keep the existing weather tool.",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_temperature.py",
+      "why": "every tools module declares API_CALLS ([] without external calls) and TOOLS, which get_tools() collects"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "why": "ruff plus the static API-policy check"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/agent.py",
+        "app/tools/weather.py",
+        "app/app_utils",
+        "tests"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "New module app/tools/temperature.py with `API_CALLS: list[dict[str, str]] = []`, a `@tool def convert_temperature(value: float, unit: str) -> str` and `TOOLS = [convert_temperature]` (app/tools/__init__.py collects TOOLS from every module); weather.py and agent.py unchanged; `graph-agents-cli lint` passes."
+}

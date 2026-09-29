@@ -1,0 +1,67 @@
+{
+  "id": "deploy-troubleshoot-secret",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-troubleshoot",
+  "task_type": "deploy/troubleshoot",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "The staging pods of shop/ never start. The `kubectl describe pod` output is in shop/incident/pod-events.txt. What is wrong, and exactly which graph-agents-cli commands do I run to fix it? Don't run anything against a cluster; just tell me.",
+  "checks": [
+    {
+      "id": "fix-command",
+      "type": "transcript",
+      "final_regex": [
+        "graph-agents-cli secrets apply\\b[^\\n]*--env[ =]staging"
+      ],
+      "why": "the app Secret comes from `secrets apply` (allow-listed keys of .env.staging), never by hand"
+    },
+    {
+      "id": "no-kubectl-secret",
+      "type": "transcript",
+      "final_not_regex": [
+        "kubectl create secret"
+      ]
+    },
+    {
+      "id": "verify-command",
+      "type": "transcript",
+      "final_regex": [
+        "secrets status\\b[^\\n]*--env[ =]staging"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "nothing-run",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    },
+    {
+      "id": "project-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "deployment",
+        "graph-agents-cli-manifest.yaml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "fix-command",
+    "no-kubectl-secret"
+  ],
+  "reference": "CreateContainerConfigError with `secret \"shop-app\" not found`: the app Secret was never applied (staging requires it: secretOptional false). Put the allow-listed keys in .env.staging and run `graph-agents-cli secrets apply --env staging`, check with `graph-agents-cli secrets status --env staging`; the pods retry on their own (or `graph-agents-cli deploy --restart --env staging`). Never create the Secret with kubectl by hand."
+}

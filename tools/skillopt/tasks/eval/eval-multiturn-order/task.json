@@ -1,0 +1,55 @@
+{
+  "id": "eval-multiturn-order",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-multiturn",
+  "task_type": "eval/dataset",
+  "fixture": {
+    "kind": "project",
+    "name": "trip-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "Add a two-turn eval case `rome-then-oslo` to trip-agent/: in one conversation the user first asks \"What is the weather in Rome?\" and then \"What is the weather in Oslo?\". The case must check that the agent looked up Rome and then Oslo, in that order, across the two turns. Run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "shape",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'rome-then-oslo' and [m.get('role') for m in c.get('messages', [])] == ['user', 'user'] and 'rome' in c['messages'][0].get('content', '').lower() and 'oslo' in c['messages'][1].get('content', '').lower() and get(c, 'expect.scope') == 'all_turns' and get(c, 'expect.ordered') is True and [('rome' in json.dumps(t.get('args_subset', {})).lower(), 'oslo' in json.dumps(t.get('args_subset', {})).lower()) for t in (get(c, 'expect.tool_calls') or []) if t.get('name') == 'get_weather'] == [(True, False), (False, True)] for c in data.get('cases', []))",
+      "why": "two user messages on one thread; scope all_turns so the first turn's call counts; ordered tool_calls"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "rome-then-oslo": "passed"
+      }
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        "tests/eval/eval_config.yaml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "shape",
+    "gate"
+  ],
+  "reference": "Add {\"id\": \"rome-then-oslo\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Rome?\"}, {\"role\": \"user\", \"content\": \"What is the weather in Oslo?\"}], \"expect\": {\"scope\": \"all_turns\", \"tool_calls\": [{\"name\": \"get_weather\", \"args_subset\": {\"query\": \"Rome\"}}, {\"name\": \"get_weather\", \"args_subset\": {\"query\": \"Oslo\"}}], \"ordered\": true}}. Without scope all_turns only the final turn's calls are read and the Rome call is missing. Run `graph-agents-cli eval run` (exit 0)."
+}

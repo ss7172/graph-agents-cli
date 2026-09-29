@@ -1,0 +1,51 @@
+{
+  "id": "eval-compare-regression",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-compare",
+  "task_type": "eval/analysis",
+  "fixture": {
+    "kind": "project",
+    "name": "faq-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "I changed the system prompt of the agent in faq-agent/. reports/before.json is the eval result from before the change and reports/after.json from after it. Which cases regressed? Write their ids to faq-agent/regressions.txt, one per line, and tell me whether the change is safe to merge.",
+  "checks": [
+    {
+      "id": "regressions",
+      "type": "cmd",
+      "run": "python3 -c \"import sys; s = {l.strip() for l in open('regressions.txt') if l.strip()}; print(sorted(s)); sys.exit(0 if s == {'weather', 'weather-follow-up'} else 1)\"",
+      "why": "exactly the two cases that went from passed to failed"
+    },
+    {
+      "id": "verdict",
+      "type": "transcript",
+      "final_regex": [
+        "not safe|unsafe|do not merge|don't merge|should not (be )?merge|shouldn't (be )?merge|not (be )?merged|block"
+      ]
+    },
+    {
+      "id": "used-compare",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+compare"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "inputs-untouched",
+      "type": "unchanged",
+      "paths": [
+        "reports",
+        "app",
+        "tests"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "regressions"
+  ],
+  "reference": "`graph-agents-cli eval compare reports/before.json reports/after.json` lists `weather` and `weather-follow-up` as regressed (passed -> failed; the exit code went 0 -> 1). Write both ids to regressions.txt and say the change is not safe to merge: the gate fails (exit 1) and the tool-calling cases broke."
+}

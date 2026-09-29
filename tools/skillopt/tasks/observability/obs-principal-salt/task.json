@@ -1,0 +1,58 @@
+{
+  "id": "obs-principal-salt",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-privacy",
+  "task_type": "observability/privacy",
+  "fixture": {
+    "kind": "project",
+    "name": "hr-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "The principal ids of hr-agent/ are employees' email addresses. Make sure nobody who holds a trace or a log line can confirm who a user is by hashing a guessed email address. I'll provide any secret values myself; don't put secrets in the repository.",
+  "checks": [
+    {
+      "id": "allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'PRINCIPAL_HASH_SALT' in get(data, 'secrets.keys', [])",
+      "why": "PRINCIPAL_HASH_SALT (HMAC key of the hashed id) is a secret: add it to secrets.keys"
+    },
+    {
+      "id": "keys-kept",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "all(k in get(data, 'secrets.keys', []) for k in ('OPENAI_API_KEY', 'JUDGE_API_KEY', 'POSTGRES_DSN', 'API_KEY', 'LANGSMITH_API_KEY'))"
+    },
+    {
+      "id": "no-salt-in-values",
+      "type": "file",
+      "path": "deployment/helm/hr-agent/values*.yaml",
+      "not_regex": "(?m)^\\s+PRINCIPAL_HASH_SALT:"
+    },
+    {
+      "id": "next-step",
+      "type": "transcript",
+      "final_regex": [
+        "secrets apply"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "allowlisted",
+    "no-salt-in-values"
+  ],
+  "reference": "Hashed principal ids are sha256 of the id unless PRINCIPAL_HASH_SALT is set (then HMAC-keyed); guessable ids such as emails need the salt. Add PRINCIPAL_HASH_SALT to `secrets.keys` in the manifest (never into values files), and tell the user to put a random value in each .env.<env> and run `graph-agents-cli secrets apply --env <env>`, then restart (changing the salt changes every hash)."
+}

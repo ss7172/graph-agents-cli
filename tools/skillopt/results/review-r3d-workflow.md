@@ -1,0 +1,721 @@
+# The round-3c workflow text with generic examples (round 3d)
+
+Date: 2026-09-28. Branch `experiments/skillopt` at `f12742f`; the CLI build is
+`0.2.0+gf12742f` (the CLI sources are unchanged since `b35b246`). This page rewords the three
+examples in the scope rule of the approved workflow text (W1,
+[`review-r3c-workflow.md`](review-r3c-workflow.md), `SKILL.md` `6f92d996…`) and re-checks the
+result on Claude Code.
+
+**Nothing has been written back.** `skills/`, `src/graph_agents_cli/skills/data/` and `v0.3` are
+unchanged. Round-3d decision 3 schedules the write-back for P6 on `v0.3`. The complete `SKILL.md`
+is at the end of this page.
+
+## What was asked
+
+Round-3d decision 3: W1 is approved **with generic examples**.
+
+- Reword the scope rule's three examples ("add this tool, rename that argument, fix this failing
+  eval") so that they no longer mirror gac-bench task names, prompts or specifics. Keep
+  everything else.
+- Re-check on Claude Code: workflow val, 3 repetitions, `acceptEdits`, no OpenAI. Must-proceed,
+  spec-gate stops and `asks` must be at least as good as W1's (9/9, 9/9 and 9/9).
+- If they get worse, try one more rewording and report both.
+
+## Verdict
+
+**The criterion is met.** Must-proceed, spec-gate stops and `asks` are each 9/9, the same as
+W1. No second rewording was needed.
+
+| On workflow val, Claude Code, 3 reps | **final (generic examples)** | W1 (round 3c) |
+|---|---|---|
+| Tasks that must proceed | **9/9** | 9/9 |
+| Spec-gate tasks that stopped before `create` | **9/9** | 9/9 |
+| Spec-gate `asks` passed | **9/9** | 9/9 |
+| val hard | **18/18** | 17/18 |
+| val soft (mean) | 0.946 | 0.989 |
+
+**Soft is lower, for a reason outside the gate.** Three spec-gate rollouts missed optional
+coverage checks, and none of them is mandatory:
+
+- `wf-spec-gate-slack-digest` reps 1 and 3 missed `covers-access` and `covers-trigger`.
+- `wf-spec-gate-orders-openapi` rep 1 missed `covers-provider`.
+
+**Why they missed.** In the two slack-digest rollouts the agent classified the request as a new
+agent ("No existing agent project or process document here, so this is a fresh Phase 0 design
+dialogue"). It stopped without writing a draft spec and asked a single question, which
+repositories to read. That follows the brainstorming playbook's "one question at a time", not the
+stop procedure's full list of open decisions. W1's only failure in round 3c had the
+same cause: `wf-spec-gate-our-llm` rep 3 asked one question and missed the mandatory
+`covers-provider`.
+
+**Not significant.** Spec-gate rollouts with every coverage check passed were 6/9 here and 8/9
+for W1 (Fisher p = 0.58). The reworded sentence is about changes to an existing project, and
+these tasks have no project. Stops and `asks` are unaffected.
+
+## Conditions
+
+- **Same as W1.**
+  - Claude Code **2.1.283**, model **`claude-sonnet-5`**, effort medium, `--permission-mode
+    acceptEdits`, 80 turns at most;
+  - workflow val: 6 tasks, 3 that must proceed and 3 spec-gate tasks, 3 repetitions;
+  - 6 slots on ports 22400-22405 (agents) and 22425-22430 (verifiers);
+  - the isolation of DESIGN section 3, with the fixes of `3036936` and `73740d8`.
+- **Pinned.** Since round 3c the installed Claude Code moved to 2.1.284, and the `sonnet` alias
+  now resolves to `claude-sonnet-5-5`. The first preflight of this round showed both. To compare
+  like with like:
+  - `GAC_SKILLOPT_CLAUDE_BIN` pointed at the 2.1.283 binary;
+  - `--model claude-sonnet-5` was passed.
+
+  Every rollout's init event reports `claude-sonnet-5`.
+- **Preflight.** It passed in the pinned configuration (`preflight: ok`, one session):
+  - the session loaded only `graph-agents-cli-workflow`: no MCP servers, no hook events;
+  - every gating check was ok: writes outside the workspace, the checkout, other runs, the key
+    directory and the skill copies were all denied, and the network reached PyPI only.
+
+  As in round 3c, the non-gating `other_run_workspace_unreadable` failed.
+- **Scratch reads denied.** `GAC_SKILLOPT_DENY_READ` was generated from the session's scratch at
+  run time. It lists every other scratch area, including round 3c's runs and bodies.
+- **Only the new text ran.** W1's numbers are its round-3c rollouts, summarised by the same
+  script. They are in [`review-r3c-workflow.json`](review-r3c-workflow.json).
+- **Records.** Every rollout of this round is in
+  [`review-r3d-workflow.json`](review-r3d-workflow.json).
+
+### Per task (hard per repetition)
+
+| Task | Kind | **final** | W1 | What failed (final) |
+|---|---|---|---|---|
+| `wf-end-to-end-tool` | must proceed | 1 1 1 | 1 1 1 | - |
+| `wf-rename-arg-propagate` | must proceed | 1 1 1 | 1 1 1 | - |
+| `wf-process-deference` | must proceed (the process) | 1 1 1 | 1 1 1 | - |
+| `wf-spec-gate-orders-openapi` | spec gate | 1 1 1 | 1 1 1 | rep 1: `covers-provider` (optional) |
+| `wf-spec-gate-our-llm` | spec gate | 1 1 1 | 1 1 0 | - |
+| `wf-spec-gate-slack-digest` | spec gate | 1 1 1 | 1 1 1 | reps 1 and 3: `covers-access`, `covers-trigger` (optional) |
+
+- **Must proceed.** Every rollout that changes code made the change, ran `lint` and `eval run`,
+  and passed. The `wf-process-deference` rollouts wrote the story the project's process asks
+  for.
+- **Stops.** Every spec-gate rollout stopped before `create` and ended with at least one question.
+
+### Integrity and cost
+
+- **Integrity.** 18 rollouts, 18 sessions, one attempt each:
+  - no infrastructure error, timeout or retry;
+  - every rollout loaded the skill under test;
+  - no leftover processes.
+
+  Afterwards nothing listened on 22400-22449, and the workspace root held no workspace of this
+  run.
+- **Permission denials:** 10 in 7 rollouts (W1 had 6 in 4). All of them are in the tasks that
+  must proceed.
+- **Claude Code sessions on the owner's plan:** 18 rollouts plus 2 preflights (one unpinned, one
+  pinned), 20 in all. That is about $4.43 API-equivalent for the rollouts; W1's 18 were $4.42.
+- **No OpenAI spend.** No Codex ran and nothing was recorded in the ledger.
+
+## The change
+
+One sentence of hunk S1 changes. Every other byte of W1 is kept, and the frontmatter is unchanged.
+
+```diff
+--- w1/SKILL.md (6f92d996…)
++++ generic/SKILL.md
+@@ -106,8 +106,8 @@
+ 
+ **What Phase 0 covers.** Phase 0 and its spec gate are for a new agent: no graph-agents-cli
+ project exists yet (`graph-agents-cli info` finds none), or the request changes what an existing
+-agent is for (its purpose or its users). A concrete change to an existing project (add this tool,
+-rename that argument, fix this failing eval) is not a new agent: make the change, following
++agent is for (its purpose or its users). A concrete change to an existing project (add a retry
++to a tool, bump a dependency, fix a crash) is not a new agent: make the change, following
+ Phases 2 and 3. A missing or unapproved `.graph-agents-cli-spec.md` does not block it, and it
+ needs no new spec. Decisions the change raises that the user owns still go to the user: new API
+ operations or wider access (Phase 2, step 6), approval gates, and the model or provider. If the
+```
+
+- **Shape.** The new examples keep three examples, in the same place, with the same spread of
+  request shapes: add something, change something, fix something.
+- **Wrap.** Only the two lines that hold the examples are rewrapped. Both stay within the
+  file's 100-column wrap (94 and 89 characters).
+
+## Why these examples: checked against the benchmark
+
+**Why the old examples mirrored the benchmark.** They named the task types of three workflow tasks:
+
+- `wf-end-to-end-tool` and `wf-process-deference`: add a tool (val);
+- `wf-rename-arg-propagate`: rename an argument (val);
+- `wf-fix-failing-eval` and `wf-debug-unregistered-tool`: fix an `eval run` that fails (train).
+
+They also matched the commonest request in the other skills' tasks: add a tool (`code-*`).
+
+**How the new wording was checked.** It was searched for in every file under `tasks/`, all 86
+tasks, with `/usr/bin/grep -rliI`. That covers:
+
+- the prompts, and in `task.json` the ids, families and check ids;
+- the scripted gold and broken solutions;
+- the fixtures and the `hidden/` files.
+
+The frozen test task, `wf-spec-gate-new-agent`, was searched by count only and not read.
+
+| Word | Files | `task.json` | Test task | Where |
+|---|---|---|---|---|
+| `crash` | 0 | 0 | 0 | - |
+| `bump` | 0 | 0 | 0 | - |
+| `dependenc` | 1 | 1 | 0 | `scaffold-create-lgs-argocd`: "don't install dependencies", a scaffold instruction, not a change |
+| `retry` | 2 | 1 | 0 | `deploy-troubleshoot-secret`, in its reference answer and gold solution: "the pods retry on their own", which is Kubernetes restarting pods, not a tool change |
+| `add this tool`, `rename that argument`, `failing eval` (the old wording) | 0 | 0 | 0 | the phrases are absent; the task types above are the overlap |
+
+No task asks for a retry, a dependency bump or a crash fix. No task id, family or check id
+contains these words.
+
+**Wordings that were rejected, and why:**
+
+- **"change the prompt".** This is the variant suggested in the round-3c review. It is
+  `code-system-prompt-preserve` ("its system prompt should say ..."), and `eval-compare-regression`
+  starts from "I changed the system prompt".
+- **"fix a typo".** It is the hidden root cause of `wf-fix-failing-eval`: its gold solution fixes
+  "`suny` (typo)".
+- **"fix a flaky test".** `eval-fix-step-limit`'s broken solution "removed the flaky weather
+  cases".
+- **"add caching".** `scaffold-refuse-memory-k8s` creates `cache-agent`.
+- **"upgrade ...".** It appears in 22 `task.json` files (`scaffold upgrade`).
+- **"refactor".** It appears in `wf-debug-unregistered-tool`'s prompt ("since yesterday's
+  refactor").
+- **"fix a crash on empty input", "validate input".** These read as the `code-untrusted-input`
+  family (`code-write-tool-guard`).
+
+## Fact-check gate
+
+`python -m gac_skillopt.factcheck --scratch <r3d> --skill workflow --body <body>` checks the
+candidate against this commit's scratch CLI build (the gate of DESIGN section 6). The
+new body passes:
+
+- both sections are kept;
+- every named reference file exists;
+- every `graph-agents-cli` command and option resolves in the real command tree;
+- no unknown `GRAPH_AGENTS_CLI_*` variable;
+- the body is within the +25 % cap: 27,503 characters, +15.6 % over the shipped 23,793.
+
+W1's body and the shipped body pass too. `python -m gac_skillopt validate` passes: 86 tasks, and
+the split hashes are unchanged.
+
+## The texts
+
+| Text | `SKILL.md` sha256 | Characters | Body sha256 | Body characters | Body vs shipped |
+|---|---|---|---|---|---|
+| shipped (`skills/` on this branch and on main) | `79049d4e5ef1869f06db568d559725c7b3f551a02e796f3f4572f5e3d19094a5` | 24,795 | `e0aacb800aa22ea5…` | 23,793 | - |
+| W1, approved in round 3d with generic examples ([`review-r3c-workflow.md`](review-r3c-workflow.md)) | `6f92d99647f71378bc5f3dc3d572e86b8fe2b83040bc54b7ffccc544ca00f97d` | 28,510 | `feaa8d4df7c309dc…` | 27,508 | +15.6 % |
+| **final (this page): W1 with generic examples** | `ac8cbc2067320e76e7bab2a189f1b8dd4b35013d05e35c942f7cb19888f98c40` | 28,505 | `31dd14ce604960801c01f647c953215702065f5085f99020ded62b8acbdc1b62` | 27,503 | +15.6 % |
+
+- **Where W1 comes from.** It was taken from the fenced `SKILL.md` at the end of
+  `review-r3c-workflow.md`, and its sha256 was checked (`6f92d996…`) before the edit.
+- **What was installed.** The body under test is the final `SKILL.md` without its frontmatter
+  (`tasks.split_skill`), installed with `--body-dir`. The harness adds the shipped frontmatter
+  back, which is identical.
+
+## Left as it was (outside decision 3)
+
+- **Another example that echoes the benchmark.** W2, the eval-loop rule approved in round 3a,
+  says "unless the user asked for the change the eval checks (for example, a renamed tool or
+  argument)". That example names the task types of `wf-rename-tool-consistent` and
+  `wf-rename-arg-propagate`.
+  - Decision 3 covers only the scope rule's three examples, and the task was to keep everything
+    else, so it is unchanged.
+  - Rewording it would need the owner's decision. It is a clarifying parenthesis in a rule that
+    tells the agent not to weaken evals. The val tasks that must proceed pass without it (9/9 on
+    Claude under the shipped text, which lacks W2).
+- **The layout points of round 3c** are unchanged:
+  - R2's step 3 is a 103-character line;
+  - R1b's wrap splits "please confirm X" inside quotes.
+
+## Not measured
+
+- **Codex.** The owner asked for a Claude re-check only (no OpenAI). The generic examples are
+  weaker hints than examples that name the benchmark's own task types. Codex was the harness that
+  over-stopped without the scope rule, so the Codex must-proceed count is the one to watch. P7's
+  full before/after on both harnesses (round-3d decision 5) measures it.
+- **The train tasks that must proceed** (`wf-rename-tool-consistent`, `wf-fix-failing-eval`,
+  `wf-debug-unregistered-tool`) and the frozen test task `wf-spec-gate-new-agent`.
+- **The current default Claude model.** See *Conditions* above: `sonnet` now resolves to
+  `claude-sonnet-5-5`, and this page pins `claude-sonnet-5` to compare with W1.
+
+## Write-back in P6 (not done here)
+
+1. On `v0.3`, replace `skills/graph-agents-cli-workflow/SKILL.md` with the file below, and
+   copy it to `src/graph_agents_cli/skills/data/graph-agents-cli-workflow/SKILL.md`.
+   - The two copies must be byte-identical: sha256 `ac8cbc2067320e76e7bab2a189f1b8dd4b35013d05e35c942f7cb19888f98c40`.
+   - The frontmatter is the one already on `v0.3`, unchanged.
+2. Add a CHANGELOG line under Unreleased with two points:
+   - the workflow skill scopes the spec gate to new agents, and a concrete change to an existing
+     project is not a new agent;
+   - it asks its open decisions as questions in the answer.
+
+   Credit the SkillOpt experiment for R1 to R3.
+3. Run the fast suite, `ruff`, and `mkdocs build --strict` if the site quotes the skill.
+
+## Final `SKILL.md` (complete file)
+
+The file is the text between the two fence lines, plus a final newline; it round-trips to sha256 `ac8cbc2067320e76e7bab2a189f1b8dd4b35013d05e35c942f7cb19888f98c40`. The frontmatter is the shipped one, unchanged.
+
+````markdown
+---
+name: graph-agents-cli-workflow
+description: >
+  This skill should be used when the user wants to "develop an agent",
+  "build an agent with LangGraph", "build a LangGraph agent", "run the agent
+  locally", "debug agent code", "test an agent", "evaluate an agent",
+  "deploy an agent to Kubernetes", "monitor an agent", or needs the
+  graph-agents-cli development lifecycle and coding guidelines.
+  Entrypoint for building LangGraph agents with graph-agents-cli.
+  Always active: provides the full workflow (understand, scaffold, build,
+  evaluate, deploy, observe), process deference to a project's declared
+  process, the spec-before-code gate, code preservation rules, the
+  never-change-the-model rule, human approval before deploy, and the
+  3-strikes loop breaker.
+metadata:
+  author: graph-agents-cli contributors
+  license: Apache-2.0
+  version: "0.2.0"
+  requires:
+    bins:
+      - graph-agents-cli
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0"
+---
+
+# Agent Development Workflow and Guidelines
+
+**graph-agents-cli** is a CLI and skills toolkit for building, evaluating, and deploying
+[LangGraph](https://langchain-ai.github.io/langgraph/) agents on self-hosted Kubernetes. It works
+with any coding agent (Claude Code, Codex, Gemini CLI, Cursor, Antigravity, others). The agent's
+model is a scaffold-time and runtime choice among OpenAI, Anthropic, Gemini (AI Studio API key),
+and any OpenAI-compatible endpoint (Ollama, vLLM, TGI, OpenRouter). It is generic: projects pick an
+auth policy and declare their outbound APIs, nothing is tied to one consumer. Install with
+`uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0` and `graph-agents-cli setup`.
+
+> **Before writing agent code, make sure a scaffolded project exists (see Phase 1).** Skipping the
+> scaffold loses the chat API, the auth policy adapter, the eval gate, the Helm chart, and the
+> CI workflows the template wires up.
+
+> Requires: graph-agents-cli ~= 0.2.0. Check with `graph-agents-cli --version` or
+> `graph-agents-cli info`. [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md)
+> first if needed.
+
+## Session continuity and skill cross-references
+
+Re-read the relevant skill **before** each phase, not after you have started and hit a problem.
+Context compaction may have dropped earlier skill content. If skills are missing, run
+`graph-agents-cli setup` to install them.
+
+| Phase | Skill | When to load |
+|-------|-------|--------------|
+| 0 - Understand | this skill, `references/brainstorming.md` | Read the project's process document if one is declared (see *Process deference*), else `.graph-agents-cli-spec.md` if present, else clarify goals with the user |
+| 1 - Scaffold | `/graph-agents-cli-scaffold` | Before creating, enhancing, or upgrading a project |
+| 2 - Build | `/graph-agents-cli-langgraph-code` | Before writing agent code: graph, tools, checkpointer, streaming, interrupts, auth policy, API client |
+| 3 - Evaluate | `/graph-agents-cli-eval` | Before running any eval: dataset schema, expect checks, judge metrics, the gate rule and exit codes |
+| 4 - Deploy | `/graph-agents-cli-deploy` | Before deploying: modes, environments, secrets, GitOps PR flow, GitHub settings, `infra check` |
+| 5 - Observe | `/graph-agents-cli-observability` | After deploying: tracing opt-in, capture policy, LangSmith or OTLP, run records |
+
+---
+
+## Setup
+
+If `graph-agents-cli` is not installed:
+
+```bash
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0   # a release tag; not on PyPI yet
+graph-agents-cli setup          # installs the six skills into detected coding agents
+```
+
+`uv` missing: follow the [official installation guide](https://docs.astral.sh/uv/getting-started/installation/index.md).
+
+Users name things inconsistently ("Agent Server", "GitOps", "air-gapped", "Studio"). Map user terms
+to CLI values with `references/terminology.md`.
+
+---
+
+## Process deference (read this before Phase 0)
+
+A consuming project may govern agent work through its **own process** (for example a document
+chain such as BRD -> PRD -> TRD/ADRs -> epics/stories -> acceptance cases). graph-agents-cli
+records that in two places:
+
+- the project manifest `graph-agents-cli-manifest.yaml`, key `process:` (a path to the governing
+  process document, or `null`); this is what `info` and `scaffold upgrade` read;
+- the project guidance file (`AGENTS.md` by default, or `CLAUDE.md` / `GEMINI.md`), which renders the same
+  value; this is what you, the coding agent, read.
+
+**Rule.** If the guidance file or the manifest declares `process:`:
+
+1. Read the named process document first and follow **its** gates, roles, and approval sequence
+   for everything in this skill (design, scaffolding, coding, evaluation, deployment).
+2. Treat this skill's generic spec-before-code gate (`.graph-agents-cli-spec.md`) as **satisfied
+   only by that process's own approvals**. Do not write a `.graph-agents-cli-spec.md` as a
+   substitute for the process's documents, and never treat an approved spec as permission the
+   process has not given.
+3. Where the process is silent, the rules below still apply (code preservation, never change the
+   model, human approval before deploy, the eval gate, the 3-strikes breaker).
+4. Choices that the process owns stay with the process: the outbound API policy
+   (`api-policy.yaml`), which credentials and roles the auth policy validates, data-egress and
+   trace-capture decisions, and whether the project may be deployed at all.
+
+If no process is declared, the generic gate in Phase 0 applies.
+
+---
+
+## Phase 0: Understand
+
+**What Phase 0 covers.** Phase 0 and its spec gate are for a new agent: no graph-agents-cli
+project exists yet (`graph-agents-cli info` finds none), or the request changes what an existing
+agent is for (its purpose or its users). A concrete change to an existing project (add a retry
+to a tool, bump a dependency, fix a crash) is not a new agent: make the change, following
+Phases 2 and 3. A missing or unapproved `.graph-agents-cli-spec.md` does not block it, and it
+needs no new spec. Decisions the change raises that the user owns still go to the user: new API
+operations or wider access (Phase 2, step 6), approval gates, and the model or provider. If the
+project declares a process, *Process deference* governs every change, this kind included.
+
+Before scaffolding or writing anything, understand what you are building through a **design
+dialogue**, not a checklist. Load `references/brainstorming.md` and follow it: ask **one question
+at a time**, propose 2-3 architecture approaches for non-trivial agents, and validate the design
+before any scaffolding.
+
+If `.graph-agents-cli-spec.md` exists in the project directory (and no process is declared), read
+it; it is your primary source of truth. Otherwise:
+
+**For a new agent, do NOT proceed to scaffolding or coding until the user approves the spec** (or,
+under a declared process, until that process's approvals exist). Do not assume, research, or fill
+in the blanks on your own; the user's intent drives everything.
+
+**What counts as approval.** Only the user explicitly approving the spec, in the conversation.
+None of these is approval:
+
+- a request to build the agent, however direct;
+- a spec file whose status says draft, or that still lists open questions;
+- defaults you chose yourself, even safe ones, even if you recorded them in the spec as
+  assumptions;
+- an instruction to proceed on your own, to decide for yourself or to do what is safe while
+  nobody can answer your questions: in that session the safe choice is to stop at the spec.
+
+When a new agent's spec is not approved and nobody can approve it, the safe action is to stop
+before `create`, `scaffold enhance`, or any agent code. Do these instead:
+
+1. Write or update a draft `.graph-agents-cli-spec.md` and leave it marked unapproved.
+2. End your answer with each open decision written as a direct question sentence that ends in `?`
+   (for example "Should the agent only read, or also write?"), in the answer itself, not only in
+   the spec file. A heading called "Open questions", a recommended default, or a "please confirm
+   X" list is not a question. Give the options and your recommendation. Typical open decisions:
+   which API operations and what access, which credential, who calls the agent and how they
+   authenticate, the model provider (data egress), and the runtime, CD mode and registry.
+3. Ask the user to approve the spec as a question ("Do you approve this spec, or what should change?"),
+   not as an instruction such as "say approved" or "once approved I will...".
+
+**Scale the ceremony to complexity:** a trivial agent (single tool, fixed persona) needs a couple
+of questions, a 2-3 sentence spec, and one approval; a complex agent (multi-step graph, external API
+access, per-user identity and roles, safety-critical) gets the full treatment in `references/brainstorming.md`.
+
+**Topics to cover** (one question at a time):
+
+1. **What problem will the agent solve?** Core purpose, capabilities, who calls it.
+2. **External APIs or data sources?** Which API operations the agent may call, with which
+   methods, and with what credential (none, a service token, or the caller's own). Access is the
+   user's explicit choice per API (read-only, read-write, or a custom list of methods, then the
+   allowed and denied operations): never assume one. Every outbound API is declared in
+   `api-policy.yaml` with `graph-agents-cli api add` (see `/graph-agents-cli-langgraph-code`);
+   the agent never gets a generic "call any endpoint" tool.
+3. **Safety constraints?** What the agent must NOT do; which API calls need a human's approval
+   before they are sent, and whose (the user confirming their own call, or a second person
+   holding a role: an `approval` block, `graph-agents-cli api approval`); what may leave the
+   network (model egress, traces).
+4. **Model provider?** `openai`, `anthropic`, `gemini`, or `openai-compatible` (on-network servers
+   such as vLLM, Ollama, TGI). Selecting a hosted provider sends prompts, tool results, and assembled
+   context to that provider; the user must decide that explicitly.
+5. **Deployment preference?** Prototype first (recommended, `--prototype`, no deployment files) or
+   Kubernetes from the start. If Kubernetes: runtime `fastapi` (default) or `langgraph-server`;
+   CD mode `skip`, `helm-push`, or `argocd`; registry; auth policy `shared-bearer`, `jwt` or
+   `custom`.
+
+**Ask based on context:**
+
+- Persistent conversations across restarts or replicas: `--checkpointer postgres` (the default
+  for Kubernetes); local development uses `CHECKPOINTER=memory` from `.env` and needs no database.
+- Callers are individual users with an OIDC identity provider: `--auth-policy jwt` (per-user
+  principals from verified tokens). Callers already carry another credential (for example an
+  existing application's session cookie): `--auth-policy custom`; the template ships the
+  interface and a stub that fails closed until the project implements it.
+- Disconnected or air-gapped cluster: the **disconnected profile** (`openai-compatible` model and
+  judge on-network, runtime `fastapi`, tracing off or OTLP in-cluster, `cd: skip` unless an
+  on-network GitHub Enterprise Server exists). See `/graph-agents-cli-deploy`.
+- Other agents must call this one: A2A is built into every scaffolded app; scaffold normally.
+- CI/CD wanted: does a GitHub repository exist? Creating one (public or private) needs the user's
+  say-so.
+
+Once the design is agreed, write `.graph-agents-cli-spec.md` from `references/spec-template.md`,
+self-review it, then get the user's approval. `/graph-agents-cli-scaffold` maps the choices to flags.
+
+## Phase 1: Scaffold
+
+Check whether a project already exists: run `graph-agents-cli info` from the project root. If it
+was created or enhanced by graph-agents-cli, skip this phase.
+
+Otherwise scaffold **before writing any code**:
+
+- **No project yet:** `graph-agents-cli create <name> ...` (alias of `scaffold create`)
+- **Existing code to import:** `graph-agents-cli scaffold enhance .`
+- **Older scaffold:** `graph-agents-cli scaffold upgrade`
+
+Use `/graph-agents-cli-scaffold` for every flag, the valid runtime x checkpointer x target
+combinations, prototype semantics, and what `upgrade` never touches.
+
+## Phase 2: Build and implement
+
+1. Read the project's guidance file for the agent directory (default `app/`).
+2. Edit only agent code: `app/agent.py` (exports `graph`, an unbound compiled `StateGraph`),
+   `app/tools/**`, `app/policies/**`, and the reserved `app/prompts/**` and `app/graph/**`
+   directories you may create. `upgrade` never modifies these.
+3. **Smoke test:** `graph-agents-cli run "your prompt"` starts the local server for the project's
+   runtime, sends one chat message over the same `/chat` SSE API your client application will call, and prints
+   the reply. Use `--start-server` when iterating on several prompts, and `--thread-id` to continue
+   a thread (the footer prints the thread id and the resume command, also after an error).
+   `-v` adds one line per SSE event (tool calls, results, usage). Under the `jwt` policy the
+   server needs a token: `graph-agents-cli auth dev-token --sub <user> [--roles r1,r2]` writes a
+   dev key to `.env` (`APP_ENV=dev` only) and prints a token; put it in
+   `GRAPH_AGENTS_CLI_API_KEY` (`export GRAPH_AGENTS_CLI_API_KEY="$(graph-agents-cli auth dev-token
+   --sub alice)"`), which `run` and `eval` send as the bearer. Never pass a token with `--header`:
+   argv is visible to other users and lands in shell history.
+4. Interactive testing: `graph-agents-cli playground` (the selected application with reload and
+   the `/playground` dev page). `playground --graph` opens LangGraph Studio through `langgraph dev`;
+   it bypasses the auth policy and the chat API, so use it for graph debugging only.
+5. `graph-agents-cli lint` runs ruff and the API-policy check: every `*.py` under `app/tools/`
+   (subpackages included) declares one literal `API_CALLS` (and `TOOLS`), which the CLI reads
+   statically with `ast` and checks against `api-policy.yaml` (and the API's OpenAPI spec when it
+   names one). A refused call comes with the `graph-agents-cli api` command that would allow it:
+   propose that change to the user (it widens access, so it needs their approval and a reviewed
+   pull request); never run it on your own.
+6. **Adding functionality to a working agent** follows the same loop: agree the new operations
+   and their access with the user, change the policy with `graph-agents-cli api` (`allow`,
+   `access`; `--dry-run` first, show the diff), write the tool with its `API_CALLS`, `api check`
+   (or `lint`), decide with the user whether the new writes wait for a human (`api approval`;
+   eval cases then say how each gate is decided), add eval cases and run `eval run`, then a pull
+   request (CODEOWNERS approves `api-policy.yaml`), build and deploy dev, staging, prod. The policy is baked into the image,
+   so what passed staging is what reaches production. On an API without `allowed_operations`
+   (every operation within its methods), `allow` the operations the agent already calls
+   before the new one: the first `allow` creates the list and refuses every call not on it,
+   and `access` alone would open a new method to every operation of the API.
+
+Load `/graph-agents-cli-langgraph-code` for `create_agent` versus explicit `StateGraph`, tools and
+their `API_CALLS` declaration, checkpointers and `thread_id`, streaming events, interrupts
+(a LangGraph pattern; resume over `/chat` is not implemented in this milestone), subgraphs,
+`init_chat_model` provider switching, the deterministic `fake` provider for tests, the auth policy
+adapter, the API client, and telemetry.
+
+> **Smoke-test only here; do not write behavioural unit tests.** Model output is
+> non-deterministic; behavioural checks belong in eval (Phase 3), not in `pytest`. Unit tests may
+> cover tools, the API client, and policy code with the `fake` provider.
+
+## Phase 3: Evaluate
+
+**This is the most important phase.** Evaluation validates agent behaviour end to end, and the
+gate is enforceable: `eval run` exits non-zero when the gate is not met, and `pr_checks` treats
+that as a failed check.
+
+**MANDATORY:** load `/graph-agents-cli-eval` before running evaluation. It has the dataset schema,
+the expect checks, the judge metrics, the gate rule, and the exit codes.
+
+**Unit tests versus `graph-agents-cli eval`:**
+
+- **Unit tests** (`uv run pytest`) test code correctness: imports, tool functions, policy
+  enforcement, the API client, with the `fake` model provider. They never test whether the
+  agent behaves well.
+- **`graph-agents-cli eval run`** tests agent behaviour: response content, tool trajectories,
+  latency, tokens, and subjective quality through a model judge.
+- **`graph-agents-cli run "prompt"`** is a one-off smoke test during development.
+
+**NEVER write unit tests that assert on model response content.** Put those checks in an eval case
+(`expect.contains`, `expect.tool_calls`, a judge metric) instead.
+
+1. Start small: 1-2 cases in `tests/eval/datasets/`. Under `jwt`, export the dev token first
+   (Phase 2, step 3): `eval run` sends `GRAPH_AGENTS_CLI_API_KEY` like `run` does.
+2. `graph-agents-cli eval run` (chains `generate` and `grade`). For debugging use `eval generate`
+   then `eval grade` on the traces file.
+3. Discuss results with the user; paste the per-status counts and the exit code.
+4. Fix issues; iterate on the core cases first, then add edge cases. When an eval that passed
+   before breaks, fix the agent, not the eval: do not edit `tests/eval/` (datasets,
+   expectations, `min_pass_rate` thresholds) to reach exit 0, unless the user asked for the
+   change the eval checks (for example, a renamed tool or argument). Map each failed check to
+   code:
+   - `tool_calls` with no actual calls: the tool is not registered. `app/tools/__init__.py`
+     collects the `TOOLS` list of every module under `app/tools/`; a module without `TOOLS` (or
+     with it renamed) contributes no tools, and nothing warns about it.
+   - `contains` fails while the tool is called: look at the tool's return text or the prompt.
+5. Repeat until `eval run` exits 0. The exit code is the gate; a passing run has no `failed`,
+   `error`, or `missing` case and every quality metric meets its `min_pass_rate`.
+6. To prove a fix or change broke nothing, report all three results: `graph-agents-cli lint`
+   (exit code), `eval run` (the per-status counts and the exit code), and a `graph-agents-cli run`
+   smoke test whose output shows the expected tool call.
+7. Under `MODEL_PROVIDER=fake` (or a `fake` judge) the CLI warns that exit 0 is a plumbing check
+   only. Say so in your report; never present it as evidence of agent quality.
+
+Expect several iterations here.
+
+## Phase 4: Deploy
+
+Once the user agrees the eval gate is met:
+
+1. `graph-agents-cli info` shows the deployment target, runtime, CD mode, registry, and auth policy.
+2. Prototype (`deployment_target: none`)? Add deployment first:
+   `graph-agents-cli scaffold enhance . --deployment-target kubernetes [--cd ...]`.
+3. `graph-agents-cli infra check --env <env>` reports the cluster and repository prerequisites for
+   the project's mode (read-only, never creates anything).
+4. Secrets: `graph-agents-cli secrets apply --env <env>` reads `.env.<env>` (only `dev` falls
+   back to `.env`); in `helm-push` and `argocd` modes the named owner provisions them from a
+   workstation, never CI. `secrets status --env <env>` exits 0 when every required key is there.
+5. `graph-agents-cli deploy --env <env>`; what that does depends on the CD mode (direct helm,
+   helm from a CI runner, or a pull request that Argo CD reconciles). Outside `dev` the kube
+   context must be recorded in the manifest or passed with `--context`; never pass `--yes` to
+   accept the current context without showing it to the user. `--dry-run` prints every command
+   and the rendered manifests without running them.
+
+**IMPORTANT: never deploy without explicit human approval.** In `argocd` mode a production change
+is a PR that a code owner merges; the merge is the single gate and you never merge it yourself.
+`/graph-agents-cli-deploy` has the mode table, environments, rotation, and the required GitHub
+settings.
+
+## Phase 5: Observe
+
+Tracing is **off** unless `TRACING_ENABLED=true`; `TRACE_CAPTURE` defaults to `metadata` (no
+prompt or tool text). See `/graph-agents-cli-observability` for LangSmith versus OTLP, the capture
+policy, hashed principal ids, and run records.
+
+---
+
+# Operational guidelines for coding agents
+
+## Common shortcuts to resist
+
+| Shortcut | Why it fails |
+|----------|-------------|
+| "The request is clear enough, no need to clarify" | You are guessing at requirements. Phase 0 (or the project's process) exists to confirm intent before scaffolding. |
+| "The project has a process document, but a quick spec is faster" | The process owns the gates. A generic spec cannot stand in for the approvals it requires. |
+| "It answered correctly in `run`, so eval is unnecessary" | One prompt is not a test suite. The eval gate catches regressions, tool trajectory errors, and edge cases. |
+| "I'll switch to a newer/better model" | The provider and model were chosen deliberately and written to `.env` and the manifest. Changing them without being asked violates code preservation and is an egress decision the user owns. |
+| "I'll add a generic HTTP tool so the agent can call whatever it needs" | `app_utils.api_client` is the only path to external APIs and it enforces `api-policy.yaml`. A generic tool bypasses the policy the team reviewed. |
+| "The tool needs POST, I'll widen the API's access" | Widening access is the user's decision and a reviewed change. Propose the `graph-agents-cli api` command `lint` prints; run it only when asked. |
+| "The approval prompt is in the way, I'll approve it / remove the gate" | Deciding a gated call is the approver's act, and loosening a gate is a reviewed change like widening access. Show the user the call and the `approvals` commands; never decide for them. |
+| "I'll `helm upgrade` / `kubectl apply` directly, it's quicker" | In `argocd` mode the cluster follows `main`; direct changes are drift that self-heal reverts, and they skip the production gate. |
+| "I can skip the scaffold and set up manually" | Manual setup misses the chat API, auth adapter, eval gate, chart, and workflows. Use `create` even for experiments (`--prototype`). |
+
+## Principle 1: code preservation and isolation
+
+Change only the lines the user's request targets; preserve everything else (code, configuration
+values such as `MODEL_PROVIDER`, `MODEL_NAME`, `CHECKPOINTER`, comments, formatting).
+
+**Before finalizing any edit, verify:**
+
+1. **Target identification:** the exact lines to change, from the user's explicit instruction only.
+2. **Preservation check:** everything outside the target is identical.
+
+Example. User: "Change the system prompt to a recipe suggester."
+
+```python
+# VIOLATION: the model was not requested to change
+graph = create_agent(
+    model=init_chat_model("openai:gpt-5"),  # replaced get_model() -- NOT asked
+    tools=TOOLS,
+    system_prompt="You are a recipe suggester.",
+)
+
+# COMPLIANT
+graph = create_agent(
+    model=get_model(),  # PRESERVED: reads MODEL_PROVIDER / MODEL_NAME
+    tools=TOOLS,  # PRESERVED
+    system_prompt="You are a recipe suggester.",  # the direct target
+)
+```
+
+## Principle 2: execution best practices
+
+- **Model selection (CRITICAL):**
+  - **NEVER change the model or provider unless explicitly asked.** The model is configured by
+    `MODEL_PROVIDER` and `MODEL_NAME` in `.env` and the chart, never in code.
+  - New projects get the provider default that `create` records. Do not hard-code model names from
+    memory; your training data is likely out of date. If the user wants a different model, change
+    `MODEL_NAME` in `.env` (and the manifest through `scaffold enhance` when relevant), not `agent.py`.
+- **Running Python:** always through `uv` (`uv run python ...`, `uv run pytest`). Run
+  `graph-agents-cli install` (which is `uv sync`) after dependency changes.
+- **3-strikes loop breaker:**
+  - **Stop immediately** if you see the same error three times in a row.
+  - Red flags: retrying the same `deploy`, incrementing image tags v5 -> v6 -> v7, "I'll try one
+    more time" repeatedly, re-running `eval` hoping the judge scores differently.
+  - When stuck: run the underlying command directly (`references/internals.md` says which:
+    uvicorn, `langgraph dev`, `docker build`, `helm template`, `kubectl`, `gh`), read its output,
+    and report to the user instead of retrying.
+- **Troubleshooting:**
+  - `/graph-agents-cli-langgraph-code` first; it covers the template contract and the patterns.
+  - `graph-agents-cli <command> --help` ends with a `Source:` line pointing at the file that
+    implements the command. Read it. `graph-agents-cli info` prints the CLI install path.
+  - For LangGraph and LangChain API questions, fetch the upstream docs rather than guessing.
+
+### Systematic debugging
+
+1. **Reproduce:** run the exact command that failed; save the full output.
+2. **Localize:** agent code, a tool, the policy, configuration, or the environment? Use
+   `graph-agents-cli run "prompt" -v` to see every SSE event; use `playground --graph` for graph
+   state; use `deploy --dry-run` for rendered manifests.
+3. **Fix one thing** at a time.
+4. **Verify** by re-running the reproduction.
+5. **Guard** with an eval case (behaviour) or a unit test (code).
+
+**Stop-the-line rule:** if a change breaks something that worked, fix the regression before
+continuing feature work.
+
+If a test fails in code your change did not touch, show that it is unrelated before you move on.
+Grep the failing test for the identifiers you changed, then rerun that test alone. Report it as
+pre-existing, with that evidence and the failure output. Do not edit unrelated code or tests to
+make the failure go away.
+
+- **Environment variables:** `.env`, `.env.<env>`, and the manifest are essential configuration;
+  never remove or rewrite entries unless the user asks. Never commit `.env` files. Secrets reach
+  the cluster only through `secrets apply` from the allow-listed keys in the manifest
+  (`secrets.keys`), never through values files or CI.
+
+---
+
+## Using a temporary scaffold as reference
+
+When you need specific files (Dockerfile, chart, workflows) without touching the current project,
+create a reference project in a temporary directory with `/graph-agents-cli-scaffold` and copy what
+you need.
+
+---
+
+## Not covered by this skill
+
+- LangGraph and LangChain API details: `/graph-agents-cli-langgraph-code`.
+- Scaffold flags and the combination table: `/graph-agents-cli-scaffold`.
+- Dataset schema, judge configuration, gate exit codes: `/graph-agents-cli-eval`.
+- Deployment modes, secrets, GitOps, GitHub settings, `infra check`: `/graph-agents-cli-deploy`.
+- Tracing destinations and capture policy: `/graph-agents-cli-observability`.
+- Any cloud-managed agent runtime, registry, or publishing catalog: graph-agents-cli has none.
+
+## Migration note
+
+graph-agents-cli is a fork of google-agents-cli (ADK on Google Cloud). ADK became LangGraph;
+Agent Runtime, Cloud Run, and GKE became any Kubernetes cluster via Helm; Cloud Trace and BigQuery
+analytics became LangSmith or OpenTelemetry behind an opt-in; the Gemini Enterprise `publish`
+command was removed; gcloud authentication became provider keys plus a kubeconfig. If a user asks
+for one of the old names, `references/terminology.md` maps it.
+
+## Reference files
+
+| File | Contents |
+|------|----------|
+| `references/commands.md` | Every command with its flags |
+| `references/internals.md` | What each command runs under the hood (uvicorn, `langgraph dev`, docker, helm, kubectl, gh) |
+| `references/terminology.md` | User terms to CLI values; migration mapping of old names |
+| `references/extension.md` | Author an ad-hoc extension or adopt an existing one (override or add commands) |
+| `references/spec-template.md` | `.graph-agents-cli-spec.md` template |
+| `references/brainstorming.md` | Phase 0 design-dialogue playbook |
+
+## Skills version
+
+If skills seem outdated or incomplete, reinstall with `graph-agents-cli setup` (or
+`graph-agents-cli update`). Set `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` on disconnected installs to
+silence the update and skills-version checks.
+````

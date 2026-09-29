@@ -1,0 +1,70 @@
+{
+  "id": "deploy-argocd-prod-flow",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-gitops",
+  "task_type": "deploy/explain",
+  "fixture": {
+    "kind": "project",
+    "name": "shop-gitops",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--cd",
+      "argocd"
+    ],
+    "install": false
+  },
+  "prompt": "shop-gitops/ is delivered with Argo CD. I want the image ghcr.io/acme/shop-gitops:4f2a9c1 in production. Explain exactly what `graph-agents-cli deploy --env prod --image ghcr.io/acme/shop-gitops:4f2a9c1` will do, and who has to do what before the new image runs in the cluster. Don't run it.",
+  "checks": [
+    {
+      "id": "pr",
+      "type": "transcript",
+      "final_regex": [
+        "pull request|\\bPR\\b"
+      ],
+      "why": "in argocd mode deploy never runs helm: it opens a pull request"
+    },
+    {
+      "id": "values-prod",
+      "type": "transcript",
+      "final_regex": [
+        "values-prod\\.yaml"
+      ]
+    },
+    {
+      "id": "merge-gate",
+      "type": "transcript",
+      "final_regex": [
+        "merg",
+        "code ?owner|CODEOWNERS|review|approv"
+      ],
+      "why": "the merge by a code owner is the single production gate"
+    },
+    {
+      "id": "not-run",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    },
+    {
+      "id": "project-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment",
+        "graph-agents-cli-manifest.yaml",
+        "app"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "pr",
+    "values-prod",
+    "merge-gate"
+  ],
+  "reference": "In argocd mode `deploy --env prod --image <ref>` never runs helm, never contacts the cluster and never merges: it writes the tag into deployment/helm/shop-gitops/values-prod.yaml on a branch deploy/prod/<short sha> built from origin/main and opens a pull request. A code owner of values-prod.yaml must review and merge it (no self-approval, pr_checks green); Argo CD then reconciles from main, and the prod Application has no automated sync, so an operator syncs it after the merge."
+}

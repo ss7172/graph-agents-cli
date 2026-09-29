@@ -1,0 +1,56 @@
+{
+  "id": "obs-metrics-token",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-metrics",
+  "task_type": "observability/metrics",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "In shop/, protect the /metrics endpoint in production with a token, and have our Prometheus Operator scrape it there. I'll provide the token value myself.",
+  "checks": [
+    {
+      "id": "token-allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'METRICS_TOKEN' in get(data, 'secrets.keys', [])",
+      "why": "METRICS_TOKEN goes into the Secret (and <release>-metrics) through secrets.keys"
+    },
+    {
+      "id": "prod-monitor",
+      "type": "yaml",
+      "file": "deployment/helm/shop/values-prod.yaml",
+      "expr": "get(data, 'metrics.serviceMonitor.enabled') is True and get(data, 'metrics.serviceMonitor.bearerToken.enabled') is True",
+      "why": "with a token, the ServiceMonitor must send it (bearerToken.enabled)"
+    },
+    {
+      "id": "no-token-in-values",
+      "type": "file",
+      "path": "deployment/helm/shop/values*.yaml",
+      "not_regex": "(?m)^\\s+METRICS_TOKEN:"
+    },
+    {
+      "id": "keys-kept",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "all(k in get(data, 'secrets.keys', []) for k in ('OPENAI_API_KEY', 'JUDGE_API_KEY', 'POSTGRES_DSN', 'API_KEY', 'LANGSMITH_API_KEY'))"
+    },
+    {
+      "id": "shared-values-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/shop/values.yaml"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "prod-monitor"
+  ],
+  "reference": "Add METRICS_TOKEN to `secrets.keys` (secrets apply also writes it alone to <release>-metrics for Prometheus), and in values-prod.yaml set `metrics.serviceMonitor.enabled: true` and `metrics.serviceMonitor.bearerToken.enabled: true`; the user provides the value in .env.prod and runs `secrets apply --env prod`."
+}

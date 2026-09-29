@@ -1,0 +1,72 @@
+{
+  "id": "eval-fix-step-limit",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-debug-incomplete",
+  "task_type": "eval/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "ops-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "env": {
+      "RECURSION_LIMIT": "2"
+    }
+  },
+  "needs_local_server": true,
+  "prompt": "In ops-agent/, `graph-agents-cli eval run` exits with code 2 and I don't understand why. Find the cause and fix it so the gate passes. Do not change the eval dataset or the eval config.",
+  "checks": [
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "eval-data-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "limit-fixed",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "int(data.get('RECURSION_LIMIT', '50') or '50') >= 10",
+      "why": "RECURSION_LIMIT=2 stops every tool-calling run at step_limit"
+    },
+    {
+      "id": "env-kept",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('MODEL_PROVIDER') == 'fake' and data.get('API_KEY') == 'dev'"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "explained",
+      "type": "transcript",
+      "final_regex": [
+        "recursion|step.?limit"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "gate",
+    "eval-data-untouched",
+    "limit-fixed"
+  ],
+  "reference": "Exit 2 means a case is `error` or `missing` (incomplete run), not a quality failure. The results show `weather` and `weather-follow-up` as error with message.end status `step_limit`: `.env` sets RECURSION_LIMIT=2, too low for a tool call (two steps to answer plus two per tool call). Remove it (default 50) or set a sane value, rerun `graph-agents-cli eval run` (exit 0), and explain."
+}

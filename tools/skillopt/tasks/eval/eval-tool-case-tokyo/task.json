@@ -1,0 +1,71 @@
+{
+  "id": "eval-tool-case-tokyo",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-tool-case",
+  "task_type": "eval/dataset",
+  "fixture": {
+    "kind": "project",
+    "name": "forecast-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "Add an eval case `tokyo-weather` to the eval dataset of forecast-agent/: the user asks exactly \"What is the weather in Tokyo?\", and the case must check both that the agent calls the weather tool for Tokyo and that its reply says it is sunny. Keep the other cases, run the evaluation, and report the result.",
+  "checks": [
+    {
+      "id": "case-shape",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'tokyo-weather' and any(tc.get('name') == 'get_weather' and 'tokyo' in json.dumps(tc.get('args_subset', {})).lower() for tc in (get(c, 'expect.tool_calls') or [])) and any('sunny' in str(s).lower() for s in (get(c, 'expect.contains') or [])) for c in data.get('cases', []))",
+      "why": "the case asserts the tool call (name + args_subset) and the reply (contains)"
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "tokyo-weather": "passed"
+      }
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        "tests/eval/eval_config.yaml"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "fake-caveat",
+      "type": "transcript",
+      "final_regex": [
+        "fake"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "case-shape",
+    "gate"
+  ],
+  "reference": "Add {\"id\": \"tokyo-weather\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}], \"expect\": {\"contains\": [\"sunny\"], \"tool_calls\": [{\"name\": \"get_weather\", \"args_subset\": {\"query\": \"Tokyo\"}}]}} (the tool is `get_weather` with the argument `query`), run `graph-agents-cli eval run` and report the per-status counts, exit code 0, and that the fake model proves the plumbing only."
+}

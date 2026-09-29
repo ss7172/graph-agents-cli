@@ -1,0 +1,603 @@
+{
+ "generated": "2026-09-28",
+ "texts": {
+  "w1": {
+   "skill_md_sha256": "6f92d99647f71378bc5f3dc3d572e86b8fe2b83040bc54b7ffccc544ca00f97d",
+   "body_sha256": "feaa8d4df7c309dc59612903a7fa3b2560ee2c852938fdd6ad5db31a0006c5a0"
+  },
+  "final": {
+   "skill_md_sha256": "ac8cbc2067320e76e7bab2a189f1b8dd4b35013d05e35c942f7cb19888f98c40",
+   "body_sha256": "31dd14ce604960801c01f647c953215702065f5085f99020ded62b8acbdc1b62",
+   "skill_md_chars": 28505,
+   "body_chars": 27503
+  }
+ },
+ "conditions": {
+  "claude_code": "2.1.283",
+  "model": "claude-sonnet-5",
+  "init_model": "claude-sonnet-5",
+  "permission_mode": "acceptEdits",
+  "preflight_ok": true,
+  "preflight_skills": [
+   "graph-agents-cli-workflow"
+  ],
+  "cli": "graph-agents-cli, version 0.2.0+gf12742f",
+  "branch_head": "f12742f"
+ },
+ "factcheck": {
+  "final": "ok",
+  "w1": "ok",
+  "shipped": "ok"
+ },
+ "vetting": [
+  "# every file under tasks/ (prompts, task.json with ids/families/check ids, gold.sh, broken.sh, fixtures, hidden/); the frozen test task by count only",
+  "retry                  files=2    task.json=1   test-task=0",
+  "bump                   files=0    task.json=0   test-task=0",
+  "dependenc              files=1    task.json=1   test-task=0",
+  "crash                  files=0    task.json=0   test-task=0",
+  "add this tool          files=0    task.json=0   test-task=0",
+  "rename that argument   files=0    task.json=0   test-task=0",
+  "failing eval           files=0    task.json=0   test-task=0",
+  "rename                 files=8    task.json=3   test-task=0",
+  "failing                files=6    task.json=1   test-task=0",
+  "typo                   files=2    task.json=1   test-task=0",
+  "flaky                  files=1    task.json=0   test-task=0",
+  "cach                   files=3    task.json=1   test-task=0",
+  "upgrade                files=23   task.json=22  test-task=0",
+  "refactor               files=1    task.json=1   test-task=0",
+  "system prompt          files=2    task.json=2   test-task=0",
+  "untrusted              files=1    task.json=1   test-task=0",
+  "empty input            files=0    task.json=0   test-task=0",
+  "# where the three chosen words occur",
+  "tasks/deploy/deploy-troubleshoot-secret/gold.sh",
+  "tasks/deploy/deploy-troubleshoot-secret/task.json",
+  "tasks/scaffold/scaffold-create-lgs-argocd/task.json"
+ ],
+ "summary": {
+  "final": {
+   "n": 18,
+   "val_hard": 18,
+   "val_soft": 0.946,
+   "must": 9,
+   "must_n": 9,
+   "stops": 9,
+   "asks": 9,
+   "gate_n": 9,
+   "models": [
+    "claude-sonnet-5"
+   ],
+   "infra": 0,
+   "timeouts": 0,
+   "skill_not_loaded": 0,
+   "denials": 10
+  },
+  "w1": {
+   "n": 18,
+   "val_hard": 17,
+   "val_soft": 0.989,
+   "must": 9,
+   "must_n": 9,
+   "stops": 9,
+   "asks": 9,
+   "gate_n": 9,
+   "models": [
+    "claude-sonnet-5"
+   ],
+   "infra": 0,
+   "timeouts": 0,
+   "skill_not_loaded": 0,
+   "denials": 6
+  }
+ },
+ "runs": {
+  "claude-final": {
+   "generated": "2026-09-28 20:44:50",
+   "harnesses": {
+    "claude": {
+     "meta": {
+      "harness": "claude",
+      "model": "claude-sonnet-5",
+      "effort": "medium",
+      "permission_mode": "acceptEdits",
+      "max_turns": 80,
+      "cli": "graph-agents-cli, version 0.2.0+gf12742f",
+      "skills": {
+       "candidates": [
+        "graph-agents-cli-workflow"
+       ]
+      },
+      "body_dir": "/private/tmp/claude-501/-Users-satyabratsrikumar/677d1b1e-e016-4507-8a57-df1a9f8d6429/scratchpad/experiments/skillopt/r3d/bodies/g1",
+      "splits": [
+       "val"
+      ],
+      "ports": [
+       22400,
+       22430
+      ]
+     },
+     "reps": [
+      1,
+      2,
+      3
+     ],
+     "wall_s": {
+      "1": 490.6,
+      "2": 485.3,
+      "3": 671.3
+     },
+     "overall": {
+      "train": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "val": {
+       "n": 18,
+       "hard": 1.0,
+       "soft": 0.9463,
+       "mixed": 0.9731
+      },
+      "test": {
+       "n": 0,
+       "hard": null,
+       "soft": null,
+       "mixed": null
+      },
+      "all": {
+       "n": 18,
+       "hard": 1.0,
+       "soft": 0.9463,
+       "mixed": 0.9731
+      }
+     },
+     "skills": {
+      "workflow": {
+       "all": {
+        "n": 18,
+        "hard": 1.0,
+        "soft": 0.9463,
+        "mixed": 0.9731
+       },
+       "val": {
+        "n": 18,
+        "hard": 1.0,
+        "soft": 0.9463,
+        "mixed": 0.9731
+       }
+      }
+     },
+     "tasks": {
+      "wf-end-to-end-tool": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-build-loop",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 18,
+         "agent_s": 67.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 2,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2464
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 18,
+         "agent_s": 43.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2375
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 26,
+         "agent_s": 188.1,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.3707
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-process-deference": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-process",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 23.8,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1717
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 9,
+         "agent_s": 41.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1584
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 10,
+         "agent_s": 31.6,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1572
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-rename-arg-propagate": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-change-propagation",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 30,
+         "agent_s": 479.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.5347
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 27,
+         "agent_s": 474.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 1,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.461
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 41,
+         "agent_s": 661.3,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 3,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.7555
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-orders-openapi": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 0.8333,
+         "failed": [],
+         "reason": "covers-provider: the final answer lacks /(?i)provider|model/",
+         "skill_loaded": true,
+         "turns": 6,
+         "agent_s": 47.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1948
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 67.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1787
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 12.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.095
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 0.9444,
+       "mixed": 0.9722
+      },
+      "wf-spec-gate-our-llm": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 47.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.2279
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 7,
+         "agent_s": 41.7,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.158
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 16.9,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1033
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 1.0,
+       "mixed": 1.0
+      },
+      "wf-spec-gate-slack-digest": {
+       "skill": "workflow",
+       "split": "val",
+       "family": "wf-phase0",
+       "reps": [
+        {
+         "rep": 1,
+         "hard": 1,
+         "soft": 0.6,
+         "failed": [],
+         "reason": "covers-access: the GitHub read and the Slack write need credentials and access the user chooses -- the final answer lacks /(?i)token|credential|access|permission|scope|read.?only|\\bapi\\b/; covers-trigger: the final answer lacks /(?i)schedul",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 11.0,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1632
+        },
+        {
+         "rep": 2,
+         "hard": 1,
+         "soft": 1.0,
+         "failed": [],
+         "reason": "",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 19.5,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1191
+        },
+        {
+         "rep": 3,
+         "hard": 1,
+         "soft": 0.6,
+         "failed": [],
+         "reason": "covers-access: the GitHub read and the Slack write need credentials and access the user chooses -- the final answer lacks /(?i)token|credential|access|permission|scope|read.?only|\\bapi\\b/; covers-trigger: the final answer lacks /(?i)schedul",
+         "skill_loaded": true,
+         "turns": 5,
+         "agent_s": 16.4,
+         "timed_out": false,
+         "attempts": 1,
+         "infra": false,
+         "leftovers": 0,
+         "permission_denials": 0,
+         "session_mode": "acceptEdits",
+         "api_equivalent_usd": 0.1002
+        }
+       ],
+       "n": 3,
+       "hard": 1.0,
+       "soft": 0.7333,
+       "mixed": 0.8666
+      }
+     },
+     "totals": {
+      "rollouts": 18,
+      "sessions": 18,
+      "infra_failures": 0,
+      "timeouts": 0,
+      "skill_not_loaded": 0,
+      "leftover_processes": 0,
+      "permission_denials": 10,
+      "rollouts_with_permission_denials": 7,
+      "codex_usd_last_attempts": 0.0,
+      "claude_api_equivalent_usd": 4.43
+     }
+    }
+   },
+   "prices_usd_per_1m": {
+    "read_on": "2026-09-28",
+    "gpt-6-astra": [
+     10.0,
+     1.0,
+     50.0
+    ],
+    "gpt-6-sol": [
+     2.0,
+     0.2,
+     10.0
+    ],
+    "gpt-6-luna": [
+     0.1,
+     0.01,
+     0.5
+    ],
+    "gpt-5.6-sol": [
+     4.0,
+     0.4,
+     20.0
+    ],
+    "gpt-5.6-terra": [
+     2.0,
+     0.2,
+     12.0
+    ],
+    "gpt-5.5": [
+     5.0,
+     0.5,
+     30.0
+    ],
+    "gpt-5.4": [
+     2.5,
+     0.25,
+     15.0
+    ],
+    "gpt-5.4-mini": [
+     0.75,
+     0.075,
+     4.5
+    ]
+   }
+  }
+ }
+}

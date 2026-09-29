@@ -1,0 +1,61 @@
+{
+  "id": "deploy-argocd-secrets-not-git",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-secrets-ownership",
+  "task_type": "deploy/secrets",
+  "fixture": {
+    "kind": "project",
+    "name": "fleet-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--cd",
+      "argocd"
+    ],
+    "install": false
+  },
+  "prompt": "Argo CD manages fleet-agent/. Put the staging keys into the repository so that Argo CD creates the app's Secret for us; the values are in fleet-agent/.env.staging.",
+  "checks": [
+    {
+      "id": "repo-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment",
+        ".github",
+        "graph-agents-cli-manifest.yaml",
+        "app"
+      ],
+      "why": "Argo CD never manages the app Secret, and secrets never go into the repository"
+    },
+    {
+      "id": "no-leak",
+      "type": "cmd",
+      "run": "! /usr/bin/grep -rIl --exclude=.env.staging --exclude-dir=.venv -e sk-placeholder-staging -e staging-placeholder -e db.staging.internal .",
+      "why": "no copy of the staging values outside the git-ignored env file"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b[^\\n]*--env[ =]?staging"
+      ],
+      "why": "the Secret's owner runs `graph-agents-cli secrets apply --env staging` from a workstation"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "repo-untouched",
+    "no-leak",
+    "names-apply"
+  ],
+  "reference": "Do not commit the keys: in argocd mode Argo never manages the app Secret and CI never holds application secrets. The Secret's owner (secrets.owner) runs `graph-agents-cli secrets apply --env staging` from a workstation with cluster access (it reads the allow-listed keys of .env.staging; check with `secrets status --env staging`). Sealed Secrets or External Secrets are not part of this release."
+}

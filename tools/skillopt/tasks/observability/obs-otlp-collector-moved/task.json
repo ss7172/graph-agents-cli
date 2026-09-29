@@ -1,0 +1,64 @@
+{
+  "id": "obs-otlp-collector-moved",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-enable-env",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "atlas-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false,
+    "setup": [
+      "printf 'tracing:\\n  enabled: true\\n  capture: metadata\\n  otlpEndpoint: http://otel-old.monitoring.svc:4318\\n' >> deployment/helm/atlas-agent/values-staging.yaml"
+    ]
+  },
+  "prompt": "The OpenTelemetry collector that receives the staging traces of atlas-agent/ moved to http://otel-collector.observability.svc:4318. Point staging's traces at it; nothing else changes. Don't deploy.",
+  "checks": [
+    {
+      "id": "staging-endpoint",
+      "type": "yaml",
+      "file": "deployment/helm/atlas-agent/values-staging.yaml",
+      "expr": "get(data, 'tracing.otlpEndpoint') == 'http://otel-collector.observability.svc:4318' and get(data, 'tracing.enabled') is True and get(data, 'tracing.capture', 'metadata') == 'metadata'",
+      "why": "the chart renders OTEL_EXPORTER_OTLP_ENDPOINT from tracing.otlpEndpoint, which wins over an env entry"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/atlas-agent/values.yaml",
+        "deployment/helm/atlas-agent/values-dev.yaml",
+        "deployment/helm/atlas-agent/values-prod.yaml",
+        "deployment/helm/atlas-agent/templates",
+        "app",
+        "graph-agents-cli-manifest.yaml"
+      ]
+    },
+    {
+      "id": "next-step",
+      "type": "transcript",
+      "final_regex": [
+        "deploy[^\\n]*--env[ =]?staging"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "staging-endpoint",
+    "others-untouched"
+  ],
+  "reference": "Change `tracing.otlpEndpoint` in values-staging.yaml to http://otel-collector.observability.svc:4318 (tracing stays enabled, capture metadata); no code, no other values file (an `env.OTEL_EXPORTER_OTLP_ENDPOINT` entry would lose to the chart's own variable). Next step: `graph-agents-cli deploy --env staging` (per the CD mode)."
+}

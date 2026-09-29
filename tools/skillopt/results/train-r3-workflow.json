@@ -1,0 +1,2094 @@
+{
+ "skill": "graph-agents-cli-workflow",
+ "harness": "claude (sonnet, effort medium, acceptEdits)",
+ "config": {
+  "num_epochs": 2,
+  "batch_size": 5,
+  "val_reps": 3,
+  "slots": 18,
+  "eval_test": false,
+  "factcheck": true,
+  "gate_metric": "mixed",
+  "harness_permission_mode": "acceptEdits",
+  "slow_update_samples": 5
+ },
+ "bodies": {
+  "approved": {
+   "chars": 25904,
+   "sha256": "efe6ca364df8d20e848fced1594bd821523df5325347d389d0f79366cd27a248"
+  },
+  "best": {
+   "chars": 27148,
+   "sha256": "a7ec7673a405e1468ba2bacf8b7f8e09d5ca8642ad2fe9a26a37a433c269a819"
+  },
+  "proposed": {
+   "chars": 27105,
+   "sha256": "508d1ceb8c3d59ef2938243ec33eaa99c57be7ff149633904b0bdf9b86367516"
+  }
+ },
+ "training": [
+  {
+   "phase": "baseline_val",
+   "rollouts": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 16,
+     "api_equivalent_usd": 0.218
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 9,
+     "api_equivalent_usd": 0.145
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 34,
+     "api_equivalent_usd": 0.48
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.144
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.197
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.6,
+     "failed_checks": [
+      "covers-access",
+      "covers-trigger"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.128
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 2,
+     "infra": false,
+     "turns": 21,
+     "api_equivalent_usd": 0.288
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 10,
+     "api_equivalent_usd": 0.134
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 25,
+     "api_equivalent_usd": 0.363
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep2",
+     "hard": 0,
+     "soft": 0.8333,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.215
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.215
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep2",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.209
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 16,
+     "api_equivalent_usd": 0.232
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.129
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 38,
+     "api_equivalent_usd": 0.536
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.141
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep3",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.202
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep3",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.237
+    }
+   ]
+  },
+  {
+   "phase": "step_0001",
+   "epoch": 1,
+   "action": "accept_new_best",
+   "selection_hard": 0.8889,
+   "selection_soft": 0.9592333333333333,
+   "gate_score": 0.9240666666666666,
+   "current_score": 0.9240666666666666,
+   "candidate_len": 26666,
+   "edits_merged": 4,
+   "edit_budget": 3,
+   "edit_apply_summary": {
+    "total": 3,
+    "applied": 3,
+    "skipped": 0,
+    "errors": 0
+   },
+   "support_counts": [
+    3,
+    3,
+    2
+   ],
+   "wall_s": 1019.7,
+   "train_rollouts": [
+    {
+     "task": "wf-debug-unregistered-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 14,
+     "api_equivalent_usd": 0.181
+    },
+    {
+     "task": "wf-rename-tool-consistent",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 28,
+     "api_equivalent_usd": 0.413
+    },
+    {
+     "task": "wf-spec-gate-draft-open-questions",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.75,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.084
+    },
+    {
+     "task": "wf-spec-gate-it-kb",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.127
+    },
+    {
+     "task": "wf-spec-gate-prototype-please",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "asks"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.126
+    }
+   ],
+   "val_rollouts": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.8333,
+     "failed_checks": [
+      "proved"
+     ],
+     "permission_denials": 2,
+     "infra": false,
+     "turns": 20,
+     "api_equivalent_usd": 0.31
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.146
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 33,
+     "api_equivalent_usd": 0.578
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8333,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.137
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.134
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8,
+     "failed_checks": [
+      "covers-trigger"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.08
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 21,
+     "api_equivalent_usd": 0.387
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 10,
+     "api_equivalent_usd": 0.154
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 29,
+     "api_equivalent_usd": 0.513
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.13
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep2",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.08
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.139
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 15,
+     "api_equivalent_usd": 0.213
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.145
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 2,
+     "infra": false,
+     "turns": 27,
+     "api_equivalent_usd": 0.452
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.166
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.173
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.143
+    }
+   ]
+  },
+  {
+   "phase": "step_0002",
+   "epoch": 1,
+   "action": "reject",
+   "selection_hard": 0.8889,
+   "selection_soft": 0.9592333333333333,
+   "gate_score": 0.9240666666666666,
+   "current_score": 0.9240666666666666,
+   "candidate_len": 26666,
+   "edits_merged": 1,
+   "edit_budget": 2,
+   "edit_apply_summary": {
+    "total": 1,
+    "applied": 0,
+    "skipped": 1,
+    "errors": 0
+   },
+   "support_counts": [
+    1
+   ],
+   "wall_s": 432.7,
+   "train_rollouts": [
+    {
+     "task": "wf-fix-failing-eval",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 24,
+     "api_equivalent_usd": 0.306
+    }
+   ],
+   "val_rollouts": []
+  },
+  {
+   "phase": "step_0003",
+   "epoch": 2,
+   "action": "accept_new_best",
+   "selection_hard": 1.0,
+   "selection_soft": 0.9907333333333334,
+   "gate_score": 0.9953666666666667,
+   "current_score": 0.9953666666666667,
+   "candidate_len": 27148,
+   "edits_merged": 4,
+   "edit_budget": 1,
+   "edit_apply_summary": {
+    "total": 1,
+    "applied": 1,
+    "skipped": 0,
+    "errors": 0
+   },
+   "support_counts": [
+    3
+   ],
+   "wall_s": 1155.8,
+   "train_rollouts": [
+    {
+     "task": "wf-debug-unregistered-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8,
+     "failed_checks": [
+      "reproduced"
+     ],
+     "permission_denials": 3,
+     "infra": false,
+     "turns": 22,
+     "api_equivalent_usd": 0.275
+    },
+    {
+     "task": "wf-fix-failing-eval",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 15,
+     "api_equivalent_usd": 0.209
+    },
+    {
+     "task": "wf-rename-tool-consistent",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 31,
+     "api_equivalent_usd": 0.517
+    },
+    {
+     "task": "wf-spec-gate-draft-open-questions",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.084
+    },
+    {
+     "task": "wf-spec-gate-it-kb",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.138
+    }
+   ],
+   "val_rollouts": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 26,
+     "api_equivalent_usd": 0.498
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.139
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 37,
+     "api_equivalent_usd": 0.639
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.144
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.094
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.138
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 11,
+     "api_equivalent_usd": 0.189
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 9,
+     "api_equivalent_usd": 0.139
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 29,
+     "api_equivalent_usd": 0.459
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.14
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.104
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.155
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 23,
+     "api_equivalent_usd": 0.336
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 9,
+     "api_equivalent_usd": 0.132
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 33,
+     "api_equivalent_usd": 0.491
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 0.8333,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.086
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.089
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.14
+    }
+   ]
+  },
+  {
+   "phase": "step_0004",
+   "epoch": 2,
+   "action": "reject",
+   "selection_hard": 0.9444499999999999,
+   "selection_soft": 0.9703666666666667,
+   "gate_score": 0.9574083333333333,
+   "current_score": 0.9953666666666667,
+   "candidate_len": 27606,
+   "edits_merged": 1,
+   "edit_budget": 1,
+   "edit_apply_summary": {
+    "total": 1,
+    "applied": 1,
+    "skipped": 0,
+    "errors": 0
+   },
+   "support_counts": [
+    1
+   ],
+   "wall_s": 654.3,
+   "train_rollouts": [
+    {
+     "task": "wf-spec-gate-prototype-please",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.113
+    }
+   ],
+   "val_rollouts": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 17,
+     "api_equivalent_usd": 0.207
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 10,
+     "api_equivalent_usd": 0.159
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 38,
+     "api_equivalent_usd": 0.539
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8333,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 4,
+     "api_equivalent_usd": 0.087
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.8,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.111
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.104
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 12,
+     "api_equivalent_usd": 0.187
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 10,
+     "api_equivalent_usd": 0.145
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 34,
+     "api_equivalent_usd": 0.642
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 0.8333,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.097
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.173
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep2",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.18
+    },
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 2,
+     "infra": false,
+     "turns": 25,
+     "api_equivalent_usd": 0.427
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.146
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 30,
+     "api_equivalent_usd": 0.587
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.146
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.156
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep3",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.142
+    }
+   ]
+  },
+  {
+   "phase": "slow_update_epoch_02",
+   "action": "reject",
+   "reason": "fact-check: body 30842 chars > 1.25 x shipped 23793",
+   "rollouts": [
+    {
+     "task": "wf-debug-unregistered-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 13,
+     "api_equivalent_usd": 0.171
+    },
+    {
+     "task": "wf-fix-failing-eval",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 23,
+     "api_equivalent_usd": 0.362
+    },
+    {
+     "task": "wf-rename-tool-consistent",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 43,
+     "api_equivalent_usd": 0.546
+    },
+    {
+     "task": "wf-spec-gate-draft-open-questions",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.098
+    },
+    {
+     "task": "wf-spec-gate-prototype-please",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.111
+    },
+    {
+     "task": "wf-debug-unregistered-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 12,
+     "api_equivalent_usd": 0.169
+    },
+    {
+     "task": "wf-fix-failing-eval",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 13,
+     "api_equivalent_usd": 0.168
+    },
+    {
+     "task": "wf-rename-tool-consistent",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 36,
+     "api_equivalent_usd": 0.695
+    },
+    {
+     "task": "wf-spec-gate-draft-open-questions",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.094
+    },
+    {
+     "task": "wf-spec-gate-prototype-please",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.118
+    }
+   ]
+  }
+ ],
+ "head_to_head": {
+  "approved": [
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 2,
+    "infra": false,
+    "turns": 21,
+    "api_equivalent_usd": 0.277
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 8,
+    "api_equivalent_usd": 0.13
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 38,
+    "api_equivalent_usd": 0.715
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep1",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "asks"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 6,
+    "api_equivalent_usd": 0.15
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.155
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.107
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep1",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "asks"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.181
+   },
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep2",
+    "hard": 0,
+    "soft": 0.8333,
+    "failed_checks": [
+     "proved"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 13,
+    "api_equivalent_usd": 0.184
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 9,
+    "api_equivalent_usd": 0.143
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep2",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "proved"
+    ],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 40,
+    "api_equivalent_usd": 0.708
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep2",
+    "hard": 0,
+    "soft": 0.4,
+    "failed_checks": [
+     "no-scaffold",
+     "no-create",
+     "asks"
+    ],
+    "permission_denials": 6,
+    "infra": false,
+    "turns": 74,
+    "api_equivalent_usd": 1.714
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 0.8333,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.089
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep2",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "asks"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.214
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep2",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "asks"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 6,
+    "api_equivalent_usd": 0.141
+   },
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 15,
+    "api_equivalent_usd": 0.233
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 8,
+    "api_equivalent_usd": 0.147
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 28,
+    "api_equivalent_usd": 0.574
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.109
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 0.8333,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.091
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep3",
+    "hard": 0,
+    "soft": 0.4,
+    "failed_checks": [
+     "no-scaffold",
+     "no-create",
+     "asks"
+    ],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 51,
+    "api_equivalent_usd": 1.176
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 10,
+    "api_equivalent_usd": 0.231
+   }
+  ],
+  "best": [
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 14,
+    "api_equivalent_usd": 0.206
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 8,
+    "api_equivalent_usd": 0.156
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 24,
+    "api_equivalent_usd": 0.481
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.14
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 0.8333,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.092
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep1",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.159
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep1",
+    "hard": 0,
+    "soft": 0.8,
+    "failed_checks": [
+     "asks"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 9,
+    "api_equivalent_usd": 0.205
+   },
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 15,
+    "api_equivalent_usd": 0.2
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 9,
+    "api_equivalent_usd": 0.134
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 28,
+    "api_equivalent_usd": 0.444
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 0.8,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 6,
+    "api_equivalent_usd": 0.144
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 0.8333,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.088
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 8,
+    "api_equivalent_usd": 0.214
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep2",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 6,
+    "api_equivalent_usd": 0.152
+   },
+   {
+    "task": "wf-end-to-end-tool",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 19,
+    "api_equivalent_usd": 0.234
+   },
+   {
+    "task": "wf-process-deference",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 1,
+    "infra": false,
+    "turns": 9,
+    "api_equivalent_usd": 0.155
+   },
+   {
+    "task": "wf-rename-arg-propagate",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 39,
+    "api_equivalent_usd": 0.595
+   },
+   {
+    "task": "wf-spec-gate-new-agent",
+    "rep": "rep3",
+    "hard": 0,
+    "soft": 0.6,
+    "failed_checks": [
+     "asks",
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.209
+   },
+   {
+    "task": "wf-spec-gate-orders-openapi",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 0.8333,
+    "failed_checks": [
+     "covers-provider"
+    ],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 4,
+    "api_equivalent_usd": 0.084
+   },
+   {
+    "task": "wf-spec-gate-our-llm",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 5,
+    "api_equivalent_usd": 0.119
+   },
+   {
+    "task": "wf-spec-gate-slack-digest",
+    "rep": "rep3",
+    "hard": 1,
+    "soft": 1.0,
+    "failed_checks": [],
+    "permission_denials": 0,
+    "infra": false,
+    "turns": 7,
+    "api_equivalent_usd": 0.139
+   }
+  ],
+  "voided_rep1": {
+   "approved": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 1,
+     "infra": false,
+     "turns": 19,
+     "api_equivalent_usd": 0.294
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-spec-gate-new-agent",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 7,
+     "api_equivalent_usd": 0.16
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.108
+    }
+   ],
+   "best": [
+    {
+     "task": "wf-end-to-end-tool",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-process-deference",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 8,
+     "api_equivalent_usd": 0.143
+    },
+    {
+     "task": "wf-rename-arg-propagate",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 33,
+     "api_equivalent_usd": 0.56
+    },
+    {
+     "task": "wf-spec-gate-new-agent",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 0.8,
+     "failed_checks": [
+      "covers-provider"
+     ],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 5,
+     "api_equivalent_usd": 0.105
+    },
+    {
+     "task": "wf-spec-gate-orders-openapi",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    },
+    {
+     "task": "wf-spec-gate-our-llm",
+     "rep": "rep1",
+     "hard": 1,
+     "soft": 1.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": false,
+     "turns": 6,
+     "api_equivalent_usd": 0.132
+    },
+    {
+     "task": "wf-spec-gate-slack-digest",
+     "rep": "rep1",
+     "hard": 0,
+     "soft": 0.0,
+     "failed_checks": [],
+     "permission_denials": 0,
+     "infra": true,
+     "turns": null,
+     "api_equivalent_usd": 0.0
+    }
+   ]
+  }
+ },
+ "proposed_val": [
+  {
+   "task": "wf-end-to-end-tool",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 13,
+   "api_equivalent_usd": 0.238
+  },
+  {
+   "task": "wf-process-deference",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 8,
+   "api_equivalent_usd": 0.144
+  },
+  {
+   "task": "wf-rename-arg-propagate",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 37,
+   "api_equivalent_usd": 0.648
+  },
+  {
+   "task": "wf-spec-gate-orders-openapi",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 0.8333,
+   "failed_checks": [
+    "covers-provider"
+   ],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 5,
+   "api_equivalent_usd": 0.086
+  },
+  {
+   "task": "wf-spec-gate-our-llm",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 4,
+   "api_equivalent_usd": 0.084
+  },
+  {
+   "task": "wf-spec-gate-slack-digest",
+   "rep": "rep1",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 6,
+   "api_equivalent_usd": 0.123
+  },
+  {
+   "task": "wf-end-to-end-tool",
+   "rep": "rep2",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 1,
+   "infra": false,
+   "turns": 20,
+   "api_equivalent_usd": 0.23
+  },
+  {
+   "task": "wf-process-deference",
+   "rep": "rep2",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 8,
+   "api_equivalent_usd": 0.131
+  },
+  {
+   "task": "wf-rename-arg-propagate",
+   "rep": "rep2",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 26,
+   "api_equivalent_usd": 0.367
+  },
+  {
+   "task": "wf-spec-gate-orders-openapi",
+   "rep": "rep2",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 1,
+   "infra": false,
+   "turns": 9,
+   "api_equivalent_usd": 0.198
+  },
+  {
+   "task": "wf-spec-gate-our-llm",
+   "rep": "rep2",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 5,
+   "api_equivalent_usd": 0.096
+  },
+  {
+   "task": "wf-spec-gate-slack-digest",
+   "rep": "rep2",
+   "hard": 0,
+   "soft": 0.8,
+   "failed_checks": [
+    "asks"
+   ],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 7,
+   "api_equivalent_usd": 0.18
+  },
+  {
+   "task": "wf-end-to-end-tool",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 13,
+   "api_equivalent_usd": 0.176
+  },
+  {
+   "task": "wf-process-deference",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 1,
+   "infra": false,
+   "turns": 12,
+   "api_equivalent_usd": 0.159
+  },
+  {
+   "task": "wf-rename-arg-propagate",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 35,
+   "api_equivalent_usd": 0.542
+  },
+  {
+   "task": "wf-spec-gate-orders-openapi",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 0.8333,
+   "failed_checks": [
+    "covers-provider"
+   ],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 5,
+   "api_equivalent_usd": 0.088
+  },
+  {
+   "task": "wf-spec-gate-our-llm",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 6,
+   "api_equivalent_usd": 0.197
+  },
+  {
+   "task": "wf-spec-gate-slack-digest",
+   "rep": "rep3",
+   "hard": 1,
+   "soft": 1.0,
+   "failed_checks": [],
+   "permission_denials": 0,
+   "infra": false,
+   "turns": 5,
+   "api_equivalent_usd": 0.171
+  }
+ ]
+}

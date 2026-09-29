@@ -1,0 +1,53 @@
+{
+  "id": "scaffold-guidance-gemini-only",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-guidance",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "catalog-agent"
+  },
+  "prompt": "Create a prototype `catalog-agent` in the current directory with OpenAI and its default model. Our team works only in Gemini CLI. Just scaffold it; don't install anything and don't create a git repository.",
+  "checks": [
+    {
+      "id": "prototype",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.deployment_target') == 'none' and get(data, 'create_params.model_provider') == 'openai'"
+    },
+    {
+      "id": "guidance",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.agent_guidance_filename') == 'GEMINI.md'",
+      "why": "a team that works only in Gemini CLI gets GEMINI.md"
+    },
+    {
+      "id": "guidance-file",
+      "type": "file",
+      "path": "GEMINI.md",
+      "regex": "graph-agents-cli",
+      "why": "the project's agent guidance is rendered into GEMINI.md"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "guidance",
+    "guidance-file"
+  ],
+  "reference": "`graph-agents-cli create catalog-agent --prototype --model-provider openai --agent-guidance-filename GEMINI.md -y`: Gemini CLI reads GEMINI.md."
+}

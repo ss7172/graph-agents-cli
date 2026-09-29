@@ -1,0 +1,74 @@
+{
+  "id": "obs-langsmith-self-hosted",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-enable-env",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "catalog-api",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Staging traces of catalog-api/ must go to our self-hosted LangSmith at https://langsmith.acme.internal/api instead of LangSmith's cloud, into the project `catalog-staging`, metadata only. I'll put the API key into .env.staging myself. Don't deploy.",
+  "checks": [
+    {
+      "id": "staging-values",
+      "type": "yaml",
+      "file": "deployment/helm/catalog-api/values-staging.yaml",
+      "expr": "get(data, 'tracing.enabled') is True and get(data, 'tracing.langsmith.project') == 'catalog-staging' and get(data, 'tracing.capture', 'metadata') == 'metadata' and get(data, 'env.LANGSMITH_ENDPOINT') == 'https://langsmith.acme.internal/api'",
+      "why": "staging values: tracing.{enabled,capture,langsmith.project} and env.LANGSMITH_ENDPOINT"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/catalog-api/values.yaml",
+        "deployment/helm/catalog-api/values-dev.yaml",
+        "deployment/helm/catalog-api/values-prod.yaml",
+        "app"
+      ]
+    },
+    {
+      "id": "key-allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'LANGSMITH_API_KEY' in get(data, 'secrets.keys', [])",
+      "why": "LANGSMITH_API_KEY is a secret: only the manifest's secrets.keys reach the app Secret"
+    },
+    {
+      "id": "no-secret-in-values",
+      "type": "file",
+      "path": "deployment/helm/catalog-api/values*.yaml",
+      "not_regex": "(?m)^\\s+LANGSMITH_API_KEY:",
+      "why": "secrets never go into chart values"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b[^\\n]*--env[ =]?staging"
+      ],
+      "why": "the value reaches the cluster only through `graph-agents-cli secrets apply --env <env>`",
+      "mandatory": false
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "staging-values",
+    "others-untouched"
+  ],
+  "reference": "In values-staging.yaml: `tracing: {enabled: true, capture: metadata, langsmith: {project: catalog-staging}}` and `env.LANGSMITH_ENDPOINT: https://langsmith.acme.internal/api`; LANGSMITH_API_KEY is already in secrets.keys, so the user puts it in .env.staging and runs `graph-agents-cli secrets apply --env staging`, then deploys staging."
+}

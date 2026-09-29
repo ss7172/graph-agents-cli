@@ -97,7 +97,9 @@ cache-keys = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["src/graph_agents_cli/scaffold/agents", "src/graph_agents_cli/scaffold/base_templates", "src/graph_agents_cli/scaffold/deployment_targets", "src/graph_agents_cli/skills/data", "tests/fixtures"]
+# tools/skillopt/tasks holds benchmark fixtures and hidden checks that run inside generated
+# projects (their own ruff settings, `app` as a first-party package), not repository code.
+extend-exclude = ["src/graph_agents_cli/scaffold/agents", "src/graph_agents_cli/scaffold/base_templates", "src/graph_agents_cli/scaffold/deployment_targets", "src/graph_agents_cli/skills/data", "tests/fixtures", "tools/skillopt/tasks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "RUF"]

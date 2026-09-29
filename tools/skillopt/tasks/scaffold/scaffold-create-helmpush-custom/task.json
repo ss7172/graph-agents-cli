@@ -1,0 +1,57 @@
+{
+  "id": "scaffold-create-helmpush-custom",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-create",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "orders-agent"
+  },
+  "prompt": "Create the project `orders-agent` in the current directory. Approved spec: FastAPI runtime on Kubernetes with Postgres; our CI builds the image and deploys it with helm from our self-hosted runner; the registry is `ghcr.io/acme-shop`; callers are already signed in to our shop and carry its session cookie, which the agent must validate itself; model provider OpenAI with its default model. Only scaffold it (no install, no git repository).",
+  "checks": [
+    {
+      "id": "architecture",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.runtime') == 'fastapi' and get(data, 'create_params.deployment_target') == 'kubernetes' and get(data, 'create_params.checkpointer') == 'postgres' and get(data, 'create_params.registry') == 'ghcr.io/acme-shop'"
+    },
+    {
+      "id": "cd",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.cd') == 'helm-push'",
+      "why": "CI deploying with helm from a self-hosted runner is the helm-push CD mode"
+    },
+    {
+      "id": "auth",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.auth_policy') == 'custom' and get(data, 'create_params.auth_policy_implemented') is False",
+      "why": "an existing session cookie is the custom auth policy (a fail-closed stub until implemented)"
+    },
+    {
+      "id": "policy-stub",
+      "type": "file",
+      "path": "app/policies/custom.py"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "auth"
+  ],
+  "reference": "`graph-agents-cli create orders-agent --runtime fastapi --deployment-target kubernetes --checkpointer postgres --registry ghcr.io/acme-shop --cd helm-push --auth-policy custom --model-provider openai -y`; the custom policy is a fail-closed stub (`auth_policy_implemented: false`) that app/policies/custom.py must implement before staging/prod deploys."
+}

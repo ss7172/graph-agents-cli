@@ -1,0 +1,70 @@
+{
+  "id": "deploy-helmpush-values-rerun",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-modes",
+  "task_type": "deploy/explain",
+  "fixture": {
+    "kind": "project",
+    "name": "ledger-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--cd",
+      "helm-push"
+    ],
+    "install": false
+  },
+  "prompt": "ledger-agent/ is deployed by our CI with helm. Staging needs 3 replicas instead of 1. Make the change, and tell me exactly how it gets to the staging cluster once it is merged to main. Don't run anything against a cluster.",
+  "checks": [
+    {
+      "id": "replicas",
+      "type": "yaml",
+      "file": "deployment/helm/ledger-agent/values-staging.yaml",
+      "expr": "get(data, 'replicaCount') == 3"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/ledger-agent/values.yaml",
+        "deployment/helm/ledger-agent/values-dev.yaml",
+        "deployment/helm/ledger-agent/values-prod.yaml",
+        "deployment/helm/ledger-agent/templates",
+        ".github",
+        "graph-agents-cli-manifest.yaml",
+        "app"
+      ],
+      "why": "values.yaml is shared by every environment; other environments must not change"
+    },
+    {
+      "id": "rollout-path",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)workflow_dispatch|by hand|manual|re-?run|trigger|run (the )?[`'\"]?staging[`'\"]? (workflow|job)"
+      ],
+      "why": "pushes that only change values-*.yaml do not start the staging workflow: run it by hand from main"
+    },
+    {
+      "id": "no-bypass",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b.*--force-direct"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "rollout-path"
+  ],
+  "reference": "Set `replicaCount: 3` in values-staging.yaml only. In helm-push mode the staging workflow (.github/workflows/staging.yaml) runs `deploy --env staging --image ...` on the self-hosted runner, but pushes that only change values-*.yaml do not start it (paths-ignore), so after the merge someone runs the staging workflow by hand (workflow_dispatch, from main). A workstation `deploy --env staging` is refused outside CI; never pass --force-direct to get around it."
+}

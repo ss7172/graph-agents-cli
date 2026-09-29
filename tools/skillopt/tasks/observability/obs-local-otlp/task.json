@@ -1,0 +1,50 @@
+{
+  "id": "obs-local-otlp",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-enable-local",
+  "task_type": "observability/config",
+  "fixture": {
+    "kind": "project",
+    "name": "trace-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "install": false
+  },
+  "prompt": "Turn on tracing for local runs of trace-agent/, exported to our OpenTelemetry collector at http://localhost:4318. Capture metadata only: no prompt or tool text.",
+  "checks": [
+    {
+      "id": "env",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('TRACING_ENABLED', '').lower() == 'true' and data.get('OTEL_EXPORTER_OTLP_ENDPOINT') == 'http://localhost:4318' and data.get('TRACE_CAPTURE', 'metadata') == 'metadata'",
+      "why": "TRACING_ENABLED=true is the opt-in; without LANGSMITH_API_KEY traces go over OTLP; TRACE_CAPTURE=metadata"
+    },
+    {
+      "id": "env-kept",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "data.get('MODEL_PROVIDER') == 'fake' and data.get('API_KEY') == 'dev' and not data.get('LANGSMITH_API_KEY')"
+    },
+    {
+      "id": "no-langchain-vars",
+      "type": "dotenv",
+      "file": ".env",
+      "mandatory": false,
+      "expr": "not any(k.startswith('LANGCHAIN_TRACING') for k in data)"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "env"
+  ],
+  "reference": "In trace-agent/.env set TRACING_ENABLED=true, OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 and keep TRACE_CAPTURE=metadata (the default); no LangSmith key, so the OTLP path is used; nothing else changes (LANGCHAIN_TRACING_V2 is not how this template enables tracing)."
+}

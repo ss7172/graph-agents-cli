@@ -1,0 +1,64 @@
+{
+  "id": "eval-quality-metric-groundedness",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-quality-metric",
+  "task_type": "eval/config",
+  "fixture": {
+    "kind": "project",
+    "name": "facts-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In facts-agent/, make `groundedness` a quality metric of the eval: a case passes it with a score of 3 or more, and the gate should accept up to 25% of the scored cases below that. Declare it on the `weather` and `weather-follow-up` cases. Keep `response_quality` as it is. Then run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "config-quality",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.groundedness.threshold') == 3 and get(data, 'quality_metrics.groundedness.min_pass_rate') == 0.75"
+    },
+    {
+      "id": "response-quality-kept",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.response_quality') == {'threshold': 4, 'min_pass_rate': 0.9}"
+    },
+    {
+      "id": "declared",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "len([c for c in data.get('cases', []) if c.get('id') in ('weather', 'weather-follow-up') and 'groundedness' in (c.get('judge') or {})]) == 2"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ]
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "config-quality",
+    "gate"
+  ],
+  "reference": "Add `groundedness: { threshold: 3, min_pass_rate: 0.75 }` under `quality_metrics:` (a quality metric needs both), keep response_quality, add `\"judge\": {\"groundedness\": {\"threshold\": 3}}` to weather and weather-follow-up (their tool results and context ground them), run `graph-agents-cli eval run` (exit 0 on the fake judge: plumbing only)."
+}

@@ -1,0 +1,19 @@
+# gac-bench on Codex (billed to an OpenAI key): training or evaluation of one skill.
+#   GAC_SKILLOPT_OPENAI_KEY_FILE=... GAC_SKILLOPT_LEDGER=... \
+#   python -m gac_skillopt.run train --config configs/codex.yaml --skill eval
+# Rollouts: Codex `gpt-5.6-terra` with the isolation of DESIGN section 3.2 and a hard spend cap
+# (env.max_usd; the runner refuses to start when the ledger has no room for it). The optimizer
+# stays on Claude Code (the developer's plan), so the key pays only for rollouts.
+# Codex rollouts run `eval run` / `run` inside the sandbox since the CLI fixes for DESIGN section 9
+# issues 1 and 2 (rebuild the scratch CLI with `setup --rebuild-cli`), so every skill runs.
+_base_: claude.yaml
+
+train:
+  num_epochs: 2
+
+env:
+  harness: codex
+  harness_model: gpt-5.6-terra
+  harness_effort: medium
+  slots: 6
+  max_usd: 60

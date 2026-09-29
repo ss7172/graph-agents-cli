@@ -1,0 +1,36 @@
+{
+  "train": [
+    "wf-rename-tool-consistent",
+    "wf-fix-failing-eval",
+    "wf-spec-gate-prototype-please",
+    "wf-spec-gate-draft-open-questions",
+    "wf-spec-gate-it-kb",
+    "wf-debug-unregistered-tool"
+  ],
+  "val": [
+    "wf-process-deference",
+    "wf-end-to-end-tool",
+    "wf-spec-gate-orders-openapi",
+    "wf-spec-gate-our-llm",
+    "wf-spec-gate-slack-digest",
+    "wf-rename-arg-propagate"
+  ],
+  "test": [
+    "wf-spec-gate-new-agent"
+  ],
+  "hashes": {
+    "wf-rename-tool-consistent": "7bb218ba4b213f56",
+    "wf-fix-failing-eval": "38e80ec14e50ee98",
+    "wf-spec-gate-prototype-please": "49ff9233f22dd88b",
+    "wf-spec-gate-draft-open-questions": "9f6cc08e80575a60",
+    "wf-spec-gate-it-kb": "af48c9915e5cd399",
+    "wf-debug-unregistered-tool": "8748fda46222308b",
+    "wf-process-deference": "9132cbdbdb103da0",
+    "wf-end-to-end-tool": "a3378c6f0e5be641",
+    "wf-spec-gate-orders-openapi": "5f129fb45df84058",
+    "wf-spec-gate-our-llm": "627dc046559fcbeb",
+    "wf-spec-gate-slack-digest": "467840c2dc7e0668",
+    "wf-rename-arg-propagate": "2e8b6e675e45950e",
+    "wf-spec-gate-new-agent": "731486a3b026f564"
+  }
+}

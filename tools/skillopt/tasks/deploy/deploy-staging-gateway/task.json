@@ -1,0 +1,64 @@
+{
+  "id": "deploy-staging-gateway",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/values",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Get the staging environment of shop/ ready: it must attach to our Gateway `shared-gw` in namespace `infra` with the hostname `shop.staging.acme.dev`. Prove that a staging deploy would render, without deploying anything.",
+  "checks": [
+    {
+      "id": "values",
+      "type": "yaml",
+      "file": "deployment/helm/shop/values-staging.yaml",
+      "expr": "get(data, 'gateway.enabled') is True and get(data, 'gateway.parentRef.name') == 'shared-gw' and get(data, 'gateway.parentRef.namespace') == 'infra' and get(data, 'gateway.hostname') == 'shop.staging.acme.dev'",
+      "why": "the Gateway settings belong in values-staging.yaml (gateway.parentRef, gateway.hostname)"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env staging --dry-run --tag abc1234",
+      "output_regex": "name: shared-gw"
+    },
+    {
+      "id": "other-values-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/shop/values.yaml",
+        "deployment/helm/shop/values-dev.yaml",
+        "deployment/helm/shop/values-prod.yaml",
+        "deployment/helm/shop/templates"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "dry-run-used",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+deploy\\b.*--dry-run"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "values",
+    "renders"
+  ],
+  "reference": "Set `gateway.hostname: shop.staging.acme.dev` and `gateway.parentRef: {name: shared-gw, namespace: infra}` in deployment/helm/shop/values-staging.yaml (gateway.parentRef.name is required while gateway.enabled), then `graph-agents-cli deploy --env staging --dry-run` (it reads .env.staging; the rendered HTTPRoute attaches to shared-gw)."
+}

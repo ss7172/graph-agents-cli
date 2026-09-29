@@ -1,0 +1,53 @@
+{
+  "id": "scaffold-guidance-unstated",
+  "skill": "graph-agents-cli-scaffold",
+  "family": "scaffold-guidance",
+  "task_type": "scaffold/create",
+  "fixture": {
+    "kind": "empty",
+    "name": "billing-agent"
+  },
+  "prompt": "Create the project `billing-agent` in the current directory from this approved spec: FastAPI on Kubernetes with Postgres; images go to `registry.acme.io/ml`; no CD for now; callers share one bearer key; OpenAI with its default model. Only scaffold it: no install, no git repository.",
+  "checks": [
+    {
+      "id": "architecture",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.runtime') == 'fastapi' and get(data, 'create_params.deployment_target') == 'kubernetes' and get(data, 'create_params.checkpointer') == 'postgres' and get(data, 'create_params.registry') == 'registry.acme.io/ml' and get(data, 'create_params.cd') == 'skip' and get(data, 'create_params.auth_policy') == 'shared-bearer' and get(data, 'create_params.model_provider') == 'openai'"
+    },
+    {
+      "id": "guidance",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "get(data, 'create_params.agent_guidance_filename') == 'AGENTS.md'",
+      "why": "the spec names no coding agent: keep the default that most agents read (the agent running the command is not the team's choice)"
+    },
+    {
+      "id": "guidance-file",
+      "type": "file",
+      "path": "AGENTS.md",
+      "regex": "graph-agents-cli",
+      "why": "the project's agent guidance is rendered into AGENTS.md"
+    },
+    {
+      "id": "no-git",
+      "type": "file",
+      "path": ".git/HEAD",
+      "exists": false,
+      "why": "never create a git repository without being asked"
+    },
+    {
+      "id": "not-installed",
+      "type": "file",
+      "path": ".venv/pyvenv.cfg",
+      "exists": false,
+      "mandatory": false,
+      "why": "the task said to scaffold only"
+    }
+  ],
+  "broken_fails": [
+    "guidance",
+    "guidance-file"
+  ],
+  "reference": "`graph-agents-cli create billing-agent --runtime fastapi --deployment-target kubernetes --checkpointer postgres --registry registry.acme.io/ml --cd skip --auth-policy shared-bearer --model-provider openai -y`. The spec names no coding agent, so the guidance file stays the default AGENTS.md; pass CLAUDE.md or GEMINI.md only when the team says it uses that agent alone."
+}

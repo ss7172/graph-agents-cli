@@ -1,0 +1,68 @@
+{
+  "id": "eval-fix-run-wide-rate",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-config-fix",
+  "task_type": "eval/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "survey-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('tests/eval/eval_config.yaml'); p.write_text(p.read_text() + '\\n# Let task_success fail on up to 20 percent of its cases.\\nmin_pass_rate: 0.8\\n')\"",
+      "python3 -c \"import json, pathlib; p = pathlib.Path('tests/eval/datasets/basic-dataset.json'); d = json.loads(p.read_text()); [c.setdefault('judge', {}).update({'task_success': {'threshold': 4}}) for c in d['cases'] if c['id'] in ('weather', 'weather-follow-up')]; p.write_text(json.dumps(d, indent=2) + chr(10))\""
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in survey-agent/ stops with exit code 3 since a teammate tried to let `task_success` fail on up to 20% of the cases that score it. Make that work the way they intended.",
+  "checks": [
+    {
+      "id": "quality",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.task_success') == {'threshold': 4, 'min_pass_rate': 0.8}",
+      "why": "a tolerated rate belongs to one metric: quality_metrics.task_success {threshold, min_pass_rate}"
+    },
+    {
+      "id": "no-run-wide",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "'min_pass_rate' not in data",
+      "why": "there is no run-wide min_pass_rate (an unknown top-level key is exit 3)"
+    },
+    {
+      "id": "response-quality-kept",
+      "type": "yaml",
+      "file": "tests/eval/eval_config.yaml",
+      "expr": "get(data, 'quality_metrics.response_quality') == {'threshold': 4, 'min_pass_rate': 0.9}"
+    },
+    {
+      "id": "dataset-untouched",
+      "type": "unchanged",
+      "paths": [
+        "tests/eval/datasets"
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "quality"
+  ],
+  "reference": "Exit 3: `min_pass_rate` is not a top-level key of eval_config.yaml (there is no run-wide rate). The teammate meant task_success as a quality metric: remove the top-level key and add `task_success: { threshold: 4, min_pass_rate: 0.8 }` under `quality_metrics:` (threshold 4 as the cases declare), keep response_quality, leave the dataset, run `graph-agents-cli eval run` (exit 0)."
+}

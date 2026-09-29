@@ -1,0 +1,63 @@
+{
+  "id": "wf-process-deference",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-process",
+  "task_type": "workflow/process",
+  "fixture": {
+    "kind": "project",
+    "name": "claims-desk",
+    "create_args": [
+      "--prototype",
+      "--process",
+      "docs/process.md"
+    ],
+    "install": false
+  },
+  "prompt": "In claims-desk/, add a tool that returns the current UTC time, so users can ask the agent what time it is.",
+  "checks": [
+    {
+      "id": "no-code-yet",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "tests",
+        "pyproject.toml"
+      ],
+      "mandatory": true,
+      "why": "the project's process allows code only for an approved story"
+    },
+    {
+      "id": "story",
+      "type": "file",
+      "path": "docs/stories/*.md",
+      "regex": "(?i)acceptance criteria"
+    },
+    {
+      "id": "no-generic-spec",
+      "type": "file",
+      "path": ".graph-agents-cli-spec.md",
+      "exists": false,
+      "why": "under a declared process its own documents replace the generic spec"
+    },
+    {
+      "id": "status-proposed",
+      "type": "file",
+      "path": "docs/stories/*.md",
+      "regex": "(?i)status:\\s*proposed",
+      "mandatory": false
+    },
+    {
+      "id": "asks-approval",
+      "type": "transcript",
+      "final_regex": [
+        "approv"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "no-code-yet",
+    "story"
+  ],
+  "reference": "The manifest and AGENTS.md declare `process: docs/process.md`; the workflow skill defers to it. Read it: every change starts as a story in docs/stories/<name>.md (Goal, Acceptance criteria, Status: proposed) that the product owner approves before any code. Write the story, write no code and no .graph-agents-cli-spec.md, and ask for the approval."
+}

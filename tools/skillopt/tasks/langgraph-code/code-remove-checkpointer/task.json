@@ -1,0 +1,60 @@
+{
+  "id": "code-remove-checkpointer",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-template-contract",
+  "task_type": "code/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "notes-agent",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "python3 - <<'PY'\nfrom pathlib import Path\np = Path('app/agent.py')\nt = p.read_text()\nt = t.replace('from langchain.agents.middleware import AgentMiddleware\\n', 'from langchain.agents.middleware import AgentMiddleware\\nfrom langchain.chat_models import init_chat_model\\n')\nt = t.replace('from langchain_core.messages import ToolMessage\\n', 'from langchain_core.messages import ToolMessage\\nfrom langgraph.checkpoint.memory import InMemorySaver\\n')\nassert '    model=get_model(),\\n' in t and '    context_schema=AgentContext,\\n' in t\nt = t.replace('    model=get_model(),\\n', '    model=init_chat_model(\"openai:gpt-5-mini\"),\\n')\nt = t.replace('    context_schema=AgentContext,\\n', '    context_schema=AgentContext,\\n    checkpointer=InMemorySaver(),\\n')\np.write_text(t)\nPY"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "`graph-agents-cli eval run` in notes-agent/ fails since a colleague edited app/agent.py. Review app/agent.py against the project's template contract, fix what is wrong, and show that the eval gate passes.",
+  "checks": [
+    {
+      "id": "contract",
+      "type": "pyfile",
+      "script": "check_contract.py",
+      "why": "the graph is compiled without a checkpointer and the model comes from get_model()"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "min_planned": 4
+    },
+    {
+      "id": "config-untouched",
+      "type": "unchanged",
+      "paths": [
+        ".env",
+        ".env.example",
+        "pyproject.toml",
+        "tests",
+        "app/app_utils",
+        "app/tools"
+      ],
+      "mandatory": true,
+      "why": "the fix is in agent.py; never change the model provider or add keys to make it run"
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "contract"
+  ],
+  "reference": "Two contract violations in app/agent.py: a hard-coded `init_chat_model(\"openai:gpt-5-mini\")` (the model comes from `get_model()`, i.e. MODEL_PROVIDER/MODEL_NAME; the hard-coded OpenAI model also needs a key the project does not have) and `checkpointer=InMemorySaver()` (graph must be exported unbound: the app binds the checkpointer CHECKPOINTER selects). Restore `model=get_model()`, remove the checkpointer and both imports, run `graph-agents-cli eval run` (exit 0)."
+}

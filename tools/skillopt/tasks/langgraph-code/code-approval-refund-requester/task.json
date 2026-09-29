@@ -1,0 +1,53 @@
+{
+  "id": "code-approval-refund-requester",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-approval-gate",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "payments-desk",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add payments --base-url-env PAYMENTS_API_BASE_URL --auth bearer --token-env PAYMENTS_API_TOKEN --access read-write",
+      "graph-agents-cli api allow payments getPayment --method GET --path '/payments/{payment_id}'",
+      "graph-agents-cli api allow payments refundPayment --method POST --path '/payments/{payment_id}/refund'"
+    ]
+  },
+  "prompt": "In payments-desk/, every refund the agent sends must first be confirmed by the user who asked for it. Nothing else about the agent changes.",
+  "checks": [
+    {
+      "id": "gate",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "any(('refundPayment' in [o.get('operationId') if isinstance(o, dict) else o for o in (get(r, 'required_for.operations') or [])] or 'POST' in [str(m).upper() for m in (get(r, 'required_for.methods') or [])]) and 'requester' in (r.get('approvers') or []) for r in (lambda a: a if isinstance(a, list) else [a])(get(data, 'apis.payments.approval')) if isinstance(r, dict))",
+      "why": "the policy's approval gate (`graph-agents-cli api approval ... --approvers requester`) pauses the call before it is sent"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.payments.allowed_methods') or []) == sorted(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']) and sorted(o.get('operationId') for o in (get(data, 'apis.payments.allowed_operations') or [])) == ['getPayment', 'refundPayment'] and not get(data, 'apis.payments.denied_operations')",
+      "why": "an approval gate never changes what the API allows"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ],
+      "why": "the gate needs no tool code; an interrupt() of your own is not wired to /chat"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    }
+  ],
+  "broken_fails": [
+    "gate",
+    "code-untouched"
+  ],
+  "reference": "`graph-agents-cli api approval payments --operations refundPayment --approvers requester` (the user asked for it, so this policy change is theirs): the client pauses the refund before sending it, `/chat` ends with awaiting_approval and the requester approves or rejects. No tool code and no `interrupt()` of your own (it is not wired to /chat); allowed methods and operations stay as they are; `lint` lists the gated call."
+}

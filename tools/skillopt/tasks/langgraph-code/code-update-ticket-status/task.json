@@ -1,0 +1,42 @@
+{
+  "id": "code-update-ticket-status",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-write-body",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "ops-desk",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add tickets --base-url-env TICKETS_API_BASE_URL --auth bearer --token-env TICKETS_API_TOKEN --access custom --methods GET,PATCH",
+      "graph-agents-cli api allow tickets updateTicket --method PATCH --path '/tickets/{ticket_id}'"
+    ]
+  },
+  "prompt": "In ops-desk/, add a tool `set_ticket_status(ticket_id: str, status: str)` that updates a ticket's status through the tickets API: `PATCH /tickets/{ticket_id}` with the JSON body `{\"status\": ...}`, operationId `updateTicket`. The API is already declared in api-policy.yaml.",
+  "checks": [
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_update.py"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "policy-untouched",
+      "type": "unchanged",
+      "paths": [
+        "api-policy.yaml",
+        "graph-agents-cli-manifest.yaml"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "behaviour"
+  ],
+  "reference": "A tool module with a literal API_CALLS entry {api: tickets, method: PATCH, operation_id: updateTicket, path: /tickets/{ticket_id}} calling `get_client(\"tickets\", ...).patch(\"/tickets/{ticket_id}\", operation_id=\"updateTicket\", path_params={\"ticket_id\": ...}, json_body={\"status\": status})`; the policy allows GET and PATCH only, so any other method is refused; lint passes."
+}

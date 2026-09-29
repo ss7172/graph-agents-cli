@@ -1,0 +1,64 @@
+{
+  "id": "deploy-dry-run-plan",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-preview",
+  "task_type": "deploy/preview",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false
+  },
+  "prompt": "Show me exactly what deploying the agent in shop/ to the dev environment would do, without changing anything anywhere: no cluster changes, no image builds or pushes. Save the complete plan (the commands and the rendered manifests) to shop/deploy-plan.txt.",
+  "checks": [
+    {
+      "id": "plan-commands",
+      "type": "file",
+      "path": "deploy-plan.txt",
+      "regex": "helm upgrade --install",
+      "why": "`deploy --dry-run` prints every docker/helm/kubectl command it would run"
+    },
+    {
+      "id": "plan-manifests",
+      "type": "file",
+      "path": "deploy-plan.txt",
+      "regex": "kind: Deployment"
+    },
+    {
+      "id": "dry-run-used",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+deploy\\b.*--dry-run"
+      ]
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    },
+    {
+      "id": "project-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "deployment",
+        "graph-agents-cli-manifest.yaml",
+        "tests"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "plan-commands",
+    "dry-run-used"
+  ],
+  "reference": "From shop/: `graph-agents-cli deploy --env dev --dry-run > deploy-plan.txt 2>&1` prints the docker, helm and kubectl commands (build, load or push, the Secret, `helm upgrade --install ... --wait`) and the rendered manifests, changes nothing and never prompts."
+}

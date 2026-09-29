@@ -1,0 +1,50 @@
+{
+  "id": "code-api-limits-recursion",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-limits",
+  "task_type": "code/policy",
+  "fixture": {
+    "kind": "project",
+    "name": "stock-watch",
+    "create_args": [
+      "--prototype"
+    ],
+    "setup": [
+      "graph-agents-cli api add inventory --base-url-env INVENTORY_API_BASE_URL --auth bearer --token-env INVENTORY_API_TOKEN --access read-only",
+      "graph-agents-cli api allow inventory getItem --method GET --path '/items/{item_id}'"
+    ]
+  },
+  "prompt": "In stock-watch/, cap the agent at 30 calls to the inventory API per run; some answers legitimately need close to that many lookups.",
+  "checks": [
+    {
+      "id": "limit",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "get(data, 'apis.inventory.limits.max_calls_per_run') == 30"
+    },
+    {
+      "id": "steps",
+      "type": "dotenv",
+      "file": ".env",
+      "expr": "int(data.get('RECURSION_LIMIT', '50') or '50') >= 62",
+      "why": "RECURSION_LIMIT (default 50) fits 24 sequential tool calls; 30 calls need at least 2 * 30 + 2 = 62"
+    },
+    {
+      "id": "access-unchanged",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "sorted(get(data, 'apis.inventory.allowed_methods') or []) == ['GET', 'HEAD'] and [o.get('operationId') for o in (get(data, 'apis.inventory.allowed_operations') or [])] == ['getItem']"
+    },
+    {
+      "id": "code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "steps"
+  ],
+  "reference": "`graph-agents-cli api limits inventory --max-calls-per-run 30` (the user asked for it), and raise RECURSION_LIMIT to at least 2 * 30 + 2 = 62 in .env (and the chart values when deployed): the default 50 steps fit only 24 sequential tool calls, so runs would stop at step_limit before the API limit (the app warns at startup)."
+}

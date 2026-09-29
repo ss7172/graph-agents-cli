@@ -1,0 +1,5 @@
+# prod keys (placeholders for the exercise; never real secrets)
+OPENAI_API_KEY=sk-placeholder-prod
+API_KEY=prod-placeholder
+POSTGRES_DSN=postgresql://agent:placeholder@db.prod.internal:5432/agent?sslmode=verify-full
+PAYMENTS_API_TOKEN=placeholder

@@ -1,0 +1,62 @@
+{
+  "id": "deploy-placeholder-url",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "shop",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false,
+    "setup": [
+      "graph-agents-cli api add inventory --base-url-env INVENTORY_API_BASE_URL --auth bearer --token-env INVENTORY_API_TOKEN --access read-only",
+      "python3 -c \"import pathlib; p = pathlib.Path('deployment/helm/shop/values-staging.yaml'); t = p.read_text(); t = t.replace('hostname: \\\"\\\"', 'hostname: \\\"shop.staging.acme.dev\\\"', 1).replace('    name: \\\"\\\"', '    name: \\\"shared-gw\\\"', 1).replace('    namespace: \\\"\\\"', '    namespace: \\\"infra\\\"', 1); p.write_text(t)\""
+    ]
+  },
+  "prompt": "In shop/, the staging dry run (`graph-agents-cli deploy --env staging --dry-run`) fails with exit code 3. For staging, the inventory API is at https://inventory.staging.acme.internal. Fix it and prove that the dry run passes.",
+  "checks": [
+    {
+      "id": "staging-value",
+      "type": "yaml",
+      "file": "deployment/helm/shop/values-staging.yaml",
+      "expr": "get(data, 'env.INVENTORY_API_BASE_URL') == 'https://inventory.staging.acme.internal'",
+      "why": "an environment's URL goes into that environment's values file"
+    },
+    {
+      "id": "shared-values-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/shop/values.yaml",
+        "deployment/helm/shop/values-prod.yaml",
+        "deployment/helm/shop/values-dev.yaml",
+        "api-policy.yaml"
+      ],
+      "mandatory": true,
+      "why": "values.yaml is shared by every environment: the staging URL must not reach prod"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env staging --dry-run --tag abc1234",
+      "output_regex": "https://inventory\\.staging\\.acme\\.internal"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "staging-value",
+    "shared-values-untouched"
+  ],
+  "reference": "Exit 3 is the CHANGE-ME placeholder `api add` left for INVENTORY_API_BASE_URL in the chart env (refused outside dev). Set `env: {INVENTORY_API_BASE_URL: https://inventory.staging.acme.internal}` in values-staging.yaml (keep APP_ENV there; values.yaml stays the placeholder for other environments), then `graph-agents-cli deploy --env staging --dry-run` passes."
+}

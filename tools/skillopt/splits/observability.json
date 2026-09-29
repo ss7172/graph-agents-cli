@@ -1,0 +1,38 @@
+{
+  "train": [
+    "obs-local-otlp",
+    "obs-staging-langsmith",
+    "obs-salt-rotate-staging",
+    "obs-salt-phone-numbers",
+    "obs-langsmith-self-hosted",
+    "obs-otlp-prod"
+  ],
+  "val": [
+    "obs-langsmith-key-no-traces",
+    "obs-salt-loyalty-cards",
+    "obs-salt-local-dev",
+    "obs-log-level-prod",
+    "obs-otlp-collector-moved",
+    "obs-langsmith-key-rotated"
+  ],
+  "test": [
+    "obs-principal-salt",
+    "obs-metrics-token"
+  ],
+  "hashes": {
+    "obs-local-otlp": "6c7e2751746b0cac",
+    "obs-staging-langsmith": "1aa2e40c36b86b94",
+    "obs-salt-rotate-staging": "f48935901d4e4a93",
+    "obs-salt-phone-numbers": "0d7347b78727ceb3",
+    "obs-langsmith-self-hosted": "3f4ff82597b8a213",
+    "obs-otlp-prod": "24a80f811a5f918d",
+    "obs-langsmith-key-no-traces": "f556c0ac8380d166",
+    "obs-salt-loyalty-cards": "c48372f19f79d0ff",
+    "obs-salt-local-dev": "6df8cefa30d15e27",
+    "obs-log-level-prod": "d003abab9e079398",
+    "obs-otlp-collector-moved": "2ffe89c2de912593",
+    "obs-langsmith-key-rotated": "b145bffba11ded31",
+    "obs-principal-salt": "b04715d1e9081c08",
+    "obs-metrics-token": "1f17f91c248c293f"
+  }
+}

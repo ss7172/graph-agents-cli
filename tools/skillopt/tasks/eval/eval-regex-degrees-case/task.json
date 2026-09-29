@@ -1,0 +1,60 @@
+{
+  "id": "eval-regex-degrees-case",
+  "skill": "graph-agents-cli-eval",
+  "family": "eval-response-check",
+  "task_type": "eval/dataset",
+  "fixture": {
+    "kind": "project",
+    "name": "climate-desk",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "Add an eval case `berlin-temperature` to climate-desk/: the user asks \"What is the weather in Berlin?\" and the case must check that the reply states a temperature in degrees (any number of degrees, not one particular value). Keep the other cases, run the evaluation and report the result.",
+  "checks": [
+    {
+      "id": "semantics",
+      "type": "pyfile",
+      "script": "check_degrees.py",
+      "why": "a number followed by degrees is `expect.regex`; `contains` on the fake model's value fits one reply only"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "berlin-temperature": "passed"
+      }
+    },
+    {
+      "id": "existing-cases-kept",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "{'greeting', 'weather', 'capabilities', 'weather-follow-up'} <= {c.get('id') for c in data.get('cases', [])}"
+    },
+    {
+      "id": "agent-code-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "pyproject.toml",
+        "tests/eval/eval_config.yaml"
+      ]
+    },
+    {
+      "id": "ran-eval",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ],
+      "mandatory": false
+    }
+  ],
+  "broken_fails": [
+    "semantics"
+  ],
+  "reference": "Add {\"id\": \"berlin-temperature\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Berlin?\"}], \"expect\": {\"regex\": \"(?i)\\\\b\\\\d+(\\\\.\\\\d+)? ?(\u00b0|degrees)\"}} (a regex, since `contains` matches fixed text: \"90 degrees\" is the fake model's value only), run `graph-agents-cli eval run` (exit 0) and report it as a plumbing check on the fake model."
+}

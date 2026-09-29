@@ -1,0 +1,87 @@
+{
+  "id": "obs-salt-rotate-staging",
+  "skill": "graph-agents-cli-observability",
+  "family": "obs-privacy",
+  "task_type": "observability/privacy",
+  "fixture": {
+    "kind": "project",
+    "name": "crm-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme",
+      "--auth-policy",
+      "jwt"
+    ],
+    "install": false,
+    "setup": [
+      "python3 -c \"import pathlib; p = pathlib.Path('graph-agents-cli-manifest.yaml'); t = p.read_text(); o = '  keys: [OPENAI_API_KEY, JUDGE_API_KEY, POSTGRES_DSN, LANGSMITH_API_KEY]'; assert o in t; p.write_text(t.replace(o, o[:-1] + ', PRINCIPAL_HASH_SALT]'))\""
+    ]
+  },
+  "prompt": "The PRINCIPAL_HASH_SALT of crm-agent/'s staging environment was pasted into a public chat. Replace it with a new random value in crm-agent/.env.staging (the file is git-ignored) and tell me exactly what to run to roll it out; I run the cluster commands myself.",
+  "checks": [
+    {
+      "id": "rotated",
+      "type": "dotenv",
+      "file": ".env.staging",
+      "expr": "data.get('PRINCIPAL_HASH_SALT', 's4lt-leaked-in-chat-0001xyz') != 's4lt-leaked-in-chat-0001xyz' and len(data.get('PRINCIPAL_HASH_SALT', '')) >= 16"
+    },
+    {
+      "id": "others-kept",
+      "type": "dotenv",
+      "file": ".env.staging",
+      "expr": "data.get('OPENAI_API_KEY') == 'sk-placeholder-staging' and data.get('API_KEY') == 'staging-placeholder' and data.get('POSTGRES_DSN', '').startswith('postgresql://agent:placeholder@db.staging.internal')"
+    },
+    {
+      "id": "untouched",
+      "type": "unchanged",
+      "paths": [
+        "app",
+        "deployment",
+        "graph-agents-cli-manifest.yaml"
+      ],
+      "why": "a rotation changes the env file only"
+    },
+    {
+      "id": "names-apply",
+      "type": "transcript",
+      "final_regex": [
+        "secrets\\s+apply\\b[^\\n]*--env[ =]?staging"
+      ],
+      "why": "the value reaches the cluster only through `graph-agents-cli secrets apply --env <env>`"
+    },
+    {
+      "id": "names-restart",
+      "type": "transcript",
+      "final_regex": [
+        "restart"
+      ],
+      "why": "pods read a changed Secret only when they start: `deploy --restart --env <env>`"
+    },
+    {
+      "id": "hash-caveat",
+      "type": "transcript",
+      "final_regex": [
+        "(?i)hash"
+      ],
+      "mandatory": false
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "rotated",
+    "untouched",
+    "names-apply",
+    "names-restart"
+  ],
+  "reference": "Write a new long random PRINCIPAL_HASH_SALT into .env.staging (keep the other keys); it is already in secrets.keys. Then the user runs `graph-agents-cli secrets apply --env staging` and `graph-agents-cli deploy --restart --env staging` (pods read a changed Secret only at start). Every hashed id changes, so older logs and run records no longer match new ones. No code or values change."
+}

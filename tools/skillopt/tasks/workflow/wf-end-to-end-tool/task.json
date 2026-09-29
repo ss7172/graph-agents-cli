@@ -1,0 +1,67 @@
+{
+  "id": "wf-end-to-end-tool",
+  "skill": "graph-agents-cli-workflow",
+  "family": "wf-build-loop",
+  "task_type": "workflow/build",
+  "fixture": {
+    "kind": "project",
+    "name": "recipe-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "needs_local_server": true,
+  "prompt": "In recipe-agent/, add a tool `suggest_recipe(ingredient: str) -> str` that returns a simple recipe using the ingredient (a fixed template is fine). Add an eval case `recipe-mushrooms` in which the user asks \"Suggest a recipe for mushrooms\" and which checks that the agent calls the new tool. Show me that the eval gate passes.",
+  "checks": [
+    {
+      "id": "tool",
+      "type": "pyfile",
+      "script": "check_recipe.py"
+    },
+    {
+      "id": "case",
+      "type": "json",
+      "file": "tests/eval/datasets/basic-dataset.json",
+      "expr": "any(c.get('id') == 'recipe-mushrooms' and any(tc.get('name') == 'suggest_recipe' for tc in (get(c, 'expect.tool_calls') or [])) for c in data.get('cases', []))"
+    },
+    {
+      "id": "gate",
+      "type": "eval",
+      "expect_exit": [
+        0
+      ],
+      "statuses": {
+        "recipe-mushrooms": "passed"
+      },
+      "min_planned": 5
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "proved",
+      "type": "transcript",
+      "must_run": [
+        "graph-agents-cli\\s+eval\\s+run"
+      ]
+    },
+    {
+      "id": "scaffolding-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/agent.py",
+        "app/fast_api_app.py"
+      ],
+      "mandatory": true
+    }
+  ],
+  "broken_fails": [
+    "case",
+    "gate",
+    "proved"
+  ],
+  "reference": "New app/tools/recipes.py with `API_CALLS = []`, `@tool suggest_recipe(ingredient: str) -> str` and `TOOLS`; a dataset case {\"id\": \"recipe-mushrooms\", \"messages\": [{\"role\": \"user\", \"content\": \"Suggest a recipe for mushrooms\"}], \"expect\": {\"tool_calls\": [{\"name\": \"suggest_recipe\"}]}}; `graph-agents-cli lint` and `graph-agents-cli eval run` (exit 0; fake model: plumbing only)."
+}

@@ -1,0 +1,62 @@
+{
+  "id": "deploy-api-url-prod",
+  "skill": "graph-agents-cli-deploy",
+  "family": "deploy-values",
+  "task_type": "deploy/debug",
+  "fixture": {
+    "kind": "project",
+    "name": "market-agent",
+    "create_args": [
+      "--registry",
+      "ghcr.io/acme"
+    ],
+    "install": false,
+    "setup": [
+      "graph-agents-cli api add payments --base-url-env PAYMENTS_API_BASE_URL --auth bearer --token-env PAYMENTS_API_TOKEN --access read-only",
+      "python3 -c \"import pathlib; p = pathlib.Path('deployment/helm/market-agent/values-prod.yaml'); t = p.read_text(); t = t.replace('hostname: \\\"\\\"', 'hostname: \\\"market.acme.com\\\"', 1).replace('    name: \\\"\\\"', '    name: \\\"public-gw\\\"', 1).replace('    namespace: \\\"\\\"', '    namespace: \\\"gateways\\\"', 1); p.write_text(t)\""
+    ]
+  },
+  "prompt": "In market-agent/, the production dry run (`graph-agents-cli deploy --env prod --dry-run`) fails with exit code 3. In production the payments API is at https://payments.acme.com. Fix it and prove that the dry run passes.",
+  "checks": [
+    {
+      "id": "prod-value",
+      "type": "yaml",
+      "file": "deployment/helm/market-agent/values-prod.yaml",
+      "expr": "get(data, 'env.PAYMENTS_API_BASE_URL') == 'https://payments.acme.com'"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "deployment/helm/market-agent/values.yaml",
+        "deployment/helm/market-agent/values-dev.yaml",
+        "deployment/helm/market-agent/values-staging.yaml",
+        "deployment/helm/market-agent/templates",
+        "api-policy.yaml"
+      ],
+      "why": "values.yaml is shared by every environment; other environments must not change"
+    },
+    {
+      "id": "renders",
+      "type": "cmd",
+      "run": "graph-agents-cli deploy --env prod --dry-run --tag abc1234",
+      "output_regex": "https://payments\\.acme\\.com"
+    },
+    {
+      "id": "nothing-applied",
+      "type": "transcript",
+      "must_not_run": [
+        "graph-agents-cli\\s+deploy\\b(?!.*(--dry-run|--help|-h\\b|--status))",
+        "graph-agents-cli\\s+secrets\\s+apply\\b(?!.*(--dry-run|--help|-h\\b))",
+        "\\bhelm\\s+(upgrade|install|uninstall|rollback)\\b",
+        "\\bkubectl\\s+(apply|create|delete|patch|replace|rollout|scale|set|edit)\\b",
+        "\\bdocker\\s+(build|push)\\b"
+      ]
+    }
+  ],
+  "broken_fails": [
+    "prod-value",
+    "others-untouched"
+  ],
+  "reference": "Exit 3 is the CHANGE-ME placeholder `api add` left for PAYMENTS_API_BASE_URL in the chart env (refused outside dev). Set `env.PAYMENTS_API_BASE_URL: https://payments.acme.com` in values-prod.yaml (keep APP_ENV), then `graph-agents-cli deploy --env prod --dry-run` passes."
+}

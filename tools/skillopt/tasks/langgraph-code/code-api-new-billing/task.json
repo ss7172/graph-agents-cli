@@ -1,0 +1,45 @@
+{
+  "id": "code-api-new-billing",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-api-new",
+  "task_type": "code/tool",
+  "fixture": {
+    "kind": "project",
+    "name": "billing-helper",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "In billing-helper/, add a tool `get_invoice(invoice_id: str)` that fetches an invoice from our billing API: `GET /invoices/{invoice_id}`, operationId `getInvoice`. The API's base URL will be in BILLING_API_BASE_URL and it takes a bearer token from BILLING_API_TOKEN. The agent may only read from this API.",
+  "checks": [
+    {
+      "id": "policy",
+      "type": "yaml",
+      "file": "api-policy.yaml",
+      "expr": "get(data, 'apis.billing.base_url_env') == 'BILLING_API_BASE_URL' and get(data, 'apis.billing.auth') == 'bearer' and get(data, 'apis.billing.token_env') == 'BILLING_API_TOKEN' and 'GET' in (get(data, 'apis.billing.allowed_methods') or []) and set(get(data, 'apis.billing.allowed_methods') or []) <= {'GET', 'HEAD'}",
+      "why": "the user chose read-only access: declare the API with `graph-agents-cli api add ... --access read-only`"
+    },
+    {
+      "id": "behaviour",
+      "type": "pyfile",
+      "script": "check_invoice.py"
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint"
+    },
+    {
+      "id": "token-allowlisted",
+      "type": "yaml",
+      "file": "graph-agents-cli-manifest.yaml",
+      "expr": "'BILLING_API_TOKEN' in get(data, 'secrets.keys', [])",
+      "mandatory": false,
+      "why": "`api add` puts a bearer token_env into secrets.keys"
+    }
+  ],
+  "broken_fails": [
+    "policy"
+  ],
+  "reference": "`graph-agents-cli api add billing --base-url-env BILLING_API_BASE_URL --auth bearer --token-env BILLING_API_TOKEN --access read-only` (and optionally `api allow billing getInvoice --method GET --path /invoices/{invoice_id}`), then a tool module with a literal API_CALLS entry for GET getInvoice calling `get_client(\"billing\", ...).get(\"/invoices/{invoice_id}\", operation_id=\"getInvoice\", path_params=...)`; `lint` passes."
+}

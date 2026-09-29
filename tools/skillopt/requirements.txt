@@ -1,0 +1,6 @@
+# gac-bench's SkillOpt environment. Install into its own venv, never the CLI's:
+#   uv venv --python 3.12 <scratch>/.venv
+#   VIRTUAL_ENV=<scratch>/.venv uv pip install -r tools/skillopt/requirements.txt
+# Pinned by commit: the PyPI 0.2.0 wheel ships no prompt files (DESIGN section 9, issue 4).
+skillopt[claude] @ git+https://github.com/microsoft/SkillOpt@79124b37e9a6371e13b753f8bcd7adb1e493ade1
+pyyaml>=6

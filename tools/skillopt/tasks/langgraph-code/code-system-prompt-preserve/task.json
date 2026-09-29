@@ -1,0 +1,45 @@
+{
+  "id": "code-system-prompt-preserve",
+  "skill": "graph-agents-cli-langgraph-code",
+  "family": "code-preservation",
+  "task_type": "code/agent",
+  "fixture": {
+    "kind": "project",
+    "name": "travel-agent",
+    "create_args": [
+      "--prototype"
+    ]
+  },
+  "prompt": "In travel-agent/, make the agent a travel assistant: its system prompt should say that it helps users plan trips and suggests destinations. Change nothing else about how the agent is built.",
+  "checks": [
+    {
+      "id": "prompt",
+      "type": "pyfile",
+      "script": "check_agent.py",
+      "why": "only the first paragraph of the prompt is the target: keep get_model(), the middleware, the recursion limit and the tool-results rule"
+    },
+    {
+      "id": "others-untouched",
+      "type": "unchanged",
+      "paths": [
+        "app/app_utils",
+        "app/tools",
+        "app/fast_api_app.py",
+        ".env",
+        "pyproject.toml",
+        "tests"
+      ],
+      "mandatory": true
+    },
+    {
+      "id": "lint",
+      "type": "cmd",
+      "run": "graph-agents-cli lint",
+      "why": "ruff plus the static API-policy check"
+    }
+  ],
+  "broken_fails": [
+    "prompt"
+  ],
+  "reference": "Edit only the first paragraph of SYSTEM_PROMPT in app/agent.py (a travel assistant that helps plan trips and suggests destinations); keep the tool-results and approval paragraphs, get_model(), middleware(), context_schema, the unbound graph and the recursion_limit config; lint passes."
+}

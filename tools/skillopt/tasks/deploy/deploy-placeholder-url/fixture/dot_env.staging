@@ -1,0 +1,5 @@
+# staging keys (placeholders for the exercise; never real secrets)
+OPENAI_API_KEY=sk-placeholder
+API_KEY=staging-placeholder
+POSTGRES_DSN=postgresql://agent:placeholder@db.staging.internal:5432/agent?sslmode=verify-full
+INVENTORY_API_TOKEN=placeholder
