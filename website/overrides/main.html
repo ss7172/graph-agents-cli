@@ -4,12 +4,13 @@
     Phones get the short form, so the bar stays one line. -#}
 {% block announce %}
   <span class="gac-announce gac-announce--long">
-    <strong>Alpha {{ config.extra.cli_version }}:</strong> interfaces may change between minor
-    releases (see the <a href="{{ 'reference/changelog/' | url }}">changelog</a>). Install it
-    from PyPI: <code>uv tool install graph-agents-cli</code>.
+    <strong>Now on <a href="https://pypi.org/project/graph-agents-cli/">PyPI</a>:</strong>
+    <code>uv tool install graph-agents-cli</code> · skills tuned with
+    <a href="{{ 'reference/skills-benchmark/' | url }}">SkillOpt</a> · alpha
+    {{ config.extra.cli_version }} (<a href="{{ 'reference/changelog/' | url }}">changelog</a>).
   </span>
   <span class="gac-announce gac-announce--short">
-    <strong>Alpha {{ config.extra.cli_version }}</strong> ·
-    <a href="{{ 'getting-started/installation/' | url }}">install from PyPI</a>
+    <strong>Now on PyPI</strong> ·
+    <a href="{{ 'getting-started/installation/' | url }}">install {{ config.extra.cli_version }}</a>
   </span>
 {% endblock %}

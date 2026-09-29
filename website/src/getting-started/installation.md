@@ -8,6 +8,12 @@ description: Install graph-agents-cli from PyPI, add the skills to your coding a
 skills, and let <code>login</code> tell you what is still missing before you create a
 project.</p>
 
+!!! success "Released on PyPI"
+    graph-agents-cli is on [PyPI](https://pypi.org/project/graph-agents-cli/) from 0.3.1:
+    `uv tool install graph-agents-cli`. Earlier releases (0.1.0 to 0.3.0) are git tags only.
+    The six skills it installs are tuned with SkillOpt; see the
+    [skills benchmark](../reference/skills-benchmark.md).
+
 ## Prerequisites
 
 You need Python and uv for everything; the rest only for the stage that uses it.

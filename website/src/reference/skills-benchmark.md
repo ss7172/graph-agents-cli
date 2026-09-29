@@ -16,6 +16,21 @@ propose edits to a skill's text. It lives in the repository under
     sdist includes a fixed list of paths without `tools/`. An optimised skill replaces a
     shipped one only after a person reviews the diff.
 
+## Results in 0.3
+
+The 0.3 skills carry every SkillOpt edit that passed review. Measured against the shipped 0.2
+skills with the same CLI build (hard pass rate; full tables in
+[`final-v0.3.md`](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/results/final-v0.3.md)):
+
+| Harness | Tasks | 0.2 skills | 0.3 skills |
+|---|---|---|---|
+| Claude Code | all 104 | 0.84 | 0.97 (+0.12, p = 0.0006) |
+| Codex (gpt-5.6-terra) | 30 (test split, plus val of workflow and observability) | 0.77 | 0.97 (+0.20, p = 0.031) |
+
+Most of the gain is in the workflow skill (stopping at an unapproved spec and asking the open
+decisions as questions) and the scaffold skill (the guidance-file choice); on Codex the
+observability skill's configuration-only salt procedure moved too. No test task went down.
+
 ## What it holds
 
 | Part | What it is |

@@ -16,6 +16,9 @@ your own Kubernetes, with one CLI and six skills for your coding agent.**
 [Reference](https://ss7172.github.io/graph-agents-cli/reference/) ·
 [Changelog](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md)
 
+**Now on [PyPI](https://pypi.org/project/graph-agents-cli/):** `uv tool install graph-agents-cli` ·
+**Skills tuned with [SkillOpt](https://github.com/microsoft/SkillOpt)**
+
 </div>
 
 ## What you get
@@ -35,6 +38,13 @@ your own Kubernetes, with one CLI and six skills for your coding agent.**
   through GitHub Actions or Argo CD, and `secrets` for the app's Secret.
 - **Works with your coding agent**: skills teach Claude Code, Codex, Gemini CLI, Cursor,
   Antigravity and others the same lifecycle.
+- **Skills tuned with SkillOpt**: the six skills are measured on gac-bench, a benchmark of
+  realistic tasks in this repository, and improved with Microsoft's
+  [SkillOpt](https://github.com/microsoft/SkillOpt). In 0.3 they raise the benchmark's pass
+  rate from 0.84 to 0.97 on Claude Code (all 104 tasks) and from 0.77 to 0.97 on Codex
+  (30 tasks) against the 0.2 skills
+  ([results](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/results/final-v0.3.md),
+  [how it works](https://ss7172.github.io/graph-agents-cli/reference/skills-benchmark/)).
 
 Nothing is specific to one domain or one consumer: a project picks its auth policy, declares
 its APIs and configures the rest through environment variables and chart values.

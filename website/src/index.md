@@ -22,6 +22,9 @@ auth, an outbound API policy, human approval of risky calls and an eval gate CI 
 [Get started](getting-started/index.md){ .md-button .md-button--primary }
 [View on GitHub](https://github.com/ss7172/graph-agents-cli){ .md-button }
 
+**Now on [PyPI](https://pypi.org/project/graph-agents-cli/)**: `uv tool install graph-agents-cli`,
+with skills tuned by [SkillOpt](reference/skills-benchmark.md).
+
 <div class="gac-works">
   <span class="gac-works__label">Works with your coding agent</span>
   <span class="gac-pill">Claude Code</span>
@@ -134,9 +137,12 @@ A generic toolkit: nothing in the CLI or the generated project is specific to on
 -   :material-robot-outline:{ .lg } **Built for coding agents**
 
     Six bundled skills teach your coding agent the same lifecycle, so you can ask it to
-    "use graph-agents-cli to build ..." and review each step.
+    "use graph-agents-cli to build ..." and review each step. They are tuned with
+    [SkillOpt](https://github.com/microsoft/SkillOpt) on a 104-task benchmark: 0.84 to 0.97
+    on Claude Code against the 0.2 skills.
 
-    [Build with a coding agent](getting-started/tutorial-coding-agent.md)
+    [Build with a coding agent](getting-started/tutorial-coding-agent.md) ·
+    [Skills benchmark](reference/skills-benchmark.md)
 
 </div>
 
