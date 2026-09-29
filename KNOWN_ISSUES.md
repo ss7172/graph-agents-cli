@@ -70,17 +70,17 @@ contributor tooling in `tools/`, never shipped).
 | auth | 4 | 2 | 6 |
 | api-policy | 4 | 9 | 13 |
 | approvals | 8 | 6 | 14 |
-| runtime | 12 | 12 | 24 |
-| a2a | 3 | 13 | 16 |
+| runtime | 14 | 14 | 28 |
+| a2a | 3 | 14 | 17 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
 | cli | 2 | 25 | 27 |
 | upgrade | 2 | 13 | 15 |
-| docs | 0 | 8 | 8 |
-| tooling | 0 | 1 | 1 |
-| **Total** | **47** | **111** | **158** |
+| docs | 0 | 9 | 9 |
+| tooling | 0 | 3 | 3 |
+| **Total** | **49** | **117** | **166** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -484,14 +484,63 @@ Medium · runtime · found in v0.3 (structured answers, verification)
   - `NaN` and `Infinity` in a place the schema leaves untyped (no `additionalProperties:
     false`, an empty schema) pass the check. The answer's text and the `/chat` events are
     then written with them (`json.dumps` allows them), and a strict JSON parser, a
-    browser's `JSON.parse` for one, refuses the `message.delta` and the whole `message.end`.
+    browser's `JSON.parse` for one, refuses the `message.delta` and the whole `message.end`;
+  - over A2A such an answer cannot be sent at all: the data part is a protobuf `Value`, and
+    `SendMessage` fails with JSON-RPC `-32603` ("Fail to serialize NaN for
+    Value.number_value"). A task that waited on an approval decided over HTTP stores the
+    answer in its data part, and every `GetTask` of it then fails with `-32603`.
 - **Impact:** A model answer can make a run fail with the generic error, and a schema with a
   self-reference fails every run. A client parsing strictly cannot read an answer that holds
-  `NaN` where the schema did not type it. Found with a scripted model; not seen with a real
+  `NaN` where the schema did not type it, and an A2A caller gets no reply (or, for a task
+  that followed an approval, can no longer read the task). Found with a scripted model; not seen with a real
   one.
 - **Workaround:** Type every value in the schema (`"additionalProperties": false`, a `type`
   on every property), bound numbers with `maximum`/`minimum`, and do not use a `$ref` that
   refers to its own schema.
+
+### KI-172: With `agent.py` half wired, an answer that does not fit stays in the thread and the native API
+
+Medium · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** With a response schema and an `agent.py` that passes `response_format` but has
+  no `StructuredAnswer()` in its middleware (a 0.2 project wired halfway, say), nothing sends
+  an answer that does not fit back to the model. The runtime checks the answer again before
+  it delivers it (`ChatRuntime.stream` in `app_utils/chat.py`), so `/chat` and A2A end the
+  run with `invalid_structured_response` and send nothing. But the answer is already in the
+  checkpoint:
+  - `GET /threads/{id}/messages` returns it (the assistant's reply under the provider
+    strategy; the `final_answer` call and "The answer was given to the user." under the tool
+    strategy), and the next turn's model request includes it as an answer already given;
+  - under `langgraph-server`, the native `POST /threads/{id}/runs/wait` and
+    `GET /threads/{id}/state` return it as `structured_response`.
+  The docs said such an answer "is never delivered" and that "the thread keeps nothing of a
+  failed try"; they now say where it stays.
+- **Impact:** A client that reads the thread or the native API can receive an answer that
+  breaks the schema, and the model's next turn builds on it. A fully wired `agent.py` (every
+  new project's) is not affected: `StructuredAnswer` keeps no failed try in the thread.
+- **Workaround:** Wire both pieces, as a new project's `agent.py` does; `lint` warns while
+  either is missing. The fix is to refuse to start when a schema exists and the graph has no
+  `StructuredAnswer`.
+
+### KI-173: The tool strategy sends a forced tool choice that some Anthropic models refuse
+
+Medium · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** LangChain's tool strategy always binds `tool_choice` "any" (a forced tool
+  call). langchain-anthropic 1.7.4 marks claude-opus-5-5 and claude-fable-5-1 as not
+  supporting a forced tool choice, and says the API rejects it. `response_format()`
+  (`app_utils/structured.py`) never checks that, so `RESPONSE_FORMAT_STRATEGY=tool` on those
+  models, or `auto` with a schema Anthropic's client cannot send (which falls back to the
+  tool strategy), sends a request the model refuses. Its startup error for `provider` with
+  such a schema suggests `RESPONSE_FORMAT_STRATEGY=tool`, and the develop guide says the tool
+  strategy works with any model that calls tools. Found by reading the client and a scripted
+  probe of the request; not run against the live API.
+- **Impact:** On those models, every run with such a schema is expected to fail with the
+  provider's error. The default model and the develop guide's example schema (which `auto`
+  sends with the provider strategy) are not affected.
+- **Workaround:** On claude-opus-5-5 and claude-fable-5-1, write the schema so Anthropic's
+  client can send it (a `type` beside every `enum`, `anyOf` with `{"type": "null"}`, no
+  type list) and keep `auto` or `provider`.
 
 ### KI-135: A cross-replica `CancelTask` just after a task starts can report a false cancel
 
@@ -1147,6 +1196,32 @@ Low · runtime · found in v0.3 (structured answers, verification)
   was checked by hand and by the verifier's probes.
 - **Workaround:** None needed today; add the tests when this code next changes.
 
+### KI-174: On Anthropic, a schema that uses `definitions` is sent with a `$ref` that points nowhere
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** The schema check accepts `$ref` to the file's `definitions` (the docs list it),
+  and `provider_refusal` (`app_utils/structured.py`) sees no refusal from the Anthropic SDK,
+  so `auto` picks the provider strategy. The SDK's `transform_schema` handles `$defs` but not
+  `definitions`: it turns them into description text and keeps `"$ref":
+  "#/definitions/..."`, so the schema Anthropic receives refers to nothing. Found with the
+  SDK's conversion on claude-sonnet-5, claude-opus-5-5 and claude-haiku-4-5; not run against
+  the live API, which is expected to refuse every run.
+- **Impact:** A schema written with `definitions` fails every run on Anthropic models.
+- **Workaround:** Use `$defs` instead of `definitions` (the same meaning in JSON Schema).
+
+### KI-175: An answer given beside other tool calls is told only that, not that it does not fit
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** Under the tool strategy, `StructuredAnswer._problem` refuses an answer that comes
+  with other tool calls before it checks the answer against the schema. An answer that both
+  breaks the schema and comes beside a call is told only to answer alone, so the model can
+  spend a second try learning the other problem. When all 3 tries fit but came beside calls,
+  the run's error still says the answer "did not fit the response schema in 3 tries".
+- **Impact:** A try can be wasted, and the final error can name the wrong cause.
+- **Workaround:** Read the log's per-try reason (`structured answer: try N did not fit`).
+
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 
 Low · a2a · found in waves 0 and 7; narrowed by the A2A multi-agent experiment
@@ -1306,6 +1381,21 @@ Low · a2a · found in v0.3 P4
 - **Impact:** Confusing errors during local development; it fails closed.
 - **Workaround:** Restart the agent (or let `langgraph dev`'s reload do it) after changing
   its peers.
+
+### KI-176: At the step limit, an A2A task with a response schema completes with text and no answer
+
+Low · a2a · found in v0.3 (structured answers, verification)
+
+- **Issue:** With a response schema, a run that reaches `RECURSION_LIMIT` ends as the step
+  limit does without one: `/chat` ends with status `step_limit` and a plain-text delta, and
+  over A2A the task is `TASK_STATE_COMPLETED` with one `response` artifact that holds the
+  step-limit text and no data part (`_resumed_outcome` and `_end_at_step_limit` in
+  `app_utils/chat.py` treat the step limit as a completed outcome). A task that followed an
+  approval decided over HTTP completes the same way.
+- **Impact:** An A2A caller that expects the data part finds a completed task without one,
+  where the docs say the `response` artifact holds the JSON text and a data part.
+- **Workaround:** Treat a completed task whose `response` artifact has no data part as
+  failed, and keep `RECURSION_LIMIT` above what the agent's tool calls need.
 
 ### KI-065: Every eval case runs as one identity
 
@@ -2074,6 +2164,19 @@ Low · docs · found in the docs-site review
 - **Impact:** A future change can update one copy and miss the other.
 - **Workaround:** None needed; the fix is to keep each fact on one page and link to it.
 
+### KI-177: The langgraph-code skill does not say how an explicit `StateGraph` gives a structured answer
+
+Low · docs · found in v0.3 (structured answers, verification)
+
+- **Issue:** In the langgraph-code skill, "An explicit `StateGraph` needs the same" follows
+  the `create_agent` wiring, which now includes `response_format=response_format(model,
+  tools)`, an argument of `create_agent` only. Nothing says how a hand-built `StateGraph`
+  should put the answer in `structured_response`.
+- **Impact:** A coding agent building an explicit `StateGraph` for a project with a response
+  schema has no guidance, and every run then ends with `invalid_structured_response`.
+- **Workaround:** Use `create_agent` for a project with a response schema, or build the
+  model node with `create_agent` inside the `StateGraph`.
+
 ### KI-161: gac-bench: cloning the warm uv cache races with another slot's install
 
 Low · tooling · found in the skill-optimisation experiment
@@ -2089,5 +2192,32 @@ Low · tooling · found in the skill-optimisation experiment
   which no rollout reads; scores and rollouts were unaffected.
 - **Workaround:** Ignore `cp:` lines in a run's log, or run fixtures with `--slots 1`. The fix
   is to skip `builds-v0/.tmp*` when cloning, or to clone under a lock that installs also take.
+
+### KI-178: gac-bench: the fact-check's growth test compares a shipped skill with itself
+
+Low · tooling · found in v0.3 (structured answers, verification)
+
+- **Issue:** The fact-check (`tools/skillopt/gac_skillopt/factcheck.py`) caps a skill body at
+  1.25 times its starting size, but its starting size is `initial_body(skill)`, the body
+  shipped in the checkout. Run on a shipped skill (`python -m gac_skillopt.factcheck`), it
+  compares that body with itself, so the growth test always passes. Measured against the
+  v0.2.0 tag, the observability skill's body is 1.283 times as long (since 26db640).
+- **Impact:** A fact-check pass says nothing about growth for shipped skills; the
+  observability skill is over the cap unnoticed. Candidates during a SkillOpt run are
+  compared with the body the run started from, as designed.
+- **Workaround:** Compare with the v0.2.0 tag's body by hand. The fix is to take the growth
+  base from a fixed ref.
+
+### KI-179: gac-bench: a fixture whose setup fails leaves its workspace behind
+
+Low · tooling · found in v0.3 (structured answers, verification)
+
+- **Issue:** When a task's `fixture.setup` command raises, `selfcheck` and rollouts record
+  an infrastructure error but skip the workspace cleanup, so the rendered project and its
+  virtual environment (about 0.5 GB each) stay in the scratch workspace root
+  (`/private/tmp/gac-x-skillopt` by default).
+- **Impact:** Disk use grows with every failing fixture; nothing else reads the leftovers.
+- **Workaround:** Delete leftover `selfcheck-*`/rollout directories under the workspace root
+  after a run that reported infrastructure errors.
 
 <!-- --8<-- [end:entries] -->
