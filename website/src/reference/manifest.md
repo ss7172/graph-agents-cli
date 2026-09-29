@@ -118,9 +118,14 @@ current. See [Deploy to Kubernetes](../guides/deploy.md).
 The default list follows the settings: the provider key (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or `MODEL_API_KEY`), `JUDGE_API_KEY`, `POSTGRES_DSN`
 (`DATABASE_URI` and `REDIS_URI` under `langgraph-server`), `API_KEY` under `shared-bearer`,
-`LANGSMITH_API_KEY`, then the `token_env` of every `auth: bearer` API. Add any other secret
-your project reads (for example `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`); remove a key from the
-Secret by dropping it here. See [Secrets](../guides/secrets.md).
+`LANGSMITH_API_KEY`, then the `token_env` of every `auth: bearer` API (a peer's key from
+`peer add --auth bearer` included), and `TOKEN_EXCHANGE_CLIENT_SECRET` while the policy has an
+`auth: exchange` API (`api add --auth exchange`, `peer add` and `system apply` add it with the
+first one; `api remove` and `peer remove` take it away with the last). Add any other secret
+your project reads (for example `METRICS_TOKEN`, `PRINCIPAL_HASH_SALT`); an agent that asks
+other agents needs `PRINCIPAL_HASH_SALT`, which keys the conversation ids it sends them
+(`deploy` and `system check` warn without it). Remove a key from the Secret by dropping it
+here. See [Secrets](../guides/secrets.md).
 
 ### `api_policy`
 
@@ -139,7 +144,9 @@ The `api` commands keep it in step with the policy file. The policy itself is de
 | Writer | What changes | Comments |
 |---|---|---|
 | `create` | The whole file | Written from the template, with its comments |
-| `graph-agents-cli api ...` | `api_policy` and the bearer tokens in `secrets.keys` | Kept: the edit is made in place |
+| `graph-agents-cli api ...` | `api_policy`, the bearer tokens and `TOKEN_EXCHANGE_CLIENT_SECRET` in `secrets.keys` | Kept: the edit is made in place |
+| `graph-agents-cli peer add\|remove` | A peer's bearer key or `TOKEN_EXCHANGE_CLIENT_SECRET` in `secrets.keys` | Kept: the edit is made in place |
+| `graph-agents-cli system apply` | What `peer add` writes, in each calling project of the system file | Kept: the edit is made in place |
 | `scaffold enhance` | The settings it changes, `secrets.keys` (defaults follow the new settings; keys you added stay), `cli_build` | Rewritten without comments |
 | `scaffold upgrade` | `cli_version`, `cli_build` | Rewritten without comments |
 

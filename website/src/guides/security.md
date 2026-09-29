@@ -139,6 +139,10 @@ Work through it for staging first, then prod. Each item links to the page that e
       `exchange.allow_actorless: true`). Under
       `shared-bearer` any holder of `API_KEY`, another agent included, decides requester
       gates. [Agents calling agents](authentication.md#agents-calling-agents)
+- [ ] Give the identity provider's admin what each agent's client may exchange tokens for
+      (`graph-agents-cli system delegations` prints it for a system of agents), and check that
+      exchanged tokens name the calling agent in `act` and live 5 minutes or less.
+      [Agents calling agents](multi-agent.md#threat-model)
 
 **Tools and outbound calls**
 
@@ -195,6 +199,10 @@ Work through it for staging first, then prod. Each item links to the page that e
       [The chart](deploy.md#values-worth-knowing)
 - [ ] `APP_URL` (or the chart's `appUrl`, or a hostname) so the A2A card advertises the public
       URL. [The chart](deploy.md#values-worth-knowing)
+- [ ] When only other agents call an agent, remove its `/a2a/<agent>` path from
+      `route.publicPaths` and admit the callers' pods with the NetworkPolicy rules
+      `system apply` writes (`system check` warns while the path is public, SC13).
+      [Deploy a system of agents](deploy.md#deploy-a-system-of-agents)
 
 **Observability and data**
 
@@ -204,7 +212,9 @@ Work through it for staging first, then prod. Each item links to the page that e
       `METRICS_TOKEN` is set; alerts on failed runs and `/ready`.
       [Observability](observability.md#metrics)
 - [ ] `PRINCIPAL_HASH_SALT` set (and added to `secrets.keys`) if principal ids are guessable,
-      such as email addresses. [Observability](observability.md#hashed-principal-ids)
+      such as email addresses, and in every agent that asks other agents: it also keys the
+      conversation ids sent to them, which are guessable without it.
+      [Observability](observability.md#hashed-principal-ids)
 - [ ] Decide `RETENTION_DAYS`, `TRACING_ENABLED` and `TRACE_CAPTURE` with whoever owns the
       data; publish a privacy notice for a hosted model provider.
       [Observability](observability.md#tracing)

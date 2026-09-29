@@ -31,6 +31,12 @@ These lines come from a local run with `LOG_FORMAT=json` and a caller-supplied r
 Every response carries `X-Request-ID`. A valid one from the caller (1 to 128 characters of
 letters, digits and `._:-`) is echoed and used in the logs; otherwise the app generates one.
 
+A record written during a run that another agent asked for a user (a
+[delegated request](authentication.md#agents-calling-agents)) also carries `actor`, that
+agent's id: a client name, not personal data. The run record and the trace metadata name it
+too, so one request can be followed from agent to agent
+([Across agents and services](#across-agents-and-services)).
+
 ### What is never logged
 
 The app logs no credentials, messages or tool arguments:
@@ -298,8 +304,10 @@ Any other value stops startup.
 - `PROPAGATE_TRACE_HEADERS=off` (or `false`) turns both directions off: set it on an agent
   whose peers or `auth: forward` or `auth: exchange` APIs are outside your trust boundary, or
   whose A2A callers should not choose its trace ids.
-- `auth: forward` and `auth: exchange` are refused under `langgraph-server`, so under that
-  runtime only its peers (`protocol: a2a` with `auth: bearer`) receive these headers.
+- `auth: forward` and `auth: exchange` are refused under `langgraph-server`, and under the
+  `shared-bearer` auth policy (whose one principal carries no credential of a user), so in
+  either case only the agent's peers (`protocol: a2a`, with `auth: bearer`) receive these
+  headers; with no peer, none does.
 
 Token exchange logs one line per exchange sent (`token exchange for orders_agent (audience
 orders): issued (38 ms)`, or `refused (invalid_target)`, or `unavailable (timed out)`) and one

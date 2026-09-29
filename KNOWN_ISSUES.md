@@ -1,8 +1,8 @@
 # Known issues
 
 <!-- --8<-- [start:intro] -->
-Medium- and low-priority issues known in graph-agents-cli 0.2.0 and parked for a future
-release. Each entry gives a severity, the area, what happens, its impact, a workaround where
+Medium- and low-priority issues known in graph-agents-cli (0.2.0, and the unreleased 0.3)
+and parked for a future release. Each entry gives a severity, the area, what happens, its impact, a workaround where
 one exists, and the review round that found it. Design limits that are not planned to change
 are described in the documentation, on the page of the feature they concern (they were the
 README's "Known limitations" until 0.2.0); entries that also appear there say so.
@@ -18,7 +18,7 @@ README's "Known limitations" until 0.2.0); entries that also appear there say so
 
 ## Triage and how an issue graduates
 
-For 0.2.0 the triage rule is: once no blocker or major issue is open, release work continues
+For 0.2.0 and 0.3 the triage rule is: once no blocker or major issue is open, release work continues
 only on high-priority issues (blocker or major), and every issue reported as minor is parked
 here with a severity for a future release. **Medium** marks security-relevant, data-integrity
 or production-operations correctness edge cases; **Low** marks developer experience, docs,
@@ -53,6 +53,11 @@ graph-agents-cli, deployed to a local cluster). "Fix review" marks an issue foun
 verifying that experiment's fixes; those entries were checked against the integration of the
 fixes, by the reproduction or code reading the entry describes.
 
+"Found in v0.3" names the phase of the 0.3 release's agent-to-agent work (P1 identity, P2
+token exchange, P3 the policy protocol, P4 the A2A client and `peer`, P5 `system`, P6 docs)
+whose build or independent verification reported the issue; those entries were checked
+against that phase's commits.
+
 <!-- --8<-- [start:summary] -->
 ## Summary
 
@@ -71,9 +76,9 @@ contributor tooling in `tools/`, never shipped).
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 2 | 23 | 25 |
+| cli | 2 | 24 | 26 |
 | upgrade | 2 | 13 | 15 |
-| docs | 0 | 9 | 9 |
+| docs | 0 | 8 | 8 |
 | tooling | 0 | 1 | 1 |
 | **Total** | **46** | **105** | **151** |
 <!-- --8<-- [end:summary] -->
@@ -233,6 +238,11 @@ Medium · approvals · found in wave 7
 - **Impact:** A `role:` approver (four eyes) decides without knowing which principal asked,
   which weakens accountability.
 - **Workaround:** None built in; confirm sensitive requests out of band.
+- **0.3:** Narrowed. The approval object (`/chat`, `GET /approvals`, the thread's approvals,
+  the A2A approval request) also carries `requester_actor`, the agent a delegated request came
+  through, and `decided_via`, the agent that relayed a decision; a relayed approval's `effect`
+  names the agents it passes through (`via`), which `approvals list` and `run` print. The
+  requester itself is still a hashed id, and the CLI's approval card names no requester.
 
 ### KI-010: The model-written approval reason is shown as fact
 
@@ -728,6 +738,10 @@ Low · auth · found in wave 2
   used.
 - **Impact:** Multi-issuer or scope-based authorization needs other means.
 - **Workaround:** Use a `custom` policy or a gateway for those needs. Also documented as a limitation in [Authentication](website/src/guides/authentication.md#known-limitations).
+- **0.3:** Narrowed. `jwt` now maps the RFC 8693 `act` claim and `azp`/`client_id` to the
+  actor (`AUTH_JWT_ACTOR_CLAIM`, `AUTH_JWT_CLIENT_CLAIM`, `AUTH_JWT_DIRECT_CLIENTS`), and
+  `AUTH_DELEGATED_ROLES` sets which roles a delegated request keeps. One issuer, and no
+  mapping from scopes or other claims to permissions, remain.
 
 ### KI-043: The docs do not tell tool authors to compare principal ids exactly
 
@@ -1048,6 +1062,10 @@ Low · a2a · found in waves 0 and 7; narrowed by the A2A multi-agent experiment
   a running task may have to retry until a request reaches that pod.
 - **Workaround:** Follow long tasks with `GetTask` (any replica answers), retry a refused
   subscription or cancel, or give A2A clients that stream session affinity.
+- **0.3:** Unchanged on the server. The template's A2A client (`app_utils/a2a_client.py`)
+  never subscribes, follows a task with `GetTask`, and asks a `CancelTask` that another
+  replica refused (`-32002`) once more after 1 s, then reports that the task is still running
+  there.
 
 ### KI-060: A resumed A2A task ends with two response artifacts
 
@@ -1673,6 +1691,24 @@ Low · cli · found in v0.3 P5
 - **Workaround:** With the agents running, `graph-agents-cli peer show <peer> --check` in
   each caller reads the peer's card at the URL `.env` gives.
 
+### KI-164: SC10 leaves out each replica's run-lease connection, and its hint names PgBouncer without its mode
+
+Low · cli · found in v0.3 P6 (the docs for agents calling agents)
+
+- **Issue:** `system check`'s SC10 counts replicas × `DB_POOL_MAX_SIZE` (plus LangGraph
+  Server's own pool) against a shared database's `max_connections`. Each `fastapi` replica
+  also holds one connection outside its pool for the run leases (`app_utils/run_locks.py`),
+  as the deploy guide's sizing rule says (replicas × (`DB_POOL_MAX_SIZE` + 1)). The finding's
+  fix hint says "put PgBouncer in front" where the deploy guide says a transaction-mode one
+  is not supported.
+- **Impact:** With 20 replicas SC10 counts 20 connections too few: they come out of the 10%
+  of `max_connections` it keeps for everything else (administration, migrations, other
+  clients), so a system that passes can still run out of connections. The hint can lead to a
+  transaction-mode pooler.
+- **Workaround:** Leave one extra connection per replica of headroom in
+  `database.max_connections`, and use a session-mode PgBouncer
+  ([External database](website/src/guides/deploy.md#external-database)).
+
 ### KI-096: The manifest's comments are lost when a command rewrites it
 
 Low · upgrade · found in waves 0, 7 and 8
@@ -1918,26 +1954,6 @@ Low · docs · found in the docs-site review
   than one page. They agree today but can drift apart.
 - **Impact:** A future change can update one copy and miss the other.
 - **Workaround:** None needed; the fix is to keep each fact on one page and link to it.
-
-### KI-146: The docs do not say that `shared-bearer` and `langgraph-server` send no correlation headers
-
-Low · docs · found in the A2A multi-agent experiment (fix review); narrowed in 0.3 (unreleased)
-
-- **Issue:** Only `auth: forward` and `auth: exchange` APIs receive `X-Request-ID` and the
-  trace context. Under `jwt` that is now an `auth: exchange` API (a token exchanged for the
-  caller's, RFC 8693) or an `auth: forward` one with `forward_audience`; but `shared-bearer`
-  principals carry no credential (both modes are refused there), and both modes are refused
-  under `langgraph-server`. So with `shared-bearer`, and under `langgraph-server`, no API
-  receives these headers, an A2A peer reached with `auth: bearer` included. The observability
-  guide says so only for `langgraph-server`, and a `langgraph-server` project's `.env.example`
-  describes forward propagation for a runtime that refuses it.
-- **Impact:** A reader can expect correlation across agents that those setups do not provide.
-- **Workaround:** Correlate by time and hashed principal, or use `jwt` (or a custom policy)
-  with `auth: exchange` to reach peer agents on the fastapi runtime.
-- **0.3:** An API declared `protocol: a2a` (another agent) receives the headers whatever its
-  `auth`, so a peer reached with `auth: bearer` is correlated under `shared-bearer` and
-  `langgraph-server` too; the observability guide, the environment reference and
-  `.env.example` say which APIs receive them.
 
 ### KI-161: gac-bench: cloning the warm uv cache races with another slot's install
 

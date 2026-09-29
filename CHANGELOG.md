@@ -352,6 +352,13 @@ migration" with the steps to follow.
   the CLI or of a generated project and is in neither the wheel nor the sdist (a fast test
   guards the build configuration); CI runs its unit tests. CONTRIBUTING.md and the site's
   [Skills benchmark](website/src/reference/skills-benchmark.md) page say how to run it.
+- **A guide to agents calling agents** ([website/src/guides/multi-agent.md](website/src/guides/multi-agent.md)):
+  who acts for whom, a walk-through from `peer add` to an eval at the entry agent, relayed
+  approvals, the user's own words, the system view, following one request across agents,
+  sizing, the threat model with what remains, and the limits. The security checklist adds
+  the internal A2A paths, what the issuer must allow and the salt for agents that ask
+  others; the observability guide names the `actor` log field; the manifest reference says
+  who adds `TOKEN_EXCHANGE_CLIENT_SECRET` and peers' keys to `secrets.keys`.
 - **The skills cover agents calling agents.** The workflow skill asks in Phase 0 whether the
   agent asks other agents or is called by them, declares peers with `peer add` or `system
   apply` (never a hand-written client), runs `lint`, `peer show --check` or `system check`,
@@ -576,6 +583,9 @@ migration" with the steps to follow.
   `expect.max_tokens` passed whatever the run used. On the Responses API
   (`MODEL_USE_RESPONSES_API`) usage comes with every streamed answer anyway, and nothing
   more is sent. Existing projects get it from `scaffold upgrade` (`app_utils/model.py`).
+- KI-146: the observability guide says that under `shared-bearer`, as under
+  `langgraph-server`, only an agent's peers (`protocol: a2a`) receive the request id and
+  trace context.
 - KI-111: the policy lifecycle no longer starts from a read-only example; the
   [Outbound API policy guide](website/src/guides/api-policy.md) makes the access level an
   explicit choice at every step.

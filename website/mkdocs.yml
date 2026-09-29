@@ -172,6 +172,7 @@ nav:
           - Authentication: guides/authentication.md
           - Outbound API policy: guides/api-policy.md
           - Human approval: guides/approvals.md
+          - Agents calling agents: guides/multi-agent.md
           - Evaluation: guides/evaluation.md
           - Extensions: guides/extensions.md
       - Operate:

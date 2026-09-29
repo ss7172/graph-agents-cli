@@ -31,6 +31,11 @@ the operate guides take it to a cluster and keep it healthy.</p>
     Make chosen calls wait for the requester or a second person, decide them with
     `approvals`, and understand what an approval binds.
 
+-   :material-lan-connect:{ .lg } **[Agents calling agents](multi-agent.md)**
+
+    Let an agent ask other agents for its user: `peer add`, token exchange, relayed
+    approvals, the system view for many projects, and the threat model.
+
 -   :material-check-decagram-outline:{ .lg } **[Evaluation](evaluation.md)**
 
     Datasets, deterministic checks, judges and quality metrics, and the gate that `eval run`
