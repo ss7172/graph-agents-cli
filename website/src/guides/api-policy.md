@@ -419,7 +419,8 @@ name: store
 agents:
   concierge:
     project: concierge-agent     # a project directory, relative to this file
-    client_id: concierge         # its client at the issuer, the actor its peers see (default: the name)
+    client_id: concierge         # its client at the issuer (default: the name)
+    actor_id: concierge          # the act.sub its exchanged tokens carry (default: client_id)
     calls: [orders, billing]
   billing:
     project: billing-agent
@@ -444,8 +445,15 @@ auth policy), `scope` and `allow_actorless` for `exchange`, `calls`
 (`ask`, `status`, `cancel`) and a `description` (default: the called agent's
 `A2A_DESCRIPTION`). A file that cannot be used is exit 3: a project that does not exist or
 that two agents name, an edge to an unknown agent or to itself, one agent called twice by
-another, two agents with one client id, an `exchange` edge without `identity`, an
-environment a manifest does not know.
+another, two agents with one client id or one actor id, an `exchange` edge without
+`identity`, an environment a manifest does not know.
+
+An agent's actor id is what the agents it calls see: the `act.sub` its issuer writes into
+the tokens it exchanges. `system apply` lists it in their `AUTH_ALLOWED_ACTORS` and prints it
+for `--relayers`. It is the `client_id` unless `actor_id` says otherwise: set `actor_id` when
+the issuer names the client differently there (for example `agent:concierge`, or a service
+account's id), or every call from that agent is refused with 403 while `system check` passes.
+Decode one exchanged token to see.
 
 - **`system apply [--env ENV ...] [--dry-run]`** writes each project's side of every edge,
   one diff per project, and is idempotent. In each caller: what `peer add` writes (the path
@@ -453,9 +461,9 @@ environment a manifest does not know.
   `<PEER>_AGENT_URL`, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the called agent's
   pods; `TOKEN_EXCHANGE_CLIENT_ID` is the `client_id`. In each called agent: `appUrl` per
   environment (the URL its callers dial, so their card check passes), `AUTH_JWT_AUDIENCE`
-  when it is empty, the callers' client ids added to `AUTH_ALLOWED_ACTORS`, and
+  when it is empty, the callers' actor ids added to `AUTH_ALLOWED_ACTORS`, and
   `networkPolicy.ingressFrom` for the callers' pods. It never writes approval gates (it prints
-  the `api approval ... --decide-with relayed --relayers <client>` line a relay needs, for the
+  the `api approval ... --decide-with relayed --relayers <actor id>` line a relay needs, for the
   called agent's owners to review), secrets, `.env`, or a local environment's settings (it
   prints them). A peer of an agent of the file goes when it leaves `calls`; your other APIs
   and peers are never touched, and an existing peer keeps its limits, timeouts, approval

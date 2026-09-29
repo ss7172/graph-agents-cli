@@ -129,8 +129,16 @@ class Agent(_Strict):
     client_id: Annotated[str, StringConstraints(pattern=CLIENT_ID_PATTERN)] | None = Field(
         default=None,
         description=(
-            "The client id this agent exchanges tokens with at the issuer: the actor id the "
-            "agents it calls see (default: the agent's name)."
+            "The client id this agent exchanges tokens with at the issuer "
+            "(TOKEN_EXCHANGE_CLIENT_ID; default: the agent's name)."
+        ),
+    )
+    actor_id: Annotated[str, StringConstraints(pattern=CLIENT_ID_PATTERN)] | None = Field(
+        default=None,
+        description=(
+            "The actor id the agents it calls see: the act.sub the issuer puts in this "
+            "agent's exchanged tokens, which their AUTH_ALLOWED_ACTORS and --relayers name "
+            "(default: client_id). Set it when the issuer names the client differently there."
         ),
     )
     calls: list[AgentName | Edge] = Field(

@@ -182,7 +182,7 @@ a Secret `<name>-app`, and under argocd an `Application`. `dev` may be a local-l
   writes both sides of every edge per environment: the callers' peer URLs,
   `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID`; the called agents' `appUrl` (the URL
   callers dial, which their card advertises: SC05), `AUTH_JWT_AUDIENCE` when empty and the
-  callers' client ids in `AUTH_ALLOWED_ACTORS` (under `jwt` an agent not listed gets 403); and
+  callers' actor ids in `AUTH_ALLOWED_ACTORS` (under `jwt` an agent not listed gets 403); and
   NetworkPolicy `egressTo`/`ingressFrom` rules. It never writes gates, secrets or `.env`.
   `graph-agents-cli system check --env <env>` (add `--live` after a deploy), then
   `graph-agents-cli system deploy --env <env>` (the agents called first, `--parallel` at
@@ -321,7 +321,7 @@ disconnected" (this profile).
 | `secrets apply` exit 3 "must be single-line" | put the value on one line (for example base64) or create the Secret with kubectl directly |
 | "API_KEY in <file> differs from the live Secret; the live key is kept" | intended; pass `--rotate-api-key` to replace it, then `deploy --restart` |
 | A2A client dials `127.0.0.1:8000` after fetching the card | `APP_URL` is unset in the pod: set `appUrl` or a gateway/ingress hostname in the values file |
-| An agent's calls to another agent fail with 403 "Delegated caller ... is not allowed here (AUTH_ALLOWED_ACTORS)" | list the caller's client id in the called agent's `AUTH_ALLOWED_ACTORS` (`system apply` does), then `deploy` it |
+| An agent's calls to another agent fail with 403 "Delegated caller ... is not allowed here (AUTH_ALLOWED_ACTORS)" | list the id the error names (the `act.sub` of the caller's exchanged tokens) in the called agent's `AUTH_ALLOWED_ACTORS`: `system apply` lists the caller's `actor_id` (default its `client_id`), so set `actor_id` when the issuer names it differently; then `deploy` it |
 | "<peer>'s agent card names <url> as its A2A endpoint, not the URL this agent calls" | set the called agent's `appUrl` to the URL the caller dials (`system apply` does); `graph-agents-cli system check --env <env>` (SC05) or `peer show <name> --check` finds it |
 | `deploy` exit 2 "missing in charts/ directory" or `helm dependency build` failed (429) | `registry-1.docker.io` is unreachable or rate-limited; retry, authenticate, or vendor the charts under `deployment/helm/<name>/charts/` |
 | `deploy` exit 2 naming a tool | helm, kubectl, docker, git or gh is not on `PATH` |

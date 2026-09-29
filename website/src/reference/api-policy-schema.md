@@ -285,7 +285,7 @@ need different approvers:
 | `approvers` | list; required | `requester` (the principal who started the run) and/or `role:<name>` (any other principal holding the role; a name of 1-256 characters without spaces or commas). |
 | `timeout_s` | integer; default `900` | 30 to 86400 seconds. A pending approval then expires, which rejects the call. |
 | `decide_with` | `direct` or `relayed`; default `direct` | How the requester decides. `direct`: with their own credentials, at this agent. `relayed`: the agents `relayers` names may deliver the requester's decision from another agent. Needs `requester` in `approvers` (role approvers always decide directly). `step_up` is reserved: "not supported yet". |
-| `relayers` | list; required with `relayed`, refused otherwise | The agents that may relay, by actor id (the calling agent's client id): 1-256 characters without spaces, commas or control characters. |
+| `relayers` | list; required with `relayed`, refused otherwise | The agents that may relay, by actor id (the `act.sub` of the calling agent's exchanged tokens, usually its client id): 1-256 characters without spaces, commas or control characters. |
 
 ```yaml
 approval:

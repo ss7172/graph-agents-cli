@@ -324,18 +324,22 @@ change in behaviour.
 - **`graph-agents-cli system check|apply|graph|delegations|deploy`: agent projects that call
   each other, seen as one** (B13). An optional `graph-agents-system.yaml` (found upward, or
   `--file`; JSON Schema `schemas/graph-agents-system.schema.json`, generated from the models)
-  names each agent's project, its client id, the agents it calls (with `approvals`, `auth`,
+  names each agent's project, its client id and actor id (`actor_id`: the `act.sub` of its
+  exchanged tokens, which the agents it calls list and `--relayers` names; default the client
+  id, for an issuer that names the client otherwise there, such as `agent:<client>`, where
+  listing the client id would leave every call refused with 403 while `system check` passed:
+  found by the round-3 acceptance run), the agents it calls (with `approvals`, `auth`,
   `scope`, `calls`, `description`), the environments (`port_base` for local processes, a `url`
   template, or in-cluster URLs from each chart and manifest namespace), the token issuer, a
   shared database's `max_connections` and `deploy.parallel`. A file that cannot be used exits 3
   (an unknown project or one two agents name, an edge to an unknown agent or to itself, one
-  agent called twice by another, two agents with one client id, an `exchange` edge without
+  agent called twice by another, two agents with one client id or actor id, an `exchange` edge without
   `identity`, an environment a manifest does not know). `system apply` writes both sides of
   every edge, idempotently and one diff per project: in each caller what `peer add` writes, and
   per environment the peer URLs, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the
   called agent's pods (`TOKEN_EXCHANGE_CLIENT_ID` is the file's client id); in each called
-  agent its `appUrl` per environment, `AUTH_JWT_AUDIENCE` when empty, the callers in
-  `AUTH_ALLOWED_ACTORS`, and `networkPolicy.ingressFrom` for the callers' pods (plus the
+  agent its `appUrl` per environment, `AUTH_JWT_AUDIENCE` when empty, the callers' actor ids
+  in `AUTH_ALLOWED_ACTORS`, and `networkPolicy.ingressFrom` for the callers' pods (plus the
   Gateway's namespace while the route publishes paths). It never writes gates (it prints the
   `api approval ... --decide-with relayed` line a relay needs), secrets, `.env` or local
   settings, removes a peer of the file's agents that left `calls`, keeps an existing peer's

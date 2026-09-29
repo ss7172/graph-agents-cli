@@ -35,7 +35,8 @@ ISSUER_DEFAULT = "(issuer default)"
 REQUIREMENTS = (
     "each client may exchange only for the audiences listed here (RFC 8693 may_act, section "
     "4.4, or the issuer's client policy), and no other audiences",
-    "an exchanged token carries act naming the calling client, earlier agents nested inside "
+    "an exchanged token carries act naming the calling agent (act.sub: its actor_id, by "
+    "default its client id), earlier agents nested inside "
     "(without act, a callee reads the call as the person's own unless AUTH_JWT_DIRECT_CLIENTS "
     "excludes the client)",
     "no exchange of service tokens, and no exchange of a token issued to another client",
@@ -72,6 +73,7 @@ def graph_data(system: System) -> dict[str, Any]:
             "name": node.name,
             "project": node.config.project_name,
             "client_id": node.client_id,
+            "actor_id": node.actor_id,
             "auth_policy": node.auth_policy(),
             "runtime": node.config.runtime,
         }
@@ -163,6 +165,8 @@ def delegations(system: System) -> dict[str, Any]:
             key,
             {
                 "client": link.caller.client_id,
+                # The act.sub its exchanged tokens must carry (None: they name no actor).
+                "actor": None if link.edge.allow_actorless else link.actor,
                 "audience": link.audience,
                 "scope": scope,
                 "because": [],
@@ -186,7 +190,13 @@ def delegations_table(data: dict[str, Any]) -> str:
             row["client"],
             row["audience"],
             row["scope"],
-            "; ".join(row["because"]) + (" [names no actor]" if row["actorless"] else ""),
+            "; ".join(row["because"])
+            + (" [names no actor]" if row["actorless"] else "")
+            + (
+                f" [act.sub {row['actor']}]"
+                if row["actor"] and row["actor"] != row["client"]
+                else ""
+            ),
         )
         for row in data["rows"]
     ]

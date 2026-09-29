@@ -105,6 +105,8 @@ class Node:
     root: Path
     project: _Project
     client_id: str
+    # The actor id the agents it calls see (act.sub): the file's actor_id, else client_id.
+    actor_id: str = ""
     _values: dict[str | None, dict[str, Any]] = field(default_factory=dict, repr=False)
 
     @property
@@ -390,9 +392,14 @@ class Link:
 
     @property
     def actor(self) -> str:
-        """The actor id the callee sees for the caller (what AUTH_ALLOWED_ACTORS lists)."""
-        client = self.caller.client_id
-        return f"{CLIENT_ACTOR_PREFIX}{client}" if self.edge.allow_actorless else client
+        """The actor id the callee sees for the caller (what AUTH_ALLOWED_ACTORS lists).
+
+        The act.sub of the caller's exchanged tokens (the file's ``actor_id``, else its
+        client id); ``client:<client id>`` for tokens that name no actor.
+        """
+        if self.edge.allow_actorless:
+            return f"{CLIENT_ACTOR_PREFIX}{self.caller.client_id}"
+        return self.caller.actor_id or self.caller.client_id
 
     @property
     def carries_user(self) -> bool:
@@ -544,15 +551,26 @@ def resolve(path: Path) -> System:
         except click.ClickException as exc:  # an invalid manifest or policy, a legacy file
             problems.append(f"agents.{name} ({agent.project}): {exc.format_message()}")
             continue
-        nodes[name] = Node(name, index, root, project, agent.client_id or name)
+        client_id = agent.client_id or name
+        nodes[name] = Node(
+            name, index, root, project, client_id, actor_id=agent.actor_id or client_id
+        )
     clients: dict[str, str] = {}
+    actors: dict[str, str] = {}
     for node in nodes.values():
         if node.client_id in clients:
             problems.append(
                 f"agents.{node.name}.client_id: {node.client_id} is also agents."
-                f"{clients[node.client_id]}'s: each agent needs its own client id (its actor id)"
+                f"{clients[node.client_id]}'s: each agent needs its own client id"
             )
         clients.setdefault(node.client_id, node.name)
+        if node.actor_id in actors and actors[node.actor_id] != node.name:
+            problems.append(
+                f"agents.{node.name}.actor_id: {node.actor_id} is also agents."
+                f"{actors[node.actor_id]}'s actor id: the agents they call could not tell them "
+                "apart"
+            )
+        actors.setdefault(node.actor_id, node.name)
     links: list[Link] = []
     for name in data.agents:
         seen: set[str] = set()

@@ -407,7 +407,9 @@ def left_for_you(
         )
         items.append(
             f"on {name}: AUTH_JWT_AUDIENCE includes {audience}, and AUTH_ALLOWED_ACTORS "
-            f"includes {client}"
+            f"includes {client} (the actor id {name} sees is the act.sub of the exchanged "
+            f"token: if the issuer names this agent otherwise there, for example agent:{client}, "
+            "list that id instead, and give it to --relayers below)"
         )
         actorless = (api.get(EXCHANGE_KEY) or {}).get(ALLOW_ACTORLESS_KEY) is True
         if actorless:

@@ -77,7 +77,8 @@ characters of lowercase letters, digits and `_`, starting with a letter.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `project` | string | required | The project directory, relative to this file. |
-| `client_id` | string | the agent's name | The client this agent exchanges tokens as at the issuer: the actor id the agents it calls see, and what `system apply` lists in their `AUTH_ALLOWED_ACTORS` and writes as its `TOKEN_EXCHANGE_CLIENT_ID`. 1-256 characters, no whitespace, commas or control characters. |
+| `client_id` | string | the agent's name | The client this agent exchanges tokens as at the issuer: what `system apply` writes as its `TOKEN_EXCHANGE_CLIENT_ID`. 1-256 characters, no whitespace, commas or control characters. |
+| `actor_id` | string | `client_id` | The actor id the agents it calls see: the `act.sub` the issuer writes into this agent's exchanged tokens. `system apply` lists it in their `AUTH_ALLOWED_ACTORS` and prints it for `--relayers`, and SC08 looks for it. Set it when the issuer names the client differently there (for example `agent:concierge`, or a service account's id); decode one exchanged token to see. An edge with `allow_actorless` uses `client:<client_id>` instead. Same format as `client_id`. |
 | `calls` | list | `[]` | The agents this agent calls: names, or edges (below). |
 
 ### Edges
@@ -136,7 +137,7 @@ problems:
 - a project directory that does not exist, or that two agents name;
 - an edge to an agent the file does not name, or to the agent itself;
 - one agent calling the same agent twice;
-- two agents with one client id;
+- two agents with one client id, or one actor id;
 - an `auth: exchange` edge (or a caller whose auth policy defaults to it) without `identity`;
 - an environment a project's manifest does not know;
 - a `token_url` or `max_connections` key that is not an environment of the file.

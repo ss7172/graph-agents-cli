@@ -225,6 +225,10 @@ def test_the_designs_example_is_valid_for_the_models_and_the_published_schema() 
             "agents.billing.client_id: concierge is also agents.concierge's",
         ),
         (
+            lambda d: d["agents"]["billing"].update(actor_id="concierge"),
+            "agents.billing.actor_id: concierge is also agents.concierge's actor id",
+        ),
+        (
             lambda d: d.pop("identity"),
             "identity: required, since these edges use auth: exchange: concierge -> orders",
         ),
@@ -615,6 +619,54 @@ def test_sc07_prints_the_command_and_is_quiet_once_it_is_run(store: Path) -> Non
     assert "SC07" not in _ids(findings)
     assert "orders_agent" in _policy(store, "billing")["apis"]
     assert "(billing: relayed)" in ok("system", "graph").output
+
+
+def test_actor_id_is_what_the_called_agents_list_and_the_relayers_name(store: Path) -> None:
+    # An issuer that names the client otherwise in the exchanged token's act.sub (the A2A
+    # experiment's issuer writes agent:<client>): the called agents see that id, not the
+    # client id, so they must list it, or every call is refused with 403.
+    ok("system", "apply")
+    orders, billing, concierge = (_project(store, a) for a in ("orders", "billing", "concierge"))
+    assert _values(orders)["env"]["AUTH_ALLOWED_ACTORS"] == "concierge,billing"
+    _with_file(store, lambda d: d["agents"]["concierge"].update(actor_id="agent:concierge"))
+    _with_file(store, lambda d: d["agents"]["billing"].update(actor_id="agent:billing"))
+    _, findings = _findings("--env", "dev")
+    sc08 = [f for f in findings if f["check"] == "SC08"]
+    assert {(f["agent"], f["severity"]) for f in sc08} == {
+        ("orders", "error"),
+        ("billing", "error"),
+    }
+    assert any("lacks agent:concierge" in f["message"] for f in sc08), sc08
+    result = ok("system", "apply")
+    assert _values(orders)["env"]["AUTH_ALLOWED_ACTORS"] == (
+        "concierge,billing,agent:concierge,agent:billing"
+    )
+    assert _values(billing)["env"]["AUTH_ALLOWED_ACTORS"] == "concierge,agent:concierge"
+    # The client id stays what the caller exchanges tokens as.
+    assert _values(concierge)["env"]["TOKEN_EXCHANGE_CLIENT_ID"] == "concierge"
+    # The ids the agents used to be listed by are left, with a note (apply never takes away).
+    assert "AUTH_ALLOWED_ACTORS still lists concierge, billing" in result.output
+    assert (
+        "cd billing-agent && graph-agents-cli api approval orders_agent --rule 0 --decide-with "
+        "relayed --relayers agent:concierge"
+    ) in result.output
+    _, findings = _findings()
+    assert "SC08" not in _ids(findings)
+    sc07 = [f for f in findings if f["check"] == "SC07"]
+    assert sc07 and sc07[0]["fix"].endswith("--relayers agent:concierge"), sc07
+    data = json.loads(ok("system", "delegations", "--format", "json").output)
+    assert [(r["client"], r["actor"]) for r in data["rows"]] == [
+        ("concierge", "agent:concierge"),
+        ("concierge", "agent:concierge"),
+        ("billing", "agent:billing"),
+    ]
+    assert "[act.sub agent:billing]" in ok("system", "delegations").output
+    graph = json.loads(ok("system", "graph", "--format", "json").output)
+    assert {n["name"]: n["actor_id"] for n in graph["nodes"]} == {
+        "concierge": "agent:concierge",
+        "billing": "agent:billing",
+        "orders": "orders",
+    }
 
 
 def test_sc08_a_values_file_that_overrides_the_allowed_actors(store: Path) -> None:

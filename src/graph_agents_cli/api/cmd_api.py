@@ -1897,8 +1897,8 @@ def _edit_rule(
     default=None,
     metavar="ID,...",
     help=(
-        "With --decide-with relayed: the agents, by actor id (their client ids), that may relay "
-        "the requester's decision."
+        "With --decide-with relayed: the agents, by actor id (the act.sub of their exchanged "
+        "tokens, usually their client ids), that may relay the requester's decision."
     ),
 )
 @click.option(

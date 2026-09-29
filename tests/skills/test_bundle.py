@@ -314,7 +314,7 @@ A2A_RULES = (
     ),
     ("graph-agents-cli-deploy", "## Agents calling agents"),
     ("graph-agents-cli-deploy", "`graph-agents-cli system delegations`"),
-    ("graph-agents-cli-deploy", "the callers' client ids in `AUTH_ALLOWED_ACTORS`"),
+    ("graph-agents-cli-deploy", "the callers' actor ids in `AUTH_ALLOWED_ACTORS`"),
     ("graph-agents-cli-scaffold", "`graph-agents-cli peer add` writes the policy entries"),
 )
 

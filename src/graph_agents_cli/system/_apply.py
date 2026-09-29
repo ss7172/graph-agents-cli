@@ -64,7 +64,7 @@ EGRESS_PATH = ("networkPolicy", "egressTo")
 ALLOWED_ACTORS_ENV = "AUTH_ALLOWED_ACTORS"
 AUDIENCE_ENV = "AUTH_JWT_AUDIENCE"
 ALLOWED_ACTORS_COMMENT = (
-    "Agents that may call this agent for a user: their client ids (graph-agents-cli system apply "
+    "Agents that may call this agent for a user: their actor ids (graph-agents-cli system apply "
     "adds its callers)."
 )
 APP_URL_COMMENT = "The URL other agents call this agent at (graph-agents-cli system apply)."
@@ -340,8 +340,9 @@ def _plan_egress(
 
 def _stale_actors(system: System, node: Node, actors: list[str]) -> list[str]:
     """Agents of the file ``node``'s AUTH_ALLOWED_ACTORS still lists that no longer call it."""
-    known = {n.client_id for n in system.nodes.values()}
-    known |= {f"client:{client}" for client in known}
+    clients = {n.client_id for n in system.nodes.values()}
+    known = clients | {n.actor_id for n in system.nodes.values()}
+    known |= {f"client:{client}" for client in clients}
     listed = node.allowed_actors() if node.has_chart else []
     return [a for a in listed if a in known and a not in actors]
 
