@@ -75,6 +75,7 @@ upgrade later.
 | Fast | `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1 uv run pytest -q -m "not slow"` | nothing (no network, cluster or model key) | every pull request and push to `main` (Python 3.12 and 3.13) |
 | End-to-end | `GRAPH_AGENTS_CLI_E2E=1 uv run pytest -q tests/integration` | network (uv sync, the bitnami subcharts), `helm` | nightly and on demand (`ci.yml`, job `e2e`) |
 | Template (slow) | `UV_NO_CONFIG=1 uv run pytest -q -m slow tests/template` | network, `uv`, `helm` | nightly and on demand, with the end-to-end tier |
+| gac-bench unit tests | `uv run pytest -q tools/skillopt/tests` | nothing | every pull request and push to `main`, after the fast suite ([gac-bench](#measuring-and-improving-the-skills-gac-bench)) |
 
 The CI job `e2e` runs both slow tiers at once:
 `GRAPH_AGENTS_CLI_E2E=1 UV_NO_CONFIG=1 uv run pytest -q -m slow`. A plain `uv run pytest -q`
@@ -284,6 +285,47 @@ must exist before users install that version. Keep
 `skills/graph-agents-cli-workflow/references/commands.md` and
 `skills/graph-agents-cli-scaffold/references/flags.md` equal to the real `--help` output, and
 never document hidden or deprecated flags there.
+
+## Measuring and improving the skills: gac-bench
+
+`tools/skillopt/` is contributor tooling for the skills: gac-bench, a benchmark of realistic
+graph-agents-cli tasks per skill, and `gac_skillopt`, an environment in which
+[SkillOpt](https://github.com/microsoft/SkillOpt) runs a candidate skill in Claude Code or
+Codex, scores each run with a deterministic verifier and proposes edits. Nothing under
+`tools/` is a dependency of the CLI or of a generated project, and none of it is in the wheel
+or the sdist (the wheel packages `src/graph_agents_cli`, and the sdist's `include` list in
+`pyproject.toml` has no `tools/`); keep it that way. ruff checks `tools/skillopt` except
+`tools/skillopt/tasks`, whose fixtures and hidden checks run inside generated projects.
+
+- **Unit tests** (no network, model or SkillOpt install; CI runs them after the fast suite):
+  `uv run pytest tools/skillopt/tests -q`. They also check every task's schema, its split and
+  its frozen content hash, so a task edited after its split was frozen fails here.
+- **Selfcheck** (macOS, Python 3.12, `uv`, `helm`; no model): for every task, the scripted
+  gold solution must pass, the scripted broken one must fail exactly the checks it names, and
+  the untouched fixture must fail. Run it after a template or CLI change that tasks rely on
+  (the fake model's replies, the scaffolded files, a command's output), and after adding a
+  task. It builds the CLI from this checkout into a scratch directory outside it:
+
+  ```bash
+  S=/path/to/scratch
+  uv venv --python 3.12 $S/.venv
+  VIRTUAL_ENV=$S/.venv uv pip install -r tools/skillopt/requirements.txt
+  cd tools/skillopt
+  $S/.venv/bin/python -m gac_skillopt setup --scratch $S --rebuild-cli
+  $S/.venv/bin/python -m gac_skillopt validate
+  $S/.venv/bin/python -m gac_skillopt selfcheck --scratch $S --slots 8
+  ```
+
+- **Rollouts and training** run Claude Code sessions on your plan, or Codex billed to an
+  OpenAI key, each isolated so that it sees only the skill under test; `preflight` proves the
+  isolation first. `tools/skillopt/README.md` has the commands, the costs and how to write a
+  task; `tools/skillopt/DESIGN.md` has the decisions and the isolation evidence.
+- **Hold-out rule.** Test tasks stay frozen and unseen. A new train or val task may share a
+  test task's family, but it differs from it in fixture, prompt and expected specifics.
+- **Write-back.** A text SkillOpt finds replaces a shipped skill only after a person reviews
+  it (generalising wording learned from the benchmark, checking every claim against the code)
+  and it is measured again; it then goes into both skill copies, byte-identical, with a
+  CHANGELOG entry. Results and reviews are kept in `tools/skillopt/results/`.
 
 ## Compatibility and documentation
 

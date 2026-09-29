@@ -228,3 +228,16 @@ def test_uv_rebuilds_a_checkout_whenever_its_commit_or_sources_change() -> None:
     assert "custom" in pyproject["tool"]["hatch"]["build"]["hooks"]
     assert "/hatch_build.py" in pyproject["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
     assert (REPO_ROOT / "hatch_build.py").is_file()
+
+
+def test_contributor_tooling_stays_out_of_the_wheel_and_the_sdist() -> None:
+    """tools/ (gac-bench and its SkillOpt environment) is contributor tooling: the wheel
+    packages the CLI's package only, and the sdist's include list names no path under tools/."""
+    targets = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"][
+        "hatch"
+    ]["build"]["targets"]
+    assert targets["wheel"]["packages"] == ["src/graph_agents_cli"]
+    assert all(a.startswith("src/graph_agents_cli/") for a in targets["wheel"]["artifacts"])
+    include = targets["sdist"]["include"]
+    assert include and all(not p.lstrip("/").startswith("tools") for p in include)
+    assert not any(p in ("/", "*", "**", "/*", "/**") for p in include)

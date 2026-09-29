@@ -191,6 +191,7 @@ nav:
       - Project manifest: reference/manifest.md
       - Exit codes: reference/exit-codes.md
       - Skills: reference/skills.md
+      - Skills benchmark: reference/skills-benchmark.md
       - Compared with google-agents-cli: reference/comparison.md
       - Known issues: reference/known-issues.md
       - Changelog: reference/changelog.md

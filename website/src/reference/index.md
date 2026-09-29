@@ -54,6 +54,11 @@ changelog).</p>
 
     The six coding-agent skills `setup` installs, generated from the skills themselves.
 
+-   :material-flask-outline:{ .lg } **[Skills benchmark](skills-benchmark.md)**
+
+    For contributors: gac-bench and SkillOpt measure and improve the skills with Claude Code
+    and Codex.
+
 -   :material-compare-horizontal:{ .lg } **[Compared with google-agents-cli](comparison.md)**
 
     What this fork keeps, where it goes further and where it is behind.

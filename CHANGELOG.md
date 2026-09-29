@@ -340,6 +340,16 @@ migration" with the steps to follow.
   on port 80 blocks them), and a pod in another namespace is refused. KI-159 and KI-160 park
   the residuals (LangGraph Server's own pool in SC10, a local environment's `.env` unchecked);
   KI-158 (SC14 on the deprecated Endpoints API) was fixed before release.
+- **gac-bench, contributor tooling for the skills** (`tools/skillopt/`): a benchmark of
+  realistic graph-agents-cli tasks for each of the six skills, each with a deterministic
+  verifier and scripted gold and broken solutions, in frozen train, val and test splits; and
+  `gac_skillopt`, an environment in which [SkillOpt](https://github.com/microsoft/SkillOpt)
+  runs a candidate skill in Claude Code or Codex, isolated so that the session sees only that
+  skill, scores it and proposes edits. It found the skill rules this release adopts after
+  review, and `tools/skillopt/results/` keeps every measurement. It is never a dependency of
+  the CLI or of a generated project and is in neither the wheel nor the sdist (a fast test
+  guards the build configuration); CI runs its unit tests. CONTRIBUTING.md and the site's
+  [Skills benchmark](website/src/reference/skills-benchmark.md) page say how to run it.
 
 ### Changed
 

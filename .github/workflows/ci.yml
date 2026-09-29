@@ -1,8 +1,9 @@
 # Continuous integration for graph-agents-cli itself (not the projects it generates).
 #
 # - `checks` runs on every pull request and every push to main: ruff check,
-#   ruff format --check and the fast test suite (no network, no cluster, no
-#   model key) on each supported Python version.
+#   ruff format --check, the fast test suite (no network, no cluster, no
+#   model key) and the gac-bench unit tests (tools/skillopt) on each supported
+#   Python version.
 # - `e2e` runs nightly and on demand: the slow tests, which install rendered
 #   projects with uv, drive the CLI end to end through subprocesses
 #   (GRAPH_AGENTS_CLI_E2E=1) and run helm against the rendered charts. It needs
@@ -70,6 +71,12 @@ jobs:
       # bundle byte-identical to skills/, the rendered-project snapshots.
       - name: Fast test suite
         run: uv run --locked pytest -q -m "not slow" -p no:cacheprovider
+
+      # Contributor tooling (tools/skillopt: gac-bench and its SkillOpt environment): its unit
+      # tests need no network, model or SkillOpt install, and check every benchmark task's
+      # schema, split and frozen hash. The benchmark's own runs are local (CONTRIBUTING.md).
+      - name: gac-bench unit tests
+        run: uv run --locked pytest -q tools/skillopt/tests -p no:cacheprovider
 
   e2e:
     name: end-to-end and template tests
