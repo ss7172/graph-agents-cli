@@ -57,14 +57,15 @@ fixes, by the reproduction or code reading the entry describes.
 ## Summary
 
 Entries are sorted by severity, then by area in this order: auth, api-policy, approvals,
-runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
+runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs, tooling (the
+contributor tooling in `tools/`, never shipped).
 
 | Area | Medium | Low | Total |
 |---|---:|---:|---:|
 | auth | 4 | 2 | 6 |
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
-| runtime | 11 | 6 | 17 |
+| runtime | 11 | 7 | 18 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
@@ -73,7 +74,8 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 2 | 23 | 25 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **102** | **148** |
+| tooling | 0 | 1 | 1 |
+| **Total** | **46** | **104** | **150** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -996,6 +998,25 @@ Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent
   and cost about 12% less per task. Not yet adopted: the difference is within noise at this
   sample size.
 
+### KI-162: A generated project's approvals-server tests can leave `langgraph dev` running inside a sandbox
+
+Low · runtime · found in the skill-optimisation experiment
+
+- **Issue:** `tests/integration/test_approvals_server.py` in a generated project starts
+  `langgraph dev` in its own process group and stops it in `_stop`, which signals the group
+  with `os.killpg`. Run by a coding agent inside its sandbox (`uv run pytest`), the servers
+  sometimes outlived the test run. gac-bench's harness stopped `langgraph dev` servers from
+  these fixtures after 7 Codex rollouts of one training run, 41 leftover processes (servers
+  and their `multiprocessing` helpers) in the Codex rollouts of a later review, and 2 servers
+  in a Claude Code training run. The root cause is not verified; a
+  candidate is a `PermissionError` from `os.killpg` in the sandbox, which `_stop` does not
+  catch (it catches only `ProcessLookupError` and the wait's timeout).
+- **Impact:** Local development and agent sandboxes only: leftover `langgraph dev` servers keep
+  their ports and memory until stopped; nothing reaches a deployment.
+- **Workaround:** After running the project's integration tests in a sandbox, stop leftover
+  `langgraph dev` processes (`pgrep -f "langgraph dev"`); gac-bench stops every process left
+  in a rollout's workspace and records it.
+
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 
 Low · a2a · found in waves 0 and 7; narrowed by the A2A multi-agent experiment
@@ -1901,5 +1922,21 @@ Low · docs · found in the A2A multi-agent experiment (fix review); narrowed in
   `auth`, so a peer reached with `auth: bearer` is correlated under `shared-bearer` and
   `langgraph-server` too; the observability guide, the environment reference and
   `.env.example` say which APIs receive them.
+
+### KI-161: gac-bench: cloning the warm uv cache races with another slot's install
+
+Low · tooling · found in the skill-optimisation experiment
+
+- **Issue:** gac-bench (`tools/skillopt/`, contributor tooling) gives each rollout a clone of
+  the shared warm uv cache (`cp -cR` in `gac_skillopt/workspace.py`, `build`). Fixtures
+  are built in parallel slots whose `install` writes into that shared cache, where uv creates
+  and deletes temporary build directories (`builds-v0/.tmp*`). A clone taken while another
+  slot installs copies a directory that disappears midway, and `cp` logs `No such file or
+  directory` (129 such lines in one training run's log). The copy is not checked
+  (`check=False`), so the rollout continues.
+- **Impact:** Log noise only: the files that go missing are uv's temporary build directories,
+  which no rollout reads; scores and rollouts were unaffected.
+- **Workaround:** Ignore `cp:` lines in a run's log, or run fixtures with `--slots 1`. The fix
+  is to skip `builds-v0/.tmp*` when cloning, or to clone under a lock that installs also take.
 
 <!-- --8<-- [end:entries] -->
