@@ -54,6 +54,7 @@ provider (and what may leave the network), and whether they want a prototype or 
 | Auth | `--auth-policy shared-bearer` (default), `jwt` (per-user OIDC/JWT tokens) or `custom` (your own policy; fail-closed stub) |
 | Outbound API boundary | `--api-policy <file>` seeds `api-policy.yaml` (validated first); or none now and `graph-agents-cli api add` later. Access is always the user's explicit choice: never assume a level |
 | Governing process | `--process <path>` writes `process:` to the manifest and the guidance file |
+| Structured final answer | `--response-schema <file>` seeds `app/response_schema.json` (checked first, exit 3); `enhance` has no such flag: add the file by hand |
 
 ### Valid runtime x checkpointer x target combinations (enforced by `create`)
 
@@ -277,7 +278,8 @@ the CHANGELOG's "Upgrading a project created with 0.1.0" (a new `app/policies/__
 
 **What upgrade never touches:**
 
-- *agent code:* `app/agent.py`, `app/tools/**`, `app/policies/**`, `app/prompts/**`, `app/graph/**`
+- *agent code:* `app/agent.py`, `app/tools/**`, `app/policies/**`, `app/prompts/**`, `app/graph/**`,
+  `app/response_schema.json`
 - *config:* `.env`, `.env.*`, `api-policy.yaml`, `deployment/helm/<name>/values-*.yaml`
   (the environment values), `deployment/argocd/**`, `tests/eval/datasets/**`,
   `tests/eval/eval_config.yaml`

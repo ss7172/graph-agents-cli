@@ -189,6 +189,8 @@ access, per-user identity and roles, safety-critical) gets the full treatment in
   but under `jwt` it refuses a calling agent until `AUTH_ALLOWED_ACTORS` lists it. Which agents
   it asks, the credential (`jwt`: a token exchanged for the user's) and whether it relays the
   person's approvals to them are the user's decisions (Phase 2, step 7).
+- **Who reads the answer?** When a program, another agent or an eval does, declare its JSON
+  shape: `create --response-schema FILE` (see `/graph-agents-cli-langgraph-code`).
 - CI/CD wanted: does a GitHub repository exist? Creating one (public or private) needs the user's
   say-so.
 

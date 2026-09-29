@@ -212,7 +212,16 @@ where the model has it, else a `final_answer` tool; `RESPONSE_FORMAT_STRATEGY`),
 checked (3 tries, then the `error` code `invalid_structured_response`), and a completed run
 sends the answer's JSON text as its only `message.delta` and the object as `message.end`'s
 `structured_response`; the answer tool never shows as `tool.call`. The A2A `response`
-artifact adds a data part with the object (`mediaType` `application/json`).
+artifact adds a data part with the object (`mediaType` `application/json`). A schema may use
+`type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `minProperties`,
+`maxProperties`, `items` (one schema), `minItems`, `maxItems`, `uniqueItems`, `minLength`,
+`maxLength`, `pattern` (Python syntax), `minimum`, `maximum`, `exclusiveMinimum`,
+`exclusiveMaximum`, `multipleOf`, `anyOf`, `oneOf`, `allOf`, `not`, `$ref` to its own `$defs`
+or `definitions`, and annotations (`title`, `description`, `default`, `examples`, `format`,
+...); anything else is refused at startup and by `lint`. Under OpenAI's strict mode every
+property is required: let one that may have no value be `null` (`anyOf` with `{"type":
+"null"}`), and write a `type` beside every `enum` (Anthropic's client refuses an `enum` alone
+or a type list, so `auto` falls back to the tool strategy).
 
 `eval generate` derives `response`, `tool_calls`, `usage`, `latency_ms`, `status` and
 `structured_response` from these events; the A2A executor bridges the same events to task
