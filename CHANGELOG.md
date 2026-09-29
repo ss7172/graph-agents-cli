@@ -427,7 +427,10 @@ migration" with the steps to follow.
   verbatim when the user runs them. Codex followed it in 6 of 6 sessions of the benchmark's
   salt task, against 1 of 9 with the old text. Tracing for one environment now edits only
   that environment's files and ends with the commands still to run; local tracing edits
-  only `.env` and adds none of the LangSmith SDK's own switches.
+  only `.env` and adds none of the LangSmith SDK's own switches. Its paragraph on trace
+  headers across agents states this release's rule (`PROPAGATE_TRACE_HEADERS=peers|all|off`:
+  other agents and `auth: forward`/`exchange` APIs, and an incoming trace continued on
+  `/a2a/*` only) instead of 0.2's.
 - **Approval times read from Postgres are in UTC**, whatever the database session's time zone
   (`created_at`, `expires_at`, `decided_at`, `used_at`; they came back in that zone, the same
   instant written differently). An approval now reads back with the very times it was

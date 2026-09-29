@@ -276,11 +276,21 @@ def test_observability_skill_keeps_the_approved_skillopt_rules(rule: str) -> Non
     assert rule in _flat_text("graph-agents-cli-observability")
 
 
-def test_observability_skill_keeps_the_trace_header_rule() -> None:
-    """The write-back kept what the skill said about trace headers across agents."""
+def test_observability_skill_states_the_trace_header_rule() -> None:
+    """The skill states 0.3's `PROPAGATE_TRACE_HEADERS` rule (telemetry.trace_scope and
+    api_client.propagates): `peers` by default, to other agents and to the APIs that act for
+    the user, an incoming trace continued on the A2A routes only; `all` and `off`."""
     text = _flat_text("graph-agents-cli-observability")
-    assert "an incoming `traceparent` continues the caller's trace" in text
-    assert "`PROPAGATE_TRACE_HEADERS=false` turns both directions off" in text
+    assert "Under `PROPAGATE_TRACE_HEADERS=peers` (the default)" in text
+    assert (
+        "only to other agents (`protocol: a2a`) and to `auth: forward` and `auth: exchange` APIs"
+        in text
+    )
+    assert "an incoming `traceparent` is continued only on `/a2a/*`" in text
+    assert "`all`: every API and every path; `off`: neither." in text
+    assert "`true` reads as `peers`, `false` as `off`." in text
+    # The 0.2 wording (auth: forward only, a trace continued on every path) is gone.
+    assert "an incoming `traceparent` continues the caller's trace" not in text
 
 
 def test_scaffold_examples_keep_the_default_guidance_file() -> None:
