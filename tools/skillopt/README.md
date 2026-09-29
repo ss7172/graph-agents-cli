@@ -137,7 +137,10 @@ without native structured output, which needs `RESPONSE_FORMAT_STRATEGY=tool` an
 field (val), and wire a 0.2 `agent.py` by hand after `scaffold upgrade` (test). A hidden check
 runs the project's graph on the fake model and reads its `structured_response`.
 
-No model has run the v0.3 tasks yet; `selfcheck` proves their verifiers.
+**Final check for 0.3 (round 3e):** the shipped 0.2.0 skills against the 0.3 skills on every
+task, with Claude Code (all 104 tasks, 2 reps on val and test) and Codex (test, plus val of
+observability and workflow). Both arms used the same CLI and harness. See
+[`results/final-v0.3.md`](results/final-v0.3.md).
 
 In training configs, `env.val_reps` (2 in `configs/claude.yaml`) runs each selection item k times,
 and the gate sees the mean.
