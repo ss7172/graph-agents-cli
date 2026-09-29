@@ -186,7 +186,11 @@ jobs:
           name: dist
           path: dist
 
-      - name: Create the release
+      # Idempotent: a second run for the same tag (GitHub started two for the
+      # v0.3.0 push) finds the release and uploads only the assets it lacks,
+      # never replacing one. uv build is reproducible, so both runs build the
+      # same bytes; a differing SHA256SUMS is reported, not overwritten.
+      - name: Create the release, or complete an existing one
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -203,15 +207,50 @@ jobs:
           ' CHANGELOG.md > release-notes.md
           (cd dist && sha256sum -- * > ../SHA256SUMS)
           cat SHA256SUMS
-          flags=()
-          if [ "${PRERELEASE}" = "true" ]; then
-            flags+=(--prerelease)
+          assets=(dist/* SHA256SUMS)
+          release_exists() {
+            gh release view "${TAG}" --json tagName > /dev/null 2>&1
+          }
+          if ! release_exists; then
+            flags=()
+            if [ "${PRERELEASE}" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            if gh release create "${TAG}" "${assets[@]}" \
+              --verify-tag \
+              --title "graph-agents-cli ${VERSION}" \
+              --notes-file release-notes.md \
+              "${flags[@]}"; then
+              exit 0
+            fi
+            # Another run for this tag may have created it in the meantime.
+            if ! release_exists; then
+              echo "::error::Could not create the release ${TAG}."
+              exit 1
+            fi
           fi
-          gh release create "${TAG}" dist/* SHA256SUMS \
-            --verify-tag \
-            --title "graph-agents-cli ${VERSION}" \
-            --notes-file release-notes.md \
-            "${flags[@]}"
+          echo "::notice::The release ${TAG} exists already; checking its assets instead of creating it."
+          published="$(gh release view "${TAG}" --json assets --jq '.assets[].name')"
+          if grep -qxF SHA256SUMS <<< "${published}"; then
+            gh release download "${TAG}" --pattern SHA256SUMS --output published-SHA256SUMS --clobber
+            if ! cmp -s SHA256SUMS published-SHA256SUMS; then
+              echo "::warning::This run built files whose SHA256SUMS differs from the one published with ${TAG}; the published assets are kept."
+              diff published-SHA256SUMS SHA256SUMS || true
+            fi
+          fi
+          missing=()
+          for asset in "${assets[@]}"; do
+            if ! grep -qxF "$(basename "${asset}")" <<< "${published}"; then
+              missing+=("${asset}")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "::notice::The release ${TAG} already has every asset; nothing to upload."
+          else
+            echo "Uploading the missing assets: ${missing[*]}"
+            gh release upload "${TAG}" "${missing[@]}"
+            echo "::notice::Uploaded ${#missing[@]} missing asset(s) to the release ${TAG}."
+          fi
 
   pypi:
     name: publish to PyPI (opt-in)
@@ -219,9 +258,11 @@ jobs:
     # Off by default. The owner enables it by (1) registering this workflow
     # (release.yml, environment `pypi`) as a trusted publisher of the
     # graph-agents-cli project on PyPI and (2) setting the repository variable
-    # PUBLISH_TO_PYPI to 'true'. Expression comparisons ignore case and `vars`
-    # includes organization variables, so the first step re-checks the exact
-    # value; the `pypi` environment's required reviewers are the human gate.
+    # PUBLISH_TO_PYPI to 'true' (both done for this repository from 0.3.1).
+    # Expression comparisons ignore case and `vars` includes organization
+    # variables, so the first step re-checks the exact value. The `pypi`
+    # environment admits only v* tags; required reviewers on it would add a
+    # human gate before each upload.
     if: vars.PUBLISH_TO_PYPI == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -250,3 +291,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          # A second run for the same tag finds its files on PyPI already
+          # (the build is reproducible; PyPI never replaces a file).
+          skip-existing: true
