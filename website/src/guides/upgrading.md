@@ -234,35 +234,126 @@ For 0.2.0 there are three:
 
 </div>
 
-### 0.2 to the next release (unreleased)
+### 0.2 to 0.3 (unreleased)
 
-The development branch adds agents calling agents
-([Authentication](authentication.md#agents-calling-agents)). What changes for an existing
-project after `scaffold upgrade`:
+0.3 adds [agents calling agents](multi-agent.md): the actor-aware principal, token exchange,
+relayed approvals, `peer` and `system`. An existing project keeps its behaviour after
+`scaffold upgrade` unless one of the edits below applies to it. The complete list of changes
+is in the [changelog](../reference/changelog.md).
 
-- **Database.** At startup, `ADD COLUMN IF NOT EXISTS` adds `threads.actor`, `runs.actor` and
-  the approvals columns `requester_actor`, `decide_with`, `relayers`, `decided_via` and
-  `display_digest` (in `agent_*` tables under `langgraph-server`); no row is rewritten, and
-  existing rows read as direct. A pending approval asked before the upgrade is `direct` and
-  is decided exactly as before. Under `langgraph dev` the approvals file is read as version 1
-  and written as version 2.
-- **`api-policy.yaml` is unchanged.** `decide_with` and `relayers` are optional; an approval
-  rule without them decides `direct`. One exception needs your edit: an `auth: forward` API
-  that can never send a credential (under `shared-bearer`, under `jwt` without
-  `forward_audience`, or under the `langgraph-server` runtime) now stops the app from starting
-  outside `APP_ENV=dev`, as `lint` reports it (exit 3). Every call to such an API already
-  failed with "the caller has no credential". Give it `forward_audience`, move it to
-  `auth: exchange`, or remove it; under `APP_ENV=dev` the app logs why and starts.
-- **`jwt` reads the `act` claim.** A token carrying one is an agent's for the user, and is
-  refused (403) until `AUTH_ALLOWED_ACTORS` lists that agent. Set `AUTH_JWT_ACTOR_CLAIM=`
-  (empty) to read every token as the user's own, as 0.2 did. Every other principal, and every
-  existing thread, task and approval, is direct and behaves as before.
-- **Custom policies** (`policies/**` is never upgraded): a policy through which another agent
-  forwards users' credentials must set `Principal.actor`, or this agent treats the calling
-  agent as the person. A policy that returns an id over 256 characters or with control
-  characters now fails the request with 500.
-- **Downgrading** is not guarded: under 0.2 the threads agents started for a user are
-  reachable by the user's subject alone.
+#### In this order
+
+1. **Update the CLI and the skills:** `graph-agents-cli update`. The skills carry the new
+   rules for coding agents, including how to declare other agents.
+2. **Upgrade the runtime:** `graph-agents-cli scaffold upgrade --dry-run`, then `-y`. It
+   three-way merges the template-owned runtime (`app/app_utils/`, `app/fast_api_app.py`, the
+   chart templates) and adds `app/app_utils/a2a_client.py` and
+   `app/app_utils/token_exchange.py`. `app/agent.py`, `app/tools/**` and `app/policies/**`
+   are never touched, and none of them needs a change. `.env.example` and the
+   `values-<env>.yaml` files are yours and are not rewritten: the new settings are in the
+   [environment reference](../reference/environment.md).
+3. **Then declare other agents,** with `peer add` or `system apply`. `peer add` refuses a
+   project whose runtime is still 0.2 and `system check` reports one (SC01): a 0.2 runtime
+   refuses every call once `api-policy.yaml` uses `protocol: a2a`.
+4. **After every later upgrade or `api` edit, run `graph-agents-cli peer sync`** in a project
+   with peers: `scaffold upgrade` never touches `app/tools/`, and `lint` fails while
+   `tools/a2a_peers.py` and the policy differ.
+5. **Deploy** as [Rolling it out](#rolling-it-out) describes.
+
+#### What needs your edit
+
+- **An `auth: forward` API that can never send a credential** (under `shared-bearer`, under
+  `jwt` without `forward_audience`, or under the `langgraph-server` runtime) stops the app
+  from starting outside `APP_ENV=dev`, and `lint` reports it (exit 3). Every call to such an
+  API already failed with "the caller has no credential". Give it `forward_audience`, move it
+  to `auth: exchange`, or remove it (`scaffold upgrade` never rewrites `api-policy.yaml`);
+  under `APP_ENV=dev` the app logs why and starts.
+- **`jwt` reads the RFC 8693 `act` claim.** A token carrying one is an agent's for the user,
+  refused with 403 until `AUTH_ALLOWED_ACTORS` lists that agent. If your identity provider
+  already puts `act` in tokens that people use directly, list the agents or set
+  `AUTH_JWT_ACTOR_CLAIM=` (empty) to read every token as the user's own, as 0.2 did.
+- **Agents other agents call** list their callers in `AUTH_ALLOWED_ACTORS` (empty refuses
+  every agent), with `AUTH_JWT_AUDIENCE` naming the agent. `system apply` sets both.
+- **Custom policies** (`app/policies/**` is never upgraded): a policy through which another
+  agent forwards users' credentials must set `Principal.actor`, or this agent treats the
+  calling agent as the person. A policy that returns an empty id, one over 256 characters or
+  one with control characters now fails the request with 500 and logs the bug.
+- **Hand-written peer clients** (a tool that posts A2A JSON-RPC itself, a delegating auth
+  policy that exchanges tokens in `authenticate`): delete the delegating policy and its
+  registration in `app/policies/__init__.py`, remove the APIs it used (`graph-agents-cli api
+  remove <peer>_agent`, and any separate approvals API), declare each peer with
+  `graph-agents-cli peer add <peer>` (or `system apply`), then delete the hand-written tool
+  module.
+
+#### What changes by itself
+
+- **Database.** At startup, under the schema lock, `ADD COLUMN IF NOT EXISTS` adds
+  `threads.actor`, `runs.actor` and the approvals columns `requester_actor`, `decide_with`,
+  `relayers`, `decided_via` and `display_digest` (`agent_*` tables under
+  `langgraph-server`); no row is rewritten, and existing rows read as direct. A pending
+  approval asked before the upgrade is `direct` and is decided exactly as before. Under
+  `langgraph dev` the approvals file is read as version 1 and written as version 2.
+- **A2A tasks move to Postgres** under `CHECKPOINTER=postgres` (and a Postgres
+  `DATABASE_URI` under `langgraph-server`): table `a2a_tasks` (`agent_a2a_tasks`), created at
+  the next start. Every replica sees every task and tasks survive restarts; a task whose run
+  ended with its process turns `failed`; a subscription or cancel that reaches a replica other
+  than the one running the task is refused (`-32004`, `-32002`,
+  [KI-024](../reference/known-issues.md#ki-024-a-running-a2a-tasks-subscription-and-cancel-work-only-on-the-replica-running-it)).
+  `A2A_TASK_TTL_S=0` now keeps a task until its thread is deleted (0.2: until the process
+  restarted). `CHECKPOINTER=memory` keeps the in-memory store.
+- **A2A tasks follow their approval**: an `input-required` task ends as its approval does,
+  also when the person decides over HTTP or the approval expires. The approval request part
+  adds `approval_json` (the approvals as exact JSON text) and its text shows each call's body;
+  a failed task carries an error data part (`{"type": "error", "code": ...}`); the agent card
+  declares the origin extension. See [HTTP API](../reference/http-api.md#a2a).
+- **The approval object gains fields** (`decide_with`, `requester_actor`, `decided_via`,
+  `digest`, and for JSON-RPC calls `rpc_method` and `a2a_operation`), and its times read from
+  Postgres are in UTC whatever the database session's time zone.
+- **Correlation across agents.** Calls to other agents (`protocol: a2a`) and to `auth:
+  forward` and `auth: exchange` APIs carry the request's `X-Request-ID` and, under OTLP
+  tracing, its W3C trace context; an incoming `traceparent` on the A2A routes continues the
+  caller's trace. Other APIs receive neither, and a `traceparent` on `/chat` is not continued.
+  `PROPAGATE_TRACE_HEADERS=off` turns both off; `all` sends them to every API and continues a
+  trace on every path. See [Observability](observability.md#across-agents-and-services).
+- **Under `langgraph-server`, a native run acts for its caller**, whatever run context the
+  request sends: its tools see the caller's own id, roles and actor. A client that set
+  another principal's context on a native run no longer can (Studio under `langgraph dev`
+  keeps the context it sends).
+- **Tool output that is not valid Unicode** (a lone surrogate) reaches the model, the stream
+  and A2A replies with U+FFFD in its place instead of failing the run.
+- **Streamed requests to OpenAI-API models ask for token usage** (`stream_options`), so runs
+  on an `openai-compatible` endpoint record their tokens.
+- **New settings default to 0.2's behaviour:** `MODEL_REASONING_EFFORT` and
+  `MODEL_USE_RESPONSES_API` unset; no `limits.max_response_bytes`; `protocol: http` for every
+  API; `decide_with: direct` for every gate; the `A2A_*` and `AUTH_*` delegation settings only
+  act on requests other agents send.
+- **The CLI** works under a SOCKS proxy (it depends on `httpx[socks]`), `run --stop-server`
+  exits 2 when it cannot stop a server, `info` skips `npx skills list` under
+  `GRAPH_AGENTS_CLI_NO_UPDATE_CHECK=1` or in CI, and `deploy` needs no Secret key for a
+  keyless project.
+
+#### Rolling it out
+
+The new columns and the task table are created at startup under the schema lock, so new
+pods can start beside old ones. Two things need care while both versions run:
+
+- **Tasks.** Tasks a 0.2 pod holds in its memory are lost when it stops, as at any 0.2
+  restart; tasks a 0.3 pod creates are in Postgres.
+- **Wire callers last.** A 0.2 pod does not read `act`, so it takes another agent's token as
+  the user's own. Add the callers to `AUTH_ALLOWED_ACTORS`, and declare peers in the calling
+  agents, only once every pod of the called agent runs 0.3.
+
+0.2.0 and 0.3 pods hold the same Postgres run lease, so they exclude each other on a thread.
+A deployment still running 0.1.0 or a pre-release 0.2.0 build follows
+[Upgrade a running deployment](#upgrade-a-running-deployment) instead.
+
+#### Downgrading
+
+`scaffold upgrade` has no downgrade guard
+([KI-102](../reference/known-issues.md#ki-102-scaffold-upgrade-has-no-downgrade-guard)). Under
+0.2 the added columns and the task table are ignored, A2A tasks go back to process memory,
+and the threads agents started for a user are reachable by any token for that user, another
+agent's included, since 0.2 does not read `act`.
 
 ### Upgrade a running deployment
 
