@@ -211,6 +211,39 @@ migration" with the steps to follow.
   bad value, or either setting for another provider, stops startup. `.env.example` and, for
   OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
   runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
+- **Structured final answers: a JSON schema for the agent's answer.** A project that puts a
+  JSON Schema (root `"type": "object"`) in `<agent directory>/response_schema.json`
+  (`create --response-schema FILE` seeds it) has its agent answer in that shape. `agent.py`
+  builds the agent with `response_format=response_format(model, tools)`
+  (`app_utils/structured.py`), one of LangChain's `create_agent` strategies:
+  `RESPONSE_FORMAT_STRATEGY=auto` (default) uses the provider's own structured output where
+  LangChain's model profile says the model has it with the agent's tools bound, strict on
+  OpenAI (LangChain's own auto mode asks OpenAI for a best-effort schema), else a
+  `final_answer` tool the model must call (`tool_choice` forces a call at every step);
+  `provider` and `tool` force one. LangChain returns a raw JSON-schema answer unchecked, so
+  the new `StructuredAnswer` middleware (last in `middleware()`) checks every answer against
+  the schema: one that does not fit, a reply that is not JSON, or a plain-text final reply
+  goes back to the model with what is wrong, up to 3 tries in the same step (the failed tries
+  stay out of the thread; their tokens count in the answer's usage), then the run ends with
+  the new `error` code `invalid_structured_response`. The checker supports a documented JSON
+  Schema subset and refuses a schema that uses anything else at startup (`lint` and
+  `create --response-schema` apply the same rules, a SHARED block kept byte-identical with the
+  template's). Delivery: a completed `/chat` run's only `message.delta` is the answer's JSON
+  text and `message.end` carries the object as `structured_response`; the answer tool never
+  shows as a `tool.call`; a run paused for an approval answers once resumed; the A2A
+  `response` artifact adds a data part with the object (`mediaType` `application/json`,
+  streamed or not) and the card lists `application/json` among its output modes; `eval`
+  records `structured_response` in its traces and `expect.json_schema` checks it as it is.
+  Both runtimes, both checkpointers. Without the file nothing changes. Measured with
+  gpt-5-mini on a 24-case triage task (a tool call, then a six-field answer), twice: without
+  the mode 28 of 48 replies were not a bare JSON document (the sentence the model writes
+  before a tool call came first), with it 0 of 96 (both strategies, no correction needed),
+  at the same cost for the provider strategy and about twice the output tokens for the tool
+  strategy. **Existing projects:**
+  `scaffold upgrade` brings `structured.py` and the runtime, but never rewrites `agent.py`:
+  pass `response_format=response_format(model, tools)` to `create_agent` and add
+  `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns
+  otherwise).
 - **The A2A server speaks to agents calling for a user.** An agent's card declares the
   graph-agents-cli origin extension (`https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1`,
   optional): an agent calling for a user may put the user's own words in the message metadata

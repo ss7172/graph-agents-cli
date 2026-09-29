@@ -42,8 +42,9 @@ CHECK_DESCRIPTIONS: dict[str, str] = {
         "The response matches the regular expression (re.search, DOTALL; `(?i)` ignores case)."
     ),
     "json_schema": (
-        "The final reply's JSON validates against the schema: the whole reply, else its last "
-        "JSON object or array of the schema's type."
+        "The final answer validates against the schema: the run's structured response when it "
+        "has one (a project with a response schema), else the final reply's JSON (the whole "
+        "reply, else its last JSON object or array of the schema's type)."
     ),
     "tool_calls": "The listed tools were called (name + args_subset); `ordered` enforces order.",
     "no_tool_calls": "The agent made no tool calls.",
@@ -68,7 +69,7 @@ MODIFIER_DESCRIPTIONS: dict[str, str] = {
     "scope": (
         "final_turn (default): checks read the final turn of a multi-turn case; all_turns: "
         "every turn's replies, tool calls, latency, tokens and approval gates (json_schema "
-        "always reads the final reply)."
+        "always reads the final answer)."
     ),
 }
 
@@ -300,7 +301,14 @@ def _extract_json(response: str, schema: Any = None) -> Any:
     raise json.JSONDecodeError("no JSON object or array found", text, 0)
 
 
-def check_json_schema(schema: Any, response: str) -> CheckResult:
+def check_json_schema(schema: Any, response: str, structured: Any = None) -> CheckResult:
+    """``structured``: the run's structured response (a project with a response schema),
+    checked as it is; without one, the JSON in ``response`` (``_extract_json``)."""
+    if structured is not None:
+        errors = validate_json_schema(schema, structured)
+        if errors:
+            return False, "structured response: schema violation: " + "; ".join(errors[:3])
+        return True, ""
     try:
         parsed = _extract_json(response, schema)
     except json.JSONDecodeError as exc:
@@ -521,6 +529,7 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
     (``final_turn``, the default; the trace's top-level fields) or every turn
     (``all_turns``: every reply, every tool call in order, each turn's latency,
     the summed tokens, every approval gate). ``json_schema`` always reads the
+    final answer: the structured response when the trace has one, else the
     final reply.
 
     A check that raises is reported as failed with the exception text, so a bad
@@ -550,7 +559,9 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
             expect["not_contains"], response, case_insensitive=fold
         ),
         "regex": lambda: check_regex(expect["regex"], response),
-        "json_schema": lambda: check_json_schema(expect["json_schema"], final_response),
+        "json_schema": lambda: check_json_schema(
+            expect["json_schema"], final_response, trace.get("structured_response")
+        ),
         "tool_calls": lambda: check_tool_calls(
             expect["tool_calls"], tool_calls, ordered=bool(expect.get("ordered"))
         ),

@@ -103,10 +103,10 @@ data: {"thread_id": "94afcb0f-1a65-4dad-b1d2-5e97c370205d", "run_id": "bc32135d-
 | Event | Fields | Notes |
 |---|---|---|
 | `message.start` | `thread_id`, `run_id` | First event of every run. A run resumed by a decision adds `approval_id` and `decision`. |
-| `message.delta` | `text` | A piece of the answer, in order. |
+| `message.delta` | `text` | A piece of the answer, in order. With a [response schema](#structured-answers), one event: the answer's JSON text. |
 | `tool.call` | `id`, `name`, `args` | The model called a tool. `args` is `{}` when the model's arguments were not valid JSON. |
 | `tool.result` | `id`, `name`, `result`, `is_error` | The tool's result. A failed call also has `error_id`, and outside `APP_ENV=dev` its `result` reads `The tool call did not succeed. Reference: <error_id>.` |
-| `message.end` | `thread_id`, `run_id`, `usage` (`input_tokens`, `output_tokens`), `latency_ms`, `status` | Last event of a run that ended normally. Paused runs add `approval` and `approvals`. |
+| `message.end` | `thread_id`, `run_id`, `usage` (`input_tokens`, `output_tokens`), `latency_ms`, `status` | Last event of a run that ended normally. Paused runs add `approval` and `approvals`; a completed run of a project with a response schema adds `structured_response`. |
 | `error` | `code`, `message`, `error_id`, `run_id` | Last event of a run that failed. Under `APP_ENV=dev` it also has `detail`. |
 
 Idle streams get a `: keep-alive` comment line every `SSE_HEARTBEAT_S` (15) seconds; SSE
@@ -135,6 +135,36 @@ log under `error_id`.
 | `unavailable` | The database is unreachable, or the run could no longer confirm it was the only run on the thread. |
 | `forbidden` | The thread is no longer the caller's. |
 | `unsupported_interrupt` | The graph paused for input this server cannot collect (an `interrupt()` of your own). |
+| `invalid_structured_response` | The project has a response schema, and no try of the model's answer fitted it (3 tries), or the graph gave no answer (an `agent.py` not built with `response_format()`). The thread keeps nothing of the failed step. |
+
+### Structured answers
+
+A project with a response schema (`app/response_schema.json`,
+[Develop](../guides/develop.md#structured-final-answers)) answers in JSON of that shape. A
+completed run sends the answer twice: its JSON text as the run's only `message.delta`, and the
+object as `message.end`'s `structured_response`. Nothing else the model writes is streamed, and
+the answer tool of the tool strategy (`final_answer`) never appears as a `tool.call`:
+
+```text
+event: message.start
+data: {"thread_id": "7f3c...", "run_id": "0b9e..."}
+
+event: tool.call
+data: {"id": "call_lookup_order", "name": "lookup_order", "args": {"order_id": "ORD-10442"}}
+
+event: tool.result
+data: {"id": "call_lookup_order", "name": "lookup_order", "result": "{\"status\": \"shipped\"}", "is_error": false}
+
+event: message.delta
+data: {"text": "{\"category\": \"billing\", \"priority\": \"high\", \"order_id\": \"ORD-10442\", \"summary\": \"Charged twice for a shipped order.\"}"}
+
+event: message.end
+data: {"thread_id": "7f3c...", "run_id": "0b9e...", "usage": {...}, "latency_ms": 2140, "status": "ok", "structured_response": {"category": "billing", "priority": "high", "order_id": "ORD-10442", "summary": "Charged twice for a shipped order."}}
+```
+
+A run that pauses for an approval has no answer yet (`awaiting_approval`); the run the decision
+resumes ends with it. A `step_limit` end has none either (its reply says why). A run whose
+answer never fits ends with the `error` code `invalid_structured_response`.
 
 On `/chat`, a busy thread, a pending approval and a request that breaks a limit are refused
 before the stream starts, with an HTTP status instead:
@@ -329,7 +359,11 @@ Card
 Replies
 :   The A2A `contextId` is the chat thread id. `SendMessage` returns the reply as one text
     part of a `response` artifact; `SendStreamingMessage` streams it in chunks, the last
-    marked `lastChunk`.
+    marked `lastChunk`. With a [response schema](#structured-answers) the text part is the
+    answer's exact JSON text, and the artifact (its last chunk, streamed) adds a data part
+    holding the answer, `mediaType` `application/json`; the card lists `application/json`
+    among its output modes. A protobuf `Value` holds every number as a double (`1` reads
+    `1.0`), so read the text part where exact integers matter.
 
 Errors
 :   A message with no text, an empty text part, or over `MAX_MESSAGE_CHARS` is an

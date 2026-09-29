@@ -321,6 +321,44 @@ def test_forward_auth_is_refused_under_langgraph_server(
     assert ok.exit_code == 0, ok.output
 
 
+RESPONSE_SCHEMA = '{"type": "object", "properties": {"answer": {"type": "string"}}}\n'
+
+
+def test_a_response_schema_is_seeded(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
+    schema = tmp_path / "answer.json"
+    schema.write_text(RESPONSE_SCHEMA)
+    result, project = run_create("--response-schema", str(schema))
+    assert result.exit_code == 0, result.output
+    assert (project / "app" / "response_schema.json").read_text() == RESPONSE_SCHEMA
+    # No manifest key: the file in the agent directory is the setting.
+    assert "response_schema" not in read_manifest(project)
+
+
+def test_a_project_has_no_response_schema_unless_seeded(run_create: CreateRunner) -> None:
+    result, project = run_create()
+    assert result.exit_code == 0, result.output
+    assert not (project / "app" / "response_schema.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("schema_text", "fragment"),
+    [
+        ('{"type": "array", "items": {}}', "the root must be an object schema"),
+        ('{"type": "object", "if": {"type": "object"}}', "`if` is not a keyword"),
+        ("{'type': 'object'}", "not a JSON file"),
+    ],
+)
+def test_a_response_schema_the_agent_cannot_check_is_refused_before_rendering(
+    run_create: CreateRunner, tmp_path: pathlib.Path, schema_text: str, fragment: str
+) -> None:
+    schema = tmp_path / "answer.json"
+    schema.write_text(schema_text)
+    result, project = run_create("--response-schema", str(schema))
+    assert result.exit_code == 3, result.output
+    assert "Invalid response schema" in result.output and fragment in result.output
+    assert not project.exists()
+
+
 def test_api_policy_must_exist(run_create: CreateRunner, tmp_path: pathlib.Path) -> None:
     result, project = run_create("--api-policy", str(tmp_path / "missing.yaml"))
     assert result.exit_code != 0

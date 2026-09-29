@@ -16,6 +16,7 @@ Run `graph-agents-cli <command> --help` for the authoritative list.
 | `--cd` | | `skip` (forced under `--prototype`) | `argocd` (pull-based, Argo `Application`s, PR flow), `helm-push` (self-hosted runner runs `deploy --image`), `skip` (CI only) |
 | `--auth-policy` | | `shared-bearer` | `shared-bearer` (API key), `jwt` (per-user OIDC/JWT tokens) or `custom` (stub; sets `auth_policy_implemented: false`); `product-session` is refused with a hint to `custom` |
 | `--api-policy` | | none | Path to an `api-policy.yaml` to seed at the project root (validated with the strict schema first, exit 3 on errors); copies the OpenAPI specs it references; adds `api_policy.policy_file` to the manifest. Optional: without it the project has no policy until `graph-agents-cli api add`. `--product-policy` is refused with a rename hint |
+| `--response-schema` | | none | Structured final answers: path to a JSON Schema (root `"type": "object"`) to seed as `<agent directory>/response_schema.json`, checked first against the subset the agent checks answers with (exit 3 on errors). The agent then answers in that JSON shape (`RESPONSE_FORMAT_STRATEGY` picks how). No manifest key: the file is the setting. `enhance` has no such flag: add the file by hand |
 | `--process` | | none | Path to the governing process document; written as `process:` to the manifest and rendered into the guidance file |
 | `--prototype` | `-p` | off | Target defaults to `none` unless given explicitly; `--cd` forced to `skip` |
 | `--agent-directory` | `-dir` | `app` | Agent code directory inside the project |
@@ -52,6 +53,7 @@ What each choice renders:
 | `--runtime langgraph-server` | server Dockerfile (`FROM langchain/langgraph-api:0.14.4-py3.12`, meta routes disabled), `langgraph.json` `http.app` + `auth`, Redis toggle in values, `uv-langgraph-server.lock` -> `uv.lock` |
 | `--runtime fastapi` | multi-stage python Dockerfile with uvicorn (uid 1000, no uv in the final image), `uv-fastapi.lock` -> `uv.lock` |
 | `--api-policy <file>` | `api-policy.yaml` at the root (copied into the image by the Dockerfile), `app/tools/example_api.py` (one call the first declared API allows, whatever its method: its first allowed operation, else one from its OpenAPI spec, else a generic operation of its first allowed method such as `GET /items/{item_id}` or `POST /items`; a `body` argument for POST, PUT and PATCH; left out, with a note, when that API allows nothing the example can make), `api_policy.policy_file` in the manifest, each `auth: bearer` API's `token_env` in `secrets.keys`, each API's `base_url_env` in `.env.example` and the chart values. `graph-agents-cli api add` makes the same changes for an API added later |
+| `--response-schema <file>` | `app/response_schema.json` (the file, as given); `agent.py` of every project already builds the agent with `response_format()` |
 | `--auth-policy custom` | `auth_policy_implemented: false` (the `app/policies/custom.py` stub ships in every project) |
 | `--auth-policy jwt` | `AUTH_JWT_*` settings in `.env.example` and the chart values |
 

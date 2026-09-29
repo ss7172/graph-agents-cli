@@ -188,7 +188,7 @@ Use `eval compare before.json after.json` to prove a fix did not regress other c
 | Response must mention / must not mention | `expect.contains`, `expect.not_contains` (case-insensitive; `case_insensitive: false` for exact case) |
 | A multi-turn case: check every turn, not only the final reply | `expect.scope: all_turns` (replies, tool calls in order, approval gates, each turn's latency, summed tokens) |
 | Exact shape (id, number, format) | `expect.regex` |
-| Structured output | `expect.json_schema` |
+| Structured output | `expect.json_schema` (a project with `app/response_schema.json` has its `structured_response` checked as it is) |
 | The right tool with the right arguments | `expect.tool_calls: [{name, args_subset}]`, `ordered: true` when order matters |
 | Must answer without tools | `expect.no_tool_calls: true` |
 | A write that must wait for a human, and how it was decided | case `approvals` instructions plus `expect.approvals: [{match, status: gated\|approved\|rejected}]` |

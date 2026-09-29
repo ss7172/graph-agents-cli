@@ -64,7 +64,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | auth | 4 | 2 | 6 |
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
-| runtime | 11 | 6 | 17 |
+| runtime | 11 | 9 | 20 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
@@ -73,7 +73,7 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | cli | 2 | 21 | 23 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **100** | **146** |
+| **Total** | **46** | **103** | **149** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -995,6 +995,50 @@ Low · runtime · found in wave 7; re-run with gpt-5-mini in the A2A multi-agent
   gate; the replacement removed the called agents' confirmation offers (4 of 24 runs to 0)
   and cost about 12% less per task. Not yet adopted: the difference is within noise at this
   sample size.
+
+### KI-158: Under the tool strategy, a thread's messages show the structured answer as a tool call
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** With a response schema and `RESPONSE_FORMAT_STRATEGY=tool` (or `auto` for a
+  model without native structured output), the model gives its answer by calling
+  `final_answer`. The `/chat` stream and the A2A reply hide that call, but the thread keeps
+  it: `GET /threads/{id}/messages` (and LangGraph Server's own thread state) lists an
+  assistant message with a `final_answer` tool call and its result "The answer was given to
+  the user." instead of an assistant reply.
+- **Impact:** A client that rebuilds a conversation from the thread shows the answer as a
+  tool call.
+- **Workaround:** Read the answer from `message.end` (`structured_response`), or treat a
+  `final_answer` call in the messages as the reply. The provider strategy keeps the answer
+  as the assistant's reply.
+
+### KI-159: The tokens of an answer's failed tries are lost when no try fits
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** `StructuredAnswer` adds the token usage of the tries that did not fit to the
+  answer that does. When none of the 3 tries fits, the step fails and those tries' usage is
+  not recorded: the run's `invalid_structured_response` error has no usage, and the run
+  record and `/metrics` count none for them.
+- **Impact:** Token counts (and cost reports built on them) under-count runs whose answer
+  never fits, by up to 3 model calls each.
+- **Workaround:** Take cost from the provider's own usage report; count
+  `invalid_structured_response` errors, which should be rare (none in 99 gpt-5-mini runs
+  with a schema, and no correction needed in any).
+
+### KI-160: The answer check reads `pattern` as a Python regular expression
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** JSON Schema's `pattern` is an ECMA-262 regular expression; the template's
+  answer check (`app_utils/structured.py`) and `create --response-schema` compile it with
+  Python's `re`. The common syntax agrees, but some forms differ (`\d` also matches other
+  scripts' digits in Python, `$` matches before a final newline, `(?<name>...)` is an error in
+  Python).
+- **Impact:** A string the provider's strict mode produced can fail the check (the run asks
+  again, then fails), or a pattern the provider accepts is refused at startup.
+- **Workaround:** Write patterns in the syntax both share: explicit classes (`[0-9]`), no
+  named groups, and `$` only where a value cannot end with a newline.
 
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 

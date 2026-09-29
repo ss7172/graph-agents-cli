@@ -18,7 +18,9 @@ The SSE transport is ``graph_agents_cli._chat_client.post_chat``; it is imported
 lazily so tests can replace it. A trace (one JSON object per case) is derived
 from the events: ``message.delta`` text becomes ``response``, ``tool.call`` /
 ``tool.result`` pairs become ``tool_calls``, ``message.end`` supplies ``usage``,
-``latency_ms``, ``thread_id`` and ``run_id``; an ``error`` event or any
+``latency_ms``, ``thread_id``, ``run_id`` and, for a project with a response
+schema, ``structured_response`` (the run's JSON answer, which the
+``json_schema`` check reads instead of the text); an ``error`` event or any
 exception yields ``status: error``; a stream with no response yields
 ``status: missing``.
 
@@ -175,6 +177,7 @@ def empty_trace(case_id: str) -> dict[str, Any]:
         "thread_id": None,
         "run_id": None,
         "approvals": [],
+        "structured_response": None,
     }
 
 
@@ -223,6 +226,7 @@ def _consume_turn(
         "thread_id": thread_id,
         "run_id": None,
         "approvals": [],
+        "structured_response": None,
     }
     text_parts: list[str] = []
     calls_by_id: dict[str, dict[str, Any]] = {}
@@ -583,6 +587,9 @@ def _fold(
             turn["thread_id"] = data.get("thread_id") or turn["thread_id"]
             turn["run_id"] = data.get("run_id") or turn["run_id"]
             turn["usage"] = _add_usage(turn["usage"], data.get("usage"))
+            if "structured_response" in data:
+                # The run's answer in the project's response schema (the last run of the turn).
+                turn["structured_response"] = data["structured_response"]
             latency = data.get("latency_ms")
             if isinstance(latency, int | float):
                 previous = turn["latency_ms"]
@@ -655,6 +662,7 @@ def run_case(
             "thread_id": last["thread_id"] or thread_id,
             "run_id": last["run_id"],
             "approvals": last.get("approvals", []),
+            "structured_response": last.get("structured_response"),
         }
     )
     if len(turns) > 1:

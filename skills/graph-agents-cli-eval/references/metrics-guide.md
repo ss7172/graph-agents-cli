@@ -11,7 +11,7 @@ designated a quality metric). `graph-agents-cli eval metric list` prints the liv
 | `contains: [..]` | every substring occurs in the final response (case-insensitive) | key facts, required disclaimers |
 | `not_contains: [..]` | none occurs (case-insensitive) | leaked secrets, forbidden claims, refusal text when a call should have succeeded |
 | `regex: "..."` | `re.search` matches (`(?i)` to ignore case) | ids, dates, numeric formats |
-| `json_schema: {..}` | the final reply's JSON validates against the schema (the whole reply, else its last JSON object or array of the schema's root type) | structured output modes |
+| `json_schema: {..}` | the final answer validates against the schema: the run's `structured_response` as it is when the project has a response schema, else the final reply's JSON (the whole reply, else its last JSON object or array of the schema's root type) | structured answers; case-specific values (`const`, `enum`) on top of the project's own schema |
 | `tool_calls: [{name, args_subset}]` | each entry matches a trace tool call by name with `args_subset` a subset of the recorded args; `ordered: true` enforces relative order | trajectory assertions, policy regressions (`getIncident` called, nothing else) |
 | `no_tool_calls: true` | the trace has no tool call | answers that must come from the prompt alone |
 | `max_latency_ms: n` | `latency_ms <= n` | latency budget |
@@ -27,7 +27,7 @@ Modifiers (keys of `expect` that are not checks; `eval metric list` shows them t
 |---|---|---|
 | `ordered` | `false` | `tool_calls` must appear in the listed order |
 | `case_insensitive` | `true` | `contains` / `not_contains` ignore case (casefold); `false` for exact case |
-| `scope` | `final_turn` | on a multi-turn case, `final_turn` reads the final reply and its tool calls, latency and usage; `all_turns` reads every turn: `contains`/`regex` pass when any reply matches, `not_contains` fails when any does, `tool_calls`/`no_tool_calls` read every call in order, `approvals`/`no_approvals` every gate, `max_latency_ms` bounds each turn, `max_tokens` their sum. `json_schema` always reads the final reply |
+| `scope` | `final_turn` | on a multi-turn case, `final_turn` reads the final reply and its tool calls, latency and usage; `all_turns` reads every turn: `contains`/`regex` pass when any reply matches, `not_contains` fails when any does, `tool_calls`/`no_tool_calls` read every call in order, `approvals`/`no_approvals` every gate, `max_latency_ms` bounds each turn, `max_tokens` their sum. `json_schema` always reads the final answer |
 
 Case-insensitive matching is the safer default for `not_contains`: a refusal check such as
 `not_contains: ["deleted"]` must also fail on "Deleted ORD-1008.".

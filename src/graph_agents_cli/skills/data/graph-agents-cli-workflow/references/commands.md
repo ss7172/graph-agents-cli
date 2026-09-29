@@ -191,7 +191,10 @@ graph-agents-cli build [--tag TEXT] [--registry TEXT] [--push] [--dry-run]
   violation. A leftover `PRODUCT_CALLS` is an error; a
   project still on `product-policy.yaml` stops with migration steps (exit 3).
   `--policy-only` skips ruff. Each refused call is followed by the `graph-agents-cli api`
-  command that would allow it (a reviewed change; propose it, do not run it unasked).
+  command that would allow it (a reviewed change; propose it, do not run it unasked). A
+  project with `app/response_schema.json` (structured final answers) has it checked first:
+  a schema the agent would not start with is exit 3, and an `agent.py` that does not pass
+  `response_format()` to `create_agent` is a warning.
 - `build`: `docker build -t <registry>/<name>:<tag> -f Dockerfile .` (default tag `latest`;
   `--registry` overrides the manifest; `--push` pushes; `--dry-run` prints the commands). Exit `2`
   on a docker failure, `3` without a Dockerfile or with a placeholder (`ghcr.io/CHANGE-ME`) or

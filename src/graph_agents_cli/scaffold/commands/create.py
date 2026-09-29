@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import click
 from rich.prompt import IntPrompt, Prompt
 
-from graph_agents_cli import _api_policy
+from graph_agents_cli import _api_policy, _response_schema
 from graph_agents_cli._defaults import (
     DEFAULT_AGENT_GUIDANCE_FILENAME,
     DEFAULT_AUTH_POLICY,
@@ -143,6 +143,16 @@ def _handle_create_errors(f: Callable) -> Callable:
     help="Internal flag for version-locked remote templates",
     default=False,
 )
+@click.option(
+    "--response-schema",
+    "response_schema",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help=(
+        "Structured final answers: seed <agent directory>/response_schema.json (the JSON "
+        "Schema of the agent's final answer) from this file; checked before the project "
+        "is created"
+    ),
+)
 @cli_options.shared_template_options
 @_handle_create_errors
 def create(
@@ -175,6 +185,7 @@ def create(
     locked: bool = False,
     in_folder: bool = False,
     cli_overrides: dict | None = None,
+    response_schema: str | None = None,
 ) -> None:
     """Create a LangGraph agent project from a template."""
     # A quiet run builds a throwaway tree for the three-way merge behind
@@ -208,6 +219,9 @@ def create(
     # Validate the seed policy before anything is rendered, including that every
     # OpenAPI spec it references can be copied into the project (lint reads them).
     api_document = _api_policy.load_policy_document(api_policy) if api_policy else None
+    # A response schema the agent could not start with is refused before anything is rendered.
+    if response_schema:
+        _response_schema.load_schema(response_schema)
     spec_copies = (
         openapi_seed.plan_spec_copies(api_document, api_policy)
         if api_document is not None and api_policy
@@ -362,6 +376,12 @@ def create(
             # replace it with the template's example.
             (rendered_path / API_POLICY_FILENAME).write_bytes(existing_policy)
             logging.debug("Restored the project's own %s", API_POLICY_FILENAME)
+        if response_schema:
+            seeded = _response_schema.schema_file(
+                rendered_path, agent_directory or _rendered_agent_directory(rendered_path)
+            )
+            shutil.copy2(response_schema, seeded)
+            logging.debug("Seeded %s from %s", seeded, response_schema)
 
         finalize_manifest(
             rendered_path,
@@ -378,6 +398,7 @@ def create(
             render_is_snapshot=(
                 not in_folder
                 and api_policy is None
+                and response_schema is None
                 and template_source_path is None
                 and remote_config is None
             ),

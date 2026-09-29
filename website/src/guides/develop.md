@@ -283,7 +283,8 @@ paragraphs:
 3. Before a tool that acts on something, say what it is about to do and why: an
    [approver](approvals.md) reads it beside the exact request.
 
-Keep the three middleware that `middleware()` returns when you add your own:
+Keep the four middleware that `middleware()` returns when you add your own, with
+`StructuredAnswer` last:
 
 **`SurfaceApiErrors`**
 :   Turns API-policy refusals and failed API calls into tool errors the model reads, and names
@@ -299,6 +300,10 @@ Keep the three middleware that `middleware()` returns when you add your own:
     text a tool returns stays data. Only the model's view changes: the thread and the
     `tool.result` events keep the tool's own output.
 
+**`StructuredAnswer`**
+:   With a [response schema](#structured-final-answers), checks the model's final answer
+    against it and asks again when it does not fit. Without one it does nothing.
+
 `graph` must stay compiled **without** a checkpointer (the runtime binds persistence) and keep
 its `recursion_limit` config (`RECURSION_LIMIT`, default 50 steps: room for 24 sequential tool
 calls). Replacing `create_agent` with an explicit `StateGraph` is a one-file change: keep the
@@ -311,6 +316,90 @@ export name `graph`, the middleware and the prompt rule. The `graph-agents-cli-l
     An `interrupt()` of your own in the served graph is not exposed over `/chat`
     (`message.end` has no status for it) and stalls the stream. Gate API calls with the
     policy instead; use custom interrupts only in `playground --graph`.
+
+## Structured final answers
+
+A project can declare the JSON shape of its agent's final answer. The model is then made to
+answer in that shape, every answer is checked against it, and clients receive the object
+itself: in `/chat`'s last event and as an A2A data part. Use it when a program, another
+agent or an eval reads the answer, not a person.
+
+Declare the shape in `app/response_schema.json` (your agent directory), a JSON Schema whose
+root is an object:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "category": {"enum": ["billing", "technical", "account", "other"]},
+    "priority": {"enum": ["low", "medium", "high"]},
+    "order_id": {"type": ["string", "null"], "pattern": "^ORD-[0-9]{5}$"},
+    "summary": {"type": "string", "maxLength": 200}
+  },
+  "required": ["category", "priority", "order_id", "summary"],
+  "additionalProperties": false
+}
+```
+
+`graph-agents-cli create --response-schema answer.json` seeds it in a new project. Without
+the file the agent answers in text, as before. `graph-agents-cli lint` checks the file, and
+the app refuses to start with one it cannot check.
+
+How the model is made to answer
+:   `agent.py` passes `response_format=response_format(model, tools)` to `create_agent`,
+    which picks one of LangChain's strategies. `RESPONSE_FORMAT_STRATEGY` chooses:
+
+    - `auto` (default): the provider's own structured output when LangChain's profile of the
+      model says it has it with the agent's tools bound (OpenAI's `json_schema` response
+      format, strict; Anthropic's and Gemini's equivalents), else the tool strategy.
+    - `provider`: always the provider's own.
+    - `tool`: a tool named `final_answer`, whose arguments are the answer, which the model
+      must call to finish (`tool_choice` forces a tool call at every step). It works with
+      any model that calls tools, including an OpenAI-compatible server.
+
+The check
+:   LangChain returns a raw JSON-schema answer unchecked, so `StructuredAnswer` checks each
+    one. An answer that does not fit, a reply that is not JSON, or a plain-text final reply
+    goes back to the model with what is wrong, in the same step, up to 3 tries. The failed
+    tries are not kept in the thread, and their tokens count in the run's usage. When no try
+    fits, the run ends with the `error` code `invalid_structured_response` and the thread
+    stays usable.
+
+What the schema may use
+:   `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`,
+    `minProperties`, `maxProperties`, `items` (one schema), `minItems`, `maxItems`,
+    `uniqueItems`, `minLength`, `maxLength`, `pattern` (Python regular expressions),
+    `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `anyOf`,
+    `oneOf`, `allOf`, `not`, and `$ref` to the file's own `$defs` or `definitions`; the
+    annotations `title`, `description`, `default`, `examples`, `format` (not checked),
+    `deprecated`, `readOnly`, `writeOnly`, `$schema`, `$id`, `$comment`. Anything else
+    (`if`/`then`, `patternProperties`, `prefixItems`, a remote `$ref`, a misspelt keyword) is
+    refused rather than half-checked. A schema's `description` tells the model what the
+    answer is for.
+
+OpenAI's strict mode
+:   With the provider strategy on Chat Completions, langchain-openai makes every property of
+    the answer required and forbids extra ones: give a property that may have no value a
+    `null` type, as `order_id` above. Every tool becomes strict too, so the model passes a
+    value for each of a tool's optional arguments. A schema the provider refuses fails every
+    run with the provider's error; use `RESPONSE_FORMAT_STRATEGY=tool` for it.
+
+What clients receive
+:   A completed `/chat` run ends with one `message.delta`, the answer's JSON text, and
+    `message.end` carries the object as `structured_response`
+    ([HTTP API](../reference/http-api.md#structured-answers)). Nothing else the model writes
+    along the way is streamed, and the `final_answer` tool never shows as a `tool.call`. A
+    run that pauses for an [approval](approvals.md) answers once it is resumed. Over A2A the
+    `response` artifact holds the JSON text and a data part with the object, and the card
+    lists `application/json` among its output modes. `eval` checks the object itself
+    (`expect.json_schema`, see [Evaluation](evaluation.md#deterministic-checks)).
+
+A project created before 0.3
+:   `scaffold upgrade` never rewrites `agent.py`, so wire it by hand before you add the file:
+    pass `response_format=response_format(model, tools)` to `create_agent` (import it and
+    `StructuredAnswer` from `app_utils.structured`) and put `StructuredAnswer()` last in
+    `middleware()`. Until then every run with a schema ends with
+    `invalid_structured_response`, and `lint` warns.
 
 ## The local loop
 

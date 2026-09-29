@@ -24,8 +24,10 @@ scaffolding files implement them.
 │   │   ├── telemetry.py         # opt-in tracing, capture policy
 │   │   ├── db.py                # run records (`runs` table under postgres; `agent_runs` under langgraph-server; `running` until they end, reconciled to `interrupted`), lease table, schema setup under an advisory lock
 │   │   ├── content.py           # message content helpers
+│   │   ├── structured.py        # structured final answers: response_format(), the StructuredAnswer check, the JSON Schema subset
 │   │   ├── playground.py        # the /playground page (APP_ENV=dev only)
 │   │   └── a2a.py               # agent card (A2A 1.0 interface only) and JSON-RPC executor bridging the SSE events; tasks per principal in Postgres (a2a_tasks) or memory, A2A_TASK_TTL_S
+│   ├── response_schema.json     # only when the project declares one (create --response-schema): the JSON shape of the final answer
 │   ├── policies/
 │   │   └── custom.py            # CustomPolicy stub (fails closed with HTTPException 503)
 │   └── tools/
@@ -50,6 +52,7 @@ scaffolding files implement them.
 │   ├── integration/test_server_runtime.py     # langgraph-server branch against a fake SDK client
 │   ├── integration/test_postgres.py           # opt-in: TEST_POSTGRES_DSN (a server where the user may create databases)
 │   ├── integration/test_model_apis.py         # MODEL_REASONING_EFFORT / MODEL_USE_RESPONSES_API against a fake OpenAI server (fake_openai.py): both APIs, with a tool
+│   ├── integration/test_structured_answers.py # a response schema: /chat and A2A deliver the answer (both strategies, approvals, memory and Postgres)
 │   ├── integration/test_chart.py              # kubernetes target: helm template/lint of every environment, expectations read from the values files (needs helm)
 │   ├── eval/datasets/basic-dataset.json, eval/eval_config.yaml   # judges: {} (built-in rubrics); cases pass on the fake model
 │   └── load_test/               # excluded from a plain `pytest`
@@ -104,6 +107,8 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
 | `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (50) | `.env` / chart | run guardrails |
 | `MODEL_REASONING_EFFORT`, `MODEL_USE_RESPONSES_API` (unset) | `.env` / chart | OpenAI-API models: reasoning effort; `true` = the Responses API (see `langchain-models.md`) |
+| `RESPONSE_FORMAT_STRATEGY` (`auto`) | `.env` / chart | with `app/response_schema.json`: `auto` (the provider's own structured output when the model has it, strict on OpenAI; else the `final_answer` tool), `provider` or `tool` |
+| `RESPONSE_SCHEMA_PATH` (`app/response_schema.json`) | `.env` | another response schema file (tests); set, it must exist |
 | `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
 | `MAX_MESSAGE_CHARS` (32000) | `.env` / chart | longest user message on `/chat` (422) and A2A (invalid params, -32602) |
 | `RETENTION_DAYS` (0) | `.env` / chart | purge threads idle longer than N days, hourly; 0 keeps everything |
@@ -147,8 +152,8 @@ Response: SSE. Each event is `event: <type>\ndata: <json>\n\n`.
 | `message.delta` | `{"text": "..."}` |
 | `tool.call` | `{"id": "...", "name": "...", "args": {...}}` (args omitted when `TRACE_CAPTURE=metadata` and the caller is not the owner; always present to the caller) |
 | `tool.result` | `{"id": "...", "name": "...", "result": "...", "is_error": false}`; a failed call adds `"error_id"` and, outside `APP_ENV=dev`, its `result` is `"The tool call did not succeed. Reference: <error_id>."` (the error text is for the model only) |
-| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok\|step_limit\|awaiting_approval"}`; with `awaiting_approval`, also `"approval": {"approval_id", "api", "method", "path", "query", "body", "operation_id", "reason", "approvers", "expires_at"}` |
-| `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
+| `message.end` | `{"thread_id": "...", "run_id": "...", "usage": {"input_tokens": n, "output_tokens": n}, "latency_ms": n, "status": "ok\|step_limit\|awaiting_approval"}`; with `awaiting_approval`, also `"approval": {"approval_id", "api", "method", "path", "query", "body", "operation_id", "reason", "approvers", "expires_at"}`; a completed run of a project with a response schema also `"structured_response": {...}` |
+| `error` | `{"code": "run_failed\|timeout\|recursion_limit\|thread_busy\|unavailable\|forbidden\|invalid_structured_response", "message": "...", "error_id": "...", "run_id": "..."}` (plus `detail` only under `APP_ENV=dev`) then the stream closes |
 
 `message.end` has `"status": "ok"`, or `"step_limit"` when the run reached `RECURSION_LIMIT` and
 ended with a reply saying so (the reply is the preceding `message.delta`; the run's work stays in
@@ -201,8 +206,17 @@ Other routes:
   approval in a data part; a message on the same task with the data part `{"approval_id": ...,
   "decision": "approve"|"reject"}` resumes it (same approver rules)
 
-`eval generate` derives `response`, `tool_calls`, `usage`, `latency_ms`, and `status` from these
-events; the A2A executor bridges the same events to task artifacts.
+Structured final answers: with `app/response_schema.json` (a JSON Schema, root an object) the
+agent answers in that shape (`app_utils/structured.py`: LangChain's provider strategy, strict,
+where the model has it, else a `final_answer` tool; `RESPONSE_FORMAT_STRATEGY`), every answer is
+checked (3 tries, then the `error` code `invalid_structured_response`), and a completed run
+sends the answer's JSON text as its only `message.delta` and the object as `message.end`'s
+`structured_response`; the answer tool never shows as `tool.call`. The A2A `response`
+artifact adds a data part with the object (`mediaType` `application/json`).
+
+`eval generate` derives `response`, `tool_calls`, `usage`, `latency_ms`, `status` and
+`structured_response` from these events; the A2A executor bridges the same events to task
+artifacts.
 
 ## Auth policy (`app/app_utils/auth.py`)
 
