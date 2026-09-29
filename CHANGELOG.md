@@ -8,16 +8,45 @@ migration" with the steps to follow.
 
 ## [Unreleased]
 
+The next release (0.3) lets agents call other agents for the user they serve, over A2A.
+Each agent knows the user and the agent in between, a person's approvals stay with that
+person, `peer add` declares the agents one asks, and `graph-agents-cli system` checks, wires
+and deploys several projects as one. It also keeps A2A tasks in Postgres so that replicas
+share them, adds reasoning effort and the Responses API for OpenAI-API models, a
+documentation site, skill rules found with the SkillOpt experiment and the benchmark that
+measured them, and fixes. What an upgrade from 0.2.0 changes, and the order to do it in, is
+in [Upgrading projects](website/src/guides/upgrading.md#02-to-03-unreleased); the guide to
+the new features is [Agents calling agents](website/src/guides/multi-agent.md). Parked
+medium- and low-priority issues are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
+### Breaking changes and migration
+
+Each change below can need an edit in an existing project; the upgrading guide's
+[0.2 to 0.3](website/src/guides/upgrading.md#02-to-03-unreleased) section lists every other
+change in behaviour.
+
+- **`jwt` reads the RFC 8693 `act` claim.** A token carrying it is an agent's for the user,
+  refused (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=`
+  (empty) to read every token as the user's own, as 0.2 did. A `custom` policy that returns an
+  invalid id (empty, over 256 characters, or with control characters) now fails the request
+  with 500 and logs the bug. A custom policy through which other agents forward users'
+  credentials must set `Principal.actor` (`policies/` is not upgraded): see the upgrading
+  guide.
+- **An API whose `auth` the project's auth policy can never serve stops the app outside
+  dev.** `lint` and `api add` check each API's `auth` against the project's auth policy:
+  `auth: exchange` or `auth: forward` under `shared-bearer`, and `auth: forward` under `jwt`
+  without `forward_audience`, are errors (exit 3): such an API never had a credential to send,
+  so every call to it failed with "the caller has no credential". Outside `APP_ENV=dev` the
+  running app now refuses to start with such an API too, as it does for `auth: exchange` (the
+  owner's decision of 2026-09-28; also `auth: forward` under the `langgraph-server` runtime);
+  under dev it logs why and starts. **Migration:** a 0.2 project with such a `forward` API
+  stops starting outside dev after the upgrade until the API gets `forward_audience`, moves to
+  `auth: exchange` or is removed (`scaffold upgrade` never rewrites `api-policy.yaml`, and
+  `lint` names the API). `lint` and `api add` also note a `forward` API with
+  `forward_audience` under `jwt` ("prefer auth: exchange").
+
 ### Added
 
-- **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
-  five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
-  agent, and a reference whose CLI and Skills pages are generated from the commands and
-  `skills/`. `.github/workflows/docs.yml` builds it with `mkdocs build --strict` and checks its
-  links on every pull request, and publishes it to GitHub Pages from `main` when the
-  repository variable `PUBLISH_DOCS` is `true`: the site is at
-  <https://ss7172.github.io/graph-agents-cli/>. Preview it with
-  `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
 - **Agents calling agents: the caller's identity.** A request another agent presents for a
   user is now told apart from the user's own. `Principal.id` stays the user (the subject);
   the new `Principal.actor` names the agent presenting the request (its id, the chain of
@@ -42,7 +71,21 @@ migration" with the steps to follow.
   such tokens locally (`--act`, repeatable, and `--azp`). The database gains
   `threads.actor`, `runs.actor` and `approvals.requester_actor` at startup (`ADD COLUMN IF NOT
   EXISTS`); existing rows are direct, and every 0.2 principal is direct, so 0.2 behaviour is
-  unchanged for them.
+  unchanged for them. KI-042 is narrowed (`jwt` maps `act` and `azp`; one issuer and no
+  mapping from scopes to permissions remain).
+- **Tools and the model know when another agent asks for the user.** `current_caller()`
+  returns the calling agent (`Caller.actor`, `actor_chain`, `delegated`); the new
+  `require_direct_caller()` refuses unless the user asks this agent directly; `require_owner`
+  still compares the user. `require_user_mentioned` follows `A2A_DELEGATED_MENTIONS`: `origin`
+  (the default) also needs the id in the user's own words the calling agent forwarded, and
+  refuses when none were forwarded (so, until the A2A client forwards them, a delegated
+  write the check guards is refused and the user names the record at this agent directly);
+  `refuse` always refuses; `request` keeps the 0.2 reading, and `lint` and `api show` point it
+  out when `.env` or a values file sets it. In a delegated run `UntrustedToolResults` fences
+  each human message the model reads as that agent's (`<agent_request from="...">`) and adds
+  one factual note after the system prompt saying an agent wrote the request, with the user's
+  own words when forwarded; `A2A_CALLER_NOTE=off` drops the note. A bad value of either
+  setting stops startup. The `fake` test model reads the request inside that fence.
 - **Approvals relayed across agents.** An approval rule may let named agents deliver the
   requester's decision from another agent: `decide_with: relayed` with `relayers` (actor
   ids) in `api-policy.yaml`, written by `api approval NAME --decide-with relayed --relayers
@@ -60,28 +103,54 @@ migration" with the steps to follow.
   `decide_with` and `relayers` to a relayed gate. The approvals table gains `decide_with`,
   `relayers`, `decided_via` and `display_digest` at startup, and the `langgraph dev` approvals
   file moves to version 2 (a version-1 file is read, its approvals direct).
-- **Tools and the model know when another agent asks for the user.** `current_caller()`
-  returns the calling agent (`Caller.actor`, `actor_chain`, `delegated`); the new
-  `require_direct_caller()` refuses unless the user asks this agent directly; `require_owner`
-  still compares the user. `require_user_mentioned` follows `A2A_DELEGATED_MENTIONS`: `origin`
-  (the default) also needs the id in the user's own words the calling agent forwarded, and
-  refuses when none were forwarded (so, until the A2A client forwards them, a delegated
-  write the check guards is refused and the user names the record at this agent directly);
-  `refuse` always refuses; `request` keeps the 0.2 reading, and `lint` and `api show` point it
-  out when `.env` or a values file sets it. In a delegated run `UntrustedToolResults` fences
-  each human message the model reads as that agent's (`<agent_request from="...">`) and adds
-  one factual note after the system prompt saying an agent wrote the request, with the user's
-  own words when forwarded; `A2A_CALLER_NOTE=off` drops the note. A bad value of either
-  setting stops startup. The `fake` test model reads the request inside that fence.
-- **Agents call other agents for the user with a token exchanged for theirs (`auth:
-  exchange`, RFC 8693).** An API declared `auth: exchange` with `exchange: {audience, scope,
-  resource}` is called with `Bearer <token>` (in `forward_header`, default `Authorization`):
-  a token the identity provider mints for that audience in exchange for the caller's own
-  verified token, naming this agent as the actor. It is asked for just before the call is
-  sent (`app_utils/token_exchange.py`), after the policy check, the approval gate and the
-  limits: a refused call, or one paused for a person's approval, never exchanges, and nothing
-  is exchanged while a request is authenticated. Tokens are kept in process memory only, per
-  user token, audience, scope and resource, for at most `expires_in`, 300 s
+- **A relayed decision shows what it decides and what will happen.** An approval of an A2A
+  message that approves another agent's approval carries `nested` (that approval, as the
+  message sends it: its call, reason, expiry, digest, and the approval it relays in turn) and
+  `effect` (the call that will actually happen, the agent that makes it and the agents `via`
+  which), in `/chat`, `GET /approvals`, the thread's approvals and the A2A approval request. It
+  expires 5 s before the approval it decides at the latest, and the nested calls' and the
+  effect's query and body are dropped on decision with the call's own (unless
+  `TRACE_CAPTURE=full`). `approvals list` and `run` print the effect first ("orders (via
+  billing) will POST /orders/ORD-1002/cancel (cancelOrder), as reported by orders", its body,
+  and a `via` line per agent), terminal-safe like the rest of the approval. With
+  `requester_actor` and `decided_via` on every approval, this narrows KI-009 (approvers still
+  see the requester as a hash).
+- **The A2A server speaks to agents calling for a user.** An agent's card declares the
+  graph-agents-cli origin extension
+  (`https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1`, optional): an agent calling
+  for a user may put the user's own words in the message metadata under that URI (`origin`:
+  `text`, `truncated`, `hops`), and for a delegated caller only they reach the run's private
+  credentials (`@origin`, where `require_user_mentioned` and the model's note read them),
+  capped at `A2A_ORIGIN_MAX_CHARS` (4000). They are never stored: every task is saved without
+  them. The run a decision resumes acts on the words of the request that paused it, whatever
+  words the decision carries (the person's "yes, go ahead" at the agent that relays it, or
+  none): the approval keeps them while it waits (never shown, and dropped once it is decided or
+  expired, whatever `TRACE_CAPTURE` says; fastapi runtime only, as LangGraph Server passes no
+  credentials to tools), so `require_user_mentioned` holds again on the resumed run and an
+  agent relaying the approval one level further rebuilds the very call the person approved.
+  More `hops` than `AUTH_MAX_DELEGATION_DEPTH` fails the task (`delegation chain too deep`). A
+  task waiting for approval carries `approval_json`, the approvals as exact JSON text, and its
+  text shows each call's body (up to 2,000 characters) (KI-026). A failed task, or a refused
+  decision, carries a data part `{"type": "error", "code": ...}` (`thread_busy`,
+  `approval_direct_only`, ...). A decision may be sent on the context alone, naming the waiting
+  task in `referenceTaskIds`.
+- **A2A tasks follow their approval's outcome** (KI-025). However an approval ends (a decision
+  over A2A, on the task or on its context; one taken over HTTP, the person at this agent
+  included; or its expiry), the requester's `input-required` tasks on that thread that wait on
+  it take the resumed run's outcome (`completed`, `failed`, or `input-required` with the new
+  approvals) and say where it continued (`Continued in task <id>.`, `... was approved outside
+  this task; the run continued there.`, `... expired before anyone decided.`), with the run's
+  reply. Both task stores; another principal's task on the thread is left alone. `role:` gates
+  are decided over HTTP, not A2A: documented as a design choice.
+- **Agents call other agents for the user with a token exchanged for theirs (`auth: exchange`,
+  RFC 8693).** An API declared `auth: exchange` with `exchange: {audience, scope, resource}` is
+  called with `Bearer <token>` (in `forward_header`, default `Authorization`): a token the
+  identity provider mints for that audience in exchange for the caller's own verified token,
+  naming this agent as the actor. It is asked for just before the call is sent
+  (`app_utils/token_exchange.py`), after the policy check, the approval gate and the limits: a
+  refused call, or one paused for a person's approval, never exchanges, and nothing is
+  exchanged while a request is authenticated. Tokens are kept in process memory only, per user
+  token, audience, scope and resource, for at most `expires_in`, 300 s
   (`TOKEN_EXCHANGE_MAX_TTL_S`) and the user's own token's expiry, less 30 s; concurrent calls
   share one exchange. A user token with 10 s or less left is not exchanged; an issuer refusal
   is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (10 s); three issuer failures in a row
@@ -91,12 +160,12 @@ migration" with the steps to follow.
   run resumed by a role approver), and the tool reads why. The issuer and this agent's client
   are `TOKEN_EXCHANGE_URL` (https outside dev unless loopback or
   `TOKEN_EXCHANGE_ALLOW_HTTP=true`), `TOKEN_EXCHANGE_CLIENT_ID`, `TOKEN_EXCHANGE_CLIENT_SECRET`
-  (`client_secret_basic`, or `client_secret_post` through `TOKEN_EXCHANGE_CLIENT_AUTH`); outside
-  `APP_ENV=dev` the app refuses to start with an exchange API and any of the three missing, or
-  under `shared-bearer` or `langgraph-server`, and a malformed setting stops it everywhere.
-  Exchange APIs receive the request's `X-Request-ID` and trace context, as `auth: forward` ones
-  do (the owner's decision). A call to an agent already in the request's delegation chain, or
-  to this agent itself, is refused before anything is sent. New metrics:
+  (`client_secret_basic`, or `client_secret_post` through `TOKEN_EXCHANGE_CLIENT_AUTH`);
+  outside `APP_ENV=dev` the app refuses to start with an exchange API and any of the three
+  missing, or under `shared-bearer` or `langgraph-server`, and a malformed setting stops it
+  everywhere. Exchange APIs receive the request's `X-Request-ID` and trace context, as `auth:
+  forward` ones do (the owner's decision). A call to an agent already in the request's
+  delegation chain, or to this agent itself, is refused before anything is sent. New metrics:
   `agent_token_exchanges_total{api, outcome}` (`issued`, `cached`, `refused`, `no_actor`,
   `unavailable`, `circuit_open`) and `agent_token_exchange_duration_seconds{api}`; one log line
   per exchange sent and a warning when the breaker opens, never a token. **An exchanged token
@@ -107,9 +176,9 @@ migration" with the steps to follow.
   user's approvals there. The refusal is remembered for `TOKEN_EXCHANGE_FAILURE_TTL_S` (metric
   outcome `no_actor`). An API opts in with `exchange.allow_actorless: true`, for a called agent
   that sets `AUTH_JWT_DIRECT_CLIENTS` and lists this agent as `client:<its client id>` in
-  `AUTH_ALLOWED_ACTORS`; the first such token then logs a warning (KI-149). `jwt` now also keeps the token's
-  `exp` for this (`keep_subject_token` takes `exp`). The authentication guide has a Keycloak
-  recipe. Existing projects get the runtime from `scaffold upgrade` (a new
+  `AUTH_ALLOWED_ACTORS`; the first such token then logs a warning (KI-149). `jwt` now also
+  keeps the token's `exp` for this (`keep_subject_token` takes `exp`). The authentication guide
+  has a Keycloak recipe. Existing projects get the runtime from `scaffold upgrade` (a new
   `app_utils/token_exchange.py`; `api_client.py`, `auth.py`, `metrics.py`, `telemetry.py`,
   `fast_api_app.py`).
 - **`auth: forward` can forward the caller's own token to an agent it was minted for:
@@ -118,8 +187,9 @@ migration" with the steps to follow.
   names the audience; a token minted for this agent alone is never replayed at another. Prefer
   `auth: exchange`.
 - **`api add --auth exchange --audience AUD [--scope S] [--resource URI] [--allow-actorless]`**
-  declares an exchange API (`--allow-actorless` writes `exchange.allow_actorless: true`); `--audience` with `--auth forward` writes `forward_audience`, and `--forward-header`
-  goes with either mode. The first exchange API adds `TOKEN_EXCHANGE_CLIENT_SECRET` to the
+  declares an exchange API (`--allow-actorless` writes `exchange.allow_actorless: true`);
+  `--audience` with `--auth forward` writes `forward_audience`, and `--forward-header` goes
+  with either mode. The first exchange API adds `TOKEN_EXCHANGE_CLIENT_SECRET` to the
   manifest's `secrets.keys`, `TOKEN_EXCHANGE_URL` and `TOKEN_EXCHANGE_CLIENT_ID` to
   `.env.example` (the secret commented out) and to the chart's `values.yaml` (a placeholder URL
   and the project's name), and lists what is left: the issuer's permission to exchange for the
@@ -128,31 +198,34 @@ migration" with the steps to follow.
   with it, the callee's `AUTH_JWT_DIRECT_CLIENTS` and this agent as `client:<id>` in
   `AUTH_ALLOWED_ACTORS`. `lint` notes the same for every API that opts in. `api remove` takes
   them away with the last exchange API, and `create --api-policy` with an exchange API renders
-  the same. `api show` names the audience, scope and resource, and the opt-in. The schema accepts
-  `forward_header` with `exchange` as well as `forward` (both SHARED copies; the messages name
-  every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
+  the same. `api show` names the audience, scope and resource, and the opt-in. The schema
+  accepts `forward_header` with `exchange` as well as `forward` (both SHARED copies; the
+  messages name every mode), and `create`, `lint` and `api add` refuse `auth: exchange` under
   `langgraph-server` as they refuse `auth: forward`.
 - **JSON-RPC APIs and other agents in `api-policy.yaml`: `protocol`, `rpc_method` and
-  `a2a_operation`.** An API may set `protocol: jsonrpc` (a JSON-RPC 2.0 API) or `protocol:
-  a2a` (another agent over A2A 1.0 JSON-RPC, with its endpoint in `a2a: {path: /a2a/<name>}`),
-  and any API a `description`. For those, every POST must send one JSON-RPC request object
-  (a batch, a notification, extra members, a body that is not plain JSON, or a body on a GET
-  or HEAD is refused before sending), and the policy client reads what it is from the body,
-  never from the tool's label: its method (`rpc_method`; under `a2a` an A2A 0.3 name such as
+  `a2a_operation`.** An API may set `protocol: jsonrpc` (a JSON-RPC 2.0 API) or `protocol: a2a`
+  (another agent over A2A 1.0 JSON-RPC, with its endpoint in `a2a: {path: /a2a/<name>}`), and
+  any API a `description`. For those, every POST must send one JSON-RPC request object (a
+  batch, a notification, extra members, a body that is not plain JSON, or a body on a GET or
+  HEAD is refused before sending), and the policy client reads what it is from the body, never
+  from the tool's label: its method (`rpc_method`; under `a2a` an A2A 0.3 name such as
   `tasks/cancel` is read as its 1.0 name, `CancelTask`) and, for an A2A message whose parts
   name an approval, what it decides (`a2a_operation`: `reject` only when every such part
-  rejects, else `approve`; a message method in any letter case is read for a decision). Operation entries may pin `rpc_method` and `a2a_operation`: an allow
-  must match them; a denial or gate covers every call they describe whatever its path, label
-  or spelling. A `protocol: a2a` API that can send messages must gate or deny `a2a_operation:
-  approve`, so an agent never decides on its own an approval the agent it calls waits for
-  (the policy is invalid otherwise, and the client refuses such a message at runtime too), and
-  refuses `auth: none`; JSON-RPC APIs allow GET, POST and HEAD only. A tool's `operation_id`
-  that names an entry pinning another method or decision is refused (the label cannot hide a
-  request). Plain `http` APIs, and every entry without the new keys, are judged exactly as in
-  0.2 (property tests against the 0.2.0 rules). With `protocol: a2a`, the transport rule for
-  peers applies: outside `APP_ENV=dev` a credential goes to such an API over https only,
-  unless the host is loopback, a single-label or a `.svc` name. Both SHARED copies; every
-  message is in the schema reference.
+  rejects, else `approve`; a message method in any letter case is read for a decision).
+  Operation entries may pin `rpc_method` and `a2a_operation`: an allow must match them; a
+  denial or gate covers every call they describe whatever its path, label or spelling. A
+  `protocol: a2a` API that can send messages must gate or deny `a2a_operation: approve`, so an
+  agent never decides on its own an approval the agent it calls waits for (the policy is
+  invalid otherwise, and the client refuses such a message at runtime too), and refuses `auth:
+  none`; JSON-RPC APIs allow GET, POST and HEAD only. A tool's `operation_id` that names an
+  entry pinning another method or decision is refused (the label cannot hide a request). Plain
+  `http` APIs, and every entry without the new keys, are judged exactly as in 0.2 (property
+  tests against the 0.2.0 rules). With `protocol: a2a`, the transport rule for peers applies:
+  outside `APP_ENV=dev` a credential goes to such an API over https only, unless the host is
+  loopback, a single-label or a `.svc` name (`<ENV> must use https outside APP_ENV=dev to carry
+  credentials`); other APIs keep their transport. Both SHARED copies; every message is in the
+  schema reference. KI-122 is closed for these APIs: their gates name `rpc_method` or
+  `a2a_operation`, which no label can hide.
 - **`lint` and `api` for JSON-RPC APIs and A2A peers.** `API_CALLS` entries take `rpc_method`
   and `a2a_operation`: every POST to a `protocol: jsonrpc|a2a` API declares its `rpc_method`
   (an A2A 0.3 name is read as its 1.0 name), and lint judges the declaration as the client
@@ -177,76 +250,23 @@ migration" with the steps to follow.
   payload), the decision and the ledger's bound approvals; the approval object and its
   `digest` include them. Calls to `http` APIs keep their three-field identity, and their
   records, decisions and digests are unchanged.
-- **`limits.max_response_bytes` caps an API's answers.** With it (1 to 67108864 bytes), the
-  client reads a response body, decoded, only up to that many bytes: past it, the answer is
-  discarded and the call fails with `<api> answered with more than N bytes; discarded` (a
-  declared `Content-Length` over the cap is refused before reading). Memory stays bounded
-  whatever the answer's compression: a capped call asks for gzip or deflate at most and
-  decodes the body itself, never past the cap (httpx decodes each network read whole, and 32
-  KiB of zstd is 1 GiB), and an answer in any other content encoding (zstd, br, an unknown or
-  a stacked one) is refused unread: `<api> answered in a content encoding other than gzip or
-  deflate, which limits.max_response_bytes cannot bound; discarded`. `api add
-  --max-response-bytes N` and `api limits NAME --max-response-bytes N|none` set it, and `api
-  limits` edits keep it; `api show` prints it. Unset, answers are read whole as in 0.2 (no
-  default cap for existing APIs). Both SHARED copies.
-- **Other agents get the request id and trace context, and credentials only over TLS.** A
-  call to an API declared `protocol: a2a` now carries the request's `X-Request-ID` and, under
-  OTLP, its W3C trace context whatever its `auth` (the owner's decision: A2A peers and APIs
-  acting for the user, never other third parties), so a peer reached with `auth: bearer` is
-  correlated too, under `shared-bearer` and `langgraph-server` included (KI-146 narrowed);
-  `auth: bearer` and `auth: none` APIs over `http` or `jsonrpc` still receive nothing. Such an
-  API that carries a credential refuses a plain `http` base URL outside `APP_ENV=dev`, unless
-  the host is loopback, a single-label name or a `.svc` name (`<ENV> must use https outside
-  APP_ENV=dev to carry credentials`); other APIs keep their transport. The docs,
-  `.env.example` and the environment reference name the peers.
-
-- **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
-  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:
-  every request to `/v1/responses`; `false`: Chat Completions; unset: langchain-openai
-  chooses, as before), for `openai` and `openai-compatible`; the judge reads
-  `JUDGE_REASONING_EFFORT` and `JUDGE_USE_RESPONSES_API`, defaulting to the agent's when it is
-  an OpenAI-API model too. A model that refuses function tools with a reasoning effort on Chat
-  Completions (the experiments' finding F15: its first call failed with a 400 naming
-  `/v1/responses`) now works with the switch on, tools, streaming and token usage included. A
-  bad value, or either setting for another provider, stops startup. `.env.example` and, for
-  OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
-  runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
-- **The A2A server speaks to agents calling for a user.** An agent's card declares the
-  graph-agents-cli origin extension (`https://ss7172.github.io/graph-agents-cli/a2a/ext/origin/v1`,
-  optional): an agent calling for a user may put the user's own words in the message metadata
-  under that URI (`origin`: `text`, `truncated`, `hops`), and for a delegated caller only they
-  reach the run's private credentials (`@origin`, where `require_user_mentioned` and the
-  model's note read them), capped at `A2A_ORIGIN_MAX_CHARS` (4000). They are never stored:
-  every task is saved without them. The run a decision resumes acts on the words of the
-  request that paused it, whatever words the decision carries (the person's "yes, go ahead"
-  at the agent that relays it, or none): the approval keeps them while it waits (never shown,
-  and dropped once it is decided or expired, whatever `TRACE_CAPTURE` says; fastapi runtime
-  only, as LangGraph Server passes no credentials to tools), so `require_user_mentioned`
-  holds again on the resumed run and an agent relaying the approval one level further
-  rebuilds the very call the person approved. More `hops` than `AUTH_MAX_DELEGATION_DEPTH`
-  fails the task (`delegation chain too deep`). A task waiting for approval carries `approval_json`, the
-  approvals as exact JSON text, and its text shows each call's body (up to 2,000 characters)
-  (KI-026). A failed task, or a refused decision, carries a data part
-  `{"type": "error", "code": ...}` (`thread_busy`, `approval_direct_only`, ...). A decision may
-  be sent on the context alone, naming the waiting task in `referenceTaskIds`.
-- **A2A tasks follow their approval's outcome** (KI-025). However an approval ends (a decision
-  over A2A, on the task or on its context; one taken over HTTP, the person at this agent
-  included; or its expiry), the requester's `input-required` tasks on that thread that wait on
-  it take the resumed run's outcome (`completed`, `failed`, or `input-required` with the new
-  approvals) and say where it continued (`Continued in task <id>.`, `... was approved outside
-  this task; the run continued there.`, `... expired before anyone decided.`), with the run's
-  reply. Both task stores; another principal's task on the thread is left alone. `role:` gates
-  are decided over HTTP, not A2A: documented as a design choice.
-- **A relayed decision shows what it decides and what will happen.** An approval of an A2A
-  message that approves another agent's approval carries `nested` (that approval, as the
-  message sends it: its call, reason, expiry, digest, and the approval it relays in turn) and
-  `effect` (the call that will actually happen, the agent that makes it and the agents `via`
-  which), in `/chat`, `GET /approvals`, the thread's approvals and the A2A approval request.
-  It expires 5 s before the approval it decides at the latest, and the nested calls' and the
-  effect's query and body are dropped on decision with the call's own (unless
-  `TRACE_CAPTURE=full`). `approvals list` and `run` print the effect first ("orders (via
-  billing) will POST /orders/ORD-1002/cancel (cancelOrder), as reported by orders", its body,
-  and a `via` line per agent), terminal-safe like the rest of the approval.
+- **Requests keep one request id and one trace across agents (`PROPAGATE_TRACE_HEADERS`).**
+  An agent that called another agent started a new request id and a new trace there, so a
+  request across agents could not be followed from end to end. Under
+  `PROPAGATE_TRACE_HEADERS=peers` (the default), every call through the policy client to
+  another agent (`protocol: a2a`, whatever its `auth`) or to an API that acts for the calling
+  user (`auth: forward`, `auth: exchange`) carries the request's `X-Request-ID` and, under
+  OTLP tracing, its W3C trace context (`traceparent`, `tracestate`). Other APIs (`auth:
+  bearer` or `auth: none` over `http` or `jsonrpc`) are third parties and never receive them.
+  An incoming `traceparent` is continued on the A2A routes (`/a2a/*`) only, so a caller of
+  the public routes (`/chat`, the thread and approval routes) cannot choose the agent's trace
+  ids; its `X-Request-ID` is still taken and echoed. `all` sends them to every API and
+  continues a trace on every path (an agent behind a tracing gateway); `off` neither. `true`
+  reads as `peers` (logged once) and `false` (also `0`, `no`) as `off`; any other value stops
+  startup. Under `shared-bearer` and `langgraph-server`, which refuse `forward` and
+  `exchange`, only an agent's peers receive them. The headers are not bound by approvals.
+  Existing projects get it from `scaffold upgrade` (`app_utils/telemetry.py`,
+  `middleware.py`, `api_client.py`, `fast_api_app.py`).
 - **An A2A client in the template: `app_utils/a2a_client.py`** (B3; replaces the
   experiment's hand-written peers client). `peer_tools(PEERS)` gives the model
   `ask_agent(agent, request)` (its description lists the peers and what each does) and, for
@@ -309,56 +329,45 @@ migration" with the steps to follow.
   shared database's `max_connections` and `deploy.parallel`. A file that cannot be used exits 3
   (an unknown project or one two agents name, an edge to an unknown agent or to itself, one
   agent called twice by another, two agents with one client id, an `exchange` edge without
-  `identity`, an environment a manifest does not know). `system apply` writes both sides of every edge,
-  idempotently and one diff per project: in each caller what `peer add` writes, and per
-  environment the peer URLs, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the called
-  agent's pods (`TOKEN_EXCHANGE_CLIENT_ID` is the file's client id); in each called agent its
-  `appUrl` per environment, `AUTH_JWT_AUDIENCE` when empty, the callers in
+  `identity`, an environment a manifest does not know). `system apply` writes both sides of
+  every edge, idempotently and one diff per project: in each caller what `peer add` writes, and
+  per environment the peer URLs, `TOKEN_EXCHANGE_URL` and `networkPolicy.egressTo` to the
+  called agent's pods (`TOKEN_EXCHANGE_CLIENT_ID` is the file's client id); in each called
+  agent its `appUrl` per environment, `AUTH_JWT_AUDIENCE` when empty, the callers in
   `AUTH_ALLOWED_ACTORS`, and `networkPolicy.ingressFrom` for the callers' pods (plus the
   Gateway's namespace while the route publishes paths). It never writes gates (it prints the
   `api approval ... --decide-with relayed` line a relay needs), secrets, `.env` or local
   settings, removes a peer of the file's agents that left `calls`, keeps an existing peer's
   tuning, and never takes access away. `system check` runs SC01-SC13 (runtimes and charts,
   edges in step, paths, issuer and audience, appUrl against the URL dialled, replicas with
-  in-memory tasks, relays the called agent's gates refuse, allowed actors, cycles and delegation
-  depth, a shared database's connection budget, the callers' secrets, exchange under
+  in-memory tasks, relays the called agent's gates refuse, allowed actors, cycles and
+  delegation depth, a shared database's connection budget, the callers' secrets, exchange under
   `langgraph-server`, an A2A path still public), and with `--live` SC14-SC15 (Services with a
-  ready endpoint, read from their EndpointSlices since the v1 Endpoints API is deprecated; cards
-  and the token URL answering; the Secrets' key names), using each
-  project's recorded kube context and never the current one outside dev; exit 1 on an error,
-  `--json`. `system graph` draws the system (mermaid, dot or json); `system delegations` prints
-  what the issuer must allow each client and guarantee. `system deploy --env ENV` checks, then
-  runs `graph-agents-cli deploy` in every project in waves, callees first (a cycle broken in
-  file order), at most `--parallel` at once (default 3), stopping after a failed wave unless
+  ready endpoint, read from their EndpointSlices since the v1 Endpoints API is deprecated;
+  cards and the token URL answering; the Secrets' key names), using each project's recorded
+  kube context and never the current one outside dev; exit 1 on an error, `--json`. `system
+  graph` draws the system (mermaid, dot or json); `system delegations` prints what the issuer
+  must allow each client and guarantee. `system deploy --env ENV` checks, then runs
+  `graph-agents-cli deploy` in every project in waves, callees first (a cycle broken in file
+  order), at most `--parallel` at once (default 3), stopping after a failed wave unless
   `--keep-going`, printing each agent's build, load and rollout times, then checks `--live`;
-  outside dev it requires every project's recorded context, and projects in `argocd` mode
-  (a commit and a pull request each) go one at a time. `api/_files` edits now build on the
-  planned text of a file, so one plan can hold several peers. The NetworkPolicy rules select an
-  agent's pods by the chart's selector labels (name and release: the bundled database shares
-  the release label), and were checked on a kind cluster with kindnet enforcing them: callers
-  reach a called agent's Service port 80 through an egress rule on the pods' port 8000 (a rule
-  on port 80 blocks them), and a pod in another namespace is refused. KI-159 and KI-160 park
-  the residuals (LangGraph Server's own pool in SC10, a local environment's `.env` unchecked);
+  outside dev it requires every project's recorded context, and projects in `argocd` mode (a
+  commit and a pull request each) go one at a time. `api/_files` edits now build on the planned
+  text of a file, so one plan can hold several peers. The NetworkPolicy rules select an agent's
+  pods by the chart's selector labels (name and release: the bundled database shares the
+  release label), and were checked on a kind cluster with kindnet enforcing them: callers reach
+  a called agent's Service port 80 through an egress rule on the pods' port 8000 (a rule on
+  port 80 blocks them), and a pod in another namespace is refused. KI-159 and KI-160 park the
+  residuals (LangGraph Server's own pool in SC10, a local environment's `.env` unchecked);
   KI-158 (SC14 on the deprecated Endpoints API) was fixed before release.
-- **gac-bench, contributor tooling for the skills** (`tools/skillopt/`): a benchmark of
-  realistic graph-agents-cli tasks for each of the six skills, 101 of them, including this
-  release's agent-to-agent features (`peer add`, relayed approval gates, `auth: exchange`,
-  `rpc_method` rules and `system apply`), each with a deterministic verifier and scripted gold
-  and broken solutions, in frozen train, val and test splits; and
-  `gac_skillopt`, an environment in which [SkillOpt](https://github.com/microsoft/SkillOpt)
-  runs a candidate skill in Claude Code or Codex, isolated so that the session sees only that
-  skill, scores it and proposes edits. It found the skill rules this release adopts after
-  review, and `tools/skillopt/results/` keeps every measurement. It is never a dependency of
-  the CLI or of a generated project and is in neither the wheel nor the sdist (a fast test
-  guards the build configuration); CI runs its unit tests. CONTRIBUTING.md and the site's
-  [Skills benchmark](website/src/reference/skills-benchmark.md) page say how to run it.
-- **A guide to agents calling agents** ([website/src/guides/multi-agent.md](website/src/guides/multi-agent.md)):
-  who acts for whom, a walk-through from `peer add` to an eval at the entry agent, relayed
-  approvals, the user's own words, the system view, following one request across agents,
-  sizing, the threat model with what remains, and the limits. The security checklist adds
-  the internal A2A paths, what the issuer must allow and the salt for agents that ask
-  others; the observability guide names the `actor` log field; the manifest reference says
-  who adds `TOKEN_EXCHANGE_CLIENT_SECRET` and peers' keys to `secrets.keys`.
+- **A guide to agents calling agents**
+  ([website/src/guides/multi-agent.md](website/src/guides/multi-agent.md)): who acts for whom,
+  a walk-through from `peer add` to an eval at the entry agent, relayed approvals, the user's
+  own words, the system view, following one request across agents, sizing, the threat model
+  with what remains, and the limits. The security checklist adds the internal A2A paths, what
+  the issuer must allow and the salt for agents that ask others; the observability guide names
+  the `actor` log field; the manifest reference says who adds `TOKEN_EXCHANGE_CLIENT_SECRET`
+  and peers' keys to `secrets.keys`.
 - **The skills cover agents calling agents.** The workflow skill asks in Phase 0 whether the
   agent asks other agents or is called by them, declares peers with `peer add` or `system
   apply` (never a hand-written client), runs `lint`, `peer show --check` or `system check`,
@@ -371,38 +380,51 @@ migration" with the steps to follow.
   says `peer add` writes the client side and that `langgraph-server` calls other agents only
   with `auth: bearer`. Each changed skill passes gac-bench's fact-check (every command and
   option exists; within 1.25 times the 0.2.0 text).
+- **`limits.max_response_bytes` caps an API's answers.** With it (1 to 67108864 bytes), the
+  client reads a response body, decoded, only up to that many bytes: past it, the answer is
+  discarded and the call fails with `<api> answered with more than N bytes; discarded` (a
+  declared `Content-Length` over the cap is refused before reading). Memory stays bounded
+  whatever the answer's compression: a capped call asks for gzip or deflate at most and
+  decodes the body itself, never past the cap (httpx decodes each network read whole, and 32
+  KiB of zstd is 1 GiB), and an answer in any other content encoding (zstd, br, an unknown or
+  a stacked one) is refused unread: `<api> answered in a content encoding other than gzip or
+  deflate, which limits.max_response_bytes cannot bound; discarded`. `api add
+  --max-response-bytes N` and `api limits NAME --max-response-bytes N|none` set it, and `api
+  limits` edits keep it; `api show` prints it. Unset, answers are read whole as in 0.2 (no
+  default cap for existing APIs). Both SHARED copies.
+- **Reasoning effort and the Responses API for OpenAI-API models:** `MODEL_REASONING_EFFORT`
+  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) and `MODEL_USE_RESPONSES_API` (`true`:
+  every request to `/v1/responses`; `false`: Chat Completions; unset: langchain-openai
+  chooses, as before), for `openai` and `openai-compatible`; the judge reads
+  `JUDGE_REASONING_EFFORT` and `JUDGE_USE_RESPONSES_API`, defaulting to the agent's when it is
+  an OpenAI-API model too. A model that refuses function tools with a reasoning effort on Chat
+  Completions (the experiments' finding F15: its first call failed with a 400 naming
+  `/v1/responses`) now works with the switch on, tools, streaming and token usage included. A
+  bad value, or either setting for another provider, stops startup. `.env.example` and, for
+  OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
+  runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
+- **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
+  five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
+  agent, and a reference whose CLI and Skills pages are generated from the commands and
+  `skills/`. `.github/workflows/docs.yml` builds it with `mkdocs build --strict` and checks its
+  links on every pull request, and publishes it to GitHub Pages from `main` when the
+  repository variable `PUBLISH_DOCS` is `true`: the site is at
+  <https://ss7172.github.io/graph-agents-cli/>. Preview it with
+  `uv run --group docs mkdocs serve -f website/mkdocs.yml`.
+- **gac-bench, contributor tooling for the skills** (`tools/skillopt/`): a benchmark of
+  realistic graph-agents-cli tasks for each of the six skills, 101 of them, including this
+  release's agent-to-agent features (`peer add`, relayed approval gates, `auth: exchange`,
+  `rpc_method` rules and `system apply`), each with a deterministic verifier and scripted gold
+  and broken solutions, in frozen train, val and test splits; and
+  `gac_skillopt`, an environment in which [SkillOpt](https://github.com/microsoft/SkillOpt)
+  runs a candidate skill in Claude Code or Codex, isolated so that the session sees only that
+  skill, scores it and proposes edits. It found the skill rules this release adopts after
+  review, and `tools/skillopt/results/` keeps every measurement. It is never a dependency of
+  the CLI or of a generated project and is in neither the wheel nor the sdist (a fast test
+  guards the build configuration); CI runs its unit tests. CONTRIBUTING.md and the site's
+  [Skills benchmark](website/src/reference/skills-benchmark.md) page say how to run it.
 
 ### Changed
-
-- **`lint` and `api add` check each API's `auth` against the project's auth policy.**
-  `auth: exchange` or `auth: forward` under `shared-bearer`, and `auth: forward` under `jwt`
-  without `forward_audience`, are errors (exit 3): such an API never had a credential to send,
-  so every call to it failed with "the caller has no credential". Outside `APP_ENV=dev` the
-  running app now refuses to start with such an API too, as it does for `auth: exchange` (the
-  owner's decision of 2026-09-28; also `auth: forward` under the `langgraph-server` runtime);
-  under dev it logs why and starts. **Migration:** a 0.2 project with such a `forward` API
-  stops starting outside dev after the upgrade until the API gets `forward_audience`, moves to
-  `auth: exchange` or is removed (`scaffold upgrade` never rewrites `api-policy.yaml`, and
-  `lint` names the API). `lint` and `api add` also note a `forward` API with
-  `forward_audience` under `jwt` ("prefer auth: exchange").
-
-- **`PROPAGATE_TRACE_HEADERS` takes `peers` (the default), `all` or `off`, and a
-  `traceparent` is continued on the A2A routes only by default.** The owner adopted, for 0.3,
-  that under the peers scope an incoming `traceparent` is continued only on `/a2a/*`: a caller
-  of the public routes (`/chat`, the thread and approval routes) can no longer choose the
-  agent's trace ids (its `X-Request-ID` is still taken and echoed). `peers` sends the request
-  id and trace context to other agents (`protocol: a2a`) and to `auth: forward` and `auth:
-  exchange` APIs, as before; `all` sends them to every API and continues a trace on every path
-  (an agent behind a tracing gateway: set it to keep 0.2's inbound behaviour); `off` neither.
-  `true` (the 0.2 default) reads as `peers` and is logged once; `false` (and `0`, `no`) is
-  `off`; any other value stops startup. Existing projects get it from `scaffold upgrade`
-  (`app_utils/telemetry.py`, `middleware.py`, `api_client.py`, `fast_api_app.py`).
-- **`jwt` reads the `act` claim.** A token carrying it is an agent's for the user, refused
-  (403) until `AUTH_ALLOWED_ACTORS` lists the agent; set `AUTH_JWT_ACTOR_CLAIM=` (empty) to
-  read every token as the user's own, as 0.2 did. A `custom` policy that returns an invalid id
-  (empty, over 256 characters, or with control characters) now fails the request with 500 and
-  logs the bug. A custom policy through which other agents forward users' credentials must set
-  `Principal.actor` (`policies/` is not upgraded): see the upgrading guide.
 
 - **The README is a short entry point** with absolute links (it is also the PyPI page). Its
   former sections, including "Known limitations" and "Where it is behind", moved to the
@@ -509,20 +531,6 @@ migration" with the steps to follow.
   made before anything is built. Outside `dev`, where the chart requires the Secret
   (`secretOptional: false`), a missing Secret stops the deploy (exit 1) before the build.
   `secrets apply` still exits 3 when there is nothing to apply.
-- **Requests keep one request id and one trace across agents.** An agent that called another
-  agent over A2A (or any API) started a new request id and a new trace there, so a
-  multi-agent request could not be followed from end to end. Every call through the policy
-  client to an `auth: forward` API (another agent, reached with the caller's own credential)
-  now carries the request's `X-Request-ID` and, under OTLP tracing, its W3C trace context
-  (`traceparent`, `tracestate`), and a request that carries a `traceparent` continues that
-  trace. `auth: bearer` and `auth: none` APIs are third parties and never receive these
-  headers. In 0.2 only a custom auth policy gives a caller a credential to forward
-  (`shared-bearer` and `jwt` principals carry none) and `langgraph-server` refuses
-  `auth: forward`, so with the built-in policies, and under `langgraph-server`, no API
-  receives them (KI-146). The headers are not bound by approvals.
-  `PROPAGATE_TRACE_HEADERS=false` turns both off. Existing projects get it from
-  `scaffold upgrade` (it changes `app_utils/telemetry.py`, `middleware.py`, `api_client.py`
-  and `fast_api_app.py`).
 - **A2A tasks are shared by every replica and survive restarts** (KI-024, now Low). The task
   store was in process memory, per replica, while the production values run two replicas:
   `GetTask`, `ListTasks`, `CancelTask` and a message naming a `taskId` (an approval decision)
@@ -558,23 +566,6 @@ migration" with the steps to follow.
   Existing projects get it from `scaffold upgrade` (it changes `app_utils/content.py`,
   `chat.py` and `a2a.py`); an `agent.py` that builds its own middleware list keeps
   `UntrustedToolResults` in it.
-- **Under `langgraph-server`, a native run no longer chooses who its tools act for.** The
-  server's native run API (`POST /threads/{thread_id}/runs`, `/runs/wait`, `/runs/stream`
-  and the thread-less `/runs` routes; the default `/threads` path prefix publishes the first
-  three) takes the run context from the request (`context`, or `config.configurable`, which
-  the server copies into it), and tools read the calling principal from that context
-  (`current_caller()`, `require_owner`, `require_direct_caller`, `require_user_mentioned`).
-  The auth handler checked whose thread it was but passed the context through, as in 0.2.0:
-  any authenticated user could have the tools act as another principal, with roles of their
-  choosing (`{"principal_id": "bob", "roles": ["ops"]}`), and an agent presenting a user's
-  request could drop its `@actor` and pass `require_direct_caller` as the user. The handler
-  now puts the caller's own run context on every run it authorizes, whatever the request
-  sent: the caller's id, its roles (an agent's are only those `AUTH_DELEGATED_ROLES` lends)
-  and its public attributes with `@actor` (never credentials), the context `/chat` sends
-  (`authenticate` publishes it in the server's user as `run_context`). A native run that
-  sends none now acts for its caller, where every tool that needs one refused (KI-020 no
-  longer lists that). Studio under `langgraph dev` keeps the context it sends. Existing
-  projects get it from `scaffold upgrade` (it changes `app_utils/auth.py` and `chat.py`).
 - **Streamed runs on an OpenAI-compatible endpoint record their token usage.** The generated
   agent now asks OpenAI-API models for usage on streamed responses
   (`stream_options.include_usage`); langchain-openai did so by itself only for
@@ -592,6 +583,40 @@ migration" with the steps to follow.
 - KI-113: the documentation site is published at
   [ss7172.github.io/graph-agents-cli](https://ss7172.github.io/graph-agents-cli/), so the
   README's links to it work.
+
+### Security
+
+- **Under `langgraph-server`, a native run no longer chooses who its tools act for.** The
+  server's native run API (`POST /threads/{thread_id}/runs`, `/runs/wait`, `/runs/stream`
+  and the thread-less `/runs` routes; the default `/threads` path prefix publishes the first
+  three) takes the run context from the request (`context`, or `config.configurable`, which
+  the server copies into it), and tools read the calling principal from that context
+  (`current_caller()`, `require_owner`, `require_direct_caller`, `require_user_mentioned`).
+  The auth handler checked whose thread it was but passed the context through, as in 0.2.0:
+  any authenticated user could have the tools act as another principal, with roles of their
+  choosing (`{"principal_id": "bob", "roles": ["ops"]}`), and an agent presenting a user's
+  request could drop its `@actor` and pass `require_direct_caller` as the user. The handler
+  now puts the caller's own run context on every run it authorizes, whatever the request
+  sent: the caller's id, its roles (an agent's are only those `AUTH_DELEGATED_ROLES` lends)
+  and its public attributes with `@actor` (never credentials), the context `/chat` sends
+  (`authenticate` publishes it in the server's user as `run_context`). A native run that
+  sends none now acts for its caller, where every tool that needs one refused (KI-020 no
+  longer lists that). Studio under `langgraph dev` keeps the context it sends. Existing
+  projects get it from `scaffold upgrade` (it changes `app_utils/auth.py` and `chat.py`).
+- **Agents that call each other for a user fail closed.** A request another agent presents
+  for a user is refused until the called agent lists that agent (`AUTH_ALLOWED_ACTORS`,
+  empty by default), keeps none of the user's roles (`AUTH_DELEGATED_ROLES`, empty), reaches
+  only the threads, tasks and approvals it started for that user, and never decides an
+  approval unless the gate relays through it by name (`decide_with: relayed` with
+  `relayers`, naming the approval's digest; the default is `direct`). A calling agent
+  exchanges tokens only after the policy check and the approval gate, refuses an exchanged
+  token that names no actor unless the API opts in, sends credentials to other agents over
+  TLS outside dev (loopback, single-label and `.svc` hosts excepted), and refuses to call an
+  agent already in the request's chain. A message that
+  approves another agent's approval must be gated or denied by the caller's policy. These
+  close the design flaws the A2A multi-agent experiment found in a hand-built system (an agent
+  holding a user's delegated token could decide that user's approvals; any agent in a chain
+  could read or cancel another's tasks); 0.2.0 itself had no delegated principals.
 
 ## [0.2.0] - 2026-09-24
 
