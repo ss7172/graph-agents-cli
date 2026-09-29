@@ -289,6 +289,73 @@ async def test_a_run_paused_for_approval_answers_once_resumed(client: httpx.Asyn
     assert "/orders/7/cancel" in answer["answer"] and len(SENT) == 1
 
 
+def _serve_model(monkeypatch: pytest.MonkeyPatch, model: Any, tools: list[Any]) -> None:
+    """Serve a graph on `model` with `tools`, built as agent.py builds it.
+
+    The answer check is last in the middleware even when the project's agent.py
+    predates it: this tests the runtime, not the project's wiring.
+    """
+    from langchain.agents import create_agent
+
+    from {{cookiecutter.agent_directory}} import agent
+    from {{cookiecutter.agent_directory}}.app_utils.structured import (
+        StructuredAnswer,
+        response_format,
+    )
+
+    middleware = agent.middleware()
+    if not any(isinstance(m, StructuredAnswer) for m in middleware):
+        middleware.append(StructuredAnswer())
+    graph = create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=agent.SYSTEM_PROMPT,
+        middleware=middleware,
+        context_schema=agent.AgentContext,
+        response_format=response_format(model, tools),
+    )
+    graph.checkpointer = agent.graph.checkpointer
+    monkeypatch.setattr(agent, "graph", graph)
+
+
+async def test_an_answer_given_beside_a_gated_call_waits_for_the_decision(
+    client: httpx.AsyncClient, openai_compatible: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A model answers and calls a gated API in one message (parallel tool calls, on by
+    # default at OpenAI): nothing is sent before the decision, and the resumed run answers.
+    fake = openai_compatible
+    _serve_model(monkeypatch, fake.model(), [cancel_order, probe])
+    tool_strategy = os.environ["RESPONSE_FORMAT_STRATEGY"] == "tool"
+    early = json.dumps({"answer": "I cancelled order 7", "done": True})
+    cancel = ("call_cancel", "cancel_order", '{"order_id": "7"}')
+    if tool_strategy:
+        # The try goes back (its cancel did not run); the model then calls the tool alone.
+        fake.queue = [
+            (None, [("call_answer", ANSWER_TOOL, early), cancel]),
+            (None, [("call_again", "cancel_order", '{"order_id": "7"}')]),
+        ]
+    else:
+        # The provider strategy: a reply with tool calls is no answer, and its calls run.
+        fake.queue = [(early, [cancel])]
+    paused = await _chat(client, "Cancel the order for 7")
+    end = paused[-1][1]
+    assert end["status"] == "awaiting_approval" and "structured_response" not in end, paused
+    assert [e for e, _ in paused].count("message.delta") == 0 and SENT == []
+    done = {"answer": "Cancelled order 7", "done": True}
+    fake.queue = [(None, [("call_done", ANSWER_TOOL, json.dumps(done))])]
+    if not tool_strategy:
+        fake.queue = [(json.dumps(done), [])]
+    r = await client.post(
+        f"/threads/{end['thread_id']}/approvals/{end['approval']['approval_id']}",
+        json={"decision": "approve"},
+        headers=_as("alice"),
+    )
+    assert r.status_code == 200, r.text
+    assert _answered(parse_sse(r.text)) == done
+    # The cancel was sent once, and every call the model made got a result.
+    assert len(SENT) == 1 and fake.refusals == [] and fake.queue == []
+
+
 async def test_an_agent_not_built_for_its_schema_ends_every_run_with_the_error(
     client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

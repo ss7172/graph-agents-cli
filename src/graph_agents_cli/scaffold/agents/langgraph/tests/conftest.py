@@ -230,8 +230,10 @@ class OpenAICompatibleFake:
     reply (see `SCRIPTS`: arguments that are not valid JSON, one id for two
     calls), a tool result gets `Found: <results>` (unless the user asked for
     `ALWAYSBAD`: invalid arguments again), anything else `ok`. Tool calls go
-    to the first tool of the request. `requests` keeps every request body;
-    `refusals` every 400.
+    to the first tool of the request. Replies put in `queue` come first, in
+    order: `(text, [(call id, tool name, raw arguments), ...])`, text and
+    calls together in one message when both are given. `requests` keeps every
+    request body; `refusals` every 400.
     """
 
     SCRIPTS: ClassVar[dict[str, list[tuple[str, str]]]] = {
@@ -245,6 +247,7 @@ class OpenAICompatibleFake:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.refusals: list[str] = []
+        self.queue: list[tuple[str | None, list[tuple[str, str, str]]]] = []
 
     def model(self) -> Any:
         import httpx
@@ -261,6 +264,17 @@ class OpenAICompatibleFake:
         )
 
     def _reply(self, body: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
+        if self.queue:
+            text, queued = self.queue.pop(0)
+            return text, [
+                {
+                    "index": i,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+                for i, (call_id, name, arguments) in enumerate(queued)
+            ]
         messages = body.get("messages") or []
         last = messages[-1] if messages else {}
         asked = next((str(m.get("content")) for m in reversed(messages) if m["role"] == "user"), "")
@@ -330,7 +344,7 @@ class OpenAICompatibleFake:
             )
 
         if calls:
-            lines = [chunk({"role": "assistant", "content": None, "tool_calls": calls})]
+            lines = [chunk({"role": "assistant", "content": text, "tool_calls": calls})]
             lines.append(chunk({}, "tool_calls"))
         else:
             lines = [chunk({"role": "assistant", "content": ""})]

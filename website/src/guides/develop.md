@@ -360,10 +360,12 @@ How the model is made to answer
 The check
 :   LangChain returns a raw JSON-schema answer unchecked, so `StructuredAnswer` checks each
     one. An answer that does not fit, a reply that is not JSON, or a plain-text final reply
-    goes back to the model with what is wrong, in the same step, up to 3 tries. The failed
-    tries are not kept in the thread, and their tokens count in the run's usage. When no try
-    fits, the run ends with the `error` code `invalid_structured_response` and the thread
-    stays usable.
+    goes back to the model with what is wrong, in the same step, up to 3 tries. So does an
+    answer given beside other tool calls (the tool strategy), and none of those calls runs:
+    an answer ends the turn, so the model calls its tools first and answers alone, and a
+    gated call waits for its decision before anything is answered. The failed tries are not
+    kept in the thread, and their tokens count in the run's usage. When no try fits, the run
+    ends with the `error` code `invalid_structured_response` and the thread stays usable.
 
 What the schema may use
 :   `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`,

@@ -222,10 +222,11 @@ migration" with the steps to follow.
   `final_answer` tool the model must call (`tool_choice` forces a call at every step);
   `provider` and `tool` force one. LangChain returns a raw JSON-schema answer unchecked, so
   the new `StructuredAnswer` middleware (last in `middleware()`) checks every answer against
-  the schema: one that does not fit, a reply that is not JSON, or a plain-text final reply
-  goes back to the model with what is wrong, up to 3 tries in the same step (the failed tries
-  stay out of the thread; their tokens count in the answer's usage), then the run ends with
-  the new `error` code `invalid_structured_response`. The checker supports a documented JSON
+  the schema: one that does not fit, a reply that is not JSON, a plain-text final reply, or an
+  answer given beside other tool calls (none of which runs, so a gated call never runs after
+  an answer already given) goes back to the model with what is wrong, up to 3 tries in the
+  same step (the failed tries stay out of the thread; their tokens count in the answer's
+  usage), then the run ends with the new `error` code `invalid_structured_response`. The checker supports a documented JSON
   Schema subset and refuses a schema that uses anything else at startup (`lint` and
   `create --response-schema` apply the same rules, a SHARED block kept byte-identical with the
   template's). Delivery: a completed `/chat` run's only `message.delta` is the answer's JSON

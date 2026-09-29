@@ -28,8 +28,9 @@ object. Without the file the agent answers in text, as before. With it:
   the agent's tools bound; the tool otherwise), `provider` or `tool`.
 * Every answer is checked against the schema here (`StructuredAnswer`):
   LangChain returns a raw JSON-schema answer unchecked under both strategies.
-  An answer that does not fit, a reply that is not JSON, or a final reply in
-  plain text is sent back to the model with what is wrong, up to
+  An answer that does not fit, a reply that is not JSON, a final reply in
+  plain text, or an answer given beside other tool calls (none of which runs)
+  is sent back to the model with what is wrong, up to
   `MAX_ANSWER_ATTEMPTS` tries in the same step (the failed tries are not kept
   in the thread; their token usage is added to the answer's). When no try
   fits, the step fails with `StructuredAnswerError` and the run ends with the
@@ -95,9 +96,16 @@ MAX_ANSWER_ATTEMPTS = 3
 MAX_REPORTED_PROBLEMS = 5
 # What the answer tool's result says (the model reads it on the thread's later turns).
 ANSWER_RECORDED = "The answer was given to the user."
-# The result of a tool call made beside an answer that did not fit (it did not run).
+# The result of a tool call made beside an answer (it did not run: an answer ends the turn).
 OTHER_CALL_NOT_RUN = (
-    f"Not run: it came with an answer that did not fit. Call tools first, then {ANSWER_TOOL} alone."
+    f"Not run: it came with a {ANSWER_TOOL} call. Call tools first, then {ANSWER_TOOL} alone."
+)
+# What is wrong with an answer given beside other tool calls (the tool strategy): the
+# calls would run after the answer was written, or pause the run for an approval with
+# the answer already given, so the try is sent back and none of its calls runs.
+ANSWER_NOT_ALONE = (
+    "your answer came with other tool calls, which did not run: an answer ends your turn, "
+    f"so call the tools you need first, then {ANSWER_TOOL} alone once you have their results"
 )
 
 # --- BEGIN SHARED RESPONSE SCHEMA RULES ---
@@ -532,10 +540,13 @@ def _correction(bad: AIMessage, problem: str) -> list[Any]:
     """The try and what the model reads about it: a tool error, or a note from the user's side."""
     call = _answer_call(bad)
     if call is not None:
-        note = (
-            f"Error: your answer does not fit the required schema: {problem}. "
-            f"Call {ANSWER_TOOL} again with a corrected answer."
-        )
+        if problem == ANSWER_NOT_ALONE:
+            note = f"Error: {problem}."
+        else:
+            note = (
+                f"Error: your answer does not fit the required schema: {problem}. "
+                f"Call {ANSWER_TOOL} again with a corrected answer."
+            )
         # Every call of the try gets a result, or the provider refuses the request.
         return [
             bad,
@@ -580,10 +591,19 @@ class StructuredAnswer(AgentMiddleware):
     def _problem(
         self, response: Any, schema: dict[str, Any]
     ) -> tuple[str | None, AIMessage | None]:
-        """What is wrong with this reply as a final answer (None: nothing), and the reply."""
+        """What is wrong with this reply as a final answer (None: nothing), and the reply.
+
+        An answer must come alone: under the tool strategy LangChain takes an
+        answer given beside other tool calls and still runs those calls, after
+        the answer was written (a gated one pauses the run with the answer
+        already given, and the resumed run then ends with none), so such a try
+        is sent back whether or not the answer fits.
+        """
         bad = _last_ai(response.result)
         answer = response.structured_response
         if answer is not None:
+            if bad is not None and any(c.get("name") != ANSWER_TOOL for c in bad.tool_calls):
+                return ANSWER_NOT_ALONE, bad
             errors = validate(schema, answer)
             if not errors:
                 return None, bad

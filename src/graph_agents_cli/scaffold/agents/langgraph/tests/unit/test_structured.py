@@ -394,6 +394,52 @@ async def test_no_fitting_try_fails_the_step(schema_file) -> None:
     assert len(model.seen) == 3
 
 
+async def test_an_answer_beside_other_tool_calls_is_sent_back_and_none_of_them_runs(
+    schema_file,
+) -> None:
+    # LangChain would take the answer and still run the other call after it (a gated
+    # one would pause the run with the answer already given): the try goes back.
+    ran: list[str] = []
+
+    @tool
+    def probe(query: str) -> str:
+        """Run the probe for a place."""
+        ran.append(query)
+        return f"{query}: 42"
+
+    fitting = {"answer": "Oslo is fine", "confidence": 1}
+    together = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": ANSWER_TOOL, "args": fitting, "id": "call_answer"},
+            {"name": "probe", "args": {"query": "Oslo"}, "id": "call_probe"},
+        ],
+    )
+    alone = AIMessage(
+        content="", tool_calls=[{"name": "probe", "args": {"query": "Oslo"}, "id": "call_again"}]
+    )
+    model = Scripted(replies=[together, alone, _answer({"answer": "Oslo: 42", "confidence": 1})])
+    graph = create_agent(
+        model=model,
+        tools=[probe],
+        response_format=_tool_strategy(),
+        middleware=[StructuredAnswer()],
+    )
+    state = await graph.ainvoke({"messages": [HumanMessage("hi")]})
+    assert state["structured_response"] == {"answer": "Oslo: 42", "confidence": 1}
+    assert ran == ["Oslo"] and len(model.seen) == 3  # the probe ran once: when called alone
+    # Every call of the refused try has a result (a provider refuses a history without):
+    # the answer is refused, the other call did not run.
+    results = {m.tool_call_id: m for m in model.seen[1] if isinstance(m, ToolMessage)}
+    assert set(results) == {"call_answer", "call_probe"}
+    assert results["call_answer"].status == "error"
+    assert "came with other tool calls" in results["call_answer"].content
+    assert results["call_probe"].content == structured.OTHER_CALL_NOT_RUN
+    # The refused try is not kept in the thread.
+    kept = {c["id"] for m in state["messages"] if isinstance(m, AIMessage) for c in m.tool_calls}
+    assert kept == {"call_again", "call_10"}
+
+
 def test_the_middleware_does_nothing_without_a_response_format(schema_file) -> None:
     model = Scripted(replies=[AIMessage(content="plain text")])
     graph = create_agent(model=model, tools=[], middleware=[StructuredAnswer()])
