@@ -35,7 +35,7 @@ values, so its settings live in ``.env``, which is never read here.
 | SC11 | the caller's secrets.keys holds the edges' secrets; PRINCIPAL_HASH_SALT | error / warning |
 | SC12 | exchange or forward in a langgraph-server caller | error |
 | SC13 | a callee's route still publishes its A2A path | warning |
-| SC14 | (--live) the URLs and the token URL answer | error |
+| SC14 | (--live) the Services have a ready endpoint (EndpointSlices); the URLs and the token URL answer | error |
 | SC15 | (--live) the Secrets hold the edges' keys (names only) | error / warning |
 """
 
@@ -732,19 +732,34 @@ class Probe:
     """What ``--live`` asks the cluster and the network (replaced in tests)."""
 
     def ready_endpoints(self, target: Target, service: str) -> int:
-        """Ready addresses behind a Service; ``ToolFailed`` when kubectl cannot say."""
+        """Ready endpoints behind a Service (-1: no such Service), read from its
+        EndpointSlices (the v1 Endpoints API is deprecated since Kubernetes 1.33);
+        ``ToolFailed`` when kubectl cannot say."""
+        found = _kube.run_cmd(
+            _kube.kubectl_args(["get", "service", service, "-o", "name"], target),
+            check=False,
+            quiet=True,
+        )
+        if found.returncode != 0:
+            if "(NotFound)" in (found.stderr or ""):
+                return -1
+            raise _kube.ToolFailed(_first_line(found))
+        label = f"kubernetes.io/service-name={service}"
         result = _kube.run_cmd(
-            _kube.kubectl_args(["get", "endpoints", service, "-o", "json"], target),
+            _kube.kubectl_args(["get", "endpointslices", "-l", label, "-o", "json"], target),
             check=False,
             quiet=True,
         )
         if result.returncode != 0:
-            if "(NotFound)" in (result.stderr or ""):
-                return -1
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            raise _kube.ToolFailed(detail[0] if detail else f"kubectl exit {result.returncode}")
+            raise _kube.ToolFailed(_first_line(result))
         body = json.loads(result.stdout or "{}")
-        return sum(len(s.get("addresses") or []) for s in body.get("subsets") or [])
+        return sum(
+            1
+            for item in body.get("items") or []
+            for endpoint in item.get("endpoints") or []
+            # An unset `ready` means ready (the EndpointSlice API).
+            if (endpoint.get("conditions") or {}).get("ready") is not False
+        )
 
     def secret_keys(self, target: Target, name: str) -> set[str] | None:
         """The key names of a Secret (never its values); None when it does not exist."""
@@ -756,8 +771,7 @@ class Probe:
         if result.returncode != 0:
             if "(NotFound)" in (result.stderr or ""):
                 return None
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            raise _kube.ToolFailed(detail[0] if detail else f"kubectl exit {result.returncode}")
+            raise _kube.ToolFailed(_first_line(result))
         body = json.loads(result.stdout or "{}")
         return set(body.get("data") or {}) | set(body.get("stringData") or {})
 
@@ -782,6 +796,11 @@ class Probe:
         if response.status_code in (200, 401):
             return True, f"HTTP {response.status_code}"
         return False, f"HTTP {response.status_code}"
+
+
+def _first_line(result: Any) -> str:
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return lines[0] if lines else f"kubectl exit {result.returncode}"
 
 
 def _cluster_service(host: str) -> tuple[str, str] | None:

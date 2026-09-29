@@ -478,7 +478,7 @@ environment a manifest does not know.
     | SC11 | The caller's `secrets.keys` holds `TOKEN_EXCHANGE_CLIENT_SECRET` or the bearer key; `PRINCIPAL_HASH_SALT` | error / warning |
     | SC12 | `exchange` or `forward` in a `langgraph-server` caller | error |
     | SC13 | A called agent's route still publishes its A2A path in a cluster environment where agents call it inside the cluster | warning |
-    | SC14 (`--live`) | In-cluster URLs: the Service has a ready endpoint; other URLs resolve and their card answers (200, or 401: [KI-120](../reference/known-issues.md#ki-120-the-agent-card-lists-one-generic-skill-and-reading-it-needs-a-credential)); the token URL answers | error |
+    | SC14 (`--live`) | In-cluster URLs: the Service exists and has a ready endpoint (its EndpointSlices); other URLs resolve and their card answers (200, or 401: [KI-120](../reference/known-issues.md#ki-120-the-agent-card-lists-one-generic-skill-and-reading-it-needs-a-credential)); the token URL answers | error |
     | SC15 (`--live`) | Each caller's Secret holds the keys its edges need (names only) | error / warning |
 
     `--live` runs `kubectl` with each project's recorded context

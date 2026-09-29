@@ -121,6 +121,22 @@ class Node:
         return self.config.project_name[:63].rstrip("-")
 
     @property
+    def chart_name(self) -> str:
+        """The chart's ``agent.name``: ``nameOverride``, else the chart's name (the project's)."""
+        override = self.values(None).get("nameOverride")
+        name = str(override) if override else self.config.project_name
+        return name[:63].rstrip("-")
+
+    @property
+    def pod_labels(self) -> dict[str, str]:
+        """The agent pods' selector labels (the chart's ``agent.selectorLabels``): the name and
+        the release. The bundled database's pods share the release label, not the name."""
+        return {
+            "app.kubernetes.io/name": self.chart_name,
+            "app.kubernetes.io/instance": self.release,
+        }
+
+    @property
     def runtime_problem(self) -> str | None:
         return runtime_problem(self.root, self.config.agent_directory)
 

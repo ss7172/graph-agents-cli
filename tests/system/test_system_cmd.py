@@ -338,7 +338,12 @@ def test_apply_writes_both_sides_of_every_edge(store: Path) -> None:
                 "namespaceSelector": {
                     "matchLabels": {"kubernetes.io/metadata.name": "orders-agent-dev"}
                 },
-                "podSelector": {"matchLabels": {"app.kubernetes.io/instance": "orders-agent"}},
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "orders-agent",
+                        "app.kubernetes.io/instance": "orders-agent",
+                    }
+                },
             }
         ],
         "ports": [{"port": 8000, "protocol": "TCP"}],
@@ -732,11 +737,16 @@ with open(os.environ["FAKE_KUBECTL_LOG"], "a") as log:
     log.write(json.dumps(args) + "\\n")
 state = json.load(open(os.environ["FAKE_KUBECTL_STATE"]))
 namespace = args[args.index("-n") + 1] if "-n" in args else "default"
-kind, name = args[1], args[2]
+kind = args[1]
+name = args[args.index("-l") + 1].split("=", 1)[1] if "-l" in args else args[2]
 key = f"{namespace}/{name}"
-if kind == "endpoints" and key in state["endpoints"]:
+if kind == "service" and key in state["endpoints"]:
+    print(f"service/{name}")
+elif kind == "endpointslices" and key in state["endpoints"]:
     ready = state["endpoints"][key]
-    print(json.dumps({"subsets": [{"addresses": [{"ip": "10.0.0.1"}] * ready}] if ready else []}))
+    endpoints = [{"addresses": ["10.0.0.1"], "conditions": {"ready": True}}] * ready
+    endpoints.append({"addresses": ["10.0.0.9"], "conditions": {"ready": False}})
+    print(json.dumps({"items": [{"endpoints": endpoints}]}))
 elif kind == "secret" and key in state["secrets"]:
     print(json.dumps({"data": {k: "c2VjcmV0" for k in state["secrets"][key]}}))
 else:
@@ -802,7 +812,18 @@ def test_live_reads_services_and_secrets_with_the_fake_kubectl(
     live = [f for f in findings if f["check"] in ("SC14", "SC15")]
     assert code == 0 and [f["severity"] for f in live] == ["warning"]  # concierge has no salt
     calls = kubectl["calls"]()
-    assert ["get", "endpoints", "orders-agent", "-o", "json", "-n", "orders-agent-dev"] in calls
+    assert ["get", "service", "orders-agent", "-o", "name", "-n", "orders-agent-dev"] in calls
+    assert [
+        "get",
+        "endpointslices",
+        "-l",
+        "kubernetes.io/service-name=orders-agent",
+        "-o",
+        "json",
+        "-n",
+        "orders-agent-dev",
+    ] in calls
+    assert not [c for c in calls if "endpoints" in c]  # the deprecated v1 Endpoints API
     assert all("--context" not in call for call in calls)  # dev: the current context
     assert all(set(c) & {"get"} for c in calls)  # reads only
     kubectl["state"]["endpoints"]["orders-agent-dev/orders-agent"] = 0

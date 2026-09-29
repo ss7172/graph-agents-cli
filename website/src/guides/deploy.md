@@ -471,8 +471,8 @@ namespace must not reach the agent, and `/ready` must still answer 200.
 
 **Agents calling agents.** `system apply` writes, for each cluster environment of a
 [system file](api-policy.md#many-agents-at-once-graph-agents-systemyaml), a caller's
-`egressTo` rule to each agent it calls (the pods of that release in its namespace, on the
-pods' port `service.targetPort`, not the Service's: a NetworkPolicy sees the connection after
+`egressTo` rule to each agent it calls (its pods, by the chart's selector labels, in its
+namespace, on the pods' port `service.targetPort`, not the Service's: a NetworkPolicy sees the connection after
 the Service has translated it) and a called agent's `ingressFrom` entry for each caller's
 pods, plus the Gateway's namespace (`gateway.parentRef.namespace`) while its route publishes
 paths, since the Gateway must still reach `/chat`. The rules take effect once
@@ -486,7 +486,7 @@ networkPolicy:
     - namespaceSelector:
         matchLabels: {kubernetes.io/metadata.name: concierge-agent-dev}
       podSelector:
-        matchLabels: {app.kubernetes.io/instance: concierge-agent}
+        matchLabels: {app.kubernetes.io/name: concierge-agent, app.kubernetes.io/instance: concierge-agent}
 ```
 
 ## External database

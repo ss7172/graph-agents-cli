@@ -59,7 +59,6 @@ from graph_agents_cli.scaffold.utils.keyedit import EditError, YamlText
 from graph_agents_cli.system._system import CLUSTER, LOCAL, Link, Node, System
 
 NS_LABEL = "kubernetes.io/metadata.name"
-INSTANCE_LABEL = "app.kubernetes.io/instance"
 INGRESS_PATH = ("networkPolicy", "ingressFrom")
 EGRESS_PATH = ("networkPolicy", "egressTo")
 ALLOWED_ACTORS_ENV = "AUTH_ALLOWED_ACTORS"
@@ -96,18 +95,19 @@ class ProjectPlan:
             self.todos.append(text)
 
 
-def pod_peer(namespace: str, release: str) -> dict[str, Any]:
-    """A NetworkPolicy peer: the pods of ``release`` in ``namespace`` (both must match)."""
+def pod_peer(namespace: str, labels: dict[str, str]) -> dict[str, Any]:
+    """A NetworkPolicy peer: the agent pods (``labels``, the chart's selector labels) in
+    ``namespace``; both must match."""
     return {
         "namespaceSelector": {"matchLabels": {NS_LABEL: namespace}},
-        "podSelector": {"matchLabels": {INSTANCE_LABEL: release}},
+        "podSelector": {"matchLabels": dict(labels)},
     }
 
 
-def egress_rule(namespace: str, release: str, port: int | str) -> dict[str, Any]:
-    """An egress rule to the pods of ``release``, on their http port (the pod's port, not the
+def egress_rule(namespace: str, labels: dict[str, str], port: int | str) -> dict[str, Any]:
+    """An egress rule to the agent pods, on their http port (the pod's port, not the
     Service's: a NetworkPolicy sees the connection after the Service has translated it)."""
-    return {"to": [pod_peer(namespace, release)], "ports": [{"port": port, "protocol": "TCP"}]}
+    return {"to": [pod_peer(namespace, labels)], "ports": [{"port": port, "protocol": "TCP"}]}
 
 
 def gateway_peer(namespace: str) -> dict[str, Any]:
@@ -218,8 +218,9 @@ def _plan_caller(system: System, node: Node, envs: list[str], result: ProjectPla
                 f"written:\n  {exc.format_message()}"
             ) from None
         project, names = added.project, added.names
-        for note in added.notes:
-            result.note(note)
+        if added.api != link.entry:  # peer add's notes, for an entry this run writes
+            for note in added.notes:
+                result.note(note)
     wanted = {link.callee.name for link in links}
     current = gen.peers_of(project.document, {**node.module_names, **names})
     for peer in current:
@@ -306,11 +307,13 @@ def _plan_egress(
             result.todo(f"values-{env}.yaml does not exist: no egress rules written for {env}")
         return
     desired = [
-        egress_rule(link.callee.namespace(env), link.callee.release, link.callee.target_port(env))
+        egress_rule(
+            link.callee.namespace(env), link.callee.pod_labels, link.callee.target_port(env)
+        )
         for link in links
     ]
     managed = [
-        egress_rule(other.namespace(env), other.release, other.target_port(env))
+        egress_rule(other.namespace(env), other.pod_labels, other.target_port(env))
         for other in system.nodes.values()
     ]
     base = _base_list(node, EGRESS_PATH)
@@ -458,8 +461,8 @@ def _plan_ingress(
     values_file = node.values_file(env)
     if values_file is None:
         return
-    desired = [pod_peer(link.caller.namespace(env), link.caller.release) for link in links]
-    managed = [pod_peer(other.namespace(env), other.release) for other in system.nodes.values()]
+    desired = [pod_peer(link.caller.namespace(env), link.caller.pod_labels) for link in links]
+    managed = [pod_peer(o.namespace(env), o.pod_labels) for o in system.nodes.values()]
     if links and node.public_paths(env):
         values = node.values(env)
         gateway = values.get("gateway") if isinstance(values.get("gateway"), dict) else {}

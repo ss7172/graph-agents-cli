@@ -323,7 +323,8 @@ migration" with the steps to follow.
   in-memory tasks, relays the called agent's gates refuse, allowed actors, cycles and delegation
   depth, a shared database's connection budget, the callers' secrets, exchange under
   `langgraph-server`, an A2A path still public), and with `--live` SC14-SC15 (Services with a
-  ready endpoint, cards and the token URL answering, the Secrets' key names), using each
+  ready endpoint, read from their EndpointSlices since the v1 Endpoints API is deprecated; cards
+  and the token URL answering; the Secrets' key names), using each
   project's recorded kube context and never the current one outside dev; exit 1 on an error,
   `--json`. `system graph` draws the system (mermaid, dot or json); `system delegations` prints
   what the issuer must allow each client and guarantee. `system deploy --env ENV` checks, then
@@ -331,9 +332,13 @@ migration" with the steps to follow.
   file order), at most `--parallel` at once (default 3), stopping after a failed wave unless
   `--keep-going`, printing each agent's build, load and rollout times, then checks `--live`;
   outside dev it requires every project's recorded context. `api/_files` edits now build on the
-  planned text of a file, so one plan can hold several peers. KI-158 to KI-160 park the
-  residuals (the Endpoints API behind SC14, LangGraph Server's own pool in SC10, a local
-  environment's `.env` unchecked).
+  planned text of a file, so one plan can hold several peers. The NetworkPolicy rules select an
+  agent's pods by the chart's selector labels (name and release: the bundled database shares
+  the release label), and were checked on a kind cluster with kindnet enforcing them: callers
+  reach a called agent's Service port 80 through an egress rule on the pods' port 8000 (a rule
+  on port 80 blocks them), and a pod in another namespace is refused. KI-159 and KI-160 park
+  the residuals (LangGraph Server's own pool in SC10, a local environment's `.env` unchecked);
+  KI-158 (SC14 on the deprecated Endpoints API) was fixed before release.
 
 ### Changed
 

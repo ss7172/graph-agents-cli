@@ -67,13 +67,13 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | runtime | 11 | 6 | 17 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
-| deploy | 4 | 9 | 13 |
+| deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
 | cli | 2 | 23 | 25 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **103** | **149** |
+| **Total** | **46** | **102** | **148** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -1220,19 +1220,6 @@ Low · eval · found in wave 0
 - **Impact:** More manual work to grow a dataset.
 - **Workaround:** Write cases by hand. See
   [Where it is behind](website/src/reference/comparison.md#where-it-is-behind).
-
-### KI-158: `system check --live` reads Services through the Endpoints API
-
-Low · deploy · found in v0.3 P5
-
-- **Issue:** SC14 counts the ready addresses of each in-cluster Service with `kubectl get
-  endpoints`. Kubernetes 1.33 deprecates the v1 Endpoints API in favour of EndpointSlices:
-  `kubectl` prints a deprecation warning, and a cluster that stops serving Endpoints would make
-  every in-cluster URL read as a Service that does not exist.
-- **Impact:** A warning today; a false SC14 error on a cluster without the Endpoints API.
-- **Workaround:** Check those Services with `kubectl get endpointslices -l
-  kubernetes.io/service-name=<service> -n <namespace>` and run `system check` without
-  `--live`.
 
 ### KI-072: helm's failure reason is printed on stdout
 
