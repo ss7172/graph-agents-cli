@@ -237,7 +237,9 @@ For 0.2.0 there are three:
 ### 0.2 to 0.3 (unreleased)
 
 0.3 adds [agents calling agents](multi-agent.md): the actor-aware principal, token exchange,
-relayed approvals, `peer` and `system`. An existing project keeps its behaviour after
+relayed approvals, `peer` and `system`; and
+[structured final answers](develop.md#structured-final-answers), an agent that answers in a
+JSON shape the project declares. An existing project keeps its behaviour after
 `scaffold upgrade` unless one of the edits below applies to it. The complete list of changes
 is in the [changelog](../reference/changelog.md).
 
@@ -247,9 +249,10 @@ is in the [changelog](../reference/changelog.md).
    rules for coding agents, including how to declare other agents.
 2. **Upgrade the runtime:** `graph-agents-cli scaffold upgrade --dry-run`, then `-y`. It
    three-way merges the template-owned runtime (`app/app_utils/`, `app/fast_api_app.py`, the
-   chart templates) and adds `app/app_utils/a2a_client.py` and
-   `app/app_utils/token_exchange.py`. `app/agent.py`, `app/tools/**` and `app/policies/**`
-   are never touched, and none of them needs a change. `.env.example` and the
+   chart templates) and adds `app/app_utils/a2a_client.py`,
+   `app/app_utils/token_exchange.py` and `app/app_utils/structured.py`. `app/agent.py`,
+   `app/tools/**` and `app/policies/**` are never touched, and none of them needs a change
+   unless the agent is to answer in a JSON shape (below). `.env.example` and the
    `values-<env>.yaml` files are yours and are not rewritten: the new settings are in the
    [environment reference](../reference/environment.md).
 3. **Then declare other agents,** with `peer add` or `system apply`. `peer add` refuses a
@@ -278,6 +281,17 @@ is in the [changelog](../reference/changelog.md).
   agent forwards users' credentials must set `Principal.actor`, or this agent treats the
   calling agent as the person. A policy that returns an empty id, one over 256 characters or
   one with control characters now fails the request with 500 and logs the bug.
+- **Structured final answers, only if you adopt them.** A project answers in text until
+  `app/response_schema.json` exists, and nothing in 0.2 creates that file. Before adding it,
+  wire `app/agent.py` by hand, since `scaffold upgrade` never rewrites it: import
+  `StructuredAnswer` and `response_format` from `app_utils.structured`, pass
+  `response_format=response_format(model, tools)` to `create_agent`, and put
+  `StructuredAnswer()` last in `middleware()`, as a new project's `agent.py` does. Then run
+  `graph-agents-cli lint`: it refuses a schema the agent would not start with (exit 3) and
+  warns while either piece of wiring is missing. Without the wiring, every run with a schema
+  ends with the `error` code `invalid_structured_response`: the runtime checks every answer
+  again before delivering it, so an unchecked answer is never sent. See
+  [A project created before 0.3](develop.md#structured-final-answers).
 - **Hand-written peer clients** (a tool that posts A2A JSON-RPC itself, a delegating auth
   policy that exchanges tokens in `authenticate`): delete the delegating policy and its
   registration in `app/policies/__init__.py`, remove the APIs it used (`graph-agents-cli api
@@ -321,10 +335,17 @@ is in the [changelog](../reference/changelog.md).
   keeps the context it sends).
 - **Tool output that is not valid Unicode** (a lone surrogate) reaches the model, the stream
   and A2A replies with U+FFFD in its place instead of failing the run.
+- **`eval`'s `json_schema` check reads the reply's answer.** 0.2 parsed the first fenced
+  block, else everything from the first `{` or `[`; 0.3 reads the whole reply when it is
+  JSON, else its last JSON object or array (of the schema's root type), and in a project with
+  a response schema the run's `structured_response` itself. A case that passed on an example
+  the reply quoted before its answer can now fail, and one that failed on prose after the JSON
+  can now pass. See [Evaluation](evaluation.md#deterministic-checks).
 - **Streamed requests to OpenAI-API models ask for token usage** (`stream_options`), so runs
   on an `openai-compatible` endpoint record their tokens.
 - **New settings default to 0.2's behaviour:** `MODEL_REASONING_EFFORT` and
-  `MODEL_USE_RESPONSES_API` unset; no `limits.max_response_bytes`; `protocol: http` for every
+  `MODEL_USE_RESPONSES_API` unset; no response schema (`RESPONSE_FORMAT_STRATEGY` acts only
+  with one); no `limits.max_response_bytes`; `protocol: http` for every
   API; `decide_with: direct` for every gate; the `A2A_*` and `AUTH_*` delegation settings only
   act on requests other agents send.
 - **The CLI** works under a SOCKS proxy (it depends on `httpx[socks]`), `run --stop-server`

@@ -19,8 +19,9 @@ your own Kubernetes, with one CLI and six skills for your coding agent.**
 
 ## What you get
 
-- **A LangGraph service, ready to run**: a streaming chat API, threads, an A2A endpoint and
-  shared-key, OIDC/JWT or custom authentication on every route.
+- **A LangGraph service, ready to run**: a streaming chat API, threads, an A2A endpoint,
+  answers in a JSON shape you declare when a program reads them, and shared-key, OIDC/JWT or
+  custom authentication on every route.
 - **Outbound calls under a policy**: `api-policy.yaml` declares the APIs tools may call, the
   agent refuses anything else, `lint` checks it in CI, and chosen calls wait for a human
   approval.

@@ -13,8 +13,9 @@ the operate guides take it to a cluster and keep it healthy.</p>
 
 -   :material-code-braces:{ .lg } **[Develop your agent](develop.md)**
 
-    The generated project, the service and its endpoints, tools and prompts, the `fastapi`
-    and `langgraph-server` runtimes, `run` and `playground`.
+    The generated project, the service and its endpoints, tools and prompts, answers in a
+    JSON shape you declare, the `fastapi` and `langgraph-server` runtimes, `run` and
+    `playground`.
 
 -   :material-account-key-outline:{ .lg } **[Authentication](authentication.md)**
 

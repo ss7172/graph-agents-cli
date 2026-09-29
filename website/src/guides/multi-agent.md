@@ -113,6 +113,17 @@ Two projects, `concierge-agent` (it asks) and `orders-agent` (it is asked), both
 Restart a running agent after `peer add`, `peer remove` or `peer sync`
 ([KI-156](../reference/known-issues.md#ki-156-a-running-agent-needs-a-restart-after-peer-add-or-peer-remove)).
 
+### A peer that answers in JSON
+
+A peer with a [response schema](develop.md#structured-final-answers) answers every request
+in that JSON shape. Its A2A reply's text is the answer's exact JSON text, with nothing else
+the model wrote, and the same `response` artifact adds a data part holding the object. The
+asking agent's `ask_agent` (and `A2APeerClient`'s `text`) reads the text, so the model gets
+the JSON as the tool's result, cut at `A2A_REPLY_MAX_CHARS` (6000 characters) like any
+reply: keep such a peer's answers under it, or raise the setting at the asking agent, since
+a cut answer is no longer JSON. A program that calls the peer directly can read the data
+part instead ([HTTP API](../reference/http-api.md#structured-answers)).
+
 ## Relayed approvals
 
 An agent relays a person's decision; it never makes one. The chain that holds this:
