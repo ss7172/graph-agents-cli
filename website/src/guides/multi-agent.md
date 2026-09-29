@@ -201,8 +201,9 @@ exchange by API and outcome. See
   ([KI-164](../reference/known-issues.md#ki-164-sc10-leaves-out-each-replicas-run-lease-connection-and-its-hint-names-pgbouncer-without-its-mode)).
   Above about 120 connections, give agents their own databases or put a session-mode
   PgBouncer in front; a transaction-mode one is not supported.
-- **Measured in the A2A experiment** (0.2 agents on one kind node with 7.65 GiB): at the
-  chart's default requests, 18 agents with a bundled Postgres each fit; idle, an agent used
+- **Measured in the A2A experiment** (agents built with 0.2, on one kind node with
+  7.65 GiB): at the chart's default requests, 18 agents with a bundled Postgres each fit;
+  idle, an agent used
   about 108 MiB and its Postgres about 39 MiB. Under load the per-agent Postgres instances
   were the limit (run leases lost, readiness checks timing out), not CPU.
 - **Deploys:** `system deploy` runs 3 at a time by default: seven images built and loaded at
