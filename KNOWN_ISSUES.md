@@ -64,16 +64,16 @@ runtime, a2a, eval, deploy, chart/CD, secrets, cli, upgrade, docs.
 | auth | 4 | 2 | 6 |
 | api-policy | 4 | 8 | 12 |
 | approvals | 8 | 6 | 14 |
-| runtime | 11 | 9 | 20 |
+| runtime | 12 | 11 | 23 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 2 | 21 | 23 |
+| cli | 2 | 22 | 24 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 9 | 9 |
-| **Total** | **46** | **103** | **149** |
+| **Total** | **47** | **106** | **153** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -457,6 +457,29 @@ Medium · runtime · found in the A2A multi-agent experiment (fix review; presen
 - **Workaround:** Keep client and ingress timeouts short so such a request fails at the edge.
   libpq connection parameters in `DATABASE_URI`, such as `tcp_user_timeout`, may bound the
   wait (not verified).
+
+### KI-161: The answer check fails on some edge values, and lets NaN and Infinity through
+
+Medium · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** The structured-answer check (`app_utils/structured.py`) has edge cases:
+  - an integer answer too large for a float (400 digits), or a `multipleOf` so small that
+    the division overflows, raises `OverflowError`;
+  - a `$ref` that points at itself (`#`, or `#/properties/a` inside `a`) passes the startup
+    check, and then every check recurses until `RecursionError`;
+  - these end the run with `run_failed`, not `invalid_structured_response`, and without a
+    correction;
+  - `NaN` and `Infinity` in a place the schema leaves untyped (no `additionalProperties:
+    false`, an empty schema) pass the check. The answer's text and the `/chat` events are
+    then written with them (`json.dumps` allows them), and a strict JSON parser, a
+    browser's `JSON.parse` for one, refuses the `message.delta` and the whole `message.end`.
+- **Impact:** A model answer can make a run fail with the generic error, and a schema with a
+  self-reference fails every run. A client parsing strictly cannot read an answer that holds
+  `NaN` where the schema did not type it. Found with a scripted model; not seen with a real
+  one.
+- **Workaround:** Type every value in the schema (`"additionalProperties": false`, a `type`
+  on every property), bound numbers with `maximum`/`minimum`, and do not use a `$ref` that
+  refers to its own schema.
 
 ### KI-135: A cross-replica `CancelTask` just after a task starts can report a false cancel
 
@@ -1039,6 +1062,39 @@ Low · runtime · found in v0.3 (structured answers)
   again, then fails), or a pattern the provider accepts is refused at startup.
 - **Workaround:** Write patterns in the syntax both share: explicit classes (`[0-9]`), no
   named groups, and `$` only where a value cannot end with a newline.
+
+### KI-162: The answer check runs `pattern` and `uniqueItems` on the event loop, unbounded
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** `StructuredAnswer` checks an answer synchronously inside the model call. A
+  `pattern` open to catastrophic backtracking (`^(a+)+$`) took 1.66 s on a 26-character
+  value, and `uniqueItems` compares every pair of items (3.8 s for 5,000 items). Nothing
+  bounds either.
+- **Impact:** A model answer can hold the server's event loop for seconds, delaying every
+  other request of that process. The schema is the project's own, so the pattern is under
+  the project's control; the value is the model's.
+- **Workaround:** Write patterns without nested quantifiers, and bound arrays that use
+  `uniqueItems` with `maxItems`.
+
+### KI-164: Some structured-answer guards have no test
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** The verifier's mutations of the structured-answer code that no test caught:
+  - `true` accepted as an integer;
+  - the synchronous `wrap_model_call` path's handling of a reply that is not JSON;
+  - `StructuredAnswer` placed first instead of last in `middleware()`;
+  - the startup check of the response schema dropped from the lifespan;
+  - a lone surrogate in the answer (and its A2A data part) not replaced;
+  - `create --response-schema` taking its snapshot of the file;
+  - `scaffold upgrade`/`enhance` leaving `response_schema.json` alone (an `agent_code`
+    pattern).
+  The fake model never gives a multi-call answer, a surrogate or a synchronous call, and
+  the scaffold tests do not cover the new pattern.
+- **Impact:** A regression in one of these would not fail the suites. The behaviour itself
+  was checked by hand and by the verifier's probes.
+- **Workaround:** None needed today; add the tests when this code next changes.
 
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 
@@ -1653,6 +1709,25 @@ Low · cli · found in v0.3 P4
   out), which the template's client accepts (it normalises both).
 - **Impact:** A false "foreign endpoint" report (exit 1) for a peer the agent calls fine.
 - **Workaround:** Write the peer's `APP_URL` and this agent's URL variable the same way.
+
+### KI-163: `create --response-schema` and `lint` accept some schemas that fail at runtime, and exit 1 on others
+
+Low · cli · found in v0.3 (structured answers, verification)
+
+- **Issue:** The response-schema check that `create --response-schema`, `lint` and the
+  app's startup share (the SHARED block) accepts:
+  - a `$ref` to its own schema (KI-161);
+  - `required` naming a property `properties` does not list: OpenAI's strict mode then
+    drops it, so no answer can fit;
+  - a schema of any size (a 15 MB, 60,000-property file was accepted).
+  A number keyword too large for a float (400 digits), or nesting a few thousand levels deep,
+  makes `create` stop with `Error: int too large to convert to float` or `maximum recursion
+  depth exceeded`, exit 1, where the [exit codes](website/src/reference/exit-codes.md) say a
+  bad response schema is exit 3. Nothing is created.
+- **Impact:** A schema passes `lint`, then every run fails. An unusual schema gets the wrong
+  exit code and a raw error message.
+- **Workaround:** List every `required` name under `properties`, keep schemas small and
+  shallow, and use ordinary numbers.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 
