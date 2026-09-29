@@ -90,11 +90,6 @@ contributor tooling in `tools/`, never shipped).
 
 ## Owner actions
 
-- **The `v0.3.0` tag is not pushed yet.** Push the release commit (and `main`), then tag
-  `v0.3.0` on it (see the release process in [CONTRIBUTING.md](CONTRIBUTING.md)). Until then
-  every install path pinned to 0.3.0 fails: the README and site install lines, `setup` and
-  `update`, the skills' install pins, and the `GRAPH_AGENTS_CLI_SPEC` of every project 0.3.0
-  generates (so its CI). `v0.1.0` and `v0.2.0` are already on GitHub.
 - Optional, for PyPI: register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
 
