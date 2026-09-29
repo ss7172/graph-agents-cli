@@ -189,6 +189,7 @@ nav:
       - Environment variables: reference/environment.md
       - HTTP API: reference/http-api.md
       - api-policy.yaml: reference/api-policy-schema.md
+      - graph-agents-system.yaml: reference/system-file.md
       - Project manifest: reference/manifest.md
       - Exit codes: reference/exit-codes.md
       - Skills: reference/skills.md

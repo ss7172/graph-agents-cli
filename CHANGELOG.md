@@ -367,7 +367,9 @@ change in behaviour.
   with what remains, and the limits. The security checklist adds the internal A2A paths, what
   the issuer must allow and the salt for agents that ask others; the observability guide names
   the `actor` log field; the manifest reference says who adds `TOKEN_EXCHANGE_CLIENT_SECRET`
-  and peers' keys to `secrets.keys`.
+  and peers' keys to `secrets.keys`. A reference page,
+  [graph-agents-system.yaml](website/src/reference/system-file.md), lists every key of the
+  system file with its default and what makes a file unusable.
 - **The skills cover agents calling agents.** The workflow skill asks in Phase 0 whether the
   agent asks other agents or is called by them, declares peers with `peer add` or `system
   apply` (never a hand-written client), runs `lint`, `peer show --check` or `system check`,

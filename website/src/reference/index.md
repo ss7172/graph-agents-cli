@@ -30,6 +30,11 @@ changelog).</p>
     `graph-agents-cli-manifest.yaml`: the project's settings, build record, secrets
     allow-list and environments.
 
+-   :material-lan-connect:{ .lg } **[graph-agents-system.yaml](system-file.md)**
+
+    Agent projects that call each other, for `graph-agents-cli system`: every key and what
+    makes a file unusable.
+
 </div>
 
 ## The generated service

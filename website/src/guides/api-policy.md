@@ -409,8 +409,9 @@ warning.
 `peer add` is complete on its own. When several of your projects call each other, an
 optional `graph-agents-system.yaml` (in a directory above them, or `--file`) names each
 agent's project, the client id it exchanges tokens as, the agents it calls and the
-environments they run in; `graph-agents-cli system` then works on all of them at once. Its
-JSON Schema is `schemas/graph-agents-system.schema.json` in the repository.
+environments they run in; `graph-agents-cli system` then works on all of them at once. Every
+key is in the [graph-agents-system.yaml reference](../reference/system-file.md), and its JSON
+Schema is `schemas/graph-agents-system.schema.json` in the repository.
 
 ```yaml title="graph-agents-system.yaml"
 version: 1
