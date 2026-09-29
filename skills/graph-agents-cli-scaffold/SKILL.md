@@ -15,16 +15,16 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.3.0"
+  version: "0.3.1"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1"
 ---
 
 # Project scaffolding guide
 
-> **Requires:** `graph-agents-cli` (`uv tool install graph-agents-cli`, or the release tag: `uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0`).
+> **Requires:** `graph-agents-cli` (`uv tool install graph-agents-cli`, or the release tag: `uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1`).
 > [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md) first if needed.
 
 Use `graph-agents-cli create`, `scaffold enhance`, and `scaffold upgrade` to create a LangGraph

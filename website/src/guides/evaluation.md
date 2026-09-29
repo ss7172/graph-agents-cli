@@ -311,7 +311,7 @@ Regressions:
 ```
 
 `eval submit` needs the extra in the CLI's own environment:
-`uv tool install --force 'graph-agents-cli[langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.0'`.
+`uv tool install --force 'graph-agents-cli[langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.1'`.
 
 ## In CI
 

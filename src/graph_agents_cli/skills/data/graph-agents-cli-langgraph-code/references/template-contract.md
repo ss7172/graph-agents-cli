@@ -444,9 +444,9 @@ the API's `openapi:` spec), and name `operation_id` on every call.
 
 ```yaml
 name: my-agent
-cli_version: 0.3.0
+cli_version: 0.3.1
 cli_build:                          # the build that rendered the project (scaffold upgrade reads it)
-  id: 0.3.0+g1a2b3c4                # `graph-agents-cli --version`; 0.3.0 for the release
+  id: 0.3.1+g1a2b3c4                # `graph-agents-cli --version`; 0.3.1 for the release
   commit: 1a2b3c4d...               # full commit; null when not built from git
   template_digest: sha256:...       # what that build renders for these settings; null after a seed policy
 agent_directory: app

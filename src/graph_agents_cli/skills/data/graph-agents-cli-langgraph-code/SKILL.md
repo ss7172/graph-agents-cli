@@ -16,11 +16,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.3.0"
+  version: "0.3.1"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1"
 ---
 
 # LangGraph and LangChain patterns for graph-agents-cli projects

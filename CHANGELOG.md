@@ -8,6 +8,32 @@ migration" with the steps to follow.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-29
+
+0.3.1 is the first release published on [PyPI](https://pypi.org/project/graph-agents-cli/).
+Its commands and templates are 0.3.0's (only the version, the documentation, the skills'
+install lines and the release workflow change), so a project created by 0.3.0 needs no
+migration.
+
+### Changed
+
+- **Published on PyPI.** Install with `uv tool install graph-agents-cli` (or `pipx install
+  graph-agents-cli`); the release tag `git+https://github.com/ss7172/graph-agents-cli@v0.3.1`
+  installs the same release. 0.3.0 and earlier stay on their git tags only.
+- **The README and the documentation point to PyPI**: the README's install section (with a
+  PyPI badge), the site's Installation page, announcement bar, home page and tutorials, and
+  the workflow and scaffold skills' install lines. "Not on PyPI yet" is gone. `setup`,
+  `update`, the `scaffold upgrade` baseline and generated projects' `GRAPH_AGENTS_CLI_SPEC`
+  still install from the release tag, since earlier releases exist only as tags;
+  `GRAPH_AGENTS_CLI_INSTALL_SPEC='graph-agents-cli=={version}'` switches them to PyPI.
+
+### Fixed
+
+- **The release workflow's GitHub Release job is idempotent.** A second run for the same
+  tag (GitHub started two for the `v0.3.0` push, and the second failed with "a release with
+  the same tag name already exists") now finds the release, uploads only the assets it lacks
+  and never replaces one; the PyPI job skips files already on PyPI.
+
 ## [0.3.0] - 2026-09-29
 
 0.3.0 lets agents call other agents for the user they serve, over A2A.
@@ -1503,7 +1529,8 @@ GitHub Release) so `scaffold upgrade` can rebuild a 0.1.0 project's baseline.
   optional LangSmith upload.
 - Six coding-agent skills, bundled in the wheel.
 
-[Unreleased]: https://github.com/ss7172/graph-agents-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ss7172/graph-agents-cli/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ss7172/graph-agents-cli/tree/v0.1.0

@@ -33,7 +33,7 @@ graph-agents-cli --version
 ```
 
 ```text
-graph-agents-cli, version 0.3.0
+graph-agents-cli, version 0.3.1
 ```
 
 `uv tool upgrade graph-agents-cli` moves to the latest release later. Other installers work
@@ -57,7 +57,7 @@ too:
 === "A release tag from GitHub"
 
     ```bash
-    uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+    uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1
     ```
 
     The same release, built from its git tag: what `setup`, `update` and generated projects'
@@ -75,7 +75,7 @@ Two commands need an extra dependency:
 ```bash
 uv tool install 'graph-agents-cli[a2a,langsmith]'
 # or from the release tag
-uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.0'
+uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.1'
 ```
 
 ### Which build you are running
@@ -84,9 +84,9 @@ uv tool install 'graph-agents-cli[a2a,langsmith] @ git+https://github.com/ss7172
 
 | `--version` prints | Meaning |
 |---|---|
-| `0.3.0` | The release, built from the `v0.3.0` tag |
-| `0.3.0+g<commit>` | A build of another commit (a checkout between releases) |
-| `0.3.0+g<commit>.dirty` | A build with uncommitted changes |
+| `0.3.1` | The release, built from the `v0.3.1` tag |
+| `0.3.1+g<commit>` | A build of another commit (a checkout between releases) |
+| `0.3.1+g<commit>.dirty` | A build with uncommitted changes |
 
 Every project records the build that created it, which is what
 [`scaffold upgrade`](../guides/upgrading.md) replays later. To install a build from a
@@ -141,10 +141,10 @@ graph-agents-cli setup --dry-run
  ──────────
 
   Would install graph-agents-cli:
-  ▸ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+  ▸ uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1
 
   Would install skills:
-  ▸ npx -y skills@1.5.9 add 'https://github.com/ss7172/graph-agents-cli#v0.3.0' -y -g
+  ▸ npx -y skills@1.5.9 add 'https://github.com/ss7172/graph-agents-cli#v0.3.1' -y -g
     (falls back to the bundled skills, then to a copy into ~/.agents/skills)
   Scope: global
 
@@ -159,12 +159,12 @@ The skills match the release your CLI's version names. `setup` tries three sourc
 order, each only when the one before it fails:
 
 1. `npx skills add` from this repository at that release's tag
-   (`https://github.com/ss7172/graph-agents-cli#v0.3.0`). Needs `git` and network access.
+   (`https://github.com/ss7172/graph-agents-cli#v0.3.1`). Needs `git` and network access.
 2. `npx skills add` from the copy bundled in the installed CLI (same build, no network).
 3. A plain copy of the bundled skills into `~/.agents/skills` (`./.agents/skills` with
    `--workspace`), for machines without Node.js.
 
-A build between releases (`0.3.0+g<commit>`) still installs the `v0.3.0` skills in step 1.
+A build between releases (`0.3.1+g<commit>`) still installs the `v0.3.1` skills in step 1.
 Only a version with no release behind it (`0.0.0`, a `.devN` or a `+local` version) uses the
 default branch. For skills that match a checkout's own code, run `setup --dev` from the
 checkout (it also installs the CLI from it, editable) or pass `--skills-source <checkout>`.

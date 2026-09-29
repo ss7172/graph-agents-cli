@@ -66,8 +66,8 @@ This comparison is as of google-agents-cli 1.7.0 (September 2026).
 - **Templates and languages**: one Python LangGraph template and no sample catalogue, against
   upstream's ADK templates in several languages, samples and a LangChain template.
 - **Lint**: no type checker or spell checker in the generated project's `lint`.
-- **Maturity**: upstream has a long release history. This project has three tagged releases
-  (`v0.1.0`, `v0.2.0`, `v0.3.0`), this documentation site (published once the
+- **Maturity**: upstream has a long release history. This project has four tagged releases
+  (`v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.3.1`), this documentation site (published once the
   maintainers enable it) and the skills; it is on PyPI from 0.3.1.
 - **Upstream fixes are ported by hand** after 1.6.1, following the upstream-sync process in
   [CONTRIBUTING.md](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md#upstream-sync).

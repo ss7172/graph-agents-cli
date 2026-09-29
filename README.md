@@ -53,7 +53,7 @@ graph-agents-cli setup      # optional: install the skills into your coding agen
 environment) work too. To install a release tag from GitHub instead:
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1
 ```
 
 More options (extras, mirrors, disconnected installs):
@@ -101,8 +101,8 @@ site's CLI page.
 
 ## Status
 
-Version 0.3.0, **alpha**
-([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.0)).
+Version 0.3.1, **alpha**
+([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.1)).
 Interfaces may still change between minor versions; the changelog lists every breaking
 change with its migration steps. Released on
 [PyPI](https://pypi.org/project/graph-agents-cli/) and as tags on GitHub.

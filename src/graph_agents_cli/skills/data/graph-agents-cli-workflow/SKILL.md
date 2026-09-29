@@ -15,11 +15,11 @@ description: >
 metadata:
   author: graph-agents-cli contributors
   license: Apache-2.0
-  version: "0.3.0"
+  version: "0.3.1"
   requires:
     bins:
       - graph-agents-cli
-    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0"
+    install: "uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.1"
 ---
 
 # Agent Development Workflow and Guidelines
@@ -36,7 +36,7 @@ auth policy and declare their outbound APIs, nothing is tied to one consumer. In
 > scaffold loses the chat API, the auth policy adapter, the eval gate, the Helm chart, and the
 > CI workflows the template wires up.
 
-> Requires: graph-agents-cli ~= 0.3.0. Check with `graph-agents-cli --version` or
+> Requires: graph-agents-cli ~= 0.3.1. Check with `graph-agents-cli --version` or
 > `graph-agents-cli info`. [Install uv](https://docs.astral.sh/uv/getting-started/installation/index.md)
 > first if needed.
 
@@ -62,7 +62,7 @@ Context compaction may have dropped earlier skill content. If skills are missing
 If `graph-agents-cli` is not installed:
 
 ```bash
-uv tool install graph-agents-cli   # from PyPI; or the release tag: git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+uv tool install graph-agents-cli   # from PyPI; or the release tag: git+https://github.com/ss7172/graph-agents-cli@v0.3.1
 graph-agents-cli setup          # installs the six skills into detected coding agents
 ```
 

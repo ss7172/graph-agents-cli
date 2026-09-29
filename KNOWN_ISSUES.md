@@ -1,7 +1,7 @@
 # Known issues
 
 <!-- --8<-- [start:intro] -->
-Medium- and low-priority issues known in graph-agents-cli 0.3.0
+Medium- and low-priority issues known in graph-agents-cli 0.3.1
 and parked for a future release. Each entry gives a severity, the area, what happens, its impact, a workaround where
 one exists, and the review round that found it. Design limits that are not planned to change
 are described in the documentation, on the page of the feature they concern (they were the

@@ -196,7 +196,7 @@ RELEASE_NAME=my-agent
 CHART_PATH=deployment/helm/my-agent
 RUNTIME=fastapi
 CD=argocd
-GRAPH_AGENTS_CLI_SPEC=git+https://github.com/ss7172/graph-agents-cli@v0.3.0
+GRAPH_AGENTS_CLI_SPEC=git+https://github.com/ss7172/graph-agents-cli@v0.3.1
 ```
 
 The file is read as `NAME=VALUE` data, never sourced by a shell. Only these six names are
