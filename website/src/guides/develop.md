@@ -474,7 +474,7 @@ bearer credential goes in `GRAPH_AGENTS_CLI_API_KEY`, never in `--header`. `run 
 needs the CLI's optional `a2a` extra:
 
 ```bash
-uv tool install --force 'graph-agents-cli[a2a] @ git+https://github.com/ss7172/graph-agents-cli@v0.2.0'
+uv tool install --force 'graph-agents-cli[a2a] @ git+https://github.com/ss7172/graph-agents-cli@v0.3.0'
 ```
 
 `playground` runs the app with reload under `APP_ENV=dev` and serves the chat page at

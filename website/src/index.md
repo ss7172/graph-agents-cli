@@ -38,7 +38,7 @@ auth, an outbound API policy, human approval of risky calls and an eval gate CI 
 
 ```bash
 # install the CLI from its release tag, then the skills
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
 graph-agents-cli setup
 
 # create an agent and ask it a question: the fake model needs no key

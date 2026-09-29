@@ -8,7 +8,9 @@ migration" with the steps to follow.
 
 ## [Unreleased]
 
-The next release (0.3) lets agents call other agents for the user they serve, over A2A.
+## [0.3.0] - 2026-09-29
+
+0.3.0 lets agents call other agents for the user they serve, over A2A.
 Each agent knows the user and the agent in between, a person's approvals stay with that
 person, `peer add` declares the agents one asks, and `graph-agents-cli system` checks, wires
 and deploys several projects as one. It also keeps A2A tasks in Postgres so that replicas
@@ -16,14 +18,14 @@ share them, adds structured final answers (an agent that answers in a JSON shape
 project declares), reasoning effort and the Responses API for OpenAI-API models, a
 documentation site, skill rules found with the SkillOpt experiment and the benchmark that
 measured them, and fixes. What an upgrade from 0.2.0 changes, and the order to do it in, is
-in [Upgrading projects](website/src/guides/upgrading.md#02-to-03-unreleased); the guide to
+in [Upgrading projects](website/src/guides/upgrading.md#02-to-03); the guide to
 the new features is [Agents calling agents](website/src/guides/multi-agent.md). Parked
 medium- and low-priority issues are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ### Breaking changes and migration
 
 Each change below can need an edit in an existing project; the upgrading guide's
-[0.2 to 0.3](website/src/guides/upgrading.md#02-to-03-unreleased) section lists every other
+[0.2 to 0.3](website/src/guides/upgrading.md#02-to-03) section lists every other
 change in behaviour.
 
 - **`jwt` reads the RFC 8693 `act` claim.** A token carrying it is an agent's for the user,
@@ -1501,6 +1503,7 @@ GitHub Release) so `scaffold upgrade` can rebuild a 0.1.0 project's baseline.
   optional LangSmith upload.
 - Six coding-agent skills, bundled in the wheel.
 
-[Unreleased]: https://github.com/ss7172/graph-agents-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ss7172/graph-agents-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ss7172/graph-agents-cli/tree/v0.1.0

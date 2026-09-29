@@ -305,6 +305,7 @@ rep order.
 | minor | skills | New deploy task `deploy-system-file-travel`: 1 of 2 after-arm reps put `approvals: deny` on an edge the request did not name. | Claude after rep 1. | skills/graph-agents-cli-deploy/SKILL.md (`system apply` edges) |
 | minor | benchmark | The `acceptEdits` permission gate blocks compound commands, and blocked 6 of 330 Claude rollouts (5 before, 1 after). It is a known confound since round 1; `bypassPermissions` failed its preflight in round 3a. | See "Failures caused by the benchmark". | tools/skillopt/gac_skillopt/isolation.py (CLAUDE_PERMISSION_MODE) |
 | note | provenance | v0.3 HEAD moved during the run: 159262b edited 2 lines of the deploy SKILL.md (client ids became actor ids). The measured after text is the `d4f9734` one (`ea0f2972…`); the difference is wording in one paragraph and one troubleshooting row. | `git diff d4f9734 159262b -- skills/` | skills/graph-agents-cli-deploy/SKILL.md |
+| note | provenance | The 0.3.0 release commit then changed every `SKILL.md`'s `metadata.version`, its install pins (`@v0.2.0` to `@v0.3.0`) and the workflow skill's `Requires` line, so the shipped hashes differ from the table above in all six skills; no rule or instruction changed. | `git diff a7edef4 <release commit> -- skills/` | skills/*/SKILL.md |
 
 Carried over from round 3d (context, not new):
 - the shipped workflow text is not the text S1 measured, because the agents-calling-agents

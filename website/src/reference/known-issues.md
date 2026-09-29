@@ -17,7 +17,7 @@ toc_depth: 2
 **Medium** marks security-relevant, data-integrity or production-operations edge cases;
 **Low** marks developer experience, docs, output polish and cosmetic issues. "Found in" names
 what first reported an issue: a pre-release review round of 0.2.0, one of the experiments run
-since, or a phase of the unreleased 0.3. How an entry is triaged
+since, or a phase of the 0.3 release's work. How an entry is triaged
 and graduates into a release is in
 [KNOWN_ISSUES.md](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md#triage-and-how-an-issue-graduates)
 on GitHub; a fixed entry leaves this page and its fix is recorded in the

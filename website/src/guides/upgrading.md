@@ -113,7 +113,7 @@ generated_at: '2026-09-25T02:51:13.329087+00:00'
 | no `cli_build` (a project made before builds were recorded, for example by a pre-release 0.2.0 build) | compared by version only: "already at version", with how to name the build |
 
 After an upgrade the manifest records the running build, so the next upgrade needs no flag.
-Every release is tagged `v<version>` on the repository (`v0.1.0`, `v0.2.0`), and that tag is
+Every release is tagged `v<version>` on the repository (`v0.1.0`, `v0.2.0`, `v0.3.0`), and that tag is
 the default baseline for the projects the release created.
 
 ## Name the baseline with `--baseline-ref`
@@ -237,7 +237,7 @@ For 0.2.0 there are three:
 
 </div>
 
-### 0.2 to 0.3 (unreleased)
+### 0.2 to 0.3
 
 0.3 adds [agents calling agents](multi-agent.md): the actor-aware principal, token exchange,
 relayed approvals, `peer` and `system`; and

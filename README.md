@@ -44,7 +44,7 @@ You need Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/getting-started/
 Deploying also needs `helm`, `kubectl`, `git` and a `docker` that builds with BuildKit.
 
 ```bash
-uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+uv tool install git+https://github.com/ss7172/graph-agents-cli@v0.3.0
 graph-agents-cli setup      # optional: install the skills into your coding agents
 ```
 
@@ -95,8 +95,8 @@ site's CLI page.
 
 ## Status
 
-Version 0.2.0, **alpha**
-([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.2.0)).
+Version 0.3.0, **alpha**
+([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/v0.3.0)).
 Interfaces may still change between minor versions; the changelog lists every breaking
 change with its migration steps. Publication on PyPI is pending.
 

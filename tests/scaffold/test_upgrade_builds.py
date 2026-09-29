@@ -51,8 +51,14 @@ OTHER_DIGEST = "sha256:" + "ab" * 32
 def version_0_2_0(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every project and the running CLI are 0.2.0 unless a test says otherwise."""
     monkeypatch.setattr(version_module, "get_current_version", lambda: "0.2.0")
+    # Modules that imported the name keep their own reference: `create` writes the
+    # project's cli_version, so it has to agree with the running CLI's version.
+    for module in ("upgrade", "create", "enhance"):
+        monkeypatch.setattr(
+            f"graph_agents_cli.scaffold.commands.{module}.get_current_version", lambda: "0.2.0"
+        )
     monkeypatch.setattr(
-        "graph_agents_cli.scaffold.commands.upgrade.get_current_version", lambda: "0.2.0"
+        "graph_agents_cli.scaffold.utils.template.get_current_version", lambda: "0.2.0"
     )
     monkeypatch.delenv(version_module.INSTALL_SPEC_ENV, raising=False)
 

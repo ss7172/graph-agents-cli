@@ -1,7 +1,7 @@
 # Known issues
 
 <!-- --8<-- [start:intro] -->
-Medium- and low-priority issues known in graph-agents-cli (0.2.0, and the unreleased 0.3)
+Medium- and low-priority issues known in graph-agents-cli 0.3.0
 and parked for a future release. Each entry gives a severity, the area, what happens, its impact, a workaround where
 one exists, and the review round that found it. Design limits that are not planned to change
 are described in the documentation, on the page of the feature they concern (they were the
@@ -56,7 +56,12 @@ fixes, by the reproduction or code reading the entry describes.
 "Found in v0.3" names the phase of the 0.3 release's agent-to-agent work (P1 identity, P2
 token exchange, P3 the policy protocol, P4 the A2A client and `peer`, P5 `system`, P6 docs),
 or the structured answers built beside it, whose build or independent verification reported
-the issue; those entries were checked against that phase's commits.
+the issue; those entries were checked against that phase's commits. "The 0.3 acceptance run"
+names the release's acceptance tests (a system of six agents built with `peer add` and
+`system apply` on a local cluster, security probes, a probe of 20 agents with 2 replicas each,
+an issuer that hangs, and an upgrade from 0.2.0 with data), and "the 0.3 skills check" its
+final before/after run of gac-bench; those entries were checked against commit `a7edef4` by
+the acceptance review.
 
 <!-- --8<-- [start:summary] -->
 ## Summary
@@ -85,8 +90,12 @@ contributor tooling in `tools/`, never shipped).
 
 ## Owner actions
 
-- Optional, for PyPI (0.2.0 is released on GitHub with the tags `v0.1.0` and `v0.2.0`):
-  register the trusted publisher, create the `pypi` environment and set
+- **The `v0.3.0` tag is not pushed yet.** Push the release commit (and `main`), then tag
+  `v0.3.0` on it (see the release process in [CONTRIBUTING.md](CONTRIBUTING.md)). Until then
+  every install path pinned to 0.3.0 fails: the README and site install lines, `setup` and
+  `update`, the skills' install pins, and the `GRAPH_AGENTS_CLI_SPEC` of every project 0.3.0
+  generates (so its CI). `v0.1.0` and `v0.2.0` are already on GitHub.
+- Optional, for PyPI: register the trusted publisher, create the `pypi` environment and set
   `PUBLISH_TO_PYPI=true`, as CONTRIBUTING.md describes.
 
 <!-- --8<-- [start:entries] -->

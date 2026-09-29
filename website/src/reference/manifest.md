@@ -173,7 +173,7 @@ CHART_PATH=deployment/helm/my-agent
 RUNTIME=fastapi
 CD=skip
 # Where the workflows install graph-agents-cli from (uvx --from "$GRAPH_AGENTS_CLI_SPEC").
-GRAPH_AGENTS_CLI_SPEC=git+https://github.com/ss7172/graph-agents-cli@v0.2.0
+GRAPH_AGENTS_CLI_SPEC=git+https://github.com/ss7172/graph-agents-cli@v0.3.0
 ```
 
 It is read as `NAME=VALUE` data, never sourced by a shell: only these six names are accepted,
