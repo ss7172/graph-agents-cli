@@ -56,10 +56,9 @@ uv run pytest tools/skillopt/tests -q                        # from the reposito
 
 `selfcheck` runs, for every task, the scripted gold solution (must score `hard=1`, `soft=1.0` and
 exit 0), the scripted broken solution (must score `hard=0` and fail exactly the mandatory checks
-the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). The
-first 101 tasks pass it against a CLI built from v0.3 (commit dbf2ddd), and the three
-structured-answer tasks against one built from 01a35c2; a run of all of them takes about 15
-minutes at 8 slots.
+the task lists in `broken_fails`), and the untouched fixture (`noop`, must score `hard=0`). All
+104 tasks pass it against a CLI built from v0.3 (commit c1f90ca); a run of all of them takes
+about 15 minutes at 8 slots.
 
 ## Running agents
 
