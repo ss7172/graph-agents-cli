@@ -24,6 +24,7 @@ project is created.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from pathlib import Path
@@ -102,3 +103,35 @@ def test_the_cli_reads_a_schema_file(tmp_path: Path) -> None:
     broken = tmp_path / "broken.json"
     broken.write_text("{", encoding="utf-8")
     assert cli.read_schema(broken)[1][0].startswith("not a JSON file")
+
+
+def _untyped_or_type_lists(node: Any, where: str = "$") -> list[str]:
+    """Schemas Anthropic's client refuses: a type list, or no `type`/`anyOf`/`oneOf`/`allOf`."""
+    if not isinstance(node, dict):
+        return []
+    found = []
+    if isinstance(node.get("type"), list):
+        found.append(f"{where}: a type list")
+    elif not any(k in node for k in ("type", "anyOf", "oneOf", "allOf", "$ref")):
+        found.append(f"{where}: no type")
+    for key in ("anyOf", "oneOf", "allOf"):
+        for i, sub in enumerate(node.get(key) or []):
+            found += _untyped_or_type_lists(sub, f"{where}.{key}[{i}]")
+    for key in ("properties", "$defs", "definitions"):
+        for name, sub in (node.get(key) or {}).items():
+            found += _untyped_or_type_lists(sub, f"{where}.{key}.{name}")
+    for key in ("items", "additionalProperties", "not"):
+        found += _untyped_or_type_lists(node.get(key), f"{where}.{key}")
+    return found
+
+
+def test_the_develop_guides_example_schema_works_with_every_provider() -> None:
+    # The guide's example is what people copy: the checker takes it, and so does
+    # Anthropic's client (a schema with a type list or an untyped `enum` fails there).
+    guide = (Path(__file__).resolve().parents[2] / "website/src/guides/develop.md").read_text(
+        encoding="utf-8"
+    )
+    section = guide.split("## Structured final answers", 1)[1]
+    example = json.loads(section.split("```json\n", 1)[1].split("```", 1)[0])
+    assert cli.schema_problems(example) == []
+    assert _untyped_or_type_lists(example) == []

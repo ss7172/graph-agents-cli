@@ -107,7 +107,7 @@ Rendered into `.env.example` and the chart's `values.yaml` `env:` map.
 | `AUTH_FORWARD_HEADERS` | `.env` / chart | langgraph-server with `LANGGRAPH_SERVER_URL`: request headers passed to the server's auth handler (default `authorization,cookie`) |
 | `RUN_TIMEOUT_S` (300), `MODEL_TIMEOUT_S` (60), `MODEL_MAX_RETRIES` (2), `RECURSION_LIMIT` (50) | `.env` / chart | run guardrails |
 | `MODEL_REASONING_EFFORT`, `MODEL_USE_RESPONSES_API` (unset) | `.env` / chart | OpenAI-API models: reasoning effort; `true` = the Responses API (see `langchain-models.md`) |
-| `RESPONSE_FORMAT_STRATEGY` (`auto`) | `.env` / chart | with `app/response_schema.json`: `auto` (the provider's own structured output when the model has it, strict on OpenAI; else the `final_answer` tool), `provider` or `tool` |
+| `RESPONSE_FORMAT_STRATEGY` (`auto`) | `.env` / chart | with `app/response_schema.json`: `auto` (the provider's own structured output when the model has it and its client can send the schema, strict on OpenAI; else the `final_answer` tool; Anthropic's client refuses a type list and an `enum` with no `type`), `provider` or `tool` |
 | `RESPONSE_SCHEMA_PATH` (`app/response_schema.json`) | `.env` | another response schema file (tests); set, it must exist |
 | `MAX_REQUEST_BYTES` (1048576), `MAX_METADATA_KEYS` (16), `MAX_METADATA_VALUE_CHARS` (256), `SSE_HEARTBEAT_S` (15) | `.env` / chart | request limits (413 / 422) and SSE keep-alive |
 | `MAX_MESSAGE_CHARS` (32000) | `.env` / chart | longest user message on `/chat` (422) and A2A (invalid params, -32602) |

@@ -217,10 +217,12 @@ migration" with the steps to follow.
   builds the agent with `response_format=response_format(model, tools)`
   (`app_utils/structured.py`), one of LangChain's `create_agent` strategies:
   `RESPONSE_FORMAT_STRATEGY=auto` (default) uses the provider's own structured output where
-  LangChain's model profile says the model has it with the agent's tools bound, strict on
-  OpenAI (LangChain's own auto mode asks OpenAI for a best-effort schema), else a
-  `final_answer` tool the model must call (`tool_choice` forces a call at every step);
-  `provider` and `tool` force one. LangChain returns a raw JSON-schema answer unchecked, so
+  LangChain's model profile says the model has it with the agent's tools bound and the
+  model's client can send the schema, strict on OpenAI (LangChain's own auto mode asks OpenAI
+  for a best-effort schema), else a `final_answer` tool the model must call (`tool_choice`
+  forces a call at every step); `provider` and `tool` force one. Anthropic's client refuses a
+  type list and a schema with no `type` (an `enum` alone) before any request, so `auto` uses
+  the tool for such a schema and `provider` stops startup naming why. LangChain returns a raw JSON-schema answer unchecked, so
   the new `StructuredAnswer` middleware (last in `middleware()`) checks every answer against
   the schema: one that does not fit, a reply that is not JSON, a plain-text final reply, or an
   answer given beside other tool calls (none of which runs, so a gated call never runs after

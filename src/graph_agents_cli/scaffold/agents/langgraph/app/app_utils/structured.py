@@ -25,7 +25,10 @@ object. Without the file the agent answers in text, as before. With it:
   model must call with its answer (`final_answer`, with `tool_choice` forcing a
   call at every step). `RESPONSE_FORMAT_STRATEGY` picks: `auto` (default: the
   provider's own when LangChain's model profile says the model has it, with
-  the agent's tools bound; the tool otherwise), `provider` or `tool`.
+  the agent's tools bound, and the model's client can send the schema; the
+  tool otherwise), `provider` or `tool`. Anthropic's client refuses a type
+  list and a schema with no `type` (an `enum` alone): `auto` then uses the
+  tool, and `provider` stops startup (`provider_refusal`).
 * Every answer is checked against the schema here (`StructuredAnswer`):
   LangChain returns a raw JSON-schema answer unchecked under both strategies.
   An answer that does not fit, a reply that is not JSON, a final reply in
@@ -60,6 +63,7 @@ error: use `RESPONSE_FORMAT_STRATEGY=tool` for it.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -375,6 +379,30 @@ def provider_supported(model: Any, tools: list[Any]) -> bool:
     return bool(_supports_provider_strategy(model, tools=tools))
 
 
+def provider_refusal(model: Any, schema: dict[str, Any]) -> str | None:
+    """Why `model`'s client would refuse `schema` as its provider's structured output; None if not.
+
+    The client converts the schema before any request is sent, and a schema it
+    cannot convert fails every run there. Anthropic: langchain-anthropic
+    converts it with the Anthropic SDK's `transform_schema`, which refuses a
+    type list (`"type": ["string", "null"]`) and a schema with no `type`,
+    `anyOf`, `oneOf` or `allOf` (an `enum` alone, a `true`). Other providers'
+    clients take any schema this checker accepts (their provider may still
+    refuse one: the run then fails with the provider's error).
+    """
+    if not type(model).__module__.startswith("langchain_anthropic"):
+        return None
+    try:
+        from anthropic import transform_schema
+    except ImportError:  # an SDK without it: nothing to ask
+        return None
+    try:
+        transform_schema(copy.deepcopy(schema))
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 def response_format(
     model: Any, tools: list[Any]
 ) -> ToolStrategy[Any] | ProviderStrategy[Any] | None:
@@ -382,7 +410,9 @@ def response_format(
 
     `auto` decides here, from the model and tools the agent is built with, so
     that the provider strategy is strict (LangChain's own `AutoStrategy` asks
-    OpenAI for a best-effort `json_schema`, which the model need not follow).
+    OpenAI for a best-effort `json_schema`, which the model need not follow),
+    and only for a schema the model's client can send (`provider_refusal`):
+    else the tool. `provider` with such a schema stops startup, naming why.
     """
     schema, strategy = structured_settings()
     if schema is None:
@@ -392,12 +422,34 @@ def response_format(
         raise SettingsError(
             f"A tool is named {ANSWER_TOOL!r}, the name of the structured answer: rename the tool."
         )
+    answer_schema = _model_schema(schema)
     if strategy == STRATEGY_AUTO:
-        strategy = STRATEGY_PROVIDER if provider_supported(model, tools) else STRATEGY_TOOL
+        strategy = STRATEGY_TOOL
+        if provider_supported(model, tools):
+            refusal = provider_refusal(model, answer_schema)
+            if refusal is None:
+                strategy = STRATEGY_PROVIDER
+            else:
+                logger.info(
+                    "structured answers: the model's client cannot send %s as its provider's "
+                    "structured output (%s)",
+                    SCHEMA_FILENAME,
+                    refusal,
+                )
+    elif strategy == STRATEGY_PROVIDER:
+        refusal = provider_refusal(model, answer_schema)
+        if refusal is not None:
+            raise SettingsError(
+                f"RESPONSE_FORMAT_STRATEGY=provider: the model's client cannot send "
+                f"{SCHEMA_FILENAME} as its provider's structured output ({refusal}). Give "
+                'every schema in it a "type" (or "anyOf"), write a value that may be null '
+                'as "anyOf" with {"type": "null"} rather than a type list, or set '
+                "RESPONSE_FORMAT_STRATEGY=tool (or auto)."
+            )
     logger.info("structured answers: the %s strategy", strategy)
     if strategy == STRATEGY_PROVIDER:
-        return ProviderStrategy(_model_schema(schema), strict=True)
-    return ToolStrategy(_model_schema(schema), tool_message_content=ANSWER_RECORDED)
+        return ProviderStrategy(answer_schema, strict=True)
+    return ToolStrategy(answer_schema, tool_message_content=ANSWER_RECORDED)
 
 
 # ---------------------------------------------------------------------------

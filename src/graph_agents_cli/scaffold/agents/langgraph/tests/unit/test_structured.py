@@ -276,6 +276,72 @@ def test_a_tool_named_like_the_answer_is_refused(schema_file) -> None:
         response_format(FakeChatModel(), [final_answer])
 
 
+# The shapes Anthropic's client refuses (a type list, an `enum` with no `type`), and the
+# same answer written so that it takes it.
+ANTHROPIC_REFUSES: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "category": {"enum": ["billing", "technical", "account", "other"]},
+        "order_id": {"type": ["string", "null"], "pattern": "^ORD-[0-9]{5}$"},
+    },
+    "required": ["category", "order_id"],
+    "additionalProperties": False,
+}
+ANTHROPIC_TAKES: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "category": {"type": "string", "enum": ["billing", "technical", "account", "other"]},
+        "order_id": {"anyOf": [{"type": "string", "pattern": "^ORD-[0-9]{5}$"}, {"type": "null"}]},
+    },
+    "required": ["category", "order_id"],
+    "additionalProperties": False,
+}
+
+
+def _claude() -> Any:
+    from langchain_anthropic import ChatAnthropic
+
+    # No request is sent: the strategy and the schema conversion happen before any.
+    return ChatAnthropic(model="claude-sonnet-5", api_key="sk-test")
+
+
+@pytest.mark.parametrize("schema", [ANTHROPIC_REFUSES, SCHEMA])
+def test_auto_uses_the_tool_where_anthropic_cannot_take_the_schema(
+    tmp_path, monkeypatch, schema
+) -> None:
+    # Every run would otherwise fail in the client, before its request (run_failed).
+    monkeypatch.setenv("RESPONSE_SCHEMA_PATH", str(_write(tmp_path / "s.json", schema)))
+    model = _claude()
+    assert structured.provider_supported(model, [])  # the model has structured output
+    assert structured.provider_refusal(model, schema) is not None
+    assert isinstance(response_format(model, []), ToolStrategy)
+
+
+def test_auto_uses_anthropics_structured_output_for_a_schema_it_takes(
+    tmp_path, monkeypatch
+) -> None:
+    from anthropic import transform_schema
+
+    monkeypatch.setenv("RESPONSE_SCHEMA_PATH", str(_write(tmp_path / "s.json", ANTHROPIC_TAKES)))
+    fmt = response_format(_claude(), [])
+    assert isinstance(fmt, ProviderStrategy)
+    # What langchain-anthropic does with it before the request.
+    transform_schema(fmt.to_model_kwargs()["response_format"]["json_schema"]["schema"])
+
+
+def test_the_provider_strategy_with_a_schema_anthropic_cannot_take_stops_startup(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("RESPONSE_SCHEMA_PATH", str(_write(tmp_path / "s.json", ANTHROPIC_REFUSES)))
+    monkeypatch.setenv("RESPONSE_FORMAT_STRATEGY", "provider")
+    with pytest.raises(SettingsError, match=r"cannot send response_schema\.json.*=tool"):
+        response_format(_claude(), [])
+    # The tool strategy takes it; other providers' clients are not asked.
+    monkeypatch.setenv("RESPONSE_FORMAT_STRATEGY", "tool")
+    assert isinstance(response_format(_claude(), []), ToolStrategy)
+    assert structured.provider_refusal(FakeChatModel(), ANTHROPIC_REFUSES) is None
+
+
 # --- the fake model --------------------------------------------------------------------
 
 

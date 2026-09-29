@@ -194,7 +194,9 @@ calls below).
 Put a JSON Schema whose root is an object in `{{cookiecutter.agent_directory}}/response_schema.json` and the agent answers in
 that shape: `agent.py` builds it with `response_format=response_format(model, tools)` (`app_utils/structured.py`).
 `RESPONSE_FORMAT_STRATEGY` picks how the model is made to: `auto` (default: the provider's own structured output
-where the model has it, strict on OpenAI, else a `final_answer` tool the model must call), `provider` or `tool`.
+where the model has it and its client can send the schema, strict on OpenAI, else a `final_answer` tool the model
+must call), `provider` or `tool`. Anthropic's client refuses a type list (`["string", "null"]`) and an `enum` with
+no `type`: give every schema a `type` and write a nullable value as `anyOf` with `{"type": "null"}`.
 Every answer is checked against the schema; one that does not fit goes back to the model (3 tries), then the run
 ends with the `error` code `invalid_structured_response`. A completed run's only `message.delta` is the answer's
 JSON text and `message.end` carries the object as `structured_response`; the A2A reply adds a data part with it;

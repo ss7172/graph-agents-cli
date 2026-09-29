@@ -331,9 +331,9 @@ root is an object:
 {
   "type": "object",
   "properties": {
-    "category": {"enum": ["billing", "technical", "account", "other"]},
-    "priority": {"enum": ["low", "medium", "high"]},
-    "order_id": {"type": ["string", "null"], "pattern": "^ORD-[0-9]{5}$"},
+    "category": {"type": "string", "enum": ["billing", "technical", "account", "other"]},
+    "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+    "order_id": {"anyOf": [{"type": "string", "pattern": "^ORD-[0-9]{5}$"}, {"type": "null"}]},
     "summary": {"type": "string", "maxLength": 200}
   },
   "required": ["category", "priority", "order_id", "summary"],
@@ -351,8 +351,10 @@ How the model is made to answer
 
     - `auto` (default): the provider's own structured output when LangChain's profile of the
       model says it has it with the agent's tools bound (OpenAI's `json_schema` response
-      format, strict; Anthropic's and Gemini's equivalents), else the tool strategy.
-    - `provider`: always the provider's own.
+      format, strict; Anthropic's and Gemini's equivalents) and the model's client can send
+      the schema (see Anthropic below), else the tool strategy.
+    - `provider`: always the provider's own; a schema the model's client cannot send stops
+      startup.
     - `tool`: a tool named `final_answer`, whose arguments are the answer, which the model
       must call to finish (`tool_choice` forces a tool call at every step). It works with
       any model that calls tools, including an OpenAI-compatible server.
@@ -381,10 +383,19 @@ What the schema may use
 
 OpenAI's strict mode
 :   With the provider strategy on Chat Completions, langchain-openai makes every property of
-    the answer required and forbids extra ones: give a property that may have no value a
-    `null` type, as `order_id` above. Every tool becomes strict too, so the model passes a
-    value for each of a tool's optional arguments. A schema the provider refuses fails every
-    run with the provider's error; use `RESPONSE_FORMAT_STRATEGY=tool` for it.
+    the answer required and forbids extra ones: let a property that may have no value be
+    `null`, as `order_id` above. Every tool becomes strict too, so the model passes a value
+    for each of a tool's optional arguments. A schema the provider refuses fails every run
+    with the provider's error; use `RESPONSE_FORMAT_STRATEGY=tool` for it.
+
+Anthropic's structured output
+:   langchain-anthropic converts the schema with the Anthropic SDK before each request. The
+    SDK refuses a type list (`"type": ["string", "null"]`) and a schema with no `type`,
+    `anyOf`, `oneOf` or `allOf` (an `enum` alone), so write them as above: a `type` beside
+    every `enum`, and `anyOf` with `{"type": "null"}` for a value that may be null. With
+    such a schema `auto` uses the tool strategy instead (the log says why) and `provider`
+    stops startup. What the SDK cannot enforce (`pattern`, `maxLength`, number bounds) goes
+    into the schema's description for the model; the answer check still enforces it.
 
 What clients receive
 :   A completed `/chat` run ends with one `message.delta`, the answer's JSON text, and

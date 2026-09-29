@@ -173,7 +173,7 @@ settings of each environment (`.env`, `.env.<env>`, the chart values), not of th
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RESPONSE_FORMAT_STRATEGY` | `auto` | Only with a response schema ([structured final answers](../guides/develop.md#structured-final-answers)): `auto` uses the provider's own structured output when the model has it (strict on OpenAI), else a `final_answer` tool the model must call; `provider` or `tool` forces one. |
+| `RESPONSE_FORMAT_STRATEGY` | `auto` | Only with a response schema ([structured final answers](../guides/develop.md#structured-final-answers)): `auto` uses the provider's own structured output when the model has it (strict on OpenAI) and the model's client can send the schema (Anthropic's refuses a type list and a schema with no `type`), else a `final_answer` tool the model must call; `provider` or `tool` forces one (`provider` with a schema the client cannot send stops startup). |
 | `RESPONSE_SCHEMA_PATH` | `<agent directory>/response_schema.json` | Another response schema file. Set, it must exist. The file is part of the agent, so the default fits nearly every project; tests set this. |
 
 ### Persistence
