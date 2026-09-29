@@ -135,7 +135,7 @@ log under `error_id`.
 | `unavailable` | The database is unreachable, or the run could no longer confirm it was the only run on the thread. |
 | `forbidden` | The thread is no longer the caller's. |
 | `unsupported_interrupt` | The graph paused for input this server cannot collect (an `interrupt()` of your own). |
-| `invalid_structured_response` | The project has a response schema, and no try of the model's answer fitted it (3 tries), or the graph gave no answer (an `agent.py` not built with `response_format()`), or its answer does not fit and was never checked (an `agent.py` without `StructuredAnswer()` in its middleware: it is not delivered). The thread keeps nothing of a failed try. |
+| `invalid_structured_response` | The project has a response schema, and no try of the model's answer fitted it (3 tries), or the graph gave no answer (an `agent.py` not built with `response_format()`), or its answer does not fit and was never checked (an `agent.py` without `StructuredAnswer()` in its middleware: it is not delivered on `/chat` or A2A, but it stays in the thread, KI-172). With `StructuredAnswer()` the thread keeps nothing of a failed try. |
 
 ### Structured answers
 

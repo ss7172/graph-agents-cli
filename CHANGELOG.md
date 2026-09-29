@@ -446,12 +446,19 @@ change in behaviour.
   `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns about
   either). The runtime checks every answer again before delivering it, so an answer that
   never went through `StructuredAnswer` and does not fit ends the run with
-  `invalid_structured_response`; it is never delivered. Documented in
+  `invalid_structured_response` and is not sent on `/chat` or over A2A (it stays in the
+  thread, KI-172). **Project tests:** a generated project's tests run with the mode off
+  (`RESPONSE_SCHEMA_PATH=none`, a new value: no schema, whatever the file), so a project with
+  a schema keeps a green suite and CI, and `tests/unit/test_structured.py` checks the
+  project's own schema and that one turn of `agent.py` answers in it; the fake model takes a
+  choice of the schema that fits (`null` for the develop guide's optional `order_id`) where
+  its text breaks a `pattern`. Documented in
   [Develop your agent](website/src/guides/develop.md#structured-final-answers), the HTTP API
   and environment references, the upgrading guide (0.2 to 0.3) and the multi-agent guide (a
   peer that answers in JSON); the langgraph-code, workflow, scaffold and eval skills teach it
   (declare the shape, never parse JSON out of a reply, wire a 0.2 `agent.py` by hand); and
-  gac-bench has a task family for it. KI-165 to KI-171 park its remaining minor issues.
+  gac-bench has a task family for it. KI-165 to KI-177 park its remaining minor issues
+  (KI-168 also covers A2A).
 - **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
   five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
   agent, and a reference whose CLI and Skills pages are generated from the commands and

@@ -690,6 +690,58 @@ def test_fastapi_project_installs_lints_and_passes_its_tests(rendered: dict[str,
 
 @pytest.mark.slow
 @pytest.mark.skipif(UV is None, reason="uv is not on PATH")
+def test_a_project_with_a_response_schema_passes_its_tests(
+    rendered: dict[str, Path], tmp_path: Path
+) -> None:
+    """With the develop guide's example response schema, the project's own suite stays green.
+
+    Its tests run with the mode off (`RESPONSE_SCHEMA_PATH=none` in `tests/conftest.py`), and
+    `tests/unit/test_structured.py` checks the schema and that one turn of `agent.py` answers
+    in it (the fake model takes the schema's `null` where its text breaks `pattern`).
+    """
+    guide = Path(__file__).resolve().parents[2] / "website" / "src" / "guides" / "develop.md"
+    section = guide.read_text(encoding="utf-8").split("## Structured final answers", 1)[1]
+    schema = json.loads(section.split("```json\n", 1)[1].split("```", 1)[0])
+    project = tmp_path / "with-schema"
+    shutil.copytree(
+        rendered["fastapi-skip"],
+        project,
+        ignore=shutil.ignore_patterns(".venv", "__pycache__", ".pytest_cache", ".ruff_cache"),
+    )
+    (project / "app" / "response_schema.json").write_text(json.dumps(schema), encoding="utf-8")
+    env = {
+        "MODEL_PROVIDER": "fake",
+        "MODEL_NAME": "fake",
+        "CHECKPOINTER": "memory",
+        "API_KEY": "test-key",
+        "APP_ENV": "dev",
+        "TRACING_ENABLED": "false",
+        "UV_NO_CONFIG": "1",
+    }
+    sync = _run([UV or "uv", "sync", "--locked"], project, env)
+    assert sync.returncode == 0, sync.stderr[-3000:]
+    tests = _run(
+        [
+            UV or "uv",
+            "run",
+            "pytest",
+            "tests/unit",
+            "tests/integration",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-rs",
+        ],
+        project,
+        env,
+    )
+    assert tests.returncode == 0, tests.stdout[-4000:] + tests.stderr[-2000:]
+    # The agent's answer was checked against the schema, not skipped over its `pattern`.
+    assert "does not match the schema's `pattern`" not in tests.stdout, tests.stdout[-4000:]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(UV is None, reason="uv is not on PATH")
 def test_server_project_lock_matches_its_pyproject(rendered: dict[str, Path]) -> None:
     project = rendered["server-helm-push"]
     check = _run([UV or "uv", "lock", "--locked"], project, {"UV_NO_CONFIG": "1"})

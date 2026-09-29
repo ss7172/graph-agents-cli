@@ -204,6 +204,9 @@ JSON text and `message.end` carries the object as `structured_response`; the A2A
 `required`, `additionalProperties`, the size and number bounds, `pattern`, `anyOf`/`oneOf`/`allOf`/`not` and
 local `$ref`s; anything else stops startup (and `graph-agents-cli lint`). On OpenAI Chat Completions strict mode
 makes every property required (give one that may be empty a `null` type) and every tool strict.
+The tests run with `RESPONSE_SCHEMA_PATH=none` (text answers, `tests/conftest.py`), whatever shape the project
+declares; `tests/unit/test_structured.py` checks the project's schema and that `agent.py` answers in it (skipped
+when the fake model's text cannot match the schema's `pattern`).
 
 ## Model and judge
 

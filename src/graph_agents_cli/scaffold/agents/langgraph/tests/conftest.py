@@ -26,6 +26,13 @@ variables and the other settings the app reads (`A2A_NAME`, `RUNTIME`, ...).
 Each test module then sets exactly what it needs. Opt-ins the tests read
 themselves (`TEST_*`, such as `TEST_POSTGRES_DSN`) are kept.
 
+The project's response schema (`<agent directory>/response_schema.json`,
+structured final answers) is switched off the same way
+(`RESPONSE_SCHEMA_PATH=none`): the tests exercise the runtime with text
+answers, whatever shape the project declares. The tests of structured answers
+set a schema of their own, and `tests/unit/test_structured.py` checks the
+project's own schema and that the agent answers in it.
+
 The server tests exercise the plumbing (tool events, redaction, a run stopped
 mid-call) with a test-only tool through the `use_test_tools` fixture, never
 with the project's own tools, which are yours to replace or delete: while a
@@ -114,6 +121,8 @@ dotenv.main.load_dotenv = _no_dotenv
 for _name in _documented_settings() | {n for n in list(os.environ) if _is_app_setting(n)}:
     if not _name.startswith("TEST_") and _name != "PYTHON_DOTENV_DISABLED":
         os.environ.pop(_name, None)
+# No response schema unless a test sets one (see the module docstring); subprocesses inherit it.
+os.environ["RESPONSE_SCHEMA_PATH"] = "none"
 
 
 def build_test_graph(tools: Sequence[Any]) -> Any:

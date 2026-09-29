@@ -71,7 +71,7 @@ from {{cookiecutter.agent_directory}}.app_utils.content import (
     unfence_tool_output,
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
-from {{cookiecutter.agent_directory}}.app_utils.structured import ANSWER_TOOL
+from {{cookiecutter.agent_directory}}.app_utils.structured import ANSWER_TOOL, validate
 
 # graph-agents-cli provider name -> LangChain `model_provider`.
 PROVIDER_TO_LANGCHAIN: dict[str, str] = {
@@ -367,14 +367,21 @@ def _fake_args(parameters: dict[str, Any], prompt: str) -> dict[str, Any]:
     return args
 
 
+def _misfit(schema: Any, value: Any, root: Any) -> bool:
+    """Whether `value` breaks `schema` (a part of the response schema `root`)."""
+    return bool(validate(schema, value, root=root))
+
+
 def _fake_answer(schema: Any, text: str, root: Any = None) -> Any:
     """A value that fits `schema` (a response schema), built from `text`: deterministic.
 
     Every property is filled (as strict structured output does): a string with
     `text` (cut to `maxLength`), a number with its `minimum` (else 1), a flag
     with false, a list with `minItems` items, an enum or a choice with its
-    first option. A `pattern` is not followed, so a schema whose pattern `text`
-    does not match gets an answer that does not fit (the tests' failing path).
+    first option. A `pattern` is not followed: a string that breaks it takes the
+    first later choice that fits (of an `anyOf` or `oneOf`, or `null` in a type
+    list), so an optional id with a pattern is null; with no such choice the
+    answer does not fit (the tests' failing path).
     """
     root = schema if root is None else root
     if not isinstance(schema, dict):
@@ -388,12 +395,19 @@ def _fake_answer(schema: Any, text: str, root: Any = None) -> Any:
         return schema["const"]
     if schema.get("enum"):
         return schema["enum"][0]
-    for key in ("anyOf", "oneOf", "allOf"):
+    for key in ("anyOf", "oneOf"):
         if schema.get(key):
-            return _fake_answer(schema[key][0], text, root)
+            values = [_fake_answer(option, text, root) for option in schema[key]]
+            fits = (v for v, o in zip(values, schema[key], strict=True) if not _misfit(o, v, root))
+            return next(fits, values[0])
+    if schema.get("allOf"):
+        return _fake_answer(schema["allOf"][0], text, root)
     types = schema.get("type")
     types = types if isinstance(types, list) else [types]
     kind = next((t for t in types if t != "null"), None if "null" in types else "string")
+    if kind is not None and "null" in types:
+        value = _fake_answer({**schema, "type": kind}, text, root)
+        return None if _misfit(schema, value, root) else value
     if kind == "object":
         properties = schema.get("properties") or {}
         return {name: _fake_answer(sub, text, root) for name, sub in properties.items()}

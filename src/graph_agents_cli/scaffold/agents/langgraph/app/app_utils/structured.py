@@ -16,7 +16,10 @@
 
 The project declares the shape in `<agent directory>/response_schema.json`
 (`RESPONSE_SCHEMA_PATH` names another file), a JSON Schema whose root is an
-object. Without the file the agent answers in text, as before. With it:
+object. Without the file the agent answers in text, as before, and so it does
+with `RESPONSE_SCHEMA_PATH=none` whatever file there is: the project's tests
+set that (`tests/conftest.py`), so they exercise the runtime with text answers,
+and check the project's own schema in `tests/unit/test_structured.py`. With it:
 
 * The model is made to answer in that shape through LangChain's
   `response_format` strategies (`response_format()`): the provider's own
@@ -85,6 +88,8 @@ from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 logger = logging.getLogger(__name__)
 
 SCHEMA_FILENAME = "response_schema.json"
+# `RESPONSE_SCHEMA_PATH=none`: no response schema (text answers), whatever file there is.
+SCHEMA_OFF = "none"
 # The name of the answer's schema at the provider and of the answer tool (the tool
 # strategy): the project's own title stays in the file, not in the name a provider checks.
 ANSWER_TOOL = "final_answer"
@@ -290,8 +295,13 @@ class StructuredAnswerError(RuntimeError):
 
 
 def schema_path() -> Path | None:
-    """`RESPONSE_SCHEMA_PATH` when set (it must exist); else the agent package's file, if any."""
+    """`RESPONSE_SCHEMA_PATH` when set (it must exist); else the agent package's file, if any.
+
+    `RESPONSE_SCHEMA_PATH=none` means no schema, whatever file the package has.
+    """
     raw = (os.environ.get("RESPONSE_SCHEMA_PATH") or "").strip()
+    if raw.lower() == SCHEMA_OFF:
+        return None
     if raw:
         path = Path(raw)
         if not path.is_file():

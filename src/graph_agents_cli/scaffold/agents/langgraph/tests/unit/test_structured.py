@@ -20,11 +20,17 @@ strategy is chosen as LangChain would with a strict provider schema, the fake
 model answers in the shape, and `StructuredAnswer` sends an answer that does
 not fit back to the model, then fails the step. The chat runtime's stream
 mapping keeps the answer and hides the answer tool.
+
+The project's own schema, if it declares one, is checked last: the rest of the
+suite runs with `RESPONSE_SCHEMA_PATH=none` (`tests/conftest.py`).
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -90,8 +96,32 @@ def schema_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # --- the schema -----------------------------------------------------------------------
 
 
-def test_no_schema_file_means_no_structured_answers(monkeypatch) -> None:
+def _agent_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema: Any = None) -> None:
+    """Look for the package's response schema in `tmp_path` (with `schema` in it, if given)."""
+    (tmp_path / "app_utils").mkdir()
+    monkeypatch.setattr(structured, "__file__", str(tmp_path / "app_utils" / "structured.py"))
+    if schema is not None:
+        _write(tmp_path / "response_schema.json", schema)
+
+
+def test_no_schema_file_means_no_structured_answers(tmp_path, monkeypatch) -> None:
+    _agent_package(tmp_path, monkeypatch)
     monkeypatch.delenv("RESPONSE_SCHEMA_PATH", raising=False)
+    assert response_schema() is None and not structured.enabled()
+    assert response_format(FakeChatModel(), []) is None
+
+
+def test_the_agent_packages_schema_file_is_the_default(tmp_path, monkeypatch) -> None:
+    _agent_package(tmp_path, monkeypatch, SCHEMA)
+    monkeypatch.delenv("RESPONSE_SCHEMA_PATH", raising=False)
+    assert response_schema() == SCHEMA and structured.enabled()
+
+
+@pytest.mark.parametrize("value", ["none", "NONE", " None "])
+def test_response_schema_path_none_switches_the_mode_off(tmp_path, monkeypatch, value) -> None:
+    # What the project's tests run with (conftest.py): text answers whatever the project declares.
+    _agent_package(tmp_path, monkeypatch, SCHEMA)
+    monkeypatch.setenv("RESPONSE_SCHEMA_PATH", value)
     assert response_schema() is None and not structured.enabled()
     assert response_format(FakeChatModel(), []) is None
 
@@ -349,6 +379,15 @@ def test_the_fake_answers_in_the_shape() -> None:
     answer = _fake_answer(SCHEMA, "sunny")
     assert answer == {"answer": "sunny", "confidence": 0, "city": "sunny"}
     assert validate(SCHEMA, answer) == []
+    # A text that breaks a pattern takes the choice that fits (the developer guide's example).
+    for schema in (ANTHROPIC_TAKES, ANTHROPIC_REFUSES):
+        answer = _fake_answer(schema, "sunny")
+        assert answer == {"category": "billing", "order_id": None}, schema
+        assert validate(schema, answer) == []
+    assert _fake_answer(ANTHROPIC_TAKES, "ORD-12345")["order_id"] == "ORD-12345"
+    # With no choice that fits, the answer does not fit (the tests' failing path).
+    failing = {"type": "object", "properties": {"id": {"type": "string", "pattern": "^ORD-"}}}
+    assert validate(failing, _fake_answer(failing, "sunny")) != []
     provider = FakeChatModel().bind_tools(
         [], response_format={"type": "json_schema", "json_schema": {"schema": SCHEMA}}
     )
@@ -568,3 +607,67 @@ def test_a_failed_answer_from_the_server_has_its_own_error_code() -> None:
         event = runtime._error_event(exc, "run-1")
         assert event["code"] == CODE_INVALID_STRUCTURED_RESPONSE, event
         assert "did not fit the response schema" in event["message"]
+
+
+# --- the project's own response schema --------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# One turn of the project's own graph (`agent.py` as written), under the project's own
+# schema: a process of its own, since this one imported the agent with the schema off.
+ONE_TURN = """
+import json
+from {{cookiecutter.agent_directory}} import agent
+from {{cookiecutter.agent_directory}}.app_utils.structured import StructuredAnswerError
+try:
+    state = agent.graph.invoke({"messages": [{"role": "user", "content": "Hello"}]})
+except StructuredAnswerError as exc:
+    print(json.dumps({"error": str(exc)}))
+else:
+    print(json.dumps({"answered": "structured_response" in state,
+                      "answer": state.get("structured_response")}))
+"""
+
+
+def _project_schema(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any] | None:
+    monkeypatch.delenv("RESPONSE_SCHEMA_PATH", raising=False)
+    return response_schema()
+
+
+def test_the_projects_response_schema_is_one_the_agent_can_use(monkeypatch) -> None:
+    # A schema the checker cannot check stops startup (SettingsError names the problem).
+    schema = _project_schema(monkeypatch)
+    if schema is not None:
+        assert schema_problems(schema) == []
+        assert response_format(FakeChatModel(), []) is not None
+
+
+def test_the_agent_answers_in_the_projects_shape(monkeypatch) -> None:
+    """`agent.py` is built for the project's schema: its answer is an object in that shape.
+
+    Without a schema, the agent answers in text (no structured answer).
+    """
+    schema = _project_schema(monkeypatch)
+    env = {k: v for k, v in os.environ.items() if k != "RESPONSE_SCHEMA_PATH"}
+    env["MODEL_PROVIDER"] = "fake"
+    done = subprocess.run(
+        [sys.executable, "-c", ONE_TURN],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr[-3000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    if schema is None:
+        assert result == {"answered": False, "answer": None}
+        return
+    if "error" in result and "must match the pattern" in result["error"]:
+        pytest.skip(
+            "the fake model writes the reply's text where the schema wants a string, and it "
+            f"does not match the schema's `pattern` ({result['error']}); the answer check ran"
+        )
+    assert "error" not in result, result["error"]
+    assert result["answered"], "agent.py gives no structured answer: pass response_format"
+    assert validate(schema, result["answer"]) == [], result["answer"]

@@ -345,6 +345,14 @@ root is an object:
 the file the agent answers in text, as before. `graph-agents-cli lint` checks the file, and
 the app refuses to start with one it cannot check.
 
+The project's tests run with `RESPONSE_SCHEMA_PATH=none`, which switches the mode off
+whatever the file says (`tests/conftest.py`), so they exercise the runtime with text answers.
+`tests/unit/test_structured.py` then checks your schema: that the app can use it, and that
+one turn of `agent.py` with the fake model answers in its shape. The fake model writes its
+reply's text where the schema wants a string and does not follow `pattern`; it takes a
+choice that fits (`null`, say) where the schema offers one, and the test is skipped when
+none fits.
+
 How the model is made to answer
 :   `agent.py` passes `response_format=response_format(model, tools)` to `create_agent`,
     which picks one of LangChain's strategies. `RESPONSE_FORMAT_STRATEGY` chooses:
@@ -416,7 +424,9 @@ A project created before 0.3
     `middleware()`. Without `response_format`, every run with a schema ends with
     `invalid_structured_response`. Without `StructuredAnswer()`, an answer that does not fit
     is not sent back to the model; the runtime checks every answer again before it delivers
-    it, so such a run ends with that error instead of the answer. `lint` warns about either.
+    it on `/chat` and over A2A, so such a run ends with that error instead of the answer. The
+    answer still stays in the thread, though, and the thread's messages and LangGraph
+    Server's native API return it (KI-172). `lint` warns about either.
 
 ## The local loop
 

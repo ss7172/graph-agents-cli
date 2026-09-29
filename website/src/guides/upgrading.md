@@ -290,7 +290,12 @@ is in the [changelog](../reference/changelog.md).
   `graph-agents-cli lint`: it refuses a schema the agent would not start with (exit 3) and
   warns while either piece of wiring is missing. Without the wiring, every run with a schema
   ends with the `error` code `invalid_structured_response`: the runtime checks every answer
-  again before delivering it, so an unchecked answer is never sent. See
+  again before it delivers it on `/chat` and over A2A. An answer that did not go through
+  `StructuredAnswer()` still stays in the thread, where the thread's messages and LangGraph
+  Server's native API return it (KI-172), so wire both pieces. `scaffold upgrade` also brings
+  the tests' `tests/conftest.py`, which runs them with the mode off
+  (`RESPONSE_SCHEMA_PATH=none`), and `tests/unit/test_structured.py`, which checks your schema
+  and that `agent.py` answers in it. See
   [A project created before 0.3](develop.md#structured-final-answers).
 - **Hand-written peer clients** (a tool that posts A2A JSON-RPC itself, a delegating auth
   policy that exchanges tokens in `authenticate`): delete the delegating policy and its
