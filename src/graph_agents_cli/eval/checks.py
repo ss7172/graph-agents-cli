@@ -41,7 +41,11 @@ CHECK_DESCRIPTIONS: dict[str, str] = {
     "regex": (
         "The response matches the regular expression (re.search, DOTALL; `(?i)` ignores case)."
     ),
-    "json_schema": "The final response parses as JSON and validates against the schema.",
+    "json_schema": (
+        "The final answer validates against the schema: the run's structured response when it "
+        "has one (a project with a response schema), else the final reply's JSON (the whole "
+        "reply, else its last JSON object or array of the schema's type)."
+    ),
     "tool_calls": "The listed tools were called (name + args_subset); `ordered` enforces order.",
     "no_tool_calls": "The agent made no tool calls.",
     "max_latency_ms": (
@@ -65,7 +69,7 @@ MODIFIER_DESCRIPTIONS: dict[str, str] = {
     "scope": (
         "final_turn (default): checks read the final turn of a multi-turn case; all_turns: "
         "every turn's replies, tool calls, latency, tokens and approval gates (json_schema "
-        "always reads the final reply)."
+        "always reads the final answer)."
     ),
 }
 
@@ -239,24 +243,74 @@ def validate_json_schema(schema: Any, value: Any) -> list[str]:
     ]
 
 
-def _extract_json(response: str) -> Any:
+# How many `{` / `[` positions the search for a reply's JSON tries (a guard against
+# pathological replies, such as thousands of unmatched brackets).
+MAX_JSON_STARTS = 2000
+
+
+def _json_values(text: str) -> list[Any]:
+    """Every top-level JSON object or array in ``text``, in order (inside code fences too).
+
+    Each ``{`` or ``[`` not inside a value found already is tried as the start
+    of one; prose around and between them is skipped.
+    """
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    position = 0
+    for _ in range(MAX_JSON_STARTS):
+        starts = [i for i in (text.find("{", position), text.find("[", position)) if i >= 0]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            position = start + 1
+            continue
+        values.append(value)
+        position = end
+    return values
+
+
+def _root_types(schema: Any) -> tuple[type, ...] | None:
+    """The Python types of the schema's root ``type`` (object or array), or None for any."""
+    declared = schema.get("type") if isinstance(schema, dict) else None
+    names = declared if isinstance(declared, list) else [declared]
+    types = tuple(t for n in names for t in {"object": (dict,), "array": (list,)}.get(n, ()))
+    return types or None
+
+
+def _extract_json(response: str, schema: Any = None) -> Any:
+    """The JSON answer in a reply: the whole reply when it is JSON, else the reply's last JSON
+    object or array (of the schema's root type, when it names object or array).
+
+    The last one, not the first: a reply often shows an example, or quotes its
+    input, before the answer, and may add prose after it.
+    """
     text = response.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fence:
-        return json.loads(fence.group(1).strip())
-    start = min((i for i in (text.find("{"), text.find("[")) if i >= 0), default=-1)
-    if start >= 0:
-        return json.loads(text[start:])
-    raise json.JSONDecodeError("no JSON found", text, 0)
+    values = _json_values(text)
+    wanted = _root_types(schema)
+    if wanted is not None:
+        values = [v for v in values if isinstance(v, wanted)] or values
+    if values:
+        return values[-1]
+    raise json.JSONDecodeError("no JSON object or array found", text, 0)
 
 
-def check_json_schema(schema: Any, response: str) -> CheckResult:
+def check_json_schema(schema: Any, response: str, structured: Any = None) -> CheckResult:
+    """``structured``: the run's structured response (a project with a response schema),
+    checked as it is; without one, the JSON in ``response`` (``_extract_json``)."""
+    if structured is not None:
+        errors = validate_json_schema(schema, structured)
+        if errors:
+            return False, "structured response: schema violation: " + "; ".join(errors[:3])
+        return True, ""
     try:
-        parsed = _extract_json(response)
+        parsed = _extract_json(response, schema)
     except json.JSONDecodeError as exc:
         return False, f"response is not valid JSON: {exc.msg}"
     errors = validate_json_schema(schema, parsed)
@@ -475,6 +529,7 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
     (``final_turn``, the default; the trace's top-level fields) or every turn
     (``all_turns``: every reply, every tool call in order, each turn's latency,
     the summed tokens, every approval gate). ``json_schema`` always reads the
+    final answer: the structured response when the trace has one, else the
     final reply.
 
     A check that raises is reported as failed with the exception text, so a bad
@@ -504,7 +559,9 @@ def run_checks(expect: dict[str, Any], trace: dict[str, Any]) -> dict[str, dict[
             expect["not_contains"], response, case_insensitive=fold
         ),
         "regex": lambda: check_regex(expect["regex"], response),
-        "json_schema": lambda: check_json_schema(expect["json_schema"], final_response),
+        "json_schema": lambda: check_json_schema(
+            expect["json_schema"], final_response, trace.get("structured_response")
+        ),
         "tool_calls": lambda: check_tool_calls(
             expect["tool_calls"], tool_calls, ordered=bool(expect.get("ordered"))
         ),

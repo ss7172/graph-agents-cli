@@ -42,6 +42,8 @@ env:
   # MODEL_REASONING_EFFORT: ""
   # MODEL_USE_RESPONSES_API: ""
 {%- endif %}
+  # Structured answers (only with the agent's response_schema.json): auto | provider | tool.
+  # RESPONSE_FORMAT_STRATEGY: auto
 {%- if cookiecutter.runtime == 'fastapi' %}
   CHECKPOINTER: postgres
 {%- endif %}

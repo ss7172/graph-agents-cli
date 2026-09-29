@@ -46,7 +46,7 @@ is added before the extension. `eval grade` picks the newest traces file by mtim
 | `expect.contains` / `not_contains` | | substrings of the final response, compared case-insensitively (`"hello"` matches "Hello!") |
 | `expect.case_insensitive` | | default `true`; `false` makes `contains` / `not_contains` exact-case (for `regex`, use `(?i)`) |
 | `expect.regex` | | Python regex searched in the final response |
-| `expect.json_schema` | | the final response must parse as JSON and validate (always the final reply, whatever `scope`) |
+| `expect.json_schema` | | the final answer must validate: the run's `structured_response` when the project has a response schema, else the final reply's JSON (the whole reply, else its last JSON object or array of the schema's root type); always the final turn, whatever `scope` |
 | `expect.tool_calls` | | list of `{name, args_subset}`; each must appear in the trace's `tool_calls` with the subset of args matching; `ordered: true` requires the same relative order |
 | `expect.no_tool_calls` | | the trace must contain no tool call |
 | `expect.max_latency_ms`, `max_tokens` | | upper bounds on `latency_ms` and `usage.input_tokens + output_tokens` |
@@ -153,6 +153,7 @@ With `--url`, an approved call is sent for real in that environment.
       "thread_id": "…",
       "run_id": "…",
       "approvals": [],
+      "structured_response": null,
       "agent_version": "0.1.0",
       "model": "openai/gpt-5-mini",
       "case": { "...the dataset case as written..." }
@@ -160,6 +161,9 @@ With `--url`, an approved call is sent for real in that environment.
   ]
 }
 ```
+
+`structured_response` is the object a project with a response schema answers with
+(`message.end`'s field; the last run of the final turn), `null` otherwise.
 
 `status` is `ok`, `error` (generation raised, the stream ended with an `error` event, or
 `message.end` carried a status other than `ok`, such as `step_limit` when the run reached

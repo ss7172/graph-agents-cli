@@ -87,16 +87,25 @@ class SurfaceApiErrors(
     ...
 
 
-def middleware() -> list[AgentMiddleware]:  # keep all three when you add your own
-    return [SurfaceApiErrors(), AnswerInvalidToolCalls(), UntrustedToolResults()]
+def middleware() -> list[AgentMiddleware]:  # keep all four, StructuredAnswer last
+    return [
+        SurfaceApiErrors(),
+        AnswerInvalidToolCalls(),
+        UntrustedToolResults(),
+        StructuredAnswer(),
+    ]
 
 
+model = get_model()
+tools = get_tools()
 graph: CompiledStateGraph = create_agent(
-    model=get_model(),
-    tools=get_tools(),
+    model=model,
+    tools=tools,
     system_prompt=SYSTEM_PROMPT,
     middleware=middleware(),
     context_schema=AgentContext,
+    # None without app/response_schema.json: the agent answers in text.
+    response_format=response_format(model, tools),
     name="my-agent",
 ).with_config({"recursion_limit": recursion_limit()})  # RECURSION_LIMIT, default 50
 ```
@@ -108,8 +117,10 @@ Rules:
   persistence. Passing `checkpointer=` here breaks both runtimes.
 - Keep the export name `graph`; `langgraph.json` points at `./app/agent.py:graph` and the app
   imports it by that name. Keep the `recursion_limit` config, the `SurfaceApiErrors`,
-  `AnswerInvalidToolCalls` and `UntrustedToolResults` middleware and the prompt's tool-results
-  rule when you rewrite it: the first stops a looping run, the second turns API refusals into
+  `AnswerInvalidToolCalls`, `UntrustedToolResults` and `StructuredAnswer` middleware, the
+  `response_format=response_format(model, tools)` argument and the prompt's tool-results
+  rule when you rewrite it (a project with `app/response_schema.json` answers in that JSON
+  shape: `references/template-contract.md`, "Chat API"): the first stops a looping run, the second turns API refusals into
   tool errors the model can read, the third answers a tool call whose arguments are not valid
   JSON and asks the model again (without it the run ends with no reply and the provider
   refuses the thread's later turns), and the last two keep text that tools return from acting

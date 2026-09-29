@@ -101,7 +101,7 @@ graph-agents-cli-manifest.yaml
 
 | Route | Behaviour |
 |---|---|
-| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id); send it to continue one. A run that pauses for approval ends with `message.end` status `awaiting_approval` and `approval`; while it waits, a new message gets 409 `{"code": "approval_pending"}` |
+| `POST /chat` | `{"thread_id": "optional", "message": "...", "metadata": {}}` with `Accept: text/event-stream`; streams `message.start`, `message.delta`, `tool.call`, `tool.result`, `message.end` (usage, latency, status) or `error`. Omit `thread_id` to start a thread (the server generates a random id); send it to continue one. A run that pauses for approval ends with `message.end` status `awaiting_approval` and `approval`; while it waits, a new message gets 409 `{"code": "approval_pending"}`. With a response schema (Structured answers below), `message.end` carries the answer as `structured_response` |
 | `GET /threads` | The caller's threads, most recent first (`?limit=1..100&offset=`), each with its `owner` hashed; `?scope=all` lists every principal's, for a role in `AUTH_READ_ACROSS_ROLES` only |
 | `GET /threads/{id}/messages` | A thread's messages (owner, or a role in `AUTH_READ_ACROSS_ROLES`) |
 | `GET /threads/{id}/approvals` | The thread's approvals of gated API calls (owner and read-across roles: all; an approver: the ones it may decide) |
@@ -188,6 +188,22 @@ write-capable APIs should authorize the user themselves (`auth: forward`). This 
 without removing it. The control that holds is a person's approval of each write before it is
 sent: gate write methods or operations with `approval` in `api-policy.yaml` (see Human approval of
 calls below).
+
+## Structured answers
+
+Put a JSON Schema whose root is an object in `{{cookiecutter.agent_directory}}/response_schema.json` and the agent answers in
+that shape: `agent.py` builds it with `response_format=response_format(model, tools)` (`app_utils/structured.py`).
+`RESPONSE_FORMAT_STRATEGY` picks how the model is made to: `auto` (default: the provider's own structured output
+where the model has it and its client can send the schema, strict on OpenAI, else a `final_answer` tool the model
+must call), `provider` or `tool`. Anthropic's client refuses a type list (`["string", "null"]`) and an `enum` with
+no `type`: give every schema a `type` and write a nullable value as `anyOf` with `{"type": "null"}`.
+Every answer is checked against the schema; one that does not fit goes back to the model (3 tries), then the run
+ends with the `error` code `invalid_structured_response`. A completed run's only `message.delta` is the answer's
+JSON text and `message.end` carries the object as `structured_response`; the A2A reply adds a data part with it;
+`expect.json_schema` in an eval case checks it as it is. The schema may use `type`, `enum`, `const`, `properties`,
+`required`, `additionalProperties`, the size and number bounds, `pattern`, `anyOf`/`oneOf`/`allOf`/`not` and
+local `$ref`s; anything else stops startup (and `graph-agents-cli lint`). On OpenAI Chat Completions strict mode
+makes every property required (give one that may be empty a `null` type) and every tool strict.
 
 ## Model and judge
 

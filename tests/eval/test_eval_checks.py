@@ -87,6 +87,51 @@ def test_json_schema_with_minimal_validator() -> None:
     assert minimal_validate({"type": "integer"}, True)  # bool is not an integer
 
 
+ANSWER = {
+    "type": "object",
+    "required": ["city"],
+    "properties": {"city": {"type": "string"}, "temp": {"type": "number"}},
+}
+
+
+@pytest.mark.parametrize(
+    ("reply", "city"),
+    [
+        # An example block before the answer: the answer (the last one) is checked.
+        ('For example:\n```json\n{"temp": 1}\n```\nAnswer:\n```json\n{"city": "SF"}\n```', "SF"),
+        # Prose after raw JSON.
+        ('{"city": "Oslo", "temp": 3} Hope this helps! Ask me anything.', "Oslo"),
+        # The input quoted before the answer, and a citation-like list after it.
+        ('You sent {"city": "?"}. Here: {"city": "Lima"} (see [1])', "Lima"),
+        # The whole reply is the answer.
+        ('{"city": "Rome"}', "Rome"),
+    ],
+)
+def test_json_schema_reads_the_replys_last_json_answer(reply: str, city: str) -> None:
+    passed, reason = check_json_schema({**ANSWER, "properties": {"city": {"const": city}}}, reply)
+    assert passed, reason
+
+
+def test_json_schema_picks_json_of_the_schemas_root_type() -> None:
+    schema = {"type": "array", "items": {"type": "integer"}}
+    assert check_json_schema(schema, 'Counts: [1, 2, 3] {"note": "done"}') == (True, "")
+    passed, reason = check_json_schema(ANSWER, "Nothing to report [1] [2]")
+    assert not passed and "schema violation" in reason  # no object: the last value is checked
+    passed, reason = check_json_schema(ANSWER, "no JSON here {not json")
+    assert not passed and "not valid JSON: no JSON object or array found" in reason
+
+
+def test_json_schema_checks_the_structured_response_as_it_is() -> None:
+    # A project with a response schema: its answer is checked, not the reply text.
+    assert check_json_schema(ANSWER, "prose, not JSON", {"city": "SF"}) == (True, "")
+    passed, reason = check_json_schema(ANSWER, '{"city": "SF"}', {"temp": 3})
+    assert not passed and reason.startswith("structured response: schema violation")
+    trace = {"response": "not JSON", "structured_response": {"city": "SF"}, "tool_calls": []}
+    assert run_checks({"json_schema": ANSWER}, trace)["json_schema"]["passed"]
+    trace["structured_response"] = None  # a text agent: the reply is read
+    assert not run_checks({"json_schema": ANSWER}, trace)["json_schema"]["passed"]
+
+
 def test_args_subset_matches_is_recursive() -> None:
     assert args_subset_matches(None, {"a": 1})
     assert args_subset_matches({"query": "SF"}, {"query": "SF", "extra": 1})

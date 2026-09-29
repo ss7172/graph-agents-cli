@@ -58,7 +58,12 @@ requests get the same error codes as 1.0 (an unknown task is -32001, logged
 at INFO; see `LegacyJsonRpcAdapter`). The reply is one `response` artifact:
 `SendMessage` returns it as one text part; `SendStreamingMessage` streams it
 in chunks (the last with `lastChunk`), and the stored task keeps the chunks
-joined into one part.
+joined into one part. A project with a response schema (`structured.py`)
+answers in JSON: the text part is the answer's exact JSON text, and the
+`response` artifact adds a data part holding the answer (`mediaType`
+`application/json`; a protobuf `Value` holds every number as a double, so
+read the text part where exact integers matter); the card lists
+`application/json` among its output modes.
 
 Approvals: a run that pauses before a gated API call moves the task to
 `input-required`; its status message holds a text part saying what waits
@@ -82,7 +87,8 @@ fails it when none is pending any more. However an approval ends (a decision
 over A2A or HTTP and the run it resumed, or its expiry), the requester's
 `input-required` tasks on that thread that wait on it follow
 (`follow_approval`, an `A2A_TASK_LISTENERS` entry): they take the run's
-outcome and say where it continued. A failed task, and a refused decision,
+outcome and say where it continued (a structured run's answer as a new
+`response` artifact, whole). A failed task, and a refused decision,
 carry a data part `{"type": "error", "code": ...}` (`thread_busy`: send the
 message again).
 
@@ -134,6 +140,7 @@ from a2a.types import (
     AgentInterface,
     AgentSkill,
     APIKeySecurityScheme,
+    Artifact,
     HTTPAuthSecurityScheme,
     Message,
     Part,
@@ -203,6 +210,7 @@ from {{cookiecutter.agent_directory}}.app_utils.chat import (
     LANGGRAPH_SERVER,
     RUNTIME,
     STATUS_AWAITING_APPROVAL,
+    STRUCTURED_KEY,
     ApprovalError,
     ChatRequest,
     detect_runtime,
@@ -217,6 +225,8 @@ from {{cookiecutter.agent_directory}}.app_utils.db import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
 from {{cookiecutter.agent_directory}}.app_utils.middleware import max_message_chars
+from {{cookiecutter.agent_directory}}.app_utils.structured import answer_text
+from {{cookiecutter.agent_directory}}.app_utils.structured import enabled as structured_enabled
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     A2A_TASK_LISTENERS,
     DELETE_LISTENERS,
@@ -239,6 +249,8 @@ DEFAULT_DESCRIPTION = "{{cookiecutter.project_name}}: a LangGraph agent served o
 DEFAULT_SKILL_DESCRIPTION = "Hold a conversation with the agent."
 # Set by the request handler for the executor: whether the caller streams the reply.
 STREAMING_STATE_KEY = "a2a_streaming"
+# The media type of a structured answer's data part (and of the card's output mode).
+JSON_MEDIA_TYPE = "application/json"
 # Whether this agent's A2A client passes the user's own words on to the agents it calls
 # (`A2A_FORWARD_ORIGIN`, `a2a_client.py`): `auto` sends them only to a peer whose card
 # declares the origin extension, and `off` never does.
@@ -1211,6 +1223,13 @@ ERROR_CODE_FORBIDDEN = "forbidden"
 ERROR_CODE_FAILED = "run_failed"
 
 
+def answer_part(answer: Any) -> Part:
+    """A structured answer as a data part (`mediaType` `application/json`)."""
+    data = struct_pb2.Value()
+    json_format.ParseDict(answer, data)
+    return Part(data=data, media_type=JSON_MEDIA_TYPE)
+
+
 def error_part(code: str) -> Part:
     """The data part a failed (or refused) task carries: `{"type": "error", "code": ...}`.
 
@@ -1336,7 +1355,12 @@ def follows(task: Task, owner: str, outcome: ApprovalOutcome) -> bool:
 
 
 def followed(task: Task, outcome: ApprovalOutcome) -> Task:
-    """`task` in the state an approval's outcome gives it (its old status moves to history)."""
+    """`task` in the state an approval's outcome gives it (its old status moves to history).
+
+    A structured run's answer (`outcome.answer`) is added as a new `response`
+    artifact, its JSON text and a data part, as the reply of a decision sent
+    on the task is: the task's last artifact is the answer.
+    """
     new = Task()
     new.CopyFrom(task)
     if new.status.HasField("message"):
@@ -1357,6 +1381,17 @@ def followed(task: Task, outcome: ApprovalOutcome) -> Task:
         )
     )
     new.status.timestamp.GetCurrentTime()
+    if state == TaskState.TASK_STATE_COMPLETED and outcome.answer is not None:
+        new.artifacts.append(
+            Artifact(
+                artifact_id=uuid.uuid4().hex,
+                name="response",
+                parts=[
+                    Part(text=valid_text(answer_text(outcome.answer))),
+                    answer_part(outcome.answer),
+                ],
+            )
+        )
     return new
 
 
@@ -1795,19 +1830,25 @@ class _Reply:
             self._held.clear()
         self._held.append(text)
 
-    async def finish(self) -> None:
-        """Send what is held as the last chunk (one empty part when the reply was empty)."""
+    async def finish(self, answer: Any = None) -> None:
+        """Send what is held as the last chunk (one empty part when the reply was empty).
+
+        `answer`: a structured run's answer, sent as a data part after the text.
+        """
         if self._finished:
             return
         self._finished = True
-        if self._held or not self._sent:
-            await self._send("".join(self._held), last=True)
+        if self._held or not self._sent or answer is not None:
+            await self._send("".join(self._held), last=True, answer=answer)
             self._held.clear()
 
-    async def _send(self, text: str, *, last: bool) -> None:
+    async def _send(self, text: str, *, last: bool, answer: Any = None) -> None:
+        # A lone surrogate (which protobuf cannot encode) is sent as U+FFFD.
+        parts = [Part(text=valid_text(text))]
+        if answer is not None:
+            parts.append(answer_part(answer))
         await self._updater.add_artifact(
-            # A lone surrogate (which protobuf cannot encode) is sent as U+FFFD.
-            [Part(text=valid_text(text))],
+            parts,
             artifact_id=self._artifact_id,
             name="response",
             append=self._sent,
@@ -1920,6 +1961,7 @@ class LangGraphAgentExecutor(AgentExecutor):
         # The reply is the `response` artifact (A2A clients read it from
         # artifacts, not from the final status message).
         reply = _Reply(updater, uuid.uuid4().hex, streaming=streaming)
+        answer: Any = None
         async for event, data in run:
             if event == EVENT_DELTA and data.get("text"):
                 await reply.add(data["text"])
@@ -1945,7 +1987,10 @@ class LangGraphAgentExecutor(AgentExecutor):
                     approval_request(updater, data.get("approvals") or [data.get("approval")])
                 )
                 return
-        await reply.finish()
+            elif event == EVENT_END:
+                # A structured run's answer (the chat runtime made its strings valid text).
+                answer = data.get(STRUCTURED_KEY)
+        await reply.finish(answer)
         await updater.complete()
 
     @staticmethod
@@ -2022,6 +2067,15 @@ def _security() -> tuple[dict[str, SecurityScheme], str]:
     )
 
 
+def _answer_modes() -> list[str]:
+    """`application/json` when the project answers in JSON (a response schema)."""
+    try:
+        return [JSON_MEDIA_TYPE] if structured_enabled() else []
+    except SettingsError:
+        # A bad schema: the lifespan's settings check refuses to start and names it.
+        return []
+
+
 def agent_card() -> AgentCard:
     rpc_url = f"{advertised_base_url()}{A2A_RPC_PATH}"
     schemes, required = _security()
@@ -2039,7 +2093,7 @@ def agent_card() -> AgentCard:
         ],
         version=os.environ.get("AGENT_VERSION", "0.1.0"),
         default_input_modes=["text/plain"],
-        default_output_modes=["text/plain"],
+        default_output_modes=["text/plain", *_answer_modes()],
         capabilities=AgentCapabilities(
             streaming=True,
             extensions=[

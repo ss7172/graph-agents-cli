@@ -54,9 +54,9 @@ verifying that experiment's fixes; those entries were checked against the integr
 fixes, by the reproduction or code reading the entry describes.
 
 "Found in v0.3" names the phase of the 0.3 release's agent-to-agent work (P1 identity, P2
-token exchange, P3 the policy protocol, P4 the A2A client and `peer`, P5 `system`, P6 docs)
-whose build or independent verification reported the issue; those entries were checked
-against that phase's commits.
+token exchange, P3 the policy protocol, P4 the A2A client and `peer`, P5 `system`, P6 docs),
+or the structured answers built beside it, whose build or independent verification reported
+the issue; those entries were checked against that phase's commits.
 
 <!-- --8<-- [start:summary] -->
 ## Summary
@@ -70,17 +70,17 @@ contributor tooling in `tools/`, never shipped).
 | auth | 4 | 2 | 6 |
 | api-policy | 4 | 9 | 13 |
 | approvals | 8 | 6 | 14 |
-| runtime | 11 | 7 | 18 |
+| runtime | 12 | 12 | 24 |
 | a2a | 3 | 13 | 16 |
 | eval | 1 | 7 | 8 |
 | deploy | 4 | 8 | 12 |
 | chart/CD | 6 | 5 | 11 |
 | secrets | 1 | 2 | 3 |
-| cli | 2 | 24 | 26 |
+| cli | 2 | 25 | 27 |
 | upgrade | 2 | 13 | 15 |
 | docs | 0 | 8 | 8 |
 | tooling | 0 | 1 | 1 |
-| **Total** | **46** | **105** | **151** |
+| **Total** | **47** | **111** | **158** |
 <!-- --8<-- [end:summary] -->
 
 ## Owner actions
@@ -469,6 +469,29 @@ Medium · runtime · found in the A2A multi-agent experiment (fix review; presen
 - **Workaround:** Keep client and ingress timeouts short so such a request fails at the edge.
   libpq connection parameters in `DATABASE_URI`, such as `tcp_user_timeout`, may bound the
   wait (not verified).
+
+### KI-168: The answer check fails on some edge values, and lets NaN and Infinity through
+
+Medium · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** The structured-answer check (`app_utils/structured.py`) has edge cases:
+  - an integer answer too large for a float (400 digits), or a `multipleOf` so small that
+    the division overflows, raises `OverflowError`;
+  - a `$ref` that points at itself (`#`, or `#/properties/a` inside `a`) passes the startup
+    check, and then every check recurses until `RecursionError`;
+  - these end the run with `run_failed`, not `invalid_structured_response`, and without a
+    correction;
+  - `NaN` and `Infinity` in a place the schema leaves untyped (no `additionalProperties:
+    false`, an empty schema) pass the check. The answer's text and the `/chat` events are
+    then written with them (`json.dumps` allows them), and a strict JSON parser, a
+    browser's `JSON.parse` for one, refuses the `message.delta` and the whole `message.end`.
+- **Impact:** A model answer can make a run fail with the generic error, and a schema with a
+  self-reference fails every run. A client parsing strictly cannot read an answer that holds
+  `NaN` where the schema did not type it. Found with a scripted model; not seen with a real
+  one.
+- **Workaround:** Type every value in the schema (`"additionalProperties": false`, a `type`
+  on every property), bound numbers with `maximum`/`minimum`, and do not use a `$ref` that
+  refers to its own schema.
 
 ### KI-135: A cross-replica `CancelTask` just after a task starts can report a false cancel
 
@@ -1046,6 +1069,83 @@ Low · runtime · found in the skill-optimisation experiment
 - **Workaround:** After running the project's integration tests in a sandbox, stop leftover
   `langgraph dev` processes (`pgrep -f "langgraph dev"`); gac-bench stops every process left
   in a rollout's workspace and records it.
+
+### KI-165: Under the tool strategy, a thread's messages show the structured answer as a tool call
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** With a response schema and `RESPONSE_FORMAT_STRATEGY=tool` (or `auto` for a
+  model without native structured output), the model gives its answer by calling
+  `final_answer`. The `/chat` stream and the A2A reply hide that call, but the thread keeps
+  it: `GET /threads/{id}/messages` (and LangGraph Server's own thread state) lists an
+  assistant message with a `final_answer` tool call and its result "The answer was given to
+  the user." instead of an assistant reply.
+- **Impact:** A client that rebuilds a conversation from the thread shows the answer as a
+  tool call.
+- **Workaround:** Read the answer from `message.end` (`structured_response`), or treat a
+  `final_answer` call in the messages as the reply. The provider strategy keeps the answer
+  as the assistant's reply.
+
+### KI-166: The tokens of an answer's failed tries are lost when no try fits
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** `StructuredAnswer` adds the token usage of the tries that did not fit to the
+  answer that does. When none of the 3 tries fits, the step fails and those tries' usage is
+  not recorded: the run's `invalid_structured_response` error has no usage, and the run
+  record and `/metrics` count none for them.
+- **Impact:** Token counts (and cost reports built on them) under-count runs whose answer
+  never fits, by up to 3 model calls each.
+- **Workaround:** Take cost from the provider's own usage report; count
+  `invalid_structured_response` errors, which should be rare (none in 99 gpt-5-mini runs
+  with a schema, and no correction needed in any).
+
+### KI-167: The answer check reads `pattern` as a Python regular expression
+
+Low · runtime · found in v0.3 (structured answers)
+
+- **Issue:** JSON Schema's `pattern` is an ECMA-262 regular expression; the template's
+  answer check (`app_utils/structured.py`) and `create --response-schema` compile it with
+  Python's `re`. The common syntax agrees, but some forms differ (`\d` also matches other
+  scripts' digits in Python, `$` matches before a final newline, `(?<name>...)` is an error in
+  Python).
+- **Impact:** A string the provider's strict mode produced can fail the check (the run asks
+  again, then fails), or a pattern the provider accepts is refused at startup.
+- **Workaround:** Write patterns in the syntax both share: explicit classes (`[0-9]`), no
+  named groups, and `$` only where a value cannot end with a newline.
+
+### KI-169: The answer check runs `pattern` and `uniqueItems` on the event loop, unbounded
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** `StructuredAnswer` checks an answer synchronously inside the model call. A
+  `pattern` open to catastrophic backtracking (`^(a+)+$`) took 1.66 s on a 26-character
+  value, and `uniqueItems` compares every pair of items (3.8 s for 5,000 items). Nothing
+  bounds either.
+- **Impact:** A model answer can hold the server's event loop for seconds, delaying every
+  other request of that process. The schema is the project's own, so the pattern is under
+  the project's control; the value is the model's.
+- **Workaround:** Write patterns without nested quantifiers, and bound arrays that use
+  `uniqueItems` with `maxItems`.
+
+### KI-171: Some structured-answer guards have no test
+
+Low · runtime · found in v0.3 (structured answers, verification)
+
+- **Issue:** The verifier's mutations of the structured-answer code that no test caught:
+  - `true` accepted as an integer;
+  - the synchronous `wrap_model_call` path's handling of a reply that is not JSON;
+  - `StructuredAnswer` placed first instead of last in `middleware()`;
+  - the startup check of the response schema dropped from the lifespan;
+  - a lone surrogate in the answer (and its A2A data part) not replaced;
+  - `create --response-schema` taking its snapshot of the file;
+  - `scaffold upgrade`/`enhance` leaving `response_schema.json` alone (an `agent_code`
+    pattern).
+  The fake model never gives a multi-call answer, a surrogate or a synchronous call, and
+  the scaffold tests do not cover the new pattern.
+- **Impact:** A regression in one of these would not fail the suites. The behaviour itself
+  was checked by hand and by the verifier's probes.
+- **Workaround:** None needed today; add the tests when this code next changes.
 
 ### KI-024: A running A2A task's subscription and cancel work only on the replica running it
 
@@ -1708,6 +1808,25 @@ Low · cli · found in v0.3 P6 (the docs for agents calling agents)
 - **Workaround:** Leave one extra connection per replica of headroom in
   `database.max_connections`, and use a session-mode PgBouncer
   ([External database](website/src/guides/deploy.md#external-database)).
+
+### KI-170: `create --response-schema` and `lint` accept some schemas that fail at runtime, and exit 1 on others
+
+Low · cli · found in v0.3 (structured answers, verification)
+
+- **Issue:** The response-schema check that `create --response-schema`, `lint` and the
+  app's startup share (the SHARED block) accepts:
+  - a `$ref` to its own schema (KI-168);
+  - `required` naming a property `properties` does not list: OpenAI's strict mode then
+    drops it, so no answer can fit;
+  - a schema of any size (a 15 MB, 60,000-property file was accepted).
+  A number keyword too large for a float (400 digits), or nesting a few thousand levels deep,
+  makes `create` stop with `Error: int too large to convert to float` or `maximum recursion
+  depth exceeded`, exit 1, where the [exit codes](website/src/reference/exit-codes.md) say a
+  bad response schema is exit 3. Nothing is created.
+- **Impact:** A schema passes `lint`, then every run fails. An unusual schema gets the wrong
+  exit code and a raw error message.
+- **Workaround:** List every `required` name under `properties`, keep schemas small and
+  shallow, and use ordinary numbers.
 
 ### KI-096: The manifest's comments are lost when a command rewrites it
 

@@ -149,6 +149,7 @@ from {{cookiecutter.agent_directory}}.app_utils.content import (
     INVALID_TOOL_CALL_TYPE,
     content_to_text,
     valid_text,
+    valid_value,
 )
 from {{cookiecutter.agent_directory}}.app_utils.db import (
     RUN_INTERRUPTED,
@@ -170,6 +171,15 @@ from {{cookiecutter.agent_directory}}.app_utils.limits import (
     valid_thread_id,
 )
 from {{cookiecutter.agent_directory}}.app_utils.model import model_label
+from {{cookiecutter.agent_directory}}.app_utils.structured import (
+    ANSWER_TOOL,
+    MAX_ANSWER_ATTEMPTS,
+    MAX_REPORTED_PROBLEMS,
+    StructuredAnswerError,
+    answer_text,
+    response_schema,
+    validate,
+)
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import bind_log_context
 from {{cookiecutter.agent_directory}}.app_utils.threads import (
     OUTCOME_COMPLETED,
@@ -226,6 +236,10 @@ CODE_FORBIDDEN = "forbidden"
 # The graph paused for input this server cannot collect (an interrupt that is
 # not a gated API call's).
 CODE_UNSUPPORTED_INTERRUPT = "unsupported_interrupt"
+# A project with a response schema: no try of the answer fitted it (or the graph gave none).
+CODE_INVALID_STRUCTURED_RESPONSE = "invalid_structured_response"
+# The state key (and `message.end` field) of a structured final answer.
+STRUCTURED_KEY = "structured_response"
 
 # Request headers passed on to the LangGraph Server under langgraph-server.
 # They matter when LANGGRAPH_SERVER_URL points at a real HTTP endpoint (its
@@ -435,6 +449,10 @@ class _RunState:
     server_run_id: str | None = None
     # The graph's interrupts (`{"id", "value"}`) when the run paused.
     interrupts: list[dict[str, Any]] = field(default_factory=list)
+    # The project has a response schema: the model's text is not streamed, and the
+    # run's answer is the last `structured_response` the graph's updates carried.
+    structured_mode: bool = False
+    structured: Any = None
 
 
 @dataclass
@@ -603,6 +621,12 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
 
     The graph's interrupts (an `updates` item under `__interrupt__`) are
     collected in `state.interrupts`, not sent: the run's end reports them.
+
+    Under a response schema (`state.structured_mode`) the model's text is not
+    sent (the run's reply is its answer's JSON text, sent when it ends), the
+    answer tool's call and result are not either (the tool strategy's answer
+    is no tool call to a client), and the last `structured_response` an update
+    carries is kept in `state.structured`.
     """
     if mode == "messages":
         chunk = data[0] if isinstance(data, list | tuple) and data else data
@@ -612,7 +636,7 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
             or _get(chunk, "invalid_tool_calls")
         ):
             text = content_to_text(_get(chunk, "content", ""))
-            if text:
+            if text and not state.structured_mode:
                 state.text.append(text)
                 yield EVENT_DELTA, {"text": text}
         return
@@ -622,6 +646,9 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
         if key == INTERRUPT_KEY:
             state.interrupts.extend(interrupts_of(update))
             continue
+        if state.structured_mode and isinstance(update, Mapping) and STRUCTURED_KEY in update:
+            # Each model step sets it (None when the step gave no answer): the last one counts.
+            state.structured = update[STRUCTURED_KEY]
         for m in _iter_messages(update):
             if _is_ai(m):
                 msg_id = str(_get(m, "id") or "")
@@ -631,6 +658,8 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
                     state.seen_ai_ids.add(msg_id)
                 _accumulate_usage(state, m)
                 for call in tool_calls_of(m):
+                    if state.structured_mode and _get(call, "name") == ANSWER_TOOL:
+                        continue
                     entry = {
                         "id": str(_get(call, "id") or uuid.uuid4()),
                         "name": str(_get(call, "name") or ""),
@@ -639,6 +668,8 @@ def map_stream_item(mode: str, data: Any, state: _RunState) -> Iterator[tuple[st
                     state.tool_calls.append({**entry, "result": None, "is_error": False})
                     yield EVENT_TOOL_CALL, entry
             elif _is_tool(m):
+                if state.structured_mode and _get(m, "name") == ANSWER_TOOL:
+                    continue
                 call_id = str(_get(m, "tool_call_id") or "")
                 result = content_to_text(_get(m, "content", ""))
                 is_error = str(_get(m, "status") or "success") == "error"
@@ -884,6 +915,13 @@ def _lease_lost(exc: BaseException | None) -> LeaseLost | None:
         seen.add(id(exc))
         exc = exc.__cause__ or exc.__context__
     return None
+
+
+def _is_structured_answer_error(exc: BaseException) -> bool:
+    if isinstance(exc, StructuredAnswerError):
+        return True
+    # Under langgraph-server the error arrives as the stream's `error` part.
+    return isinstance(exc, _ServerRunError) and exc.error_type == "StructuredAnswerError"
 
 
 def _is_recursion_error(exc: BaseException) -> bool:
@@ -1249,13 +1287,15 @@ class ChatRuntime:
         status: str,
         paused: list[ApprovalRecord],
         reply: str,
+        answer: Any = None,
     ) -> None:
         """The A2A tasks waiting on the decided approval follow the run it resumed (KI-025).
 
         They end as the run did (`completed`, `failed`, or `input-required` with
         the approvals it paused for again), saying where it continued: in the
         A2A task that carried the decision, or outside any task (the HTTP
-        route), with the run's reply.
+        route), with the run's reply. A structured run's `answer` goes whole in
+        the outcome (the tasks add it as a `response` artifact), not in the text.
         """
         record = resume.approval
         if status == STATUS_AWAITING_APPROVAL:
@@ -1289,6 +1329,7 @@ class ChatRuntime:
                 approvals=tuple(r.public() for r in paused),
                 references=resume.references,
                 continued_in=resume.continued_in,
+                answer=answer if state == OUTCOME_COMPLETED else None,
             )
         )
 
@@ -1995,6 +2036,9 @@ class ChatRuntime:
         error: BaseException | None = None
         error_event: dict[str, Any] | None = None
         final_text: str | None = None
+        # A structured run's answer (the object) and its JSON text, the run's reply.
+        answer: Any = None
+        answer_json: str | None = None
         pump: _Pump | None = None
         paused: list[ApprovalRecord] = []
         # A resumed run's reply, for the A2A tasks that waited on its approval.
@@ -2006,6 +2050,8 @@ class ChatRuntime:
                 start.update(approval_id=resume.approval.approval_id, decision=resume.decision)
             yield EVENT_START, start
             lease.check()
+            schema = response_schema()
+            state.structured_mode = schema is not None
             if self.runtime == LANGGRAPH_SERVER:
                 source = self._server_events(principal, req, thread_id, run_id, state, resume)
             else:
@@ -2051,6 +2097,23 @@ class ChatRuntime:
                         "run_id": run_id,
                     }
                     logger.warning("run paused for input this server cannot collect")
+            elif state.structured_mode:
+                if state.structured is None:
+                    status = STATUS_ERROR
+                    error_event = self._no_answer_event(run_id)
+                else:
+                    # A lone surrogate cannot go out (UTF-8, protobuf): sent as U+FFFD.
+                    answer = valid_value(state.structured)
+                    # `StructuredAnswer` checks every answer before the graph takes it: one
+                    # that reaches delivery and does not fit is refused, never sent.
+                    unfit = validate(schema, answer)
+                    if unfit:
+                        status = STATUS_ERROR
+                        error_event = self._unfit_answer_event(run_id, unfit)
+                        answer = None
+                    else:
+                        answer_json = answer_text(answer)
+                        state.text = [answer_json]
         except RunTimeout:
             status = STATUS_TIMEOUT
             error_id = new_error_id()
@@ -2106,13 +2169,20 @@ class ChatRuntime:
             await asyncio.shield(finish)
         if resume is not None:
             await self._resumed_outcome(
-                thread_id, resume, status, paused, "".join(reply) + (final_text or "")
+                thread_id,
+                resume,
+                status,
+                paused,
+                "".join(reply) + (final_text or ""),
+                answer if answer_json is not None else None,
             )
         if error_event is not None:
             yield EVENT_ERROR, error_event
             return
         if final_text is not None:
             yield EVENT_DELTA, {"text": final_text}
+        if answer_json is not None:
+            yield EVENT_DELTA, {"text": answer_json}
         end: dict[str, Any] = {
             "thread_id": thread_id,
             "run_id": run_id,
@@ -2127,7 +2197,50 @@ class ChatRuntime:
             # The requester sees what it is asked to approve (it asked for it).
             end["approval"] = paused[0].public()
             end["approvals"] = [record.public() for record in paused]
+        if answer_json is not None:
+            end[STRUCTURED_KEY] = answer
         yield EVENT_END, end
+
+    @staticmethod
+    def _no_answer_event(run_id: str) -> dict[str, Any]:
+        """A structured run that ended with no answer (the graph gave no `structured_response`)."""
+        error_id = new_error_id()
+        logger.warning(
+            "run ended without a structured answer: the project has a response schema, but the "
+            "graph gave no structured_response (is agent.py built with response_format()?) "
+            "(error_id=%s)",
+            error_id,
+        )
+        return {
+            "code": CODE_INVALID_STRUCTURED_RESPONSE,
+            "message": "The run ended without an answer in the shape of the response schema. "
+            f"Reference: {error_id}.",
+            "error_id": error_id,
+            "run_id": run_id,
+        }
+
+    @staticmethod
+    def _unfit_answer_event(run_id: str, problems: list[str]) -> dict[str, Any]:
+        """A structured run whose answer does not fit the schema when it is delivered.
+
+        `StructuredAnswer` sends such an answer back to the model; one that gets
+        here was never checked (agent.py's `middleware()` has no
+        `StructuredAnswer()`), so the run fails rather than deliver it.
+        """
+        error_id = new_error_id()
+        logger.warning(
+            "run failed: its answer does not fit the response schema and was never checked "
+            "(is StructuredAnswer() last in agent.py's middleware()?) (error_id=%s): %s",
+            error_id,
+            "; ".join(problems[:MAX_REPORTED_PROBLEMS]),
+        )
+        return {
+            "code": CODE_INVALID_STRUCTURED_RESPONSE,
+            "message": "The run failed: the agent's answer did not fit the response schema. "
+            f"Reference: {error_id}.",
+            "error_id": error_id,
+            "run_id": run_id,
+        }
 
     def _error_event(self, exc: BaseException, run_id: str) -> dict[str, Any]:
         """The client-facing error: a code and a generic message; the detail is logged."""
@@ -2144,6 +2257,17 @@ class ChatRuntime:
                 "code": CODE_RECURSION,
                 "message": f"The run reached the step limit ({recursion_limit()} steps) and "
                 f"was stopped. Reference: {error_id}.",
+            }
+        elif _is_structured_answer_error(exc):
+            logger.warning(
+                "run failed: no answer fitted the response schema (error_id=%s): %s",
+                error_id,
+                _first_line(exc),
+            )
+            event = {
+                "code": CODE_INVALID_STRUCTURED_RESPONSE,
+                "message": "The run failed: the agent's answer did not fit the response schema "
+                f"in {MAX_ANSWER_ATTEMPTS} tries. Reference: {error_id}.",
             }
         elif lost is not None:
             logger.warning("run stopped (error_id=%s): %s", error_id, lost)

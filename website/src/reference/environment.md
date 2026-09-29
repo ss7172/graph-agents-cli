@@ -132,7 +132,8 @@ ones (see [Secrets](../guides/secrets.md)).
       at once: the guardrails and limits, the pool sizes, `LOG_LEVEL`, `LOG_FORMAT`,
       `METRICS_ENABLED`, `MODEL_TIMEOUT_S`, `MODEL_MAX_RETRIES`, `MODEL_REASONING_EFFORT`,
       `MODEL_USE_RESPONSES_API` (and their `JUDGE_` forms), `TRACE_CAPTURE`,
-      `A2A_TASK_TTL_S` and `MAX_MESSAGE_CHARS`. Nothing silently falls back to a default.
+      `A2A_TASK_TTL_S`, `MAX_MESSAGE_CHARS`, `RESPONSE_FORMAT_STRATEGY` and the response
+      schema. Nothing silently falls back to a default.
     - **`APP_ENV` counts as dev only when it is exactly `dev`.** `DEV`, ` dev`,
       `development` or unset are a deployed environment.
     - **`TRACING_ENABLED` is on only for `true`, `yes` or `1`** (any case); any other value
@@ -169,6 +170,11 @@ ones (see [Secrets](../guides/secrets.md)).
 Either of the two OpenAI settings set for another provider stops startup, since it would be
 ignored (`fake` ignores them). Neither has a `create` flag: like the timeouts, they are
 settings of each environment (`.env`, `.env.<env>`, the chart values), not of the project.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RESPONSE_FORMAT_STRATEGY` | `auto` | Only with a response schema ([structured final answers](../guides/develop.md#structured-final-answers)): `auto` uses the provider's own structured output when the model has it (strict on OpenAI) and the model's client can send the schema (Anthropic's refuses a type list and a schema with no `type`), else a `final_answer` tool the model must call; `provider` or `tool` forces one (`provider` with a schema the client cannot send stops startup). |
+| `RESPONSE_SCHEMA_PATH` | `<agent directory>/response_schema.json` | Another response schema file. Set, it must exist. The file is part of the agent, so the default fits nearly every project; tests set this. |
 
 ### Persistence
 

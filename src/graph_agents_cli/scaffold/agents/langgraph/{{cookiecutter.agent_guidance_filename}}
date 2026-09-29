@@ -114,6 +114,10 @@ write `.graph-agents-cli-spec.md` and get it approved before writing code.
   A tool makes at most one gated call per tool call, and code before it runs again on
   resume, so keep other side effects after it; pass `redact=[...]` for fields an approver
   need not read. Tests of gated tools run inside a graph (see `tests/unit/test_approval_ledger.py`).
+- **A response schema is a contract.** When `{{cookiecutter.agent_directory}}/response_schema.json`
+  exists, clients read the agent's final answer as that JSON (`message.end`
+  `structured_response`): change it only when the user asks, keep `response_format=` and
+  `StructuredAnswer()` (last) in `agent.py`, and run `graph-agents-cli lint` after an edit.
 - **Never edit `graph-agents-cli-manifest.yaml` or `values-prod.yaml`** unless the
   user asks: production desired state changes only through a pull request reviewed
   by the code owners.

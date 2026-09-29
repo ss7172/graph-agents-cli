@@ -405,6 +405,46 @@ change in behaviour.
   bad value, or either setting for another provider, stops startup. `.env.example` and, for
   OpenAI-API projects, the chart's `values.yaml` document them; existing projects get the
   runtime from `scaffold upgrade` (`app_utils/model.py`, `fast_api_app.py`).
+- **Structured final answers: a JSON schema for the agent's answer.** A project that puts a
+  JSON Schema (root `"type": "object"`) in `<agent directory>/response_schema.json`
+  (`create --response-schema FILE` seeds it) has its agent answer in that shape. `agent.py`
+  builds the agent with `response_format=response_format(model, tools)`
+  (`app_utils/structured.py`), one of LangChain's `create_agent` strategies:
+  `RESPONSE_FORMAT_STRATEGY=auto` (default) uses the provider's own structured output where
+  LangChain's model profile says the model has it with the agent's tools bound and the
+  model's client can send the schema, strict on OpenAI (LangChain's own auto mode asks OpenAI
+  for a best-effort schema), else a `final_answer` tool the model must call (`tool_choice`
+  forces a call at every step); `provider` and `tool` force one. Anthropic's client refuses a
+  type list and a schema with no `type` (an `enum` alone) before any request, so `auto` uses
+  the tool for such a schema and `provider` stops startup naming why. LangChain returns a raw JSON-schema answer unchecked, so
+  the new `StructuredAnswer` middleware (last in `middleware()`) checks every answer against
+  the schema: one that does not fit, a reply that is not JSON, a plain-text final reply, or an
+  answer given beside other tool calls (none of which runs, so a gated call never runs after
+  an answer already given) goes back to the model with what is wrong, up to 3 tries in the
+  same step (the failed tries stay out of the thread; their tokens count in the answer's
+  usage), then the run ends with the new `error` code `invalid_structured_response`. The checker supports a documented JSON
+  Schema subset and refuses a schema that uses anything else at startup (`lint` and
+  `create --response-schema` apply the same rules, a SHARED block kept byte-identical with the
+  template's). Delivery: a completed `/chat` run's only `message.delta` is the answer's JSON
+  text and `message.end` carries the object as `structured_response`; the answer tool never
+  shows as a `tool.call`; a run paused for an approval answers once resumed; the A2A
+  `response` artifact adds a data part with the object (`mediaType` `application/json`,
+  streamed or not; an A2A task that waited on an approval decided elsewhere, over HTTP
+  say, takes the whole answer as its last `response` artifact) and the card lists
+  `application/json` among its output modes; `eval`
+  records `structured_response` in its traces and `expect.json_schema` checks it as it is.
+  Both runtimes, both checkpointers. Without the file nothing changes. Measured with
+  gpt-5-mini on a 24-case triage task (a tool call, then a six-field answer), twice: without
+  the mode 28 of 48 replies were not a bare JSON document (the sentence the model writes
+  before a tool call came first), with it 0 of 96 (both strategies, no correction needed),
+  at the same cost for the provider strategy and about twice the output tokens for the tool
+  strategy. **Existing projects:**
+  `scaffold upgrade` brings `structured.py` and the runtime, but never rewrites `agent.py`:
+  pass `response_format=response_format(model, tools)` to `create_agent` and add
+  `StructuredAnswer()` last to `middleware()` before adding a schema (`lint` warns about
+  either). The runtime checks every answer again before delivering it, so an answer that
+  never went through `StructuredAnswer` and does not fit ends the run with
+  `invalid_structured_response`; it is never delivered.
 - **A documentation site** in `website/` (MkDocs Material): Get started (installation, a
   five-minute quickstart, two tutorials, the lifecycle), guides for building and operating an
   agent, and a reference whose CLI and Skills pages are generated from the commands and
@@ -483,6 +523,14 @@ change in behaviour.
 
 ### Fixed
 
+- **`eval`'s `json_schema` check reads the reply's answer, not its first JSON.** It parsed the
+  first fenced code block, and otherwise everything from the first `{` or `[` to the end of
+  the reply: a reply that showed an example (or quoted its input) before its answer was
+  checked against the example, and one that added prose after raw JSON failed as "not valid
+  JSON" (the experiments' finding F10). It now reads the whole reply when that is JSON, else
+  the reply's last JSON object or array, taking the schema's root type when it names
+  `object` or `array` (so a citation such as `[1]` after an object answer is skipped), inside
+  code fences or not.
 - **`run`, `eval run`, `eval generate` and `approvals` no longer fail under a SOCKS proxy.**
   With `ALL_PROXY=socks5h://...` in the environment (as coding-agent sandboxes such as Codex's
   network proxy set it), every request crashed with `ImportError: Using SOCKS proxy, but the

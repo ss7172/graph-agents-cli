@@ -110,7 +110,7 @@ metrics:
 |---|---|
 | `contains` / `not_contains` | every listed substring appears / none appears in the response (case-insensitive) |
 | `regex` | the response matches (`re.search`, DOTALL; `(?i)` ignores case) |
-| `json_schema` | the final response parses as JSON and validates against the schema |
+| `json_schema` | the final answer validates against the schema: a project with a [response schema](develop.md#structured-final-answers) has it checked as the object the run returned (`structured_response`); otherwise the final reply's JSON (the whole reply, else its last JSON object or array of the schema's root type) |
 | `tool_calls` | the listed tools were called, matched by name and `args_subset` (`ordered: true` for order) |
 | `no_tool_calls` | the agent made no tool call |
 | `max_latency_ms`, `max_tokens` | `latency_ms`, and input plus output tokens, stay at or below the limit |
@@ -123,7 +123,7 @@ Two modifiers change how checks read the response:
   `not_contains: ["deleted"]` also fails on "Deleted". Set `false` for exact case.
 - **`scope`** (default `final_turn`): a multi-turn case's checks read the final turn.
   `all_turns` reads every turn's replies, tool calls, latency, tokens and gates (`json_schema`
-  always reads the final reply). A trace without per-turn records is graded on its final turn,
+  always reads the final answer). A trace without per-turn records is graded on its final turn,
   and `eval grade` says which cases.
 
 ## Judges and quality metrics

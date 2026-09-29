@@ -234,6 +234,28 @@ def test_invalid_instructions_and_expectations_are_config_errors(approvals, expe
 # ---------------------------------------------------------------------------
 
 
+def test_the_answer_of_a_run_resumed_after_approval_is_the_structured_response(
+    fake_chat, fake_decide
+) -> None:
+    answer = {"cancelled": True, "order": "ORD-1"}
+
+    def resumed_answer(calls: int, decision: str) -> list[Any]:
+        events = resumed(True)
+        events[-2] = sse("message.delta", {"text": json.dumps(answer)})
+        events[-1].data["structured_response"] = answer
+        return events
+
+    fake_chat({"cancel it": paused()})
+    fake_decide(then=resumed_answer)
+    expect = {"json_schema": {"type": "object", "required": ["cancelled"]}}
+    trace = run_case("http://x", case(APPROVE_CANCEL, expect=expect), headers={})
+    assert trace["status"] == "ok", trace["error"]
+    assert trace["structured_response"] == answer
+    # The reply text holds the paused run's words too; the check reads the answer.
+    assert trace["response"].startswith("Cancelling. ")
+    assert run_checks(expect, trace)["json_schema"] == {"passed": True, "reason": ""}
+
+
 def test_an_approve_instruction_approves_and_the_continuation_is_one_turn(
     fake_chat, fake_decide
 ) -> None:

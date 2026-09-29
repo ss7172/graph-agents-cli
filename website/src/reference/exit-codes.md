@@ -14,7 +14,7 @@ agents can act on a result without parsing its output.</p>
 | `0` | Success. For a gate (`eval`, `secrets status`), the gate is met. | Carrying on. |
 | `1` | Refused by a policy or a mode, a declined confirmation, or a failed gate. | Reading the message: the fix is a change to the project or a decision. |
 | `2` | A tool failed or could not be reached: `helm`, `kubectl`, `docker`, `git`, `gh`, `uvx`, a local server, the agent. Also an incomplete eval run, a Click usage error and an unexpected crash. | Retrying once the tool or network works, or reporting a bug. |
-| `3` | Configuration error: not in a project, an invalid manifest, env file, policy, port or kube context, a placeholder left in place. | Fixing the configuration the message names. |
+| `3` | Configuration error: not in a project, an invalid manifest, env file, policy, response schema, port or kube context, a placeholder left in place. | Fixing the configuration the message names. |
 
 The scheme is the same everywhere, and this page maps every command to it. The gate and run
 commands (`run`, `lint`, `login`, `auth dev-token`, `eval run`, `eval generate`, `eval grade`,
@@ -50,7 +50,7 @@ the traceback is printed and the command exits `2`.
     |---|---|---|---|
     | [`run`](cli.md#graph-agents-cli-run) | The agent answered with an error (an HTTP error or an `error` event), or the server refused a decision (not an approver, already decided, expired) | The agent could not be reached or went silent; the local server did not start, or `--stop-server` could not stop it (the processes still running are named and its record is kept) | No project; the port is unavailable |
     | [`approvals`](cli.md#graph-agents-cli-approvals) | The server refused (not an approver, already decided, expired, not found), or the resumed run ended with an error | The agent could not be reached | Not in a project and no `--url` |
-    | [`lint`](cli.md#graph-agents-cli-lint) | A refused call or an unreadable `API_CALLS`, or ruff failed | | An invalid `api-policy.yaml`, the retired product policy, or not in a project |
+    | [`lint`](cli.md#graph-agents-cli-lint) | A refused call or an unreadable `API_CALLS`, or ruff failed | | An invalid `api-policy.yaml` or response schema (`app/response_schema.json`), the retired product policy, or not in a project |
     | [`api`](cli.md#graph-agents-cli-api) | `api check`: a declared call is refused | Usage error | An invalid result (nothing is written), an invalid `api-policy.yaml`, or not in a project |
     | [`install`](cli.md#graph-agents-cli-install) | `uv sync` failed, or `uv` is missing | | Not in a project |
     | [`login`](cli.md#graph-agents-cli-login) | A check failed (`0` with `--status`) | | |

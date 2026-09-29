@@ -71,6 +71,7 @@ from {{cookiecutter.agent_directory}}.app_utils.content import (
     unfence_tool_output,
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import SettingsError
+from {{cookiecutter.agent_directory}}.app_utils.structured import ANSWER_TOOL
 
 # graph-agents-cli provider name -> LangChain `model_provider`.
 PROVIDER_TO_LANGCHAIN: dict[str, str] = {
@@ -366,6 +367,50 @@ def _fake_args(parameters: dict[str, Any], prompt: str) -> dict[str, Any]:
     return args
 
 
+def _fake_answer(schema: Any, text: str, root: Any = None) -> Any:
+    """A value that fits `schema` (a response schema), built from `text`: deterministic.
+
+    Every property is filled (as strict structured output does): a string with
+    `text` (cut to `maxLength`), a number with its `minimum` (else 1), a flag
+    with false, a list with `minItems` items, an enum or a choice with its
+    first option. A `pattern` is not followed, so a schema whose pattern `text`
+    does not match gets an answer that does not fit (the tests' failing path).
+    """
+    root = schema if root is None else root
+    if not isinstance(schema, dict):
+        return text
+    if isinstance(schema.get("$ref"), str) and schema["$ref"].startswith("#"):
+        node: Any = root
+        for key in [k for k in schema["$ref"][1:].split("/") if k]:
+            node = node.get(key, {}) if isinstance(node, dict) else {}
+        return _fake_answer(node, text, root)
+    if "const" in schema:
+        return schema["const"]
+    if schema.get("enum"):
+        return schema["enum"][0]
+    for key in ("anyOf", "oneOf", "allOf"):
+        if schema.get(key):
+            return _fake_answer(schema[key][0], text, root)
+    types = schema.get("type")
+    types = types if isinstance(types, list) else [types]
+    kind = next((t for t in types if t != "null"), None if "null" in types else "string")
+    if kind == "object":
+        properties = schema.get("properties") or {}
+        return {name: _fake_answer(sub, text, root) for name, sub in properties.items()}
+    if kind == "array":
+        return [_fake_answer(schema.get("items") or {}, text, root)] * int(
+            schema.get("minItems") or 0
+        )
+    if kind in ("integer", "number"):
+        return schema.get("minimum", 1)
+    if kind == "boolean":
+        return False
+    if kind is None:
+        return None
+    limit = schema.get("maxLength")
+    return text[:limit] if isinstance(limit, int) else text
+
+
 def _first_sentence(text: str) -> str:
     return text.strip().split("\n")[0].split(". ")[0].rstrip(".")
 
@@ -409,10 +454,20 @@ class FakeChatModel(BaseChatModel):
       * anything else: ``I am a fake model. I can use these tools: <name> (<first
         sentence of its description>), ... You said: <text>`` (without the tools
         part when none is bound)
+
+    Structured answers (a response schema, `structured.py`): bound with a
+    provider `response_format`, a reply that would be text is instead that text
+    as a JSON answer (`_fake_answer`); bound with a forced `tool_choice` and the
+    answer tool (the tool strategy), it is a call of the answer tool with that
+    answer. It never calls the answer tool for a request that names it.
     """
 
     bound_tools: list[str] = Field(default_factory=list)
     tool_specs: list[dict[str, Any]] = Field(default_factory=list)
+    # The response schema of a provider `response_format`, when one is bound.
+    answer_schema: dict[str, Any] | None = None
+    # A bound `tool_choice` that forces a tool call ("any", "required", true).
+    forced_tool: bool = False
 
     @property
     def _llm_type(self) -> str:
@@ -424,13 +479,41 @@ class FakeChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Any:  # type: ignore[override]
         specs = [spec for spec in (_tool_spec(t) for t in tools) if spec is not None]
+        response_format = kwargs.get("response_format")
+        schema = None
+        if isinstance(response_format, dict):
+            schema = (response_format.get("json_schema") or {}).get("schema")
         return self.model_copy(
-            update={"bound_tools": [s["name"] for s in specs], "tool_specs": specs}
+            update={
+                "bound_tools": [s["name"] for s in specs],
+                "tool_specs": specs,
+                "answer_schema": schema if isinstance(schema, dict) else None,
+                "forced_tool": kwargs.get("tool_choice") in ("any", "required", True),
+            }
         )
+
+    def _structured(self, reply: AIMessage) -> AIMessage:
+        """A text reply as a structured answer, when one is bound; else the reply itself."""
+        if reply.tool_calls:
+            return reply
+        text = str(reply.content)
+        if self.answer_schema is not None:
+            answer = _fake_answer(self.answer_schema, text)
+            content = json.dumps(answer, ensure_ascii=False)
+            return AIMessage(content=content, usage_metadata=reply.usage_metadata)
+        spec = next((s for s in self.tool_specs if s["name"] == ANSWER_TOOL), None)
+        if self.forced_tool and spec is not None:
+            answer = _fake_answer(spec["parameters"], text)
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": ANSWER_TOOL, "args": answer, "id": f"call_{ANSWER_TOOL}"}],
+                usage_metadata=reply.usage_metadata,
+            )
+        return reply
 
     def _tool_call(self, prompt: str) -> AIMessage | None:
         for spec in self.tool_specs:
-            if _mentions(prompt, spec["name"]):
+            if spec["name"] != ANSWER_TOOL and _mentions(prompt, spec["name"]):
                 args = _fake_args(spec["parameters"], prompt)
                 return AIMessage(
                     content="",
@@ -440,6 +523,9 @@ class FakeChatModel(BaseChatModel):
         return None
 
     def _reply(self, messages: list[BaseMessage]) -> AIMessage:
+        return self._structured(self._text_reply(messages))
+
+    def _text_reply(self, messages: list[BaseMessage]) -> AIMessage:
         last = messages[-1]
         if isinstance(last, ToolMessage):
             # The agent fences tool results (`UntrustedToolResults`); echo the tool's own text.
