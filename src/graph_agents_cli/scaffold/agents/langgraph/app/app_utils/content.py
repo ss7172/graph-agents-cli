@@ -98,6 +98,11 @@ def _valid_value(value: Any) -> Any:
     return value
 
 
+def valid_value(value: Any) -> Any:
+    """A JSON value with `valid_text` applied to every string in it (a structured answer)."""
+    return _valid_value(value)
+
+
 def valid_tool_result(result: Any) -> Any:
     """A tool's result with `valid_text` applied to its content and artifact.
 

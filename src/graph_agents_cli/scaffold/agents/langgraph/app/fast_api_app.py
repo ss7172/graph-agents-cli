@@ -25,7 +25,11 @@ Routes:
     carries an `error_id` and, outside `APP_ENV=dev`, a generic `result` (the
     error text is for the model only). A run that pauses before a gated call
     ends with `message.end` status `awaiting_approval`, with `approval` (and
-    `approvals`: every one the run waits for).
+    `approvals`: every one the run waits for). With a response schema
+    (`app_utils/structured.py`), a completed run's `message.end` carries the
+    answer as `structured_response`, its only `message.delta` is the answer's
+    JSON text, and a run whose answer never fits ends with the `error` code
+    `invalid_structured_response`.
   * `GET /threads/{thread_id}/approvals` (`approval.read`): the thread's
     approvals (owner and read-across roles: all; a decider: the ones it may
     decide). `GET /approvals?status=&limit=&offset=`: across threads, the
@@ -189,6 +193,7 @@ from {{cookiecutter.agent_directory}}.app_utils.middleware import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.model import model_limits, model_options
 from {{cookiecutter.agent_directory}}.app_utils.playground import PLAYGROUND_HTML
+from {{cookiecutter.agent_directory}}.app_utils.structured import structured_settings
 from {{cookiecutter.agent_directory}}.app_utils.telemetry import (
     bind_log_context,
     log_format,
@@ -234,8 +239,8 @@ else:
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
-    # A bad limit, log, metrics, pool, model, trace-capture or A2A setting
-    # stops startup instead of being guessed.
+    # A bad limit, log, metrics, pool, model, trace-capture, A2A or response-schema
+    # setting stops startup instead of being guessed.
     check_settings(
         extra=(
             log_level,
@@ -253,6 +258,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             exchange_settings,
             trace_scope,
             client_settings,
+            structured_settings,
         )
     )
     if RUNTIME.runtime == FASTAPI:

@@ -37,6 +37,8 @@ FILE_CATEGORIES: dict[str, list[str]] = {
         "{agent_directory}/agent.py",
         "{agent_directory}/tools/**",
         "{agent_directory}/policies/**",
+        # The shape of the agent's final answer (structured answers), when it has one.
+        "{agent_directory}/response_schema.json",
         # Reserved for directories the developer may create.
         "{agent_directory}/prompts/**",
         "{agent_directory}/graph/**",

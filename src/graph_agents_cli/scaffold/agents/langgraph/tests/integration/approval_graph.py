@@ -21,8 +21,9 @@ a test tool that cancels an order through `api_client`: a call the test's
 and the decision. Two more tools place and amend orders, for a policy whose
 approval rules ask other approvers for other calls, and one reads a gauge whose
 reading holds a lone surrogate. `whoami` reports the caller its run acts for
-(`current_caller`) and whether `require_direct_caller` lets it through. Not
-collected by pytest (no `test_` prefix).
+(`current_caller`) and whether `require_direct_caller` lets it through. With
+`RESPONSE_SCHEMA_PATH` set it answers in that shape (`test_structured_server.py`).
+Not collected by pytest (no `test_` prefix).
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ from {{cookiecutter.agent_directory}}.app_utils.api_client import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+from {{cookiecutter.agent_directory}}.app_utils.structured import response_format
 
 
 def _principal(context: Any) -> str:
@@ -118,14 +120,18 @@ def whoami(topic: str, runtime: ToolRuntime[Any]) -> str:
     )
 
 
+model = get_model()
+# The fake model calls the first tool a message names: "Cancel ..." cancels,
+# "Place ..." places, "Amend ..." amends, "... gauge ..." reads the gauge and
+# "whoami" reports the caller.
+tools = [cancel_order, place_order, amend_order, gauge_reading, whoami]
 graph = create_agent(
-    model=get_model(),
-    # The fake model calls the first tool a message names: "Cancel ..." cancels,
-    # "Place ..." places, "Amend ..." amends, "... gauge ..." reads the gauge and
-    # "whoami" reports the caller.
-    tools=[cancel_order, place_order, amend_order, gauge_reading, whoami],
+    model=model,
+    tools=tools,
     system_prompt=agent.SYSTEM_PROMPT,
     middleware=agent.middleware(),
     context_schema=agent.AgentContext,
+    # Structured answers when the server runs with RESPONSE_SCHEMA_PATH (as agent.py).
+    response_format=response_format(model, tools),
     name="approval-test",
 ).with_config({"recursion_limit": recursion_limit()})

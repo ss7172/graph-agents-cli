@@ -123,13 +123,16 @@ def build_test_graph(tools: Sequence[Any]) -> Any:
     from {{cookiecutter.agent_directory}} import agent
     from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
     from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+    from {{cookiecutter.agent_directory}}.app_utils.structured import response_format
 
+    model = get_model()
     return create_agent(
-        model=get_model(),
+        model=model,
         tools=list(tools),
         system_prompt=agent.SYSTEM_PROMPT,
         middleware=agent.middleware(),
         context_schema=agent.AgentContext,
+        response_format=response_format(model, list(tools)),
         name="test-agent",
     ).with_config({"recursion_limit": recursion_limit()})
 

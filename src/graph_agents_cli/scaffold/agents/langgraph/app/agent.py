@@ -32,10 +32,17 @@ stays in the thread.
 refusals and failed API calls into tool errors the model reads,
 `AnswerInvalidToolCalls` answers a tool call whose arguments are not valid
 JSON with an error result and asks the model again (without it the run ends
-with no reply and the provider refuses the thread's later turns), and
+with no reply and the provider refuses the thread's later turns),
 `UntrustedToolResults` fences every tool result the model reads as untrusted
-data. The graph is the same under both runtimes (LangGraph Server loads it
-from `langgraph.json`), so all three apply everywhere.
+data, and `StructuredAnswer` checks a structured final answer against the
+response schema (last: it wraps the model call innermost). The graph is the
+same under both runtimes (LangGraph Server loads it from `langgraph.json`),
+so all four apply everywhere.
+
+Structured final answers: with a response schema (`response_schema.json` in
+this directory), `response_format()` makes the model answer in that JSON shape and the run delivers the object
+(`message.end` `structured_response`, an A2A data part). Without the file it
+returns None and the agent answers in text. See `app_utils/structured.py`.
 """
 
 from __future__ import annotations
@@ -60,6 +67,10 @@ from {{cookiecutter.agent_directory}}.app_utils.content import (
 )
 from {{cookiecutter.agent_directory}}.app_utils.limits import recursion_limit
 from {{cookiecutter.agent_directory}}.app_utils.model import get_model
+from {{cookiecutter.agent_directory}}.app_utils.structured import (
+    StructuredAnswer,
+    response_format,
+)
 from {{cookiecutter.agent_directory}}.tools import get_tools
 
 load_dotenv()
@@ -139,15 +150,25 @@ class SurfaceApiErrors(AgentMiddleware):
 
 
 def middleware() -> list[AgentMiddleware]:
-    """The agent's middleware (new instances): keep all three when you add your own."""
-    return [SurfaceApiErrors(), AnswerInvalidToolCalls(), UntrustedToolResults()]
+    """The agent's middleware (new instances): keep all four when you add your own,
+    with `StructuredAnswer` last."""
+    return [
+        SurfaceApiErrors(),
+        AnswerInvalidToolCalls(),
+        UntrustedToolResults(),
+        StructuredAnswer(),
+    ]
 
 
+model = get_model()
+tools = get_tools()
 graph: CompiledStateGraph = create_agent(
-    model=get_model(),
-    tools=get_tools(),
+    model=model,
+    tools=tools,
     system_prompt=SYSTEM_PROMPT,
     middleware=middleware(),
     context_schema=AgentContext,
+    # None without a response schema: the agent answers in text.
+    response_format=response_format(model, tools),
     name="{{cookiecutter.project_name}}",
 ).with_config({"recursion_limit": recursion_limit()})
