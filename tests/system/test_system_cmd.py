@@ -28,6 +28,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -101,6 +102,8 @@ def templates(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
 
 @pytest.fixture
 def store(templates: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # `system deploy` keeps its logs in a new temporary directory: this test's.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     root = tmp_path / "store"
     root.mkdir()
     for agent, source in templates.items():
