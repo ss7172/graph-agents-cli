@@ -11,7 +11,7 @@ with one CLI and six skills for your coding agent.**
 
 [![PyPI](https://img.shields.io/pypi/v/graph-agents-cli)](https://pypi.org/project/graph-agents-cli/)
 [![Python](https://img.shields.io/pypi/pyversions/graph-agents-cli)](https://pypi.org/project/graph-agents-cli/)
-[![CI](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
+[![CI](https://img.shields.io/github/actions/workflow/status/ss7172/graph-agents-cli/ci.yml?branch=main&event=push&label=CI)](https://github.com/ss7172/graph-agents-cli/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-site-0f766e)](https://ss7172.github.io/graph-agents-cli/)
 [![Skills tuned with SkillOpt](https://img.shields.io/badge/skills-tuned%20with%20SkillOpt-0f766e)](https://ss7172.github.io/graph-agents-cli/reference/skills-benchmark/)
@@ -27,10 +27,8 @@ with one CLI and six skills for your coding agent.**
 
 ---
 
-graph-agents-cli takes an agent from `create` to a hardened Helm release: a streaming chat API,
-shared-key or per-user auth, an outbound API policy, human approval of risky calls and an eval
-gate CI can enforce. It is a port of Google's [agents-cli](https://github.com/google/agents-cli)
-to LangGraph on self-hosted Kubernetes: it keeps the lifecycle and the scaffold engine, and
+graph-agents-cli is a port of Google's [agents-cli](https://github.com/google/agents-cli) to
+LangGraph on self-hosted Kubernetes: it keeps the lifecycle and the scaffold engine, and
 replaces ADK on Google Cloud with LangGraph, Helm and any cluster
 ([how the two compare](https://ss7172.github.io/graph-agents-cli/reference/comparison/)).
 
@@ -48,19 +46,25 @@ replaces ADK on Google Cloud with LangGraph, Helm and any cluster
   ([guide](https://ss7172.github.io/graph-agents-cli/guides/multi-agent/)). Also new:
   structured final answers in a JSON shape you declare, and skills tuned with Microsoft's
   [SkillOpt](https://github.com/microsoft/SkillOpt) ([results](https://ss7172.github.io/graph-agents-cli/reference/skills-benchmark/)).
+  Measured while building it
+  ([0.3.0 notes](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md#030---2026-09-29)):
+  - wiring an agent to five other agents takes **5** `peer add` commands instead of 40 `api`
+    commands and 418 hand-written lines;
+  - replies that were not a bare JSON document (gpt-5-mini, 24-case triage task) went from
+    28 of 48 to **0 of 96** with structured answers.
 
 ## What you get
 
-| | |
+| Feature | What it does |
 |---|---|
-| **Scaffold a real service** | `create` renders a LangGraph project with a streaming chat API, threads, answers in a JSON shape you declare, an A2A endpoint, an eval harness, a hardened Helm chart and GitHub Actions workflows. |
-| **Run it locally, keyless** | `run` sends a prompt through a temporary local server; `playground` serves a dev chat page with reload. A deterministic fake model needs no key. |
+| **Scaffold a real service** | `create` renders a LangGraph project: streaming chat API, A2A endpoint, eval harness, hardened Helm chart, GitHub Actions workflows. |
+| **Run it locally, keyless** | `run` sends one prompt, `playground` serves a dev chat page; a deterministic fake model needs no key. |
 | **An eval gate CI can enforce** | Deterministic checks and model judges; the exit code of `eval run` is the gate. |
-| **Outbound calls under a policy** | `api-policy.yaml` declares the APIs tools may call, the agent refuses anything else, `lint` checks it in CI, and chosen calls wait for a human approval. |
-| **Agents that ask other agents** | `peer add` declares the agents one asks over A2A, each agent knows the user and the agent in between, and `system` checks, wires and deploys several projects as one. |
-| **Secure by default** | One auth policy on every route: a shared bearer key, OIDC/JWT or your own. |
-| **Deploy to any cluster** | `deploy --env dev`, `staging` or `prod` with Helm, straight from your machine or through GitHub Actions or Argo CD; `secrets` for the app's Secret. |
-| **Skills tuned with SkillOpt** | Six skills teach your coding agent the same lifecycle, measured on a 104-task benchmark and improved with SkillOpt. |
+| **Outbound calls under a policy** | `api-policy.yaml` declares the APIs tools may call; anything else is refused, and chosen calls wait for a human. |
+| **Agents that ask other agents** | `peer add` declares the agents one asks over A2A; `system` checks, wires and deploys several projects as one. |
+| **Secure by default** | One auth policy on every surface: a shared bearer key, OIDC/JWT or your own. |
+| **Deploy to any cluster** | `deploy --env dev`, `staging` or `prod` with Helm, from your machine, GitHub Actions or Argo CD. |
+| **Skills for your coding agent** | Six skills teach it the same lifecycle. All six are measured on a 104-task benchmark, and SkillOpt tuned three of them: workflow, scaffold and observability. |
 
 Nothing is specific to one domain or one company: a project picks its auth policy, declares
 its APIs and configures the rest through environment variables and chart values.
@@ -73,6 +77,8 @@ its APIs and configures the rest through environment variables and chart values.
       (https://github.com/user-attachments/assets/<id>), which GitHub renders as a player;
     - then a centered link:
       <p align="center"><a href="https://youtu.be/<id>"><b>Watch the full demo on YouTube</b></a></p>
+  - optionally, a badge in the badge row:
+      [![Demo video](https://img.shields.io/badge/demo-video-ff0000)](https://youtu.be/<id>)
   PyPI shows the user-attachments URL as plain text, so keep the YouTube link too.
   Absolute URLs only: this file is also the PyPI page.
 -->
@@ -89,6 +95,10 @@ You need Python 3.12 or 3.13 and [uv](https://docs.astral.sh/uv/getting-started/
 uv tool install graph-agents-cli
 graph-agents-cli setup      # optional: add the six skills to the coding agents it finds
 ```
+
+`setup` also reinstalls the same release from its git tag
+([Installation & setup](https://ss7172.github.io/graph-agents-cli/getting-started/installation/)
+explains why).
 
 <details>
 <summary>Other ways to install: pipx, the release tag from GitHub, extras</summary>
@@ -123,8 +133,15 @@ walks through each step.
 
 ### 3. Build with your coding agent, then ship it
 
-Once `setup` has installed the skills, ask your coding agent to *"use graph-agents-cli to build
-..."* and review each step
+Once `setup` has installed the skills, open your coding agent in an empty directory and ask,
+for example:
+
+> *"Use graph-agents-cli to build an agent that answers questions about orders from our orders
+> API (`GET /orders`) and can put an order on hold (`PATCH /orders/{order_id}`). Holding an
+> order must wait for my approval. Use the fake model locally; when the evals pass, deploy it
+> to my local kind cluster."*
+
+The skills lead each step and stop for your decision at every gate
 ([coding-agent tutorial](https://ss7172.github.io/graph-agents-cli/getting-started/tutorial-coding-agent/)).
 Or do it by hand: add an API tool under a policy, pass the `eval run` gate, then
 `deploy --env dev` to a local kind cluster
@@ -150,8 +167,11 @@ text differs):
 
 | Harness | Tasks | 0.2 skills | 0.3 skills | Change |
 |---|---|---|---|---|
-| Claude Code (claude-sonnet-5-5) | all 104 | 0.84 | **0.97** | +0.12, p = 0.0006 |
-| Codex (gpt-5.6-terra) | 30 (test split, plus val of workflow and observability) | 0.77 | **0.97** | +0.20, p = 0.031 |
+| Claude Code (claude-sonnet-5-5) | 104 | 0.84 | **0.97** | +0.12 (p = 0.0006) |
+| Codex (gpt-5.6-terra) | 30 | 0.77 | **0.97** | +0.20 (p = 0.031) |
+
+Codex ran the test split of all six skills plus val of workflow and observability. Change is
+the mean of per-task differences, so it need not equal the difference of the two scores.
 
 <details>
 <summary>Where the gain is, per skill (Claude Code, val and test tasks)</summary>
@@ -166,25 +186,9 @@ The other four skills scored 0.92 or higher before and moved by 0.00 to +0.06.
 </details>
 
 No test task went down on either harness. There is one real regression on Claude Code (1 of 2
-reps of a new deploy task), and the test-split gains alone are not significant (p = 0.25 and
+reps of a new deploy task in the val split), and the test-split gains alone are not significant (p = 0.25 and
 0.5). Full tables:
 [final-v0.3.md](https://github.com/ss7172/graph-agents-cli/blob/main/tools/skillopt/results/final-v0.3.md).
-
-## 0.3 in numbers
-
-Measured while building 0.3, as recorded in the
-[changelog](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md):
-
-| What | Before | With 0.3 |
-|---|---|---|
-| Wiring an agent to five other agents | 40 `api` commands and 418 hand-written lines | **5** `peer add` commands |
-| Replies that were not a bare JSON document (gpt-5-mini, 24-case triage task) | 28 of 48 | **0 of 96** with structured answers |
-
-Before release, 0.3 was acceptance-tested on a system of six agents built with `peer add` and
-`system apply` on a local cluster, security probes, 20 agents with 2 replicas each, an issuer
-that hangs, and an upgrade from 0.2.0 with data. Blocker and major issues are fixed before a
-release; the rest are parked, each with its impact and workaround, in
-[KNOWN_ISSUES.md](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md).
 
 ## Commands
 
@@ -231,7 +235,12 @@ GitHub ([release notes](https://github.com/ss7172/graph-agents-cli/releases/tag/
 Interfaces may still change between minor versions; the changelog lists every breaking change
 with its migration steps.
 
-- [Known issues](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md): parked issues, each with its impact and workaround.
+0.3's acceptance tests covered a system of six agents built with `peer add` and `system apply`
+on a local cluster, security probes, a probe of 20 agents with 2 replicas each, an issuer that
+hangs, and an upgrade from 0.2.0 with data. Blocker and major issues are fixed before a
+release; the rest are parked.
+
+- [Known issues](https://github.com/ss7172/graph-agents-cli/blob/main/KNOWN_ISSUES.md): parked issues, each with its impact and a workaround where one exists.
 - [Changelog](https://github.com/ss7172/graph-agents-cli/blob/main/CHANGELOG.md): every release and its migration steps.
 - [Contributing](https://github.com/ss7172/graph-agents-cli/blob/main/CONTRIBUTING.md): development setup, tests, templates, releases and the upstream-sync process.
 
@@ -242,9 +251,9 @@ graph-agents-cli stands on two projects:
 - **[google-agents-cli](https://github.com/google/agents-cli)**, Copyright 2026 Google LLC,
   Apache-2.0. graph-agents-cli is a fork of it, started from 1.6.1, with the Google Cloud
   specific parts removed; files kept from it keep their Google LLC copyright headers.
-  [NOTICE](https://github.com/ss7172/graph-agents-cli/blob/main/NOTICE) lists every modification.
-- **[SkillOpt](https://github.com/microsoft/SkillOpt)** from Microsoft, which proposed the
-  skill edits that 0.3 adopted after review.
+  [NOTICE](https://github.com/ss7172/graph-agents-cli/blob/main/NOTICE) lists the modifications.
+- **[SkillOpt](https://github.com/microsoft/SkillOpt)** from Microsoft, which found the skill
+  rules that 0.3 adopted after review.
 
 ## License
 
