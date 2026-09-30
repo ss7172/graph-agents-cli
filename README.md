@@ -15,6 +15,7 @@ with one CLI and six skills for your coding agent.**
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/ss7172/graph-agents-cli/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-site-0f766e)](https://ss7172.github.io/graph-agents-cli/)
 [![Skills tuned with SkillOpt](https://img.shields.io/badge/skills-tuned%20with%20SkillOpt-0f766e)](https://ss7172.github.io/graph-agents-cli/reference/skills-benchmark/)
+[![Demo video](https://img.shields.io/badge/demo-video-f59e0b)](https://github.com/ss7172/graph-agents-cli#demo-video)
 
 [Get started](https://ss7172.github.io/graph-agents-cli/getting-started/) ·
 [Guides](https://ss7172.github.io/graph-agents-cli/guides/) ·
@@ -69,19 +70,10 @@ replaces ADK on Google Cloud with LangGraph, Helm and any cluster
 Nothing is specific to one domain or one company: a project picks its auth policy, declares
 its APIs and configures the rest through environment variables and chart values.
 
-<!--
-  DEMO VIDEO: pending the owner's approval of the video. Once approved, replace this comment
-  with a "## Demo video" section, placed here after the overview as microsoft/SkillOpt's README
-  does:
-    - the GitHub user-attachments URL on a line of its own
-      (https://github.com/user-attachments/assets/<id>), which GitHub renders as a player;
-    - then a centered link:
-      <p align="center"><a href="https://youtu.be/<id>"><b>Watch the full demo on YouTube</b></a></p>
-  - optionally, a badge in the badge row:
-      [![Demo video](https://img.shields.io/badge/demo-video-ff0000)](https://youtu.be/<id>)
-  PyPI shows the user-attachments URL as plain text, so keep the YouTube link too.
-  Absolute URLs only: this file is also the PyPI page.
--->
+## Demo video
+
+https://github.com/user-attachments/assets/82cd712f-4c87-486a-914a-dff7cfddc0b1
+
 
 ## Get started
 
