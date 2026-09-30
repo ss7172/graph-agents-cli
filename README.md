@@ -72,7 +72,7 @@ its APIs and configures the rest through environment variables and chart values.
 
 ## Demo video
 
-https://github.com/user-attachments/assets/82cd712f-4c87-486a-914a-dff7cfddc0b1
+https://github.com/user-attachments/assets/ebc36951-e765-490e-8c45-d412f1cecba7
 
 
 ## Get started
